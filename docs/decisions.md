@@ -30,6 +30,58 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins)
+
+**Decision.** Start M1 with Clang/LLD 22.1.8 from apt.llvm.org
+Noble packages `1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80`
+(exact hashes for both architectures in the smoke manifest), GCC 13
+libstdc++ development/support files
+(`13.3.0-6ubuntu2~24.04.1`), libstdc++6/libgcc-s1 runtime
+`14.2.0-4ubuntu2~24.04.1`, and glibc `2.39-0ubuntu8.9`. Select CUDA
+Toolkit 13.4.2's NVCC, CRT, libNVVM, libnvptxcompiler, and cudart/runtime
+development components `13.4.92-1`, with CCCL package `13.3.4.3.1-1`,
+for both x86-64 and ARM. Ordinary `.cc` files use Clang C++23; narrow
+`.cu` files use NVCC `--std=c++23` with Clang as host compiler.
+
+Cross-build with `aarch64-linux-gnu -march=armv8-a`, an explicit Clang
+host wrapper, LLD, and the hashed 2026-09-21 Spark sysroot snapshot (DGX
+OS 7.5.0 base / 7.6.0 OTA). Add the 13.4.2 SBSA target headers/runtime
+from the pinned packages. NVCC selects `--target-directory sbsa-linux`
+and `-arch=sm_121`. The workstation CPU target is explicitly
+`x86_64-linux-gnu -march=x86-64`. Keep the native Spark diagnostic
+profile (Clang/NVCC with GNU binutils `2.42-4ubuntu2.10`) alongside the
+cross path; translate experiment profiles to CMake presets in M1.
+
+**Evidence.** The [retained smoke experiment](experiments/toolchain-smoke/README.md)
+records package/snapshot hashes, commands, and checks. A native C++23 CPU
+executable passed on the workstation. AArch64 CPU and NVCC/Clang CUDA
+objects were built there, linked, deployed over SSH, and passed on `spark`
+(GB10 12.1, driver 580.178.04). The native Spark fallback passed too.
+Both GPU paths exercised a C++23 `if consteval` host/device function and
+checked all 257 results with PTX JIT disabled. The installed CUDA 13.0
+comparison passed only with C++20 CUDA; 13.4.2 removes that limit (RE-001).
+
+**Compiler choice.** The [comparison](experiments/toolchain-smoke/compiler-choice.md)
+retains Clang for the verified cross-build workflow and LLVM tooling fit.
+GCC is a modern, supported alternative, not ruled out by C++23 or CUDA;
+no performance comparison was made. LLVM 23 is newer but outside CUDA
+13.4's supported host-compiler range. 22.1.8 is the newest compatible
+release checked on 2026-09-21. The earlier LLVM 18 smoke is retained as
+comparison evidence. Clang continues to use the separately pinned libstdc++.
+
+**Consequences.** Open question 6 is answered for the smoke scope. CUDA
+13.x minor-version compatibility allowed this native GB10 test on R580;
+new driver features and PTX/JIT paths need separate validation and may
+require a driver upgrade. No driver/default-toolkit change was made in
+this experiment. These are initial integration pins, not complete C++23
+library or backend support. M1 still owes declarative provisioning,
+CMake/mise/CI, clean-host/container verification, and the dependency audit.
+The copied sysroot is a local input, not a redistributable SDK.
+
+**Reopen if.** A backend needs a newer compiler/library/driver feature,
+the target OS changes, or M1 clean setup cannot reproduce the smoke.
+Validate native, cross, and Spark fallback paths before changing pins.
+
 ## D-031: Shared prompt prefixes and conversation continuations have independent reuse and retention  (2026-09-21, status: accepted; clarifies D-024 and D-030; supersedes D-022's prefix-as-conversation identity)
 
 **Decision.** Prefix matching identifies reusable computation, never a unique

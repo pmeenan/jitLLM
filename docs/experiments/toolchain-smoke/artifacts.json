@@ -1,0 +1,370 @@
+{
+  "date": "2026-09-21",
+  "packages": [
+    {
+      "package": "cccl-13-4",
+      "version": "13.3.4.3.1-1",
+      "architecture": "amd64",
+      "filename": "cccl-13-4_13.3.4.3.1-1_amd64.deb",
+      "sha256": "caaaa7bb716d0ea9e7251a3f0e1f5d41c0a0d33057772aa2b5a94be9a77c1716",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./cccl-13-4_13.3.4.3.1-1_amd64.deb"
+    },
+    {
+      "package": "cuda-crt-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "cuda-crt-13-4_13.4.92-1_amd64.deb",
+      "sha256": "ec05400c48dafc7d2186f34c3b000596513895aa8d3c2d84446385c6d51f6d49",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./cuda-crt-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "cuda-cudart-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "cuda-cudart-13-4_13.4.92-1_amd64.deb",
+      "sha256": "47eea997932b76cb3c070ec5e1a87b221423e911795f0b53ce7530f89b3617f2",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./cuda-cudart-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "cuda-cudart-dev-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "cuda-cudart-dev-13-4_13.4.92-1_amd64.deb",
+      "sha256": "71bf3d001f2560a4710bdaba9297fcd3f775a50e3b320ec1c5fcc880d458b0df",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./cuda-cudart-dev-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "cuda-nvcc-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "cuda-nvcc-13-4_13.4.92-1_amd64.deb",
+      "sha256": "9790031bdc0a2262a0d9bfae841574e51e4392c1e947319928e031fb354bb432",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./cuda-nvcc-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "libnvptxcompiler-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "libnvptxcompiler-13-4_13.4.92-1_amd64.deb",
+      "sha256": "23236f0787ac87e18074027e90288a2355ed26499ccf60ff1c9d6ea9741cc949",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./libnvptxcompiler-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "libnvvm-13-4",
+      "version": "13.4.92-1",
+      "architecture": "amd64",
+      "filename": "libnvvm-13-4_13.4.92-1_amd64.deb",
+      "sha256": "4fd508a5e08cbfc2b2db713bb45e206a4e2fd0d1d93b82ad815963775d7c92c8",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/./libnvvm-13-4_13.4.92-1_amd64.deb"
+    },
+    {
+      "package": "cccl-13-4",
+      "version": "13.3.4.3.1-1",
+      "architecture": "arm64",
+      "filename": "cccl-13-4_13.3.4.3.1-1_arm64.deb",
+      "sha256": "571cd8518b11b873f2fde6670d29586b876e276d17e648c266586eb969bd1f0d",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./cccl-13-4_13.3.4.3.1-1_arm64.deb"
+    },
+    {
+      "package": "cuda-crt-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "cuda-crt-13-4_13.4.92-1_arm64.deb",
+      "sha256": "6dcb0ccbf64e4c4c7ff0a0b4f3a7ecce23c5932758e5cb197294b90fd5aafb55",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./cuda-crt-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "cuda-cudart-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "cuda-cudart-13-4_13.4.92-1_arm64.deb",
+      "sha256": "98401b30176fdb83399b1e2937fd54ab67ceb41fc4f1d839262d1f687801f1bc",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./cuda-cudart-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "cuda-cudart-dev-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "cuda-cudart-dev-13-4_13.4.92-1_arm64.deb",
+      "sha256": "3c24b4d5a00b17d42bc1a18dbb28e93927db6c8b3299f68f90d378b69dcfcf1e",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./cuda-cudart-dev-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "cuda-nvcc-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "cuda-nvcc-13-4_13.4.92-1_arm64.deb",
+      "sha256": "be349094a0e56ff8a8f4f0c45db87c372b4de1e68a1b898f0f329497802ee85b",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./cuda-nvcc-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "libnvptxcompiler-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "libnvptxcompiler-13-4_13.4.92-1_arm64.deb",
+      "sha256": "c300120e7c776ce16ba3975b222c30934809004af22f4bff4028482d2a6f00d5",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./libnvptxcompiler-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "libnvvm-13-4",
+      "version": "13.4.92-1",
+      "architecture": "arm64",
+      "filename": "libnvvm-13-4_13.4.92-1_arm64.deb",
+      "sha256": "415457d538bf0952e33d418223248dd210f052657059f4c006e470e27c0b6348",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/./libnvvm-13-4_13.4.92-1_arm64.deb"
+    },
+    {
+      "package": "clang-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "clang-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "e969e7f97a6e71326bae2cec6d76059cb9bf6562bfe89d03bcb65c3cee1aac05",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "libclang-common-22-dev",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "libclang-common-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "90cee393eefbe1cb5bf463b7d4aea4ab5512d06525641e6836d21c4d7191944e",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-common-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "libclang-cpp22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "libclang-cpp22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "620b7960fef6ca4647b813889d4f3ae3f8bd5de71c949550c98a6030427acb18",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-cpp22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "libclang1-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "libclang1-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "25ca957fa2054cc607218df0a5c01994416062abc76fe008327fb95420afc509",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang1-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "libllvm22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "libllvm22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "e94d23161316c53ebe8c9e35038468e06a5e47dbdf207a3c54a22ab40e37cbb6",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libllvm22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "lld-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "lld-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "4172d3b289825f729a84ae351b2f37a2c6c6715f2d1511edd60b59a79c3da200",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/lld-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "llvm-22-linker-tools",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "llvm-22-linker-tools_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "ee6df5de094e62ba016f6d8ade319d34c246a0a5c79ed898aeaaa327332cd5b7",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22-linker-tools_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "clang-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "clang-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "dd7d3c50fa8a4f6c98ad7030f4a08a0b1646c6652aef766c1869d8c38430d404",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "libclang-common-22-dev",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "libclang-common-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "a92049ff0d0e95d8d53c68f0798a48bdc3ba17f22043b08f69b5829030c2eafd",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-common-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "libclang-cpp22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "libclang-cpp22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "c9d346b6fec7df4c51bdd5ff604661fa812330d1a7b384c21a34b6d845ce1125",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-cpp22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "libclang1-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "libclang1-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "4d86da9f20b56406b7d54f8791e0d43bc71381cd55acc6af1b627fc39a6064da",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang1-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "libllvm22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "libllvm22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "73dd23fb06588c63b3e6ddb9f35c464e874e0967a88b706c97eb64ddb8580970",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libllvm22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "lld-22",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "lld-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "9e35be586d2055bde84ea9b9ccecf07a4b0834c4c88751c053bfab57a4828d11",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/lld-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "llvm-22-linker-tools",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "llvm-22-linker-tools_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "4314e30a3d95d28e2be18c326d586bdba5c26a63346f1a754ce88e38037f4240",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22-linker-tools_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+    },
+    {
+      "package": "libz3-4",
+      "version": "4.8.12-3.1build1",
+      "architecture": "amd64",
+      "filename": "libz3-4_4.8.12-3.1build1_amd64.deb",
+      "sha256": "67ceb432593fe62afbaf3bd85c73d46c66fa19433a6b58326a3248162f139b19",
+      "source": "Ubuntu noble/universe; apt-get download libz3-4=4.8.12-3.1build1 on matching architecture"
+    },
+    {
+      "package": "libz3-4",
+      "version": "4.8.12-3.1build1",
+      "architecture": "arm64",
+      "filename": "libz3-4_4.8.12-3.1build1_arm64.deb",
+      "sha256": "7297a82d2c3eee4909108ddfb4d11a04cae10868ad03ee469efed0e9f8250959",
+      "source": "Ubuntu noble/universe; apt-get download libz3-4=4.8.12-3.1build1 on matching architecture"
+    }
+  ],
+  "snapshots": {
+    "sysroot": {
+      "sha256_normalized_tar": "d1f457706ef43dae852c28869b0aa3155fecb57074977fb5937d97fc4baf6f2a"
+    },
+    "cuda-13.0-sbsa-baseline": {
+      "sha256_normalized_tar": "4da756884b411953b095a89f9ebe5832f2d02e84025410f804712682ee6406ca"
+    },
+    "cuda-13.4-sbsa": {
+      "sha256_normalized_tar": "36e70af4fefade9363953a9cfc6a2960ffeda4dbf5e4edbbb988edeeb3c18e18"
+    }
+  },
+  "baseline_cuda_packages": [
+    {
+      "package": "cuda-cccl-13-0",
+      "version": "13.0.85-1",
+      "architecture": "amd64",
+      "filename": "cuda-cccl-13-0_13.0.85-1_amd64.deb",
+      "sha256": "daf5010080632222a57bc8b81fed96f4f23ba78d3aab1adf2db706911c9073c9"
+    },
+    {
+      "package": "cuda-crt-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "cuda-crt-13-0_13.0.88-1_amd64.deb",
+      "sha256": "88e7a068c08e5ff55dfa227ee271c33268e035c49e1df5fb588afbbce4bfbd94"
+    },
+    {
+      "package": "cuda-cudart-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "cuda-cudart-13-0_13.0.88-1_amd64.deb",
+      "sha256": "8219aa9f81357b4c7ea24b346a58b56a5f2bd566ee4f22f0cdf290f7124bc995"
+    },
+    {
+      "package": "cuda-cudart-dev-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "cuda-cudart-dev-13-0_13.0.88-1_amd64.deb",
+      "sha256": "d0fc978b0b83575ae4eb51735a0d648e4d20e98453d727aec32c8768ef8d9527"
+    },
+    {
+      "package": "cuda-nvcc-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "cuda-nvcc-13-0_13.0.88-1_amd64.deb",
+      "sha256": "394e9c9101dfe18c96e50452bcbb31841bbdca5c946fc7698105228ba9af1d08"
+    },
+    {
+      "package": "libnvptxcompiler-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "libnvptxcompiler-13-0_13.0.88-1_amd64.deb",
+      "sha256": "2a85592cc49d93fd811ab39e7662f882da826fb187acc3b9c6a5625a686e93ae"
+    },
+    {
+      "package": "libnvvm-13-0",
+      "version": "13.0.88-1",
+      "architecture": "amd64",
+      "filename": "libnvvm-13-0_13.0.88-1_amd64.deb",
+      "sha256": "2539ff7ba030f4fbe1093644bff608d1b91256ca34076fc5be7aa579c3b657ff"
+    }
+  ],
+  "baseline_llvm_packages": [
+    {
+      "package": "clang-18",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "clang-18_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "628b16701014ef7ad648380b20ea74b90dd543857f933b3e34d2fc042783de25"
+    },
+    {
+      "package": "libclang-common-18-dev",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "libclang-common-18-dev_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "d41631bb752815a8196261d1030c096591c59678c8adfbf2e6a740a691b49e80"
+    },
+    {
+      "package": "libclang-cpp18",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "libclang-cpp18_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "e91eda104813ee0468d145d010a4a4e142401f3f17f9a65596c66d416298d018"
+    },
+    {
+      "package": "libclang1-18",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "libclang1-18_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "1ed67106d743ab4f12db2726c5fc11c436c5e1fba613e9f1006bf3fa05cc69bd"
+    },
+    {
+      "package": "libllvm18",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "libllvm18_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "af6197096ce3b89aab86de59f01c1b5feb008b2ae1514a03906c0664edb8b0b1"
+    },
+    {
+      "package": "lld-18",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "lld-18_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "c574594d714bf445f4c2323fa99374c05b79be09a3899edbf9d4b7265c9ccc57"
+    },
+    {
+      "package": "llvm-18-linker-tools",
+      "version": "1:18.1.3-1ubuntu1",
+      "architecture": "amd64",
+      "filename": "llvm-18-linker-tools_1%3a18.1.3-1ubuntu1_amd64.deb",
+      "sha256": "50f0bcfa784e42f8bf0eac31aeb6a20798fb6174cc31efe021f12ae71af91b23"
+    }
+  ],
+  "llvm_repository_verification": {
+    "base_url": "https://apt.llvm.org/noble/",
+    "suite": "llvm-toolchain-noble-22",
+    "signing_key_fingerprint": "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421",
+    "key_url": "https://apt.llvm.org/llvm-snapshot.gpg.key",
+    "inrelease_sha256": "eb6d22e7dd7cf97c329c0770968786a065a886c61c850e71d4c2e5f42d38deef",
+    "packages_gz_sha256": {
+      "amd64": "5afb4722f05744b626512536fb269d633a5c5be68f48b0233f3813018083b6cf",
+      "arm64": "ca7c577e794a02c343c0ddfff585a82599ee6c0d44aaae2479405dea6ce59677"
+    },
+    "validation": "gpgv verified InRelease; SHA256 authenticated each Packages.gz; package SHA256 checked before extraction"
+  }
+}

@@ -445,6 +445,19 @@ some CUDA smoke tests can run on the workstation before a Spark, but Spark
 capabilities (VMM behaviour on GB10, GDS mode, unified-memory accounting) are
 only measurable on a Spark. The Spark-side inventory follows.
 
+### Toolchain smoke follow-up (2026-09-21)
+
+The [M0 smoke](experiments/toolchain-smoke/README.md) passed native C++23,
+AArch64 cross CPU/CUDA execution on `spark`, and a native Spark fallback.
+D-032 pins LLVM/LLD 22.1.8, the measured GCC/libstdc++/glibc components,
+NVCC/cudart 13.4.92 (Toolkit 13.4.2), and the hashed target snapshot.
+Host and CUDA translation units both use C++23, including an `if consteval`
+host/device probe; the installed 13.0 comparison has a dialect limit (RE-001).
+GB10 was validated with `sm_121` and PTX JIT disabled. The workstation
+compiler SDK was extracted to scratch; the baseline above is historical,
+and system compiler defaults and drivers were not changed. Full M1
+provisioning is still pending.
+
 ## Target nodes (DGX Sparks)
 
 Captured 2026-09-20 over SSH, read-only, no sudo. Both nodes are identical in
@@ -472,9 +485,11 @@ still uncabled (see the RDMA row).
 
 Implications for the M0 spikes: the target driver is 580.178.04, so the cross
 toolchain's CUDA toolkit pin has to stay within that driver's compatibility
-range (13.0 is what the nodes have; a newer toolkit means a driver decision
-first). The workstation driver (595.91.07) is newer than the targets', so a
-kernel that runs locally is not proof it runs on Spark. The I/O spike has one
+range. The installed toolkit remains 13.0; the later D-032 smoke validated
+extracted 13.4.2 components using native GB10 code on the existing R580
+driver through CUDA minor-version compatibility. New driver-dependent
+features and PTX/JIT paths still need separate validation. The workstation
+driver (595.91.07) is newer than the targets', so a kernel that runs locally is not proof it runs on Spark. The I/O spike has one
 NVMe and one filesystem to work with, shared with the OS. The interconnect
 half of the inventory is a separate plan task after cabling.
 

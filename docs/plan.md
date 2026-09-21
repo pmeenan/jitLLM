@@ -42,16 +42,17 @@ needs evidence from the real hardware.
       Sparks recorded in
       [architecture.md](architecture.md#target-nodes-dgx-sparks). The
       interconnect half is the separate cabling task below.
-- [ ] Spike — **toolchain smoke** (answers open question 6): one end-to-end
-      Clang C++23 native build, AArch64 cross build, and NVCC (Clang host
-      compiler) CUDA object for GB10, deployed and run on a Spark over SSH.
-      Consider rsync'ing the exact target sysroot (glibc 2.39, libstdc++ 13,
-      CUDA 13.0 `targets/sbsa-linux`) from a Spark so the ABI matches by
-      construction, recorded as a snapshot of that DGX OS version. Keep a
-      native-on-Spark preset as the fallback and diagnostic build so the
-      first token never waits on the cross CUDA path. Output: exact LLVM /
-      libstdc++ / CUDA / sysroot pins and the GB10 architecture spelling →
-      decision entry.
+- [x] Spike — **toolchain smoke** (2026-09-21; open question 6,
+      D-032): Clang C++23 native and AArch64 cross builds passed;
+      NVCC 13.4.92 (Toolkit 13.4.2) with Clang 22.1.8 produced
+      C++23 `sm_121` CUDA objects that ran on `spark`, as did the native
+      Spark fallback. C++23 host/device
+      feature checks and GPU results passed on driver 580.178.04 with
+      PTX JIT disabled; the older 13.0 dialect limit is RE-001.
+      Exact compiler, library, CUDA component, and target-sysroot pins,
+      hashes, commands, and limits are in the
+      [smoke report](experiments/toolchain-smoke/README.md).
+      M1 still owns declarative provisioning and CMake presets.
 - [ ] Spike — **VMM microbench** (open question 1): on a Spark, measure VMM
       granularity, map/unmap latency vs extent size, cost under concurrent
       kernels, and physical-pool retention behaviour. Output: numbers in

@@ -283,10 +283,12 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    revisions may require explicit re-import. The blob container is a reused
    known container, not bespoke (settled 2026-09-21); pick which one (see
    the Artifacts rows).
-6. **Exact toolchain pins validated as one unit.** LLVM version, libstdc++,
-   CUDA toolkit, ARM sysroot, GB10 architecture spelling, Clang as host
-   compiler in the cross configuration. Blocks M1. → M0 spike "toolchain
-   smoke" (workstation for the build, one Spark for the run).
+6. **Exact toolchain pins validated as one unit.** Resolved 2026-09-21
+   by D-032 and the [toolchain smoke](experiments/toolchain-smoke/README.md):
+   LLVM 22.1.8, pinned libstdc++/glibc and Spark sysroot, NVCC 13.4.92
+   (Toolkit 13.4.2) with Clang host compiler, `sm_121`, C++23 throughout.
+   Native workstation, cross-to-Spark, and native Spark fallback passed;
+   declarative provisioning and clean-container verification remain M1.
 7. **C++ source-dependency mechanism.** vcpkg, Conan, CPM/FetchContent,
    submodules, or vendoring, independent of toolchain provisioning. Blocks M1
    and interacts with the copyleft-disabled profile. → M0 decision.

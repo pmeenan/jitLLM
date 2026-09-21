@@ -179,10 +179,11 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-031; the feature matrix was triaged with
+contracts are recorded through D-032; the feature matrix was triaged with
 the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
-Both Sparks are reachable over SSH; the direct interconnect is not yet cabled.
+Toolchain smoke passed on the workstation and `spark` (D-032). Both Sparks
+are reachable over SSH; the direct interconnect is not yet cabled.
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).
