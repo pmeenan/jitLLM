@@ -109,6 +109,18 @@ needs evidence from the real hardware.
       and target environment for M4 to repeat. Separate cold storage, warm OS
       cache, and warm residency; follow the comparison protocol. This is an
       M0/early-M1 deliverable before M2, not a new runtime implementation.
+      Comparator datapoint: Athena's Engine reports a 46 s measured switch
+      between DeepSeek V4 Flash and Qwen3.8 Flash Next on one GB10 and a
+      2.1 s restore of a 141k-token conversation from disk (creator-reported;
+      see [architecture.md](architecture.md#comparator-athenas-engine-closed-source-creator-reported)).
+      Optionally install it on a Spark as a second comparator for the
+      normal-reference view if its terms still allow personal use; never cite
+      its numbers in place of our own measurement.
+      The author's X thread adds that the 46 s includes checkpointing the
+      session and that the pair does not both fit in 128 GB at those bit
+      depths, which makes DeepSeek V4 Flash plus Qwen3.8 Flash Next the
+      canonical two-large-model switching workload for the feasibility spike
+      if a DeepSeek V4 Flash GGUF is available at pick time.
 - [ ] Spike — **paging feasibility**: use a pinned reference engine and a
       representative quantized MoE to capture prefill and decode expert routes
       across representative requests and batch sizes. Shape the trace as the

@@ -216,6 +216,11 @@ cover.
 
 ## D-021: The switching bar is "never worse than a full swap"; seamless is the goal  (2026-09-20, status: accepted; baseline measurement amended by D-025)
 
+*Comparator datapoint (2026-09-21): Athena's Engine, a closed-source engine
+for GB10, reports a 46 s measured full swap, including a session checkpoint, between DeepSeek V4 Flash and
+Qwen3.8 Flash Next on one node (creator-reported). D-025's own measured
+baseline still governs; this number only makes the floor concrete.*
+
 **Decision.** The minimum acceptable behaviour for a model switch is that it is
 no slower than today's practice of suspending one engine instance and
 instantiating another, a full unload and load, while adding management

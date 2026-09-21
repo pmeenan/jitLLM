@@ -149,6 +149,40 @@ tokens reused versus recomputed. Never invent thresholds or measured results.
 M4 validates switching, M5 validates MoE paging, and M7 validates subsequent
 optimizations against these criteria; scope changes when evidence warrants it.
 
+
+#### Comparator: Athena's Engine (closed source, creator-reported)
+
+Announced 2026-09-19 on the NVIDIA developer forum by its author; numbers
+measured 2026-09-18 on a single GB10. Closed source, so nothing is reusable;
+free for personal, research, and small-company use at the time of reading,
+so installing it on a Spark as a second comparator is permitted (verify the
+current terms first). All figures are the author's, not independently
+verified, and include its speculative-decoding sidecar, so they belong in the
+normal-reference view, never the matched one.
+
+| Item | Reported |
+| --- | --- |
+| Models | DeepSeek V4 Flash (IQ2_XXS mix, Q8 projections); Qwen3.8 Flash Next (Unsloth UD-IQ4_XS); GGUF only |
+| Prefill | about 1,070 to 1,126 tok/s at 8k context; about 950 to 960 tok/s at 256k |
+| Decode, 256 tokens | DeepSeek 21.4 tok/s at 8k, 19.4 at 256k; Qwen3.8 29.9 at 8k, 32.1 at 256k; flat over context |
+| Model switch | drain, flush checkpoints, release, verify memory is free, load the other: 46 s measured |
+| Context restore | a 141,519-token conversation restored from a 619 MB file in 2.1 s, versus 2 min 20 s to re-prefill |
+| API | OpenAI- and Anthropic-compatible, streaming and tool calls |
+| Sessions | checkpoints the current agent or session to disk before unloading, so the switch preserves conversation state; one endpoint serves both models |
+| Memory | the two models at those bit depths do not both fit in 128 GB, per the author's X thread |
+
+What it tells us. The 46 s switch includes checkpointing the active session,
+so it is a real-world floor for A→B→A with state preserved on this exact
+model pair on one GB10 (D-021, D-025); M4's target is to beat it clearly at
+comparable bit depths, and our own measured baseline still governs. Because
+the pair does not both fit in 128 GB, it is the canonical two-large-model
+switching workload for the feasibility spike. The restore figure implies roughly 4.4 KB of restorable state per
+token for Qwen3.8's hybrid attention, a concrete datapoint for D-024's
+retention budgets and the spill/restore gate, and it confirms D-025's
+caution that a comparator need not lose conversation state on a swap. Its
+"checks the memory is really there" step is the unified-memory accounting
+problem of D-004 seen in the wild. Offering both API flavours is mild
+evidence for the proposed Anthropic Messages row (D-022).
 ### Early backend integration proof
 
 Run a small dense model from a prepared experimental artifact alongside M2's

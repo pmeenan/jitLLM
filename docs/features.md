@@ -168,7 +168,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Streaming inference API compatible with standard web-API clients (Cursor, OpenCode, Codex named) | confirmed | D-022; endpoint set verified per client in M0/M1 |
 | Web dashboard as a separate process over the management API | confirmed | later (Stage 6); must not own the scheduler or take runtime locks |
 | OpenAI-compatible HTTP surface (chat completions at minimum) | confirmed | D-022 baseline; Responses API and streaming/tool-call details verified per named client |
-| Anthropic Messages API format alongside the OpenAI-compatible surface | proposed | *agent-suggested.* Several agent clients speak it; include only if a named client needs it |
+| Anthropic Messages API format alongside the OpenAI-compatible surface | proposed | *agent-suggested.* Several agent clients speak it; include only if a named client needs it Athena's Engine offers both flavours, mild evidence that Spark users expect it. |
 | Admission "explain / what-if" query (why can't this request be admitted now; what would need to be evicted) | proposed | *agent-suggested.* Natural extension of explainability and a debugging tool for progress-envelope bugs |
 | Trace export in Perfetto / Chrome trace-event format for the I/O timeline and scheduling | proposed | *agent-suggested.* Structured events are confirmed; a standard viewer format avoids building a timeline UI early |
 | Target capability probe tool (VMM granularity, GDS mode, RDMA availability, driver/toolkit versions, glibc/ABI) | proposed | *agent-suggested.* The brief says "probe the installed stack"; a first-class tool serves the M0 inventory and the later `doctor` command Platform properties are probed capabilities, not constants (D-026). |
@@ -219,6 +219,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Resident-hit path measured independently from the miss path; cold storage vs warm OS cache vs warm residency separated | confirmed | |
 | Canonical A→B→A through an unmodified client, with resident reuse, forced spill/restore, and bounded-cache fallback cases | confirmed | M4's first useful product gate; report elapsed time, bytes read/written, reused/recomputed prompt tokens, and numerical checks |
 | Paging feasibility assessed before M2 against the full-swap floor; matched-configuration and normal reference-configuration comparisons | confirmed | [performance evidence](architecture.md#performance-evidence); D-021/D-025: first-cut estimates, then a measured reference A→B→A once setup runs; spike sizes M4/M5, M4 validates switching and M5/M7 validate paging/optimizations |
+| Athena's Engine as a closed-source comparator for the normal-reference view (46 s full swap and 2.1 s context restore on one GB10, creator-reported) | proposed | *agent-suggested.* Nothing reusable; numbers include speculative decoding; install on a Spark only if its terms allow and only as a comparator The 46 s includes checkpointing the active session; the pair does not both fit in 128 GB. |
 
 ## Platforms
 
