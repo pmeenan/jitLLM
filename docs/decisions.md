@@ -25,9 +25,142 @@ Decision / Context / Consequences / Reopen if
 
 Seed entries D-001 through D-014 record the directions the owner stated in
 [ideation.md](ideation.md) (§ references) at kickoff. D-015 onward record
-the owner's M0 triage answers and review fixes from the same day.
+the owner's M0 triage answers and review fixes (2026-09-20) and the
+feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
+
+## D-031: Shared prompt prefixes and conversation continuations have independent reuse and retention  (2026-09-21, status: accepted; clarifies D-024 and D-030; supersedes D-022's prefix-as-conversation identity)
+
+**Decision.** Prefix matching identifies reusable computation, never a unique
+conversation or its lifetime. A system-prompt prefix can be cached and reused
+across independent conversations with compatible execution identities.
+Shared prompt-prefix snapshots are immutable; mutable continuation state is
+isolated per branch/request. A conversation's longer history may itself have
+reusable immutable snapshots, but a hit on the shared system prefix does not
+identify or authorize reuse of any conversation's suffix.
+
+Shared prompt prefixes and conversation continuations have separate reuse
+statistics and retention/expiry decisions within the same bounded node
+memory, spill, and metadata budgets. Shared-prefix value reflects reuse
+across conversations; continuation value reflects reuse of that particular
+history. A hit on the shared prefix does not refresh unrelated continuation
+entries. Expiring or releasing a conversation does not itself invalidate the
+shared prefix or another branch. Neither class is pinned indefinitely, and
+shared physical extents are charged once and protected until all live
+consumers retire (D-006, D-007).
+
+**Context.** Owner's clarification during review on 2026-09-21: system-prompt
+prefixes must be cached independently from a given conversation because their
+reuse assumptions differ. This makes D-024's distinction explicit and
+corrects D-030's restatement of D-022's superseded identity claim.
+
+**Consequences.** Cache keys cover the exact rendered token prefix from the
+context origin, model/artifact and execution identity, and non-text inputs
+when supported; matching system-prompt text alone is insufficient. Restore
+only at architecture-supported boundaries. If a longer continuation is
+unavailable, reuse a compatible shorter prefix when present and recompute
+the remaining supplied history. Before M4, define the two retention policies
+and measured defaults. M4 tests cross-conversation prefix reuse, independent
+expiry/release, isolated branches, spill/restore, and shared-byte accounting;
+details live in [architecture.md](architecture.md#conversation-state-retention).
+
+**Reopen if.** A supported state representation cannot preserve a reusable
+prompt-prefix boundary, or measured workloads require another retention
+class; preserve the separation of cache identity and conversation identity.
+
+## D-030: Claude Code is a named client; the Anthropic Messages format is in the baseline surface  (2026-09-21, status: accepted; amends D-022; prefix policy clarified by D-031)
+
+**Decision.** Claude Code joins Cursor, OpenCode, and Codex as a named
+standard client. Because it speaks the Anthropic Messages API, that format
+ships in the M3 baseline endpoint alongside OpenAI-compatible chat completions
+and whatever else the named clients need, rather than as a later optional
+extension. The `model` field remains the switch signal, and sessions and
+hints remain optional. Prefix matching identifies reusable computation,
+not conversation identity or lifetime (D-024, D-031).
+
+**Context.** Owner's answer on 2026-09-21 during the M0 feature triage. The
+primary workload (D-019) is an agent plus subagents on different models, a
+pattern Claude Code fits.
+
+**Consequences.** The M0/M1 endpoint verification task covers Claude Code's
+exact endpoint, streaming, and tool-call needs. M3 carries a second
+request/response translation, including tool-call streaming. M4's canonical
+A→B→A may run through any named client.
+
+**Reopen if.** Claude Code moves to a protocol the baseline does not cover,
+or maintaining two formats measurably delays M3, in which case the Messages
+format drops back to an M7 extension.
+
+## D-029: Contributions under DCO; REUSE-style SPDX headers and a NOTICE file from M1; SBOM with packaging  (2026-09-21, status: accepted)
+
+**Decision.** External pull requests are accepted and must carry a Developer
+Certificate of Origin sign-off (`Signed-off-by`); there is no CLA. Every
+REUSE-covered file has copyright notices and an `SPDX-License-Identifier`
+(Apache-2.0 for jitLLM-authored code, the actual license for incorporated
+code), with the corresponding license texts under `LICENSES/`. Commentable
+source and documentation files embed this metadata in headers, using
+`SPDX-FileCopyrightText` for copyright notices. Uncommentable files may use
+`.license` sidecars or `REUSE.toml`. From M1, CI runs REUSE lint for metadata
+coverage and a separate check for required embedded headers. A root `NOTICE`
+file is seeded in M1 and grown by the dependency audit (D-017). A software
+bill of materials is generated when `.deb` packaging lands and is tied to
+the build's license profile.
+
+**Context.** Owner's answers on 2026-09-21 during the M0 feature triage,
+closing the plan.md item on NOTICE, SPDX headers, and contribution policy.
+DCO is the lightest credible sign-off for an Apache-2.0 project and keeps
+the barrier low for an externally consumed single-developer project (D-016).
+
+**Consequences.** Merging an external PR still goes through the human commit
+gate; agents never merge. A commentable source or documentation file without
+its required header fails the separate header check even if REUSE lint finds
+metadata elsewhere. REUSE lint alone accepts sidecars and `REUSE.toml`; it
+does not enforce embedded headers ([REUSE specification](https://reuse.software/spec-3.3/#licensing-information),
+checked 2026-09-21). These checks support, but do not replace, D-017's audit
+of the selected dependency closure. The SBOM follows `.deb` packaging rather
+than standing as its own deliverable; the provisional ladder places the
+first CI `.deb` build in M1.
+
+**Reopen if.** Relicensing flexibility becomes necessary (which would mean a
+CLA), or a contributor base needs a maintainer structure that D-016 does not
+describe.
+
+## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010)
+
+**Decision.** The first vertical slice (M3) executes on GGML/GGUF with jitLLM
+supplying the buffers behind tensors, so weights and state live in
+jitLLM-owned VMM backing and GGML computes over them. EXL3 kernels are ported
+later for the flagship recipes as further build-time backends behind the same
+operation contract. Optional implementation modules (D-017) are build-time
+modules selected by build profile; there is no versioned runtime C plugin ABI
+for separately built backends, and none is planned.
+
+**Context.** Owner's answers on 2026-09-21 during the M0 feature triage;
+settles the direction of open question 4 (the checkpoint, quantization, and
+numerical reference remain that question's task). GGML is MIT, torch-free,
+has a C API and broad quantization and tokenizer coverage, and matches the
+llama.cpp reference engine and the owner-provided GGUF candidates for the
+reference spike (plan.md); the MiaAI-Lab reference recipes are EXL3 and
+torch-bound. The C ABI row (ideation §14) was
+rejected outright: a removable boundary is a build-profile property, and
+freezing a plugin ABI before a real backend exposes its requirements was the
+risk the row itself named.
+
+**Consequences.** The M2 early backend integration proof runs GGML on
+jitLLM-owned memory with explicit workspace and completion tracking; if
+GGML's allocator or scheduler assumptions cannot be met that way, this entry
+is the first thing to reopen. The operation contract is finalized from that
+proof. The immutable artifact data follows GGML's tensor formats, re-packed
+into aligned extents (open question 5). The copyleft-disabled profile is a
+build profile that omits optional modules; license and notice reporting is
+per build, not per loaded plugin. A later Metal, ROCm/HIP, or Vulkan port is
+mostly a memory-provider job (D-026), since GGML already has those backends.
+
+**Reopen if.** The M2 proof shows GGML cannot run on externally owned backing
+without a fork; the flagship recipes need kernels GGML cannot host; or an
+out-of-tree, differently licensed backend must load without rebuilding the
+core.
 
 ## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted)
 
@@ -115,7 +248,7 @@ normal-reference configurations remain separate views under
 record the limitation and select another validated comparator before making
 the corresponding performance claim.
 
-## D-024: Conversation reuse is bounded; prefix identity does not imply session lifetime  (2026-09-20, status: accepted; amends D-019 and D-022)
+## D-024: Conversation reuse is bounded; prefix identity does not imply session lifetime  (2026-09-20, status: accepted; amends D-019 and D-022; independent prefix retention clarified by D-031)
 
 **Decision.** For clients that resend their history, prefix matching finds
 reusable computation. It does not establish a unique conversation, whether
@@ -188,7 +321,7 @@ owner's hostnames, except in the environment inventory.
 **Reopen if.** A deployment needs multiple entry points (federation), which
 would revisit the single-conductor rule.
 
-## D-022: Standard web-API compatibility is the baseline; sessions and hints are optional extensions  (2026-09-20, status: accepted; prefix identity and retention amended by D-024)
+## D-022: Standard web-API compatibility is the baseline; sessions and hints are optional extensions  (2026-09-20, status: accepted; prefix-as-conversation identity superseded by D-024 and D-031; named clients amended by D-030)
 
 **Decision.** The inference API works out of the box with existing standard
 web APIs and clients; the owner named Cursor, OpenCode, and Codex. The
@@ -556,7 +689,7 @@ not the primary workflow.
 **Reopen if.** Cross CUDA compilation for GB10 cannot be validated, making a
 target-side build primary.
 
-## D-010: C++23 host runtime, Clang-first, native hot path  (2026-09-20, status: accepted)
+## D-010: C++23 host runtime, Clang-first, native hot path  (2026-09-20, status: accepted; optional-backend C ABI clause superseded by D-028)
 
 **Decision.** The host runtime is C++23. Clang is the primary compiler for code
 we own. NVCC is the default CUDA compiler with Clang as its host compiler

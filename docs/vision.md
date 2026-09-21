@@ -30,8 +30,8 @@ requests keep their state protection while suspended.
 
 It began as the design brief in [ideation.md](ideation.md) (2026-09-20), which
 consolidated the ideation discussion. The decided directions there are
-recorded in [decisions.md](decisions.md); its proposed designs are in
-[features.md](features.md) awaiting triage.
+recorded in [decisions.md](decisions.md); its proposed designs were triaged
+with the owner in [features.md](features.md) on 2026-09-21.
 
 Correctness is a prerequisite for every supported configuration and every
 optimization. Within that constraint, priorities are fast and predictable
@@ -78,12 +78,15 @@ in the model support matrix, not to arbitrary checkpoints.
   working sets and complete execution envelopes fit each node's budget under
   a supported placement; otherwise they are time-sliced, and the runtime
   reports which happened.
-- **Standard clients work unmodified.** Cursor, OpenCode, Codex, and other
-  standard web-API clients talk to the conductor's endpoint with no
-  jitLLM-specific changes; the request's model field drives switching, and
-  compatible cached state is recovered by prefix identity. Prefix matching
-  does not identify session lifetime or guarantee indefinite retention.
-  Sessions and hints are optional extensions (D-022, D-024).
+- **Standard clients work unmodified.** Cursor, OpenCode, Codex, Claude
+  Code, and other standard web-API clients talk to the conductor's
+  endpoint with no jitLLM-specific changes; the request's model field
+  drives switching, and compatible cached state is recovered by prefix
+  identity. Prefix matching identifies neither a conversation nor its lifetime.
+  A system-prompt prefix is reusable across compatible conversations, with
+  independent continuation state and different reuse/expiry policies under
+  common bounds; neither is retained indefinitely (D-031).
+  Sessions and hints are optional extensions (D-022, D-024, D-030).
 - **Partial retention works.** With two persistent model contexts on one
   Spark, when the second needs capacity, only selected extents of the first
   are displaced; untouched extents remain resident; resuming the first

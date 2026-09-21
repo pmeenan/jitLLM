@@ -21,18 +21,22 @@ needs evidence from the real hardware.
 
 - [x] Repo scaffolding for the AI-directed workflow (this scaffold,
       2026-09-20).
-- [ ] Feature triage: walk [features.md](features.md) with the owner; confirm,
-      reject, or defer proposals. A deferral records a reason, a concrete
-      revisit trigger, and an earliest milestone; it is a valid M0 outcome
-      and does not become approval when the trigger fires. Prioritize what
-      unblocks M1–M4, answer architecture-shaping questions by their deadlines,
-      and record only significant calls in [decisions.md](decisions.md).
+- [x] Feature triage: walk [features.md](features.md) with the owner; confirm,
+      reject, or defer proposals (2026-09-21: 46 proposed or open rows
+      triaged; 30 confirmed, 13 deferred with a reason, trigger, and
+      earliest milestone, 2 rejected, 1 still open. Load-bearing calls
+      recorded as D-028 GGML-first substrate with build-time optional
+      backends, D-029 contribution and compliance conventions, D-030
+      Claude Code and the Anthropic Messages format). A deferral does not
+      become approval when its trigger fires.
 - [x] Confirm the original-code license (2026-09-20: Apache-2.0 accepted,
       D-003; dependency categories and tiers clarified in D-017, superseding
       D-015; process weight for an externally consumed project recorded,
       D-016).
-- [ ] Decide NOTICE and SPDX-header conventions and the contribution policy
-      (external PRs accepted? DCO or CLA?). Record in decisions.md.
+- [x] Decide NOTICE and SPDX-header conventions and the contribution policy
+      (2026-09-21: REUSE copyright/license metadata plus an embedded-header
+      check in CI and a NOTICE file from M1, SBOM with packaging, external
+      PRs accepted under DCO; D-029).
 - [x] Inventory the environments without changing drivers or security
       settings (2026-09-20, read-only, no sudo): workstation baseline and both
       Sparks recorded in
@@ -171,9 +175,9 @@ needs evidence from the real hardware.
       their revisit triggers are below. Nothing about node names or counts
       in code; the owner's `spark`/`spark-b` are one deployment's config.
 - [ ] Verify the endpoint set the named clients need (Cursor, OpenCode,
-      Codex: chat completions, Responses API, Anthropic Messages format,
-      streaming and tool-call details) against their current docs; record
-      the baseline surface as a D-022 follow-up.
+      Codex, Claude Code: chat completions, Responses API, Anthropic Messages
+      format, streaming and tool-call details) against their current docs;
+      record the baseline surface as a D-022/D-030 follow-up.
 - [ ] Decide the async/task and completion model (open question 3), ideally
       prototyped against the fake-backend design.
 - [ ] Decide the initial reservation guarantee and progress envelopes (open
@@ -182,9 +186,12 @@ needs evidence from the real hardware.
       and rejection or a validated alternative when a phase cannot fit.
       Record the policy and the adversarial cases it must pass; see
       [architecture.md](architecture.md#reservation-progress-gate).
-- [ ] Decide the first vertical-slice checkpoint, backend, and numerical
-      reference (open question 4); record provenance and license status of
-      every reused unit.
+      Direction settled 2026-09-21: turn/step-scoped leases with eviction
+      only at scheduler-established completion boundaries (features.md);
+      the policy entry is still owed.
+- [ ] Decide the first vertical-slice checkpoint and numerical reference
+      (open question 4); the substrate is GGML-first (D-028, 2026-09-21).
+      Record provenance and license status of every reused unit.
 - [ ] Scope the **early backend integration proof**, executed alongside M2:
       a small dense model runs from a prepared experimental artifact with
       jitLLM-owned weight/state backing, explicit workspace and completion
@@ -192,25 +199,34 @@ needs evidence from the real hardware.
       logits, then repeat after eviction and restoration of weights and
       state at a completed boundary on a Spark. Exercise cancellation with
       pending work. Use the result to settle internal interfaces before M3;
-      do not freeze a plugin ABI from the fake backend alone.
+      the operation contract is settled from this proof, not from the fake
+      backend alone (there is no runtime plugin ABI, D-028).
 - [ ] Define the M4 A→B→A acceptance trace and the bounded retention policy
-      (D-024): memory/spill/metadata limits, idle expiry, cleanup, cache
+      (D-024, D-031): memory/spill/metadata limits, independent shared-prefix
+      and conversation-continuation reuse/expiry policies, cleanup, cache
       identity, restore boundaries, and fallback/error behavior. Choose
       numeric defaults from measured state sizes and available headroom
       before M4. Include resident reuse, forced spill/restore, branch/edit
       cases, expiry and spill exhaustion; protect admitted suspended work.
+      Include independent conversations sharing a system prefix: releasing
+      or expiring one continuation preserves eligible shared-prefix reuse,
+      and hits on that prefix do not refresh unrelated continuations.
 - [ ] Choose an experimental artifact encoding and layout ABI (open question
       5, D-018), including validation, version rejection, and re-import rules.
-      Compatibility guarantees wait for dense and MoE execution and restore
-      evidence; they are not an M0 requirement.
+      The immutable data reuses a known aligned container and jitLLM owns
+      the manifest and resource index (settled 2026-09-21); pick the
+      container here. Compatibility guarantees wait for dense and MoE
+      execution and restore evidence; they are not an M0 requirement.
 - [ ] Decide the C++ source-dependency mechanism (open question 7).
 - [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /
-      LLD as proposed), test framework, format and lint pins, CI shape
-      including the copyleft-disabled profile, license/provenance tooling
-      (REUSE?), versioning/changelog conventions for an externally consumed
-      project (D-016), and the installed layout that packaging will need
-      (FHS paths, service user, systemd unit; D-027). Record in
-      decisions.md.
+      LLD, confirmed 2026-09-21), test framework, format and lint pins, CI
+      shape including the copyleft-disabled profile, REUSE lint, a separate
+      embedded-header check for commentable source/docs, and an
+      installable `.deb` build from M1 (D-029), versioning/changelog
+      conventions for an externally consumed project (D-016), and the
+      installed layout that packaging will need (FHS paths, service user,
+      systemd unit; D-027, confirmed 2026-09-21). Record the pins and the
+      layout in decisions.md.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria.
@@ -246,7 +262,9 @@ has a promised date; each should leave a usable, testable result.
 - **M1 — Bootstrap.** Repository skeleton, declarative SDK setup (mise plus
   provisioning), C++23/Clang native build, Spark cross build, ARM/CUDA smoke
   binary running over SSH, CI with the copyleft-disabled profile, initial
-  license and provenance tooling. *Gate:* clean host and container setup;
+  license and provenance tooling (REUSE lint, embedded-header check, NOTICE),
+  a first-cut capability probe (the future `doctor` task), and an installable
+  `.deb` build. *Gate:* clean host and container setup;
   native tests pass, including a CPU-only configuration with no CUDA toolkit
   present (D-026 guardrail); smoke binary runs on a Spark; exact pins recorded;
   any deferred feasibility experiment, measured reference switching baseline,
@@ -264,16 +282,19 @@ has a promised date; each should leave a usable, testable result.
   small dense model and its state, with correctness checked before and after
   restoration; full serving integration follows in M3.
 - **M3 — One resident model, end to end.** Import a manageable model (small
-  dense first), native backend execution, tokenizer/state/sampling baseline,
-  and the OpenAI-compatible endpoint (D-022). *Gate:* teacher-forced and
+  dense first) with the standalone artifact verifier, GGML-backed native
+  execution (D-028), tokenizer/state/sampling baseline, and the
+  OpenAI-compatible endpoint plus the Anthropic Messages format (D-022,
+  D-030). *Gate:* teacher-forced and
   intermediate comparisons against a pinned reference; bounded, explainable
   memory usage; at least one named client completes a chat through the
   endpoint unmodified. M2's backend proof supplies the integration evidence;
   M2/M3 implementation may overlap while their gates remain explicit.
 - **M4 — First useful product: A→B→A with partial retention.** Two small
   supported model contexts, one shared local budget, partial eviction of a
-  quiescent model, bounded conversation-state retention (D-024), and basic
-  status/diagnostics. Through at least one unmodified named client, build a
+  quiescent model, bounded prefix/continuation retention (D-024, D-031), and
+  basic status/diagnostics including the admission what-if query and Perfetto
+  trace export. Through at least one unmodified named client, build a
   long conversation on A, request B under pressure, then resume A. *Gate:*
   only selected extents displaced; untouched data remains resident; reload
   only missing dependencies. Exercise both resident state reuse and forced
@@ -285,9 +306,15 @@ has a promised date; each should leave a usable, testable result.
   numerics stay correct after weight/state restoration. Branching histories,
   edits, incompatible identity, expiry, and spill exhaustion yield correct
   reuse, recomputation from supplied history, or explicit errors as appropriate;
-  cache expiry never destroys admitted suspended work. An all-resident
-  control demonstrates concurrent progress without paging when both complete
-  execution envelopes fit. This milestone is useful without MoE or sharding.
+  cache expiry never destroys admitted suspended work. Independent
+  conversations reuse a shared system prefix with isolated mutable suffixes;
+  continuation release/expiry leaves eligible shared-prefix reuse intact,
+  while shared-prefix hits do not refresh unrelated continuations. Exercise
+  shorter-prefix fallback after continuation eviction, independent prefix
+  expiry, and shared-byte accounting, with numerical reference checks (D-031).
+  An all-resident control demonstrates concurrent progress without paging
+  when both complete execution envelopes fit. This milestone is useful
+  without MoE or sharding.
 - **M4a — Configured placement across nodes.** After M4, independently of M5:
   one configured conductor, configured nodes with capability/health probes,
   whole-model placement and request routing with state affinity. Run B on

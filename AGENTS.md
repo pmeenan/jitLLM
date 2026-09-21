@@ -37,10 +37,12 @@ affected docs. Until then, these govern.
   model; placement is preferred over paging when it suffices. Topology is
   configured or discovered, never baked into the app. The floor is "never
   worse than a full swap", validated against a measured reference cycle.
-  State reuse has bounded retention; prefix matching does not identify session
-  lifetime. Standard web-API clients (Cursor,
-  OpenCode, Codex) work unmodified; sessions and hints are optional
-  extensions. (D-019 to D-025)
+  State reuse has bounded retention; shared prompt prefixes and conversation
+  continuations have independent reuse and expiry (D-031). Prefix matching
+  identifies neither a conversation nor its lifetime. Standard web-API clients
+  (Cursor, OpenCode, Codex, Claude Code) work unmodified; sessions and hints
+  are optional extensions.
+  (D-019 to D-025, D-030)
 - **Spark memory is one physical budget; two Sparks are two domains.** CPU
   allocations, GPU backing, staging, and page cache share 128 GB of unified
   memory, so CPU offload is not a second tier. Two nodes are two memory
@@ -76,6 +78,10 @@ affected docs. Until then, these govern.
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
+- **GGML first, behind an operation contract; optional backends are
+  build-time modules.** The first vertical slice executes on GGML with
+  jitLLM owning the buffers behind tensors; EXL3 and other kernels follow
+  as build-time backends. There is no runtime plugin ABI. (D-028)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
   interfaces, with CUDA VMM the only implementation for now. Apple silicon
@@ -173,7 +179,8 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-027. M4 targets A→B→A with retained state;
+contracts are recorded through D-031; the feature matrix was triaged with
+the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Both Sparks are reachable over SSH; the direct interconnect is not yet cabled.

@@ -29,8 +29,10 @@
 - **Switching bar and API baseline.** Never worse than a full swap; seamless
   is the goal, validated against a measured reference cycle (D-021, D-025).
   Standard web-API clients work unmodified; the model field drives switching.
-  Prefix matching enables bounded state reuse; it does not identify session
-  lifetime. Sessions and hints are optional extensions (D-022, D-024).
+  Prefix matching enables bounded state reuse; it identifies neither a
+  conversation nor its lifetime. Shared prompt prefixes and conversation
+  continuations have independent reuse/expiry policies (D-024, D-031).
+  Sessions and hints are optional extensions (D-022).
 - **Vocabulary.** *Virtual reservation* = address space. *Capacity
   reservation* = admission commitment under a progress policy. *Residency
   lease* = protection of specific backing while consumers run. Never
@@ -193,19 +195,20 @@ reuse. Unknown allocations remain non-evictable and budgeted. Check
 teacher-forced logits against a pinned reference, then evict and restore
 weights and retained state at a completed boundary and repeat the comparison
 on a Spark. Include cancellation with pending work to exercise lifetime rules.
-This proof informs M3 and the interfaces; it does not freeze a plugin ABI or
-claim support for flagship architectures.
+This proof informs M3 and the interfaces; it does not claim support for
+flagship architectures, and there is no runtime plugin ABI to freeze (D-028).
 
 ## Expected shape (to be validated in the M0 draft)
 
-Where a bullet below leans on a `proposed` [features.md](features.md) row, it
-is a design assumption to confirm during feature triage, not settled scope.
+The matrix was triaged on 2026-09-21. Where a bullet below leans on a
+`deferred` or `open` [features.md](features.md) row, it is a design
+assumption, not settled scope.
 
 ### Process and components (§3)
 
 ```text
-standard clients (Cursor, OpenCode, Codex, ...)
-        |  OpenAI-compatible endpoint
+standard clients (Cursor, OpenCode, Codex, Claude Code, ...)
+        |  OpenAI-compatible and Anthropic Messages endpoint
         v
 node A: conductor + jitLLM runtime          (owner's `spark`)
         | routes by placement           | model communication (sharded)
@@ -278,36 +281,63 @@ semantics.
 
 ### Conversation-state retention
 
-D-024 distinguishes state required by admitted work from reusable state kept
-between requests. A suspended continuation retains the resources needed to
-complete or safely unwind; expiry of an idle cache entry cannot invalidate
-those resources. After a response completes, retaining its prefix is subject
-to bounded memory and spill capacity. Optional sessions and hints can guide
+D-024 and D-031 distinguish state required by admitted work from reusable
+state kept between requests. A suspended continuation retains the resources
+needed to complete or safely unwind; expiry of an idle cache entry cannot
+invalidate those resources. After response completion, prefix retention is
+subject to bounded memory and spill capacity. Optional sessions and hints can guide
 policy without making storage unbounded.
 
 Before M4, specify per-node cache-memory and spill-byte limits, metadata/entry
-bounds, idle expiry, and spill cleanup. Select and record numeric defaults
-from the measured workload and available headroom. Spill-full or expiry
+bounds, idle expiry, and spill cleanup. Shared prompt-prefix snapshots and
+conversation-continuation snapshots have separate reuse statistics and
+retention/expiry decisions within these common bounds. Shared-prefix value
+comes from reuse across conversations; continuation value comes from reuse
+of that history. A hit on the shared prefix does not refresh unrelated
+continuations. Select and record numeric defaults for both policies from
+the measured workload and available headroom. Spill-full or expiry
 invalidates only eligible reusable entries; active work retains a valid
 recovery path or safely fails under the admission policy. No implicit crash
 durability or indefinite retention is promised.
 
 Cache identity covers artifact/model version, relevant execution settings
 (including position/attention configuration), state representation/layout,
-and the exact processed token prefix plus non-text input identity when
-supported. Tokenizer and template changes must not produce an incompatible
-hit. Architecture-specific adapters define which boundaries can be restored;
-do not assume a recurrent snapshot can be truncated like full-attention KV.
+and the exact rendered token prefix from the context origin plus non-text
+input identity when supported. The same system-prompt text after different
+preceding input is not the same prefix; matching a message label or its text
+alone never authorizes a hit. Tokenizer and template changes must not produce
+an incompatible hit. Architecture-specific adapters define which boundaries
+can be restored; do not assume a recurrent snapshot can be truncated like
+full-attention KV.
 Independent branches may share compatible immutable prefixes, with their
 mutable continuation state isolated.
 
+Retain the shared system-prompt prefix independently of longer conversation
+snapshots at supported restore boundaries. With inputs `S + A` and `S + B`,
+where `S` is the same compatible rendered prefix, both requests may reuse
+the immutable state for `S`; neither may use the other's divergent suffix.
+Expiring or releasing A drops only A's continuation retention, not S's cache
+entry or B's state. Reusing S for a new conversation does not keep A alive.
+S remains subject to its own bounded retention policy. Expiry of a cache
+entry removes its retention claim, not backing still needed by admitted
+work or other retained entries; shared extents are counted once. Eviction
+updates affected residency and restore metadata; a cache hit requires a
+valid resident or stored representation of every dependency needed to restore.
+
 On a compatible hit, restore state and process new input plus any declared
-cache-block tail. On a miss, expiry, or invalid stored state, recompute from
-the request's supplied history. If history is unavailable, fail explicitly.
+cache-block tail. If a longer continuation is missing or expired, reuse a
+compatible shorter prefix at a valid restore boundary and recompute only the
+remaining supplied history. Without a valid prefix, recompute from the
+request's full history. If required history is unavailable, fail explicitly.
 Expose reused/recomputed token counts and miss reasons through diagnostics
 without logging prompts or KV. M4 tests branching histories, edits to an
 earlier message, incompatible cache identity, expiry, and spill exhaustion,
-alongside both resident reuse and forced spill/restore.
+alongside both resident reuse and forced spill/restore. Include S+A and S+B
+with independent release/expiry, continuation eviction while S remains,
+shared-prefix expiry while a consumer is suspended, changed rendering or
+preceding context that must miss, and shared-byte accounting. Compare each
+branch's logits with its uncached reference and report shared-prefix reuse
+separately from longer-history reuse.
 
 ### Lifecycles (§8)
 
@@ -359,10 +389,10 @@ eviction victims may differ per rank. Communication buffers come from a
 separately budgeted pool with stable backing. TP, PP, and EP are different
 plans; port the validated recipe's plan first.
 
-### Proposed repository shape (§20; a proposal, not a commitment)
+### Repository shape (§20; toolchain file set confirmed 2026-09-21, the rest a sketch)
 
 ```text
-CMakeLists.txt  CMakePresets.json  mise.toml  mise.lock  dev  .devcontainer/
+CMakeLists.txt  CMakePresets.json  mise.toml  mise.lock  .devcontainer/
 LICENSE  LICENSES/  NOTICE  REUSE.toml
 toolchains/{manifest.toml, artifacts.lock.json}   cmake/toolchains/
 include/jitllm/{resource,residency,execution,backend,model_artifact}.h
@@ -376,7 +406,7 @@ third_party/   docs/
 than the `docs/decisions/` directory in §20. Backend licensing is explicit;
 directory names do not establish legal isolation.
 
-### Conceptual native API (§20; a sketch, not compilable)
+### Conceptual native API (§20; confirmed 2026-09-21 as the starting shape; a sketch, not compilable)
 
 `register_resource(descriptor)`, `reserve_capacity(transaction, envelope)`,
 `acquire_group(reservation, dependencies)` → ready | deferred | impossible |
@@ -384,8 +414,9 @@ cancelled | failed, `submit(plan, lease, context)` → completion token (lease
 ownership transfers to completion tracking), `retire_completed(token)`,
 `reclaim(extents)` (validates generations, reports actual bytes recovered),
 `cancel(transaction)`. Deferred results refer to owned continuations, not a
-blocked global scheduler. Do not freeze a public plugin ABI before the first
-real backend, paging path, and distributed phase expose their requirements.
+blocked global scheduler. There is no runtime plugin ABI (D-028); optional
+backends are build-time modules behind the operation contract, which is
+finalized after the M2 backend proof.
 
 ## Development host baseline
 
@@ -456,7 +487,7 @@ dependency mechanism, license and API surface, reservation guarantees. Purely
 technical additions to resolve while drafting:
 
 - Exception policy and error-result type for the runtime; what crosses the
-  C ABI boundary of optional backends.
+  boundary of optional build-time backends (no runtime plugin ABI, D-028).
 - Thread topology of the first scheduler: how many service threads for I/O,
   completion polling, and scheduling, and how continuations are handed off.
 - Whether the resource catalog is a single-writer structure with sharded read
@@ -465,7 +496,8 @@ technical additions to resolve while drafting:
   in one honest memory breakdown on unified memory.
 - Initial eviction scoring over eligible extents. Dependency-group scoring
   is deferred until trace replay shows a useful improvement over the baseline.
-- Lease granularity and progress for the initial scheduler. Optimistic MoE
+- Lease granularity and progress for the initial scheduler, now directed at
+  turn/step-scoped leases (2026-09-21). Optimistic MoE
   execution is deferred until the pessimistic M5 path is correct and measured;
   its future design must still handle a miss when the current step fills RAM.
 - Whether direct I/O is the default read path, and whether the staging copy
@@ -475,9 +507,10 @@ technical additions to resolve while drafting:
   sidecar), how it represents cluster-wide capacity,
   placement, and replicas, and how a routed request's streaming response
   flows back through it. M4a uses one configured conductor; election is deferred.
-- Cache-memory, spill, metadata, and expiry limits for D-024's retention
-  policy; choose before M4 from measured state sizes and available headroom.
+- Cache-memory, spill, metadata, and expiry limits for D-024/D-031's shared
+  prompt-prefix and conversation-continuation policies; choose before M4
+  from measured state sizes and available headroom.
 - The minimal provider interface the pager needs from a device memory and
   transfer backend (reserve, back, map, unmap, copy, fence, event; transport
-  send and receive with registration), and whether the ledger keys by memory
-  domain from the start (D-026).
+  send and receive with registration); the ledger keys by memory domain from
+  the start (confirmed 2026-09-21, D-026).
