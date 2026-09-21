@@ -5,7 +5,9 @@ many models should be available, only some components are active at a time,
 and aggregate model storage exceeds physical memory. It keeps the useful parts
 of models resident, reclaims the least valuable extents across all models when
 capacity is needed, and brings missing weights or state back on demand from
-prepared on-disk artifacts. Initial target: one or two NVIDIA DGX Sparks,
+prepared on-disk artifacts. The primary workload is one user switching among
+a library of models larger than memory, with conversation state preserved
+across switches (D-019). Initial target: one or two NVIDIA DGX Sparks,
 developed from an x86-64 Linux workstation. Almost all code is written by AI
 agents working from the project documentation, directed and reviewed by a
 human.
@@ -25,6 +27,20 @@ affected docs. Until then, these govern.
   model execution, scheduling, memory policy, VMM control, and completion
   tracking. Dashboard, importer, and supervisors are separate processes and
   never in the per-expert hot path. (D-005)
+- **Optimize for one user switching models, not mixed-traffic throughput.**
+  The primary workload is a single user, or an agent plus subagents on
+  different models, switching among a library larger than memory with
+  conversations spanning hours. Under contention models are time-sliced;
+  when a supported placement fits each node's full execution budget they run
+  concurrently. A single conductor, the cluster's one point of entry, places
+  models across nodes, routes requests, and may run replicas of a busy small
+  model; placement is preferred over paging when it suffices. Topology is
+  configured or discovered, never baked into the app. The floor is "never
+  worse than a full swap", validated against a measured reference cycle.
+  State reuse has bounded retention; prefix matching does not identify session
+  lifetime. Standard web-API clients (Cursor,
+  OpenCode, Codex) work unmodified; sessions and hints are optional
+  extensions. (D-019 to D-025)
 - **Spark memory is one physical budget; two Sparks are two domains.** CPU
   allocations, GPU backing, staging, and page cache share 128 GB of unified
   memory, so CPU offload is not a second tier. Two nodes are two memory
@@ -62,8 +78,9 @@ affected docs. Until then, these govern.
   compiler where validated. Build-time tooling may use Python. (D-010)
 - **Develop on x86-64 Linux, cross-build, test on Spark over SSH.** Native
   builds and CPU tests run on the workstation; ARM concurrency, VMM, kernel,
-  and distributed tests run on the Sparks, reachable as `spark` (master) and
-  `spark-b` (inventory in architecture.md). Explicit CPU/GPU targets only, never
+  and distributed tests run on the Sparks, which in the owner's environment
+  are `spark` and `spark-b` (inventory in architecture.md; those names are
+  not application configuration). Explicit CPU/GPU targets only, never
   `-march=native` or autodetection. Toolchain provisioning is declarative and
   pinned. Agents never invent compiler pins, measured numbers, supported
   model combinations, or license permissions. (D-011, D-012)
@@ -149,11 +166,10 @@ the human commit gate.
 
 ## Current status
 
-Milestone **M0 (plan the plan)** — license and process weight are decided
-(D-003, D-016, D-017); the feature matrix, architecture, and milestone ladder
-are being worked out through planning, three hardware spikes, and an early
-paging-feasibility experiment. Both Sparks are reachable over SSH; their
-direct interconnect is not yet cabled. See
-[docs/plan.md](docs/plan.md). No application code exists yet; scaffolding is
-M1. Keep this paragraph short and current when plan.md milestone status
-changes (rule 4).
+Milestone **M0 (plan the plan)** — direction and retention/measurement
+contracts are recorded through D-025. M4 targets A→B→A with retained state;
+M4a adds configured placement before MoE and sharding. Remaining planning,
+hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
+Both Sparks are reachable over SSH; the direct interconnect is not yet cabled.
+No application code exists yet; scaffolding is M1. Keep this paragraph short
+and current when plan.md milestone status changes (rule 4).

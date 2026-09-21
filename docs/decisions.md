@@ -24,10 +24,217 @@ Decision / Context / Consequences / Reopen if
 ```
 
 Seed entries D-001 through D-014 record the directions the owner stated in
-[ideation.md](ideation.md) (§ references) at kickoff. D-015 and D-016 record
-the owner's M0 triage answers from the same day.
+[ideation.md](ideation.md) (§ references) at kickoff. D-015 onward record
+the owner's M0 triage answers and review fixes from the same day.
 
 ---
+
+## D-025: Measure the switching baseline once the reference runs  (2026-09-20, status: accepted; amends D-021)
+
+**Decision.** Artifact size divided by measured read bandwidth remains a
+first-cut M0 estimate. Once the pinned reference setup runs, measure an
+end-to-end A→B→A cycle on the target, including state save/restore or
+recomputation, unload/load, and time to the first returned token. M4's
+switching gate uses this measured baseline for the same workloads and memory
+budgets; estimates alone do not establish the "never worse than a full swap"
+claim. Report cold storage, warm OS cache, and warm residency separately.
+
+**Context.** The owner approved the review's planning improvements on
+2026-09-20. Transfer bandwidth alone does not describe the user's wait.
+[llama.cpp's server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+describes model routing and slot prompt-cache save/restore; verify these on
+the pinned build and checkpoint and include applicable reference
+optimizations. Do not assume a reference must lose all conversation state.
+
+**Consequences.** D-021's performance floor and scope-sizing purpose remain.
+Its exemption from benchmarking the full-swap baseline is superseded. The
+reference A→B→A experiment is an M0/early-M1 deliverable, reused by M4;
+record unsupported state paths instead of inventing support. Matched and
+normal-reference configurations remain separate views under
+[the comparison protocol](architecture.md#performance-evidence).
+
+**Reopen if.** The selected reference cannot execute a comparable cycle;
+record the limitation and select another validated comparator before making
+the corresponding performance claim.
+
+## D-024: Conversation reuse is bounded; prefix identity does not imply session lifetime  (2026-09-20, status: accepted; amends D-019 and D-022)
+
+**Decision.** For clients that resend their history, prefix matching finds
+reusable computation. It does not establish a unique conversation, whether
+the user has finished, or whether they will return. Retained state between
+requests has explicit memory and spill budgets and an expiry policy. A valid
+retained prefix resumes from resident or spilled state; when that cache is
+absent, expired, incompatible, or invalid, recompute from the supplied history
+and report the cache miss. Never claim state reuse when reconstruction ran.
+
+State needed by admitted work, including an internally suspended request,
+stays protected by D-007's progress and lifetime rules. Cache expiry cannot
+discard that state. If a request lacks the history needed for reconstruction,
+unavailable state produces an explicit error; never continue from partial or
+unrelated history. Optional session IDs and release hints do not confer
+unbounded retention or relax cache-compatibility checks.
+
+**Context.** The owner approved the review's planning improvements on
+2026-09-20. A library and its conversations can outgrow both RAM and spill
+capacity. Two conversations can share a prefix and then branch. D-019's
+preservation goal needs a bounded retention contract, and D-022's prefix
+identity needs to be distinguished from explicit session identity.
+
+**Consequences.** Cache identity includes the artifact/model identity,
+relevant execution and state-layout configuration, and the exact processed
+prefix, including non-text inputs when supported. Reuse shared prefixes
+without allowing one branch to mutate another's state. Architecture-specific
+adapters declare valid restore boundaries. M4 proves both retained-state
+resumption and correct fallback after expiry or cache loss. Set retention
+defaults and limits before M4 from measured state sizes and the target
+budget; no numeric defaults are chosen here. Details live in
+[architecture.md](architecture.md#conversation-state-retention).
+
+**Reopen if.** A client needs a durable server-side conversation without
+resending history; define a separate persistence contract and resource
+guarantee before promising that behavior.
+
+## D-023: Cluster topology is discovered or configured, never baked in; one conductor; replicas allowed  (2026-09-20, status: accepted)
+
+**Decision.** The application never hardcodes node names, counts, or roles.
+Cluster membership and per-node capabilities come from configuration and
+discovery at runtime. There is always exactly one conductor, the single point
+of entry, designated by configuration or election, which runs the placement,
+routing, and admission role described in D-020. When concurrent demand on a
+small model justifies it, the same model may run as multiple replicas on
+different nodes; the conductor balances requests across them while keeping a
+conversation's state on one replica (session or prefix affinity). The
+hostnames `spark` and `spark-b` in these docs describe the owner's
+environment only.
+
+**Context.** Owner's clarification on 2026-09-20: the node names are personal
+configuration; discovery and configuration should be dynamic and flexible;
+there will always be a single conductor and point of entry; multiple copies
+of a busy small model should be allowed.
+
+**Consequences.** D-020's "coordinator" is this conductor, and its mention of
+the master node's hostname is environment, not design. Cluster configuration
+format, discovery mechanism, conductor designation, health and membership,
+and per-node capability probing are M0/M1 design items. Replicas add a
+load-balancing and affinity dimension to placement; the catalog stays per
+node. Code, tests, and docs use role names (conductor, node), never the
+owner's hostnames, except in the environment inventory.
+
+**Reopen if.** A deployment needs multiple entry points (federation), which
+would revisit the single-conductor rule.
+
+## D-022: Standard web-API compatibility is the baseline; sessions and hints are optional extensions  (2026-09-20, status: accepted; prefix identity and retention amended by D-024)
+
+**Decision.** The inference API works out of the box with existing standard
+web APIs and clients; the owner named Cursor, OpenCode, and Codex. The
+`model` field of a standard request is the switch signal. For standard
+clients, which resend the whole conversation and carry no session ID,
+conversation identity comes from prefix matching (prefix-cache identity).
+Optional extensions for cooperating clients, all ignorable by standard ones:
+an explicit session or conversation ID, an explicit release, and next-model
+or warm hints.
+
+**Context.** Owner's answer on 2026-09-20 during M0 triage. Resolves
+features.md open question 8.
+
+**Consequences.** OpenAI-compatible chat completions is the minimum surface;
+the exact endpoint set the named clients need (Responses API, Anthropic
+Messages format, streaming and tool-call details) is verified against their
+current documentation in M0/M1 and recorded as a follow-up. Prefix-cache
+retention with spill and restore across switches is the baseline mechanism by
+which conversation state survives, because standard clients would otherwise
+force a full re-prefill. The management API stays separate and local (D-014).
+Clients talk to the conductor's endpoint (D-020, D-023).
+
+**Reopen if.** The named clients move to a protocol the baseline does not
+cover.
+
+## D-021: The switching bar is "never worse than a full swap"; seamless is the goal  (2026-09-20, status: accepted; baseline measurement amended by D-025)
+
+**Decision.** The minimum acceptable behaviour for a model switch is that it is
+no slower than today's practice of suspending one engine instance and
+instantiating another, a full unload and load, while adding management
+convenience. The goal is as fast and seamless as possible. The full-swap
+baseline is estimated from artifact size and measured read bandwidth, not
+benchmarked separately, because being slower than it would take effort.
+
+**Context.** Owner's answer on 2026-09-20 during M0 triage.
+
+**Consequences.** The paging-feasibility spike quantifies how much partial
+retention and expert paging gain over a full swap and where expert paging
+earns its complexity; it adjusts M4/M5 scope rather than gating the
+project's viability. M2's prerequisite softens accordingly. Benchmark
+reporting still includes switch and switch-back latency and bytes moved.
+
+**Reopen if.** A competing approach raises the practical floor well above a
+full swap.
+
+## D-020: The coordinator orchestrates the Spark pool: placement, routing, and time-slicing versus concurrency  (2026-09-20, status: accepted)
+
+*Terminology and scope note, same day (D-023): "coordinator" is the conductor
+role; the hostname below is the owner's environment, not application
+configuration. Topology is discovered or configured.*
+
+**Decision.** The master node (`spark`) runs the coordinator, which
+orchestrates the whole pool: it decides which models, or parts of models, run
+on which node; routes each request to the node running that model when the
+whole model lives elsewhere; and admits work cluster-wide. When a supported
+placement fits the working sets and complete execution envelopes within each
+node's budget, models run concurrently with no paging. Aggregate pool capacity
+alone is insufficient: unsharded models must each fit on their assigned node.
+When no such placement fits, execution is time-sliced; that is the
+v0 policy under contention. Concurrency when it fits is required soon after
+v0, not deferred to the last milestone.
+
+**Context.** Owner's answers on 2026-09-20 during M0 triage: time-slicing
+first but concurrency soon, and the coordinator should make optimal cluster
+decisions, placement preferred.
+
+**Consequences.** Node placement is the first two-node capability, ahead of
+sharding; the ideation §12 prepare/commit protocol applies to sharded models,
+while placement needs only the network. D-005 is unchanged: one execution
+process per node; the coordinator is an additional role on the master, and
+whether it lives inside that runtime process or a sidecar is an M0 decision.
+The inference and management APIs have a single front door on the
+coordinator. Capacity accounting is per node with a cluster view. Under time
+slicing, question 9 reduces to one active phase per node plus suspended
+state. The ladder rewrite places concurrency-when-it-fits around M4/M5.
+
+**Reopen if.** A third node type or a multi-user deployment changes what the
+coordinator must balance.
+
+## D-019: Primary workload is one user switching among a library of models, with conversation state preserved  (2026-09-20, status: accepted; retention bounds amended by D-024)
+
+**Decision.** The workload jitLLM is optimized for first is a single user, or
+a single user's agent plus subagents, switching automatically among a library
+of models that is larger than memory. A conversation spans minutes to hours,
+and the main model is expected to resume after a subagent on a different
+model finishes. Models are time-sliced rather than run simultaneously
+(TDMA-style): two models execute concurrently only when both resident sets
+fit in RAM. The headline metrics are therefore switch latency (a request for
+model B arrives while A is resident, to B's first token), switch-back latency
+(A resumes with its conversation state), steady-state decode parity with an
+all-resident run, and the size of the library that stays warm enough.
+Multi-tenant fairness and mixed-traffic throughput are secondary.
+
+**Context.** Stated by the owner on 2026-09-20 during M0 triage, sharpening
+ideation §1's "one large model plus smaller models handling mixed traffic."
+
+**Consequences.** Model switches are explicit quiescent points, which the
+scheduler can use as eviction and lease boundaries. Preserving a suspended
+conversation's KV or equivalent state across a switch (residency, spill to
+SSD, or reconstruction) matters as much as retaining weights, and a
+session or conversation is a first-class scheduling entity with
+suspended-versus-finished state. Requests name the next model, so prefetch of
+the incoming model's core can overlap the outgoing model's last steps, and
+clients may hint upcoming use. With two nodes, placing the subagent's model on
+the other node is a legitimate alternative to paging. Steady-state expert
+paging during decode must be rare; its value is in resume and warm-up, not
+per-token streaming. The feasibility spike's trace is an agent session with
+model alternation and long context, not a mixed-traffic benchmark.
+
+**Reopen if.** The project targets multi-user serving, where fairness and
+throughput under contention would move up the priority list.
 
 ## D-018: Experimental artifacts before compatibility guarantees  (2026-09-20, status: accepted; amends D-009)
 
@@ -486,6 +693,11 @@ for a different arrangement, or a core dependency turns out to be
 incompatible with Apache-2.0 distribution.
 
 ## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted)
+
+*Scope note (owner, 2026-09-20): model weights are outside the project's
+licensing scope. Users download them directly; jitLLM supports loading them
+and uses a representative set for testing. The remark below about checkpoint
+review is superseded.*
 
 **Decision.** All jitLLM-authored code is open source under a permissive core
 license (D-003 for which one). Optional copyleft components, for example

@@ -11,6 +11,25 @@
 - **Ownership split.** Model implementations describe computation and
   dependencies; jitLLM owns storage, residency, scheduling, and execution
   lifetime. One native process per node (D-005).
+- **Primary workload.** One user switching among a library of models larger
+  than memory; an agent plus subagents on different models; conversations
+  spanning minutes to hours; time-sliced under contention, concurrent when
+  a supported placement fits each node's complete execution budget. Headline
+  metrics are switch latency, switch-back with conversation state preserved,
+  and decode parity with an all-resident run. Model switches are quiescent
+  points the scheduler may rely on (D-019).
+- **Cluster coordination.** A single conductor, the cluster's one point of
+  entry, places models, or parts of models, per node; routes requests to a
+  node running the model; admits work cluster-wide. Placement is the first
+  multi-node capability and is preferred over paging when it suffices;
+  sharding follows for the flagship. Topology is discovered or configured at
+  runtime, never baked into the application, and a busy small model may run
+  as replicas across nodes (D-020, D-023).
+- **Switching bar and API baseline.** Never worse than a full swap; seamless
+  is the goal, validated against a measured reference cycle (D-021, D-025).
+  Standard web-API clients work unmodified; the model field drives switching.
+  Prefix matching enables bounded state reuse; it does not identify session
+  lifetime. Sessions and hints are optional extensions (D-022, D-024).
 - **Vocabulary.** *Virtual reservation* = address space. *Capacity
   reservation* = admission commitment under a progress policy. *Residency
   lease* = protection of specific backing while consumers run. Never
@@ -91,6 +110,15 @@ assumptions about overlap, mapping overhead, and contention when turning
 trace replay and measured I/O into estimates. These estimates guide scope;
 actual end-to-end results must later validate them.
 
+Once the pinned reference runs, measure A→B→A on the target (D-025). Start
+with one reproducible conversation on A, a request to B, and a continuation
+of A's history. Include an all-resident control and a constrained budget
+that forces displacement. Measure the full switch and switch-back interval,
+including any state writes, unload/load, restore or re-prefill, and first
+returned token. Enable applicable reference routing and state-save features,
+verify them per checkpoint, and record any harness actions needed to use
+them. Pin the trace and settings so M4 can repeat the same experiment.
+
 Every backend/paging performance comparison has two views:
 
 - **Matched configuration:** align checkpoint, numerical policy, request
@@ -105,10 +133,25 @@ Every backend/paging performance comparison has two views:
 For speculative runs, record drafter identity, settings, acceptance, and
 memory use; report throughput per accepted output token. If a matched run
 cannot be made, record why and leave its comparison unvalidated. Before M2,
-agree generation-stall limits and mixed-workload benefit criteria for the
-selected workloads, including a whole-model-switching baseline. Never invent
-thresholds or measured results. M5/M7 compare actual results to those criteria
-and revisit scope when the evidence does not support them.
+agree switching-benefit and generation-stall criteria for the selected
+workloads using the measured whole-model-switching baseline. Record latency
+distributions, bytes read and written, peak memory/spill occupancy, and prompt
+tokens reused versus recomputed. Never invent thresholds or measured results.
+M4 validates switching, M5 validates MoE paging, and M7 validates subsequent
+optimizations against these criteria; scope changes when evidence warrants it.
+
+### Early backend integration proof
+
+Run a small dense model from a prepared experimental artifact alongside M2's
+resource-core work, before treating the internal backend contract as settled.
+jitLLM supplies the weight and state backing, controls the stream, accounts
+for workspace and backend-owned allocations, and tracks completion before
+reuse. Unknown allocations remain non-evictable and budgeted. Check
+teacher-forced logits against a pinned reference, then evict and restore
+weights and retained state at a completed boundary and repeat the comparison
+on a Spark. Include cancellation with pending work to exercise lifetime rules.
+This proof informs M3 and the interfaces; it does not freeze a plugin ABI or
+claim support for flagship architectures.
 
 ## Expected shape (to be validated in the M0 draft)
 
@@ -118,11 +161,18 @@ is a design assumption to confirm during feature triage, not settled scope.
 ### Process and components (§3)
 
 ```text
-x86-64 workstation: editor / builds / CPU tests / import tools
-        | SSH deploy
-Spark A: jitLLM runtime  <-- model communication -->  Spark B: jitLLM runtime
+standard clients (Cursor, OpenCode, Codex, ...)
+        |  OpenAI-compatible endpoint
+        v
+node A: conductor + jitLLM runtime          (owner's `spark`)
+        | routes by placement           | model communication (sharded)
+        v                               v
+node B..N: jitLLM runtime  <-----------/    (owner's `spark-b`)
         \------------- management API -------------/
                   optional dashboard (separate process)
+topology: discovered or configured, never baked in (D-023)
+
+x86-64 workstation: editor / builds / CPU tests / import tools -> SSH deploy
 ```
 
 | Component | Responsibilities |
@@ -183,6 +233,39 @@ registrations) · transfer staging (bounded, pre-reserved). Live and reusable
 state goes through architecture-specific adapters with conservative
 semantics.
 
+### Conversation-state retention
+
+D-024 distinguishes state required by admitted work from reusable state kept
+between requests. A suspended continuation retains the resources needed to
+complete or safely unwind; expiry of an idle cache entry cannot invalidate
+those resources. After a response completes, retaining its prefix is subject
+to bounded memory and spill capacity. Optional sessions and hints can guide
+policy without making storage unbounded.
+
+Before M4, specify per-node cache-memory and spill-byte limits, metadata/entry
+bounds, idle expiry, and spill cleanup. Select and record numeric defaults
+from the measured workload and available headroom. Spill-full or expiry
+invalidates only eligible reusable entries; active work retains a valid
+recovery path or safely fails under the admission policy. No implicit crash
+durability or indefinite retention is promised.
+
+Cache identity covers artifact/model version, relevant execution settings
+(including position/attention configuration), state representation/layout,
+and the exact processed token prefix plus non-text input identity when
+supported. Tokenizer and template changes must not produce an incompatible
+hit. Architecture-specific adapters define which boundaries can be restored;
+do not assume a recurrent snapshot can be truncated like full-attention KV.
+Independent branches may share compatible immutable prefixes, with their
+mutable continuation state isolated.
+
+On a compatible hit, restore state and process new input plus any declared
+cache-block tail. On a miss, expiry, or invalid stored state, recompute from
+the request's supplied history. If history is unavailable, fail explicitly.
+Expose reused/recomputed token counts and miss reasons through diagnostics
+without logging prompts or KV. M4 tests branching histories, edits to an
+earlier message, incompatible cache identity, expiry, and spill exhaustion,
+alongside both resident reuse and forced spill/restore.
+
 ### Lifecycles (§8)
 
 Page-in: commit capacity for the actual missing extents → obtain backing →
@@ -210,6 +293,21 @@ CUDA graphs: residency decisions sit outside captured segments; no CUDA API
 calls from host-function nodes.
 
 ### Two-node flow (§12)
+
+Placement first (D-020, D-023): the conductor decides which node hosts each
+model and routes requests there; a subagent's model on another node while the
+main model stays resident needs no collective and no direct link. M4a starts
+with configured membership and one configured conductor, capability and
+health probes, and request routing with affinity to retained compatible
+state. The node runtime remains authoritative for local admission; a stale
+cluster view cannot authorize unsafe local execution. Unavailable nodes
+cause explicit request failure, not assumed reclamation or silent replay of
+an already-started stream. Replica placement, automatic discovery, and
+conductor election have separate revisit triggers in plan.md. A busy small
+model may later run as replicas on several nodes. Concurrent execution without paging requires a
+supported placement whose working sets and complete execution envelopes fit
+each node's budget; aggregate pool capacity alone is insufficient. M4a depends
+on M4, not on demand-paged MoE. Sharding, below, is M6 for the flagship model.
 
 Describe the phase and local requirements per rank → reserve capacity on all
 required nodes → establish local residency → commit distributed execution →
@@ -276,7 +374,8 @@ only measurable on a Spark. The Spark-side inventory follows.
 ## Target nodes (DGX Sparks)
 
 Captured 2026-09-20 over SSH, read-only, no sudo. Both nodes are identical in
-software. `spark` (master, also `spark-a`) and `spark-b` resolve from the
+software. These names are the owner's environment, not application
+configuration (D-023). `spark` (master, also `spark-a`) and `spark-b` resolve from the
 workstation and from each other, and SSH is configured in both directions
 between the nodes (verified 2026-09-20 with a hop from each to the other).
 That traffic currently rides the management Ethernet; the direct QSFP link is
@@ -321,3 +420,17 @@ technical additions to resolve while drafting:
   paths or partitioned by model from the start.
 - How physical-pool capacity, page-cache usage, and OS headroom are reported
   in one honest memory breakdown on unified memory.
+- Initial eviction scoring over eligible extents. Dependency-group scoring
+  is deferred until trace replay shows a useful improvement over the baseline.
+- Lease granularity and progress for the initial scheduler. Optimistic MoE
+  execution is deferred until the pessimistic M5 path is correct and measured;
+  its future design must still handle a miss when the current step fills RAM.
+- Whether direct I/O is the default read path, and whether the staging copy
+  can be dropped on Spark through GPU in-place access to system-allocated
+  memory.
+- Where the conductor lives (inside its node's runtime process or a
+  sidecar), how it represents cluster-wide capacity,
+  placement, and replicas, and how a routed request's streaming response
+  flows back through it. M4a uses one configured conductor; election is deferred.
+- Cache-memory, spill, metadata, and expiry limits for D-024's retention
+  policy; choose before M4 from measured state sizes and available headroom.

@@ -21,9 +21,12 @@ needs evidence from the real hardware.
 
 - [x] Repo scaffolding for the AI-directed workflow (this scaffold,
       2026-09-20).
-- [ ] Feature triage: walk [features.md](features.md) with the owner; promote
-      or reject every `proposed` row; answer the open questions; record
-      significant calls in [decisions.md](decisions.md).
+- [ ] Feature triage: walk [features.md](features.md) with the owner; confirm,
+      reject, or defer proposals. A deferral records a reason, a concrete
+      revisit trigger, and an earliest milestone; it is a valid M0 outcome
+      and does not become approval when the trigger fires. Prioritize what
+      unblocks M1–M4, answer architecture-shaping questions by their deadlines,
+      and record only significant calls in [decisions.md](decisions.md).
 - [x] Confirm the original-code license (2026-09-20: Apache-2.0 accepted,
       D-003; dependency categories and tiers clarified in D-017, superseding
       D-015; process weight for an externally consumed project recorded,
@@ -38,8 +41,13 @@ needs evidence from the real hardware.
 - [ ] Spike — **toolchain smoke** (answers open question 6): one end-to-end
       Clang C++23 native build, AArch64 cross build, and NVCC (Clang host
       compiler) CUDA object for GB10, deployed and run on a Spark over SSH.
-      Output: exact LLVM / libstdc++ / CUDA / sysroot pins and the GB10
-      architecture spelling → decision entry.
+      Consider rsync'ing the exact target sysroot (glibc 2.39, libstdc++ 13,
+      CUDA 13.0 `targets/sbsa-linux`) from a Spark so the ABI matches by
+      construction, recorded as a snapshot of that DGX OS version. Keep a
+      native-on-Spark preset as the fallback and diagnostic build so the
+      first token never waits on the cross CUDA path. Output: exact LLVM /
+      libstdc++ / CUDA / sysroot pins and the GB10 architecture spelling →
+      decision entry.
 - [ ] Spike — **VMM microbench** (open question 1): on a Spark, measure VMM
       granularity, map/unmap latency vs extent size, cost under concurrent
       kernels, and physical-pool retention behaviour. Output: numbers in
@@ -47,29 +55,113 @@ needs evidence from the real hardware.
 - [ ] Spike — **I/O path comparison** (open question 2): cuFile compatibility
       mode vs native file I/O with pinned staging vs direct I/O, under
       concurrent compute and memory pressure; page-cache duplication and read
-      amplification. Output: numbers, a storage-backend decision entry, and
+      amplification. Treat direct I/O as the default hypothesis on unified
+      memory, and test GPU in-place access to system-allocated memory read
+      straight from NVMe, which would remove the staging copy on Spark.
+      Measure sustained read throughput over minutes to catch thermal
+      throttling. Output: numbers, a storage-backend decision entry, and
       staging-budget guidance.
+- [x] Pick the reference engine for the feasibility spike: llama.cpp with
+      MoE GGUFs and a small router-logging patch (decided 2026-09-20; the
+      lightest install and the owner's preference).
+- [ ] Install llama.cpp on a Spark in a container so the host baseline in
+      architecture.md stays clean; record exactly what was installed.
+      Candidate trace models, owner-provided, with facts from their model
+      cards as read on 2026-09-20 (re-verify at install time):
+      - [unsloth Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF):
+        125B total, 6B active, 512 experts, top-10 plus 1 shared, expert
+        intermediate dim 640, plus a 51B n-gram embedding table and a 4B MTP
+        head; Gated DeltaNet plus sparse MQA attention; 262K context. GGUFs
+        run from about 72 GB
+        (1-bit) through 82 to 90 GB (3-bit) to 111 GB (Q4_K_XL). On a
+        121 GiB node that is a single-model budget sweep: 3-bit fits, Q4 is
+        borderline, Q5 and up exceed the node, so it covers the
+        forces-paging axis by itself. Its n-gram table is the first concrete
+        sparse-lookup component to page by rows, and its MTP head matters
+        for matched-configuration comparisons (D-021).
+      - [unsloth gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF):
+        25.2B total, 3.8B active, 128 experts, top-8 plus 1 shared; hybrid
+        1024-token sliding-window and global attention; 256K context.
+        Q4_K_M about 17 GB. The owner has experience with Gemma.
+        Fits easily: the subagent and switch-latency case, with mixed KV
+        lifetimes for the spill study.
+      - [ornith-ai/Ornith-1.5-35B-A3B-GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF):
+        36B total, about 3B active, `qwen35moe` architecture (expert count
+        not on the card; read it from the GGUF metadata); 262K context.
+        Q4_K_M about 22 GB. A second small model for replica and
+        multi-model-switching traces.
+      Gaps these three leave, to fill only if cheap: a few-large-experts,
+      low-top-k model (Mixtral-style) for the high per-miss-cost end, and a
+      plain full-KV GQA model where KV grows linearly and spill cost is
+      highest. Record for each model used: expert count, top-k, shared
+      experts, expert bytes at the chosen quant, total bytes, KV or recurrent
+      state bytes per token, and headroom on one node. The owner's local
+      Ollama blobs are plain GGUFs usable for workstation-side dry runs on
+      the RTX 3080 Ti where they fit.
+- [ ] **Reference A→B→A experiment** (D-025): once the pinned reference setup
+      runs, measure a long conversation on A, a request to B under memory
+      pressure, and a continuation on A. Use an all-resident control and a
+      budget that forces displacement. Include end-to-end first-token waits,
+      state save/restore or re-prefill, bytes read/written, and reused versus
+      recomputed prompt tokens. Verify applicable reference routing and
+      prompt-cache save/restore on the chosen checkpoints; record unavailable
+      paths and any harness actions. Pin the trace, settings, engine revision,
+      and target environment for M4 to repeat. Separate cold storage, warm OS
+      cache, and warm residency; follow the comparison protocol. This is an
+      M0/early-M1 deliverable before M2, not a new runtime implementation.
 - [ ] Spike — **paging feasibility**: use a pinned reference engine and a
       representative quantized MoE to capture prefill and decode expert routes
-      across representative requests and batch sizes, including interleaved
-      requests to a smaller model in the workload. Replay partial
-      retention and whole-model switching against the same request trace and
-      total memory budgets, accounting for non-expert weights, live state,
-      scratch, staging, and headroom. Combine miss bytes and read sizes with
-      the staged-I/O measurements to estimate exposed stalls; keep estimates
-      distinct from measurements and state overlap assumptions. Output:
-      miss-byte curves versus memory budget, model-switch recovery costs,
-      workload/configuration provenance, and owner-agreed generation-stall
-      and mixed-workload benefit criteria. Follow the comparison protocol in
-      [architecture.md](architecture.md#performance-evidence). Establish which
-      workloads justify proceeding, or narrow the scope before M2. This may
-      finish in early M1 if reference setup requires it; reference runs do
-      not require jitLLM's model implementation or trace recorder.
+      across representative requests and batch sizes. Shape the trace as the
+      primary workload (D-019): a main model alternating with a subagent on a
+      smaller or different model, long contexts, sessions lasting minutes to
+      hours. Replay partial retention and whole-model switching against the
+      same request trace and total memory budgets, accounting for non-expert
+      weights, live state, scratch, staging, and headroom, with and without
+      KV spill and restore across switches. Combine miss bytes and read sizes
+      with the staged-I/O measurements to estimate exposed stalls and switch
+      latencies; keep estimates distinct from measurements and state overlap
+      assumptions. From the same traces report per-layer reuse distance and
+      next-layer predictability, which decide whether prefetch can hide the
+      remaining misses. Output: miss-byte curves versus memory budget, switch
+      and switch-back cost estimates against the full-swap floor (D-021,
+      D-025: artifact-size/bandwidth estimates for the first cut, then the
+      measured reference cycle once setup runs), model-switch
+      recovery costs, and workload/configuration provenance. Follow the
+      comparison protocol in
+      [architecture.md](architecture.md#performance-evidence). The result
+      sizes how much partial retention and expert paging gain over a full
+      swap and where expert paging earns its complexity; it adjusts M4/M5
+      scope rather than gating viability. Time-box a first cut (one MoE, one
+      budget sweep) before the full protocol. This may finish in early M1
+      if reference setup requires it;
+      reference runs do not require jitLLM's model implementation or trace
+      recorder.
+- [ ] Agree switching-benefit and generation-stall criteria before M2 from
+      the measured reference experiment and feasibility evidence. These
+      govern M4/M5/M7 acceptance for named workloads; no numeric thresholds
+      are assumed in this plan.
 - [ ] Re-inventory the Spark-to-Spark direct link once the QSFP/NCCL cable
       is installed (expected 2026-09-21): link state, RDMA devices, NCCL
       version, and the bandwidth a plain host-buffer transfer achieves
-      between `spark` and `spark-b`. Record in architecture.md. Two-node work
-      (M6) waits on this.
+      between `spark` and `spark-b`. Record in architecture.md. Sharded
+      execution in M6 waits on this; placement and request routing can use
+      the existing network.
+- [ ] Inventory which MiaAI-Lab reference files are actually AGPL versus MIT
+      ExLlamaV3 upstream before designing the optional-module boundary, and
+      note AGPL's network clause for a served process in the licensing docs.
+- [ ] Decide where the conductor lives (inside its node's runtime process or
+      a sidecar) and how cluster-wide admission and placement are represented
+      (D-020). Record in decisions.md.
+- [ ] Define the initial configured cluster (D-023): configuration format,
+      one designated conductor, configured membership, capability and health
+      probes, per-node admission, and affinity to retained compatible state.
+      M4a needs no discovery service, election, or automatic replica placement;
+      their revisit triggers are below. Nothing about node names or counts
+      in code; the owner's `spark`/`spark-b` are one deployment's config.
+- [ ] Verify the endpoint set the named clients need (Cursor, OpenCode,
+      Codex: chat completions, Responses API, Anthropic Messages format,
+      streaming and tool-call details) against their current docs; record
+      the baseline surface as a D-022 follow-up.
 - [ ] Decide the async/task and completion model (open question 3), ideally
       prototyped against the fake-backend design.
 - [ ] Decide the initial reservation guarantee and progress envelopes (open
@@ -81,6 +173,20 @@ needs evidence from the real hardware.
 - [ ] Decide the first vertical-slice checkpoint, backend, and numerical
       reference (open question 4); record provenance and license status of
       every reused unit.
+- [ ] Scope the **early backend integration proof**, executed alongside M2:
+      a small dense model runs from a prepared experimental artifact with
+      jitLLM-owned weight/state backing, explicit workspace and completion
+      tracking, and all backend allocations accounted for. Match reference
+      logits, then repeat after eviction and restoration of weights and
+      state at a completed boundary on a Spark. Exercise cancellation with
+      pending work. Use the result to settle internal interfaces before M3;
+      do not freeze a plugin ABI from the fake backend alone.
+- [ ] Define the M4 A→B→A acceptance trace and the bounded retention policy
+      (D-024): memory/spill/metadata limits, idle expiry, cleanup, cache
+      identity, restore boundaries, and fallback/error behavior. Choose
+      numeric defaults from measured state sizes and available headroom
+      before M4. Include resident reuse, forced spill/restore, branch/edit
+      cases, expiry and spill exhaustion; protect admitted suspended work.
 - [ ] Choose an experimental artifact encoding and layout ABI (open question
       5, D-018), including validation, version rejection, and re-import rules.
       Compatibility guarantees wait for dense and MoE execution and restore
@@ -98,18 +204,27 @@ needs evidence from the real hardware.
 **Exit criteria:** the owner has walked features.md and says the plan is good
 enough to build from; open questions 1–7 and 9 are answered or explicitly
 deferred with a reason and a milestone deadline; toolchain pins exist; M1+
-milestones have scopes. The paging-feasibility result and question 9's policy
-are required before M2, even if deferred out of M0. Question 8 may remain
-deferred to M7. M0 exits on the owner's call, not on a checklist reaching
-zero. Both Sparks are reachable now (`spark`, `spark-b`), so the three hardware
+milestones have scopes. Proposed optimizations may remain deferred with a
+reason and trigger; they need not be accepted or rejected to exit M0. The
+paging-feasibility result, measured reference switching baseline, agreed
+performance criteria, and question 9's policy are required before M2, even if
+deferred out of M0; feasibility sizes M4/M5 rather than gating viability
+(D-021, D-025). Question 8 is resolved by
+D-022; endpoint verification is an M0/M1 task. M0 exits on the owner's call,
+not on a checklist reaching zero. Both Sparks are reachable now
+(`spark`, `spark-b`), so the three hardware
 spikes can start. Paging feasibility also needs a pinned reference; a
-two-node reference run waits on the direct link, just as M6 does.
+sharded two-node reference run waits on the direct link, as does M6's sharded
+execution work.
 
 ## Provisional milestone ladder  `pending — to be rewritten in M0`
 
 This is the owner's staged plan from ideation §19 translated into milestones,
 ordered by risk: substrate, then the resource core, then one end-to-end model
-path, then paging breadth, then two nodes, then performance and product.
+path, then the first useful product at M4 (A→B→A with retention and conversation
+state reuse), then configured placement across nodes at M4a, then MoE paging,
+sharding, and further performance/product work. M4a keeps the existing M5–M7
+identifiers stable and has no dependency on demand-paged MoE.
 Sketch only — do not start work from these entries. They freely reference
 `proposed` features.md rows; nothing here pre-empts the M0 triage. No stage
 has a promised date; each should leave a usable, testable result.
@@ -119,24 +234,54 @@ has a promised date; each should leave a usable, testable result.
   binary running over SSH, CI with the copyleft-disabled profile, initial
   license and provenance tooling. *Gate:* clean host and container setup;
   native tests pass; smoke binary runs on a Spark; exact pins recorded;
-  any deferred paging-feasibility experiment and reservation policy are
-  complete before M2.
+  any deferred feasibility experiment, measured reference switching baseline,
+  agreed performance criteria, and reservation policy are complete before M2.
 - **M2 — Resource core.** Catalog, reservation/lease state machine,
   deterministic fake backend, real VMM smoke harness. *Prerequisites:*
-  paging-feasibility result supports the agreed scope; reservation policy
-  and progress envelopes are recorded. *Gate:* adversarial completion,
+  paging-feasibility results recorded and M4/M5 scope adjusted if warranted
+  (D-021, D-025); measured reference cycle and acceptance criteria recorded;
+  reservation policy and progress envelopes are recorded. *Gate:* adversarial completion,
   cancellation, competing suspended-phase, state-growth, and impossible-phase
   tests pass; repeated map/load/evict/restore checks succeed on a Spark.
+  Run the early backend integration proof alongside this work; it must pass
+  before settling the internal contract and closing M2. The proof covers one
+  small dense model and its state, with correctness checked before and after
+  restoration; full serving integration follows in M3.
 - **M3 — One resident model, end to end.** Import a manageable model (small
-  dense first), native backend execution, tokenizer/state/sampling baseline.
-  *Gate:* teacher-forced and intermediate comparisons against a pinned
-  reference; bounded, explainable memory usage. M0 may interleave M2 and M3
-  so numerical plumbing is derisked alongside the pager.
-- **M4 — Partial retention.** Two persistent model contexts, shared local
-  budget, partial eviction of a quiescent model, basic status API. *Gate:*
-  only selected extents displaced; untouched data resident; resumption
-  reloads only the missing dependencies; dense-model numerics remain correct
-  after eviction and restoration from the experimental artifact.
+  dense first), native backend execution, tokenizer/state/sampling baseline,
+  and the OpenAI-compatible endpoint (D-022). *Gate:* teacher-forced and
+  intermediate comparisons against a pinned reference; bounded, explainable
+  memory usage; at least one named client completes a chat through the
+  endpoint unmodified. M2's backend proof supplies the integration evidence;
+  M2/M3 implementation may overlap while their gates remain explicit.
+- **M4 — First useful product: A→B→A with partial retention.** Two small
+  supported model contexts, one shared local budget, partial eviction of a
+  quiescent model, bounded conversation-state retention (D-024), and basic
+  status/diagnostics. Through at least one unmodified named client, build a
+  long conversation on A, request B under pressure, then resume A. *Gate:*
+  only selected extents displaced; untouched data remains resident; reload
+  only missing dependencies. Exercise both resident state reuse and forced
+  spill/restore. A compatible retained prefix resumes without a full
+  re-prefill; process only new input and any declared cache-block tail.
+  Report switch/switch-back latency distributions, bytes read/written,
+  peak memory/spill use, and prompt tokens reused versus recomputed against
+  D-025's measured reference cycle and the agreed criteria. Teacher-forced
+  numerics stay correct after weight/state restoration. Branching histories,
+  edits, incompatible identity, expiry, and spill exhaustion yield correct
+  reuse, recomputation from supplied history, or explicit errors as appropriate;
+  cache expiry never destroys admitted suspended work. An all-resident
+  control demonstrates concurrent progress without paging when both complete
+  execution envelopes fit. This milestone is useful without MoE or sharding.
+- **M4a — Configured placement across nodes.** After M4, independently of M5:
+  one configured conductor, configured nodes with capability/health probes,
+  whole-model placement and request routing with state affinity. Run B on
+  another node while A stays resident; use the existing network. *Gate:*
+  an unmodified standard client completes the A→B→A flow through one endpoint;
+  each node enforces its full local budget and compatible state reuse; models
+  run concurrently when placement permits. Stale capacity reports, node loss,
+  and cancellation cause bounded failure/unwind without unsafe admission or
+  silent replay of a started stream. Honor remote-access protection (D-014).
+  Discovery, election, and automatic replicas follow the separate triggers below.
 - **M5 — Demand-paged MoE.** Routing boundary, selected-expert leases,
   asynchronous misses, resumable tasks, native trace capture and policy replay
   checked against the early reference experiment.
@@ -145,13 +290,33 @@ has a promised date; each should leave a usable, testable result.
   protocol; small-MoE numerics remain correct after eviction and restoration.
   With M4's dense evidence, assess artifact compatibility guarantees in a
   separate decision (D-018).
-- **M6 — Two Sparks.** Explicit sharding, coordinated admission, stable
-  communication buffers, ordered collectives. Needs the direct
-  Spark-to-Spark link (cable expected 2026-09-21). *Gate:* both ranks correct
-  under asymmetric pressure, cancellation, and controlled failure.
+- **M6 — Sharded model execution (two Sparks here).** Build on M4a's
+  configured cluster; add explicit sharding for the flagship, coordinated
+  admission, stable communication buffers, and ordered collectives. Needs
+  the direct Spark-to-Spark link (cable expected 2026-09-21) and the relevant
+  single-node model/paging evidence. *Gate:* both ranks remain correct under
+  asymmetric pressure, cancellation, and controlled failure; no timeout is
+  treated as proof of reclaimed memory. Placement-only use already works at M4a.
 - **M7 — Performance and product.** Alternative compatible kernels and plans,
-  prefetch, selective CUDA graphs, dashboard, inference API surface,
+  prefetch, selective CUDA graphs, dashboard, optional API extensions
+  (sessions, hints; D-022),
   packaging with notices. *Gate:* measured results meet the agreed workload
   benefit and generation-stall criteria; matched-configuration and normal
   reference-configuration comparisons are reported; no numerical or lifetime
   regression; compliant optional-backend builds.
+
+## Deferred delivery and proposals
+
+Confirmed scope stays confirmed when its implementation is deferred. A
+candidate stays unapproved until revisited; reaching a trigger is a reason
+to evaluate it. Deferred optimization triggers (predictive prefetch,
+dependency-group scoring, optimistic MoE) live in features.md.
+
+| Item | Earliest work / revisit trigger | Scope |
+| --- | --- | --- |
+| Automatic membership discovery | After M4a, when a deployment needs membership changes that configured nodes and explicit reload cannot reasonably serve | Candidate mechanism under D-023; configured topology is the initial path |
+| Conductor election | After M4a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
+| Automatic replica placement and balancing | After M4a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |
+
+Review untriggered items during M7 planning; they do not automatically enter
+M7's implementation scope or block earlier milestone exits.

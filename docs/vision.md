@@ -6,17 +6,27 @@ jitLLM is an independent, open-source inference runtime built around one
 premise: **model implementations describe computation and dependencies;
 jitLLM owns storage, residency, scheduling, and execution lifetime.**
 
-The target workload is one large model, potentially sharded across two NVIDIA
-DGX Sparks, plus smaller models handling mixed traffic, where aggregate model
-storage exceeds physical memory and not every model or expert is active at
-once. Existing engines treat a model as an indivisible allocation: to make
-room, you unload a model. jitLLM instead keeps a node-wide catalog of every
-managed extent, reclaims the least valuable eligible extents across all models
-when capacity is needed, and brings missing weights or state back only when
-the model actually needs them, or when justified prefetching can hide a miss.
-Routed-expert models get exactly the experts the router selected, loaded on
-demand from prepared on-disk artifacts, with the execution suspended and other
-work running while the I/O is in flight.
+The workload jitLLM is built for first is one user, or one user's agent and
+its subagents, switching among a library of models that is larger than
+memory (D-019). A conversation spans minutes to hours; the main model is
+expected to resume after a subagent on a different model finishes; models are
+time-sliced under contention and run concurrently when their complete
+execution budgets fit. Switching can require expensive weight reloads and
+prompt recomputation. jitLLM keeps a node-wide catalog of every managed
+extent, reclaims the least valuable eligible extents across all models when
+capacity is needed, preserves conversation state through residency or spill
+within explicit retention bounds (D-024), and brings missing weights or state back only
+when the model actually needs them, or when justified prefetching can hide a
+miss. Routed-expert models get exactly the experts the router selected,
+loaded on demand from prepared on-disk artifacts, with execution suspended
+and other work running while the I/O is in flight. With more than one node,
+a single conductor places models across the pool and routes requests, so a
+subagent's model can run on another node while the main model stays
+resident, a busy small model can run as replicas, and the flagship model may
+be sharded across nodes. Topology is configured or discovered, never baked
+in. When an idle cached prefix has expired or cannot be retained, the runtime
+recomputes from client-supplied history and reports that work; admitted
+requests keep their state protection while suspended.
 
 It began as the design brief in [ideation.md](ideation.md) (2026-09-20), which
 consolidated the ideation discussion. The decided directions there are
@@ -24,10 +34,12 @@ recorded in [decisions.md](decisions.md); its proposed designs are in
 [features.md](features.md) awaiting triage.
 
 Correctness is a prerequisite for every supported configuration and every
-optimization. Within that constraint, priorities are useful mixed-model
-execution, warm generation performance, memory efficiency, and explainable
-scheduling. Cold time-to-first-token is desirable but not primary; repeated
-paging stalls during generation matter.
+optimization. Within that constraint, priorities are fast and predictable
+model switching with conversation state preserved, warm generation
+performance at parity with an all-resident run, memory efficiency so the warm
+library is as large as possible, and explainable scheduling. Cold
+time-to-first-token for a never-loaded model is desirable but not primary;
+repeated paging stalls during generation matter.
 
 ## Who it's for
 
@@ -35,9 +47,10 @@ jitLLM is built by one developer but meant to be consumed externally (D-016),
 so the audience is anyone with the problem, not just the owner.
 
 1. **People running local inference on one or two DGX Sparks**, the project
-   owner first among them, who want more models available than fit in memory
-   without losing warm-generation performance or the ability to explain what
-   the runtime did.
+   owner first among them, who switch between models or run agents whose
+   subagents use different models, and who want a large library available
+   without losing conversation state, warm-generation performance, or the
+   ability to explain what the runtime did.
 2. **Owners of other CUDA hardware with a similar memory-versus-storage
    gap**, once a validated direct storage path or a second target makes
    their configuration a supported one.
@@ -50,11 +63,32 @@ so the audience is anyone with the problem, not just the owner.
 Each of these is checkable, and each is scoped to a *supported configuration*
 in the model support matrix, not to arbitrary checkpoints.
 
+- **Switching is fast and state survives it.** With a library larger than
+  memory, switching from a resident model A to model B and back reloads only
+  the missing dependencies; a compatible retained prefix resumes from KV or
+  equivalent state through residency or spill and restore. M4 demonstrates
+  both paths through an unmodified client. Expiry, capacity limits, or edited
+  history can require recomputation; these cases are measured separately and
+  must remain correct (D-024). Switch and switch-back latency are measured
+  against the reference's end-to-end whole-model-switching baseline
+  for the agreed workloads, and are never worse than a full swap of one
+  engine instance for another (D-021, D-025). Report bytes moved and prompt
+  tokens reused versus recomputed. Models run concurrently when the
+  working sets and complete execution envelopes fit each node's budget under
+  a supported placement; otherwise they are time-sliced, and the runtime
+  reports which happened.
+- **Standard clients work unmodified.** Cursor, OpenCode, Codex, and other
+  standard web-API clients talk to the conductor's endpoint with no
+  jitLLM-specific changes; the request's model field drives switching, and
+  compatible cached state is recovered by prefix identity. Prefix matching
+  does not identify session lifetime or guarantee indefinite retention.
+  Sessions and hints are optional extensions (D-022, D-024).
 - **Partial retention works.** With two persistent model contexts on one
   Spark, when the second needs capacity, only selected extents of the first
   are displaced; untouched extents remain resident; resuming the first
   reloads only the missing dependencies. Verified from catalog state and
-  structured events, not inferred from timing.
+  structured events, not inferred from timing. For a dense model this pays
+  off at resume time, not during active decode, and the docs say so.
 - **Demand-paged MoE is exact.** On a supported routed-expert checkpoint, a
   phase loads only the experts the router selected plus declared
   metadata/granularity/read-ahead, never substitutes an expert, never drops a
@@ -67,6 +101,10 @@ in the model support matrix, not to arbitrary checkpoints.
 - **Two Sparks stay correct under stress.** A sharded model on two nodes
   passes asymmetric-memory-pressure, cancellation, and controlled-failure
   tests with no speculative reuse after timeouts.
+- **Placement is useful before sharding.** M4a routes a main model and its
+  subagent across configured nodes through one conductor, with local budget
+  enforcement, health checks, and state affinity. It follows M4 independently
+  of demand-paged MoE; sharded execution has its own M6 gate.
 - **Every decision is explainable.** For any eviction or admission decision
   the runtime can report victims, expected and actual bytes recovered, the
   cost estimate, and why alternatives were retained, from structured events

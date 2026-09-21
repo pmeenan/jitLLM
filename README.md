@@ -10,6 +10,15 @@ needed, and pages missing weights or state back in on demand from prepared
 on-disk artifacts. Routed-expert (MoE) models get exactly the experts the
 router selected, loaded just in time.
 
+The workload it is built for first is one person switching among a library of
+models, or running an agent whose subagents use different models, with
+conversations that last hours. Useful conversation state survives switches
+within configured retention limits; expired caches can be rebuilt from the
+history clients provide.
+Standard web-API clients such as Cursor, OpenCode, and Codex work unmodified,
+and with more than one node a single conductor places models across the
+cluster and routes requests.
+
 Initial target: one or two NVIDIA DGX Sparks, developed from an x86-64 Linux
 workstation. Model support is earned per checkpoint and tracked in a support
 matrix; see [docs/features.md](docs/features.md) for what is confirmed scope
@@ -39,6 +48,11 @@ the work, reviews it, and is the sole committer.
 [docs/ideation.md](docs/ideation.md); the living plan, feature matrix,
 architecture skeleton, and decision log are in `docs/`. No application code
 exists yet.
+
+The first useful product target is M4: chat with A, switch to B under memory
+pressure, then resume A with retained state, through an unmodified client.
+M4a adds configured placement across nodes; demand-paged MoE and sharding
+have separate later gates. See [the plan](docs/plan.md).
 
 ## License
 
