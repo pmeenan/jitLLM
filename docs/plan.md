@@ -69,7 +69,7 @@ needs evidence from the real hardware.
       Candidate trace models, owner-provided, with facts from their model
       cards as read on 2026-09-20 (re-verify at install time):
       - [unsloth Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF):
-        125B total, 6B active, 512 experts, top-10 plus 1 shared, expert
+        125B core parameters, 6B active, 512 experts, top-10 plus 1 shared, expert
         intermediate dim 640, plus a 51B n-gram embedding table and a 4B MTP
         head; Gated DeltaNet plus sparse MQA attention; 262K context. GGUFs
         run from about 72 GB
@@ -195,8 +195,10 @@ needs evidence from the real hardware.
 - [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /
       LLD as proposed), test framework, format and lint pins, CI shape
       including the copyleft-disabled profile, license/provenance tooling
-      (REUSE?), and versioning/changelog conventions for an externally
-      consumed project (D-016). Record in decisions.md.
+      (REUSE?), versioning/changelog conventions for an externally consumed
+      project (D-016), and the installed layout that packaging will need
+      (FHS paths, service user, systemd unit; D-027). Record in
+      decisions.md.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria.
@@ -233,7 +235,8 @@ has a promised date; each should leave a usable, testable result.
   provisioning), C++23/Clang native build, Spark cross build, ARM/CUDA smoke
   binary running over SSH, CI with the copyleft-disabled profile, initial
   license and provenance tooling. *Gate:* clean host and container setup;
-  native tests pass; smoke binary runs on a Spark; exact pins recorded;
+  native tests pass, including a CPU-only configuration with no CUDA toolkit
+  present (D-026 guardrail); smoke binary runs on a Spark; exact pins recorded;
   any deferred feasibility experiment, measured reference switching baseline,
   agreed performance criteria, and reservation policy are complete before M2.
 - **M2 — Resource core.** Catalog, reservation/lease state machine,
@@ -242,7 +245,8 @@ has a promised date; each should leave a usable, testable result.
   (D-021, D-025); measured reference cycle and acceptance criteria recorded;
   reservation policy and progress envelopes are recorded. *Gate:* adversarial completion,
   cancellation, competing suspended-phase, state-growth, and impossible-phase
-  tests pass; repeated map/load/evict/restore checks succeed on a Spark.
+  tests pass with the fake backend and no vendor SDK present; repeated
+  map/load/evict/restore checks succeed on a Spark.
   Run the early backend integration proof alongside this work; it must pass
   before settling the internal contract and closing M2. The proof covers one
   small dense model and its state, with correctness checked before and after
@@ -300,7 +304,7 @@ has a promised date; each should leave a usable, testable result.
 - **M7 — Performance and product.** Alternative compatible kernels and plans,
   prefetch, selective CUDA graphs, dashboard, optional API extensions
   (sessions, hints; D-022),
-  packaging with notices. *Gate:* measured results meet the agreed workload
+  packaging as signed apt packages for Spark with notices (D-027). *Gate:* measured results meet the agreed workload
   benefit and generation-stall criteria; matched-configuration and normal
   reference-configuration comparisons are reported; no numerical or lifetime
   regression; compliant optional-backend builds.

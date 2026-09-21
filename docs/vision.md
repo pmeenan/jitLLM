@@ -51,8 +51,9 @@ so the audience is anyone with the problem, not just the owner.
    subagents use different models, and who want a large library available
    without losing conversation state, warm-generation performance, or the
    ability to explain what the runtime did.
-2. **Owners of other CUDA hardware with a similar memory-versus-storage
-   gap**, once a validated direct storage path or a second target makes
+2. **Owners of other hardware with a similar memory-versus-storage gap**,
+   other CUDA hardware first, and possibly Apple silicon or AMD single
+   machines later if demand appears (D-026), once a validated path makes
    their configuration a supported one.
 3. **Inference-systems developers** interested in a memory-first runtime
    whose catalog, reservation/lease, and paging subsystems are usable and
@@ -120,9 +121,10 @@ in the model support matrix, not to arbitrary checkpoints.
   generation-stall criteria; measured implementation results must meet them.
   Native code is never assumed to outperform an existing engine.
 - **Setup is reproducible by a stranger.** A new user reaches a running
-  supported model on a fresh Spark following only the checked-in docs and
-  setup path, and the setup reports the exact toolchain, driver, and SDK
-  identities it installed or found.
+  supported model on a fresh Spark by installing from the project's package
+  repository and following only the checked-in docs (D-027); a developer
+  reaches a working build through the checked-in setup path, which reports
+  the exact toolchain, driver, and SDK identities it installed or found.
 - **The default build meets its dependency policy.** Incorporated core
   implementation satisfies the Apache-2.0 / BSD / MIT / MPL-2.0 allowlist;
   declared tools and platform runtimes are recorded under their separate

@@ -16,8 +16,9 @@
   spanning minutes to hours; time-sliced under contention, concurrent when
   a supported placement fits each node's complete execution budget. Headline
   metrics are switch latency, switch-back with conversation state preserved,
-  and decode parity with an all-resident run. Model switches are quiescent
-  points the scheduler may rely on (D-019).
+  and decode parity with an all-resident run. A switch request signals intent;
+  the scheduler establishes a completed handoff boundary before releasing
+  residency leases or reclaiming backing (D-007, D-019).
 - **Cluster coordination.** A single conductor, the cluster's one point of
   entry, places models, or parts of models, per node; routes requests to a
   node running the model; admits work cluster-wide. Placement is the first
@@ -58,6 +59,14 @@
   where validated, pinned libstdc++ initially; cross-built from x86-64 and
   tested on Spark over SSH; declarative pinned toolchain (D-010, D-011,
   D-012).
+- **Portability posture.** NVIDIA first. The core holds no vendor types;
+  device memory, paging, and transport sit behind narrow provider interfaces
+  with CUDA VMM as the only implementation for now; platform properties are
+  probed capabilities. Apple silicon and AMD single machines are possible
+  later targets; nothing is done or sacrificed for them now (D-026).
+- **Distribution.** Users install from a signed apt repository, Spark first;
+  the developer toolchain path is separate. Installed layout, service user,
+  and unit are settled before the endpoint lands (D-027, D-012).
 
 ### Mandatory pager invariants (§18)
 
@@ -304,8 +313,8 @@ cluster view cannot authorize unsafe local execution. Unavailable nodes
 cause explicit request failure, not assumed reclamation or silent replay of
 an already-started stream. Replica placement, automatic discovery, and
 conductor election have separate revisit triggers in plan.md. A busy small
-model may later run as replicas on several nodes. Concurrent execution without paging requires a
-supported placement whose working sets and complete execution envelopes fit
+model may later run as replicas on several nodes. Concurrent execution
+without paging requires a supported placement whose working sets and complete execution envelopes fit
 each node's budget; aggregate pool capacity alone is insufficient. M4a depends
 on M4, not on demand-paged MoE. Sharding, below, is M6 for the flagship model.
 
@@ -434,3 +443,7 @@ technical additions to resolve while drafting:
   flows back through it. M4a uses one configured conductor; election is deferred.
 - Cache-memory, spill, metadata, and expiry limits for D-024's retention
   policy; choose before M4 from measured state sizes and available headroom.
+- The minimal provider interface the pager needs from a device memory and
+  transfer backend (reserve, back, map, unmap, copy, fence, event; transport
+  send and receive with registration), and whether the ledger keys by memory
+  domain from the start (D-026).

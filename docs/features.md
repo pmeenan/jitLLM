@@ -66,7 +66,9 @@ client-supplied history when an idle cache entry is unavailable.
 | Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
 | Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | proposed | ideation §20 sketch; types and async primitives to design in M0 |
 | Physical-backing pool to amortize allocation overhead | proposed | ideation §8; retained capacity stays in the ledger; sized by the M0 VMM spike |
-| Turn/step-scoped leases with eviction only at quiescent boundaries (model switch, phase end) as the v1 lease model | proposed | *agent-suggested* candidate answer to open question 9. D-019's time slicing makes every switch a quiescent point; fine-grained per-expert leases can stay a later refinement |
+| Turn/step-scoped leases with eviction only at scheduler-established completion boundaries as the v1 lease model | proposed | *agent-suggested* candidate answer to open question 9. A switch request alone establishes no quiescence; consumers must complete and suspended live state stays protected. Applicability to MoE depends on the progress proof for within-step misses |
+| Core free of vendor types; device memory, paging, and transfer operations behind narrow provider interfaces, CUDA VMM the first and only implementation | confirmed | D-026; only where it adds no complexity or penalty on NVIDIA |
+| Ledger keyed by memory domain (one domain on unified-memory platforms) so a discrete-GPU platform is a data difference, not a redesign | proposed | *agent-suggested*, only if it costs nothing (D-026) |
 
 ## Eviction and retention policy
 
@@ -140,7 +142,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Executing ready experts while other experts load | proposed | later; not an assumed capability |
 | Speculative decoding | proposed | not committed; benchmarks require matched decoding features plus the reference's normal configuration, even when its speculative decoding is unavailable in jitLLM. Qwen3.8-Flash-Next ships a 4B MTP head, so its matched comparison must state whether MTP is used |
 | Optimistic MoE execution: device-visible residency table, kernels flag a miss, restart from the missed layer | deferred | *agent-suggested.* Earliest M7, after the pessimistic M5 baseline is correct and measured host-boundary cost warrants it; must prove safe revocation, replay of mutable state, and progress when a step's leases fill memory |
-| GGML/GGUF as the first compute substrate, with jitLLM supplying the buffers behind tensors; EXL3 kernels ported later for the flagship recipes | proposed | *agent-suggested* framing for open question 4. GGML is MIT, torch-free, has a C API and broad quant and tokenizer coverage; the reference recipes are EXL3 and torch-bound. Pick deliberately |
+| GGML/GGUF as the first compute substrate, with jitLLM supplying the buffers behind tensors; EXL3 kernels ported later for the flagship recipes | proposed | *agent-suggested* framing for open question 4. GGML is MIT, torch-free, has a C API and broad quant and tokenizer coverage; the reference recipes are EXL3 and torch-bound. Pick deliberately GGML also runs on Metal, ROCm/HIP, and Vulkan, so a later port would be mostly a memory-provider job (D-026). |
 
 ## Two-node execution
 
@@ -169,7 +171,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Anthropic Messages API format alongside the OpenAI-compatible surface | proposed | *agent-suggested.* Several agent clients speak it; include only if a named client needs it |
 | Admission "explain / what-if" query (why can't this request be admitted now; what would need to be evicted) | proposed | *agent-suggested.* Natural extension of explainability and a debugging tool for progress-envelope bugs |
 | Trace export in Perfetto / Chrome trace-event format for the I/O timeline and scheduling | proposed | *agent-suggested.* Structured events are confirmed; a standard viewer format avoids building a timeline UI early |
-| Target capability probe tool (VMM granularity, GDS mode, RDMA availability, driver/toolkit versions, glibc/ABI) | proposed | *agent-suggested.* The brief says "probe the installed stack"; a first-class tool serves the M0 inventory and the later `doctor` command |
+| Target capability probe tool (VMM granularity, GDS mode, RDMA availability, driver/toolkit versions, glibc/ABI) | proposed | *agent-suggested.* The brief says "probe the installed stack"; a first-class tool serves the M0 inventory and the later `doctor` command Platform properties are probed capabilities, not constants (D-026). |
 | Per-model memory quota and priority policy (minimum guarantee, maximum share) | proposed | *agent-suggested.* Fairness is confirmed; explicit knobs give the owner control over the flagship-vs-small-model balance |
 | Model version hot-swap (publish a new artifact version, drain the old, no runtime restart) | proposed | *agent-suggested.* Removal-with-quiesce is confirmed; this is the add-then-drain composition |
 
@@ -184,6 +186,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Copyleft-components-disabled CI profile with audited dependency closure | confirmed | D-002, D-017; excludes optional implementation dependencies and records declared tools/platform runtimes separately |
 | Optional implementation modules/plugins selectable at build time; incorporated core implementation uses Apache-2.0 / BSD / MIT / MPL-2.0 | confirmed | D-017; default build may use declared platform dependencies under their actual terms; classification never waives license obligations |
 | Reference container pinned by digest; target driver recorded separately from toolkit and library versions | confirmed | ideation §16 |
+| Core builds and its tests pass in a CPU-only configuration with no vendor SDK present | confirmed | ideation §16, D-026; the portability guardrail and the fake backend's home |
 | CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | proposed | ideation §14 "proposed engineering conventions"; the obvious default, to confirm in the M0 toolchain decisions |
 | Proposed file set: `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`, `tools/setup-toolchain`, `tools/check-toolchain`, `cmake/toolchains/`, `CMakePresets.json`, `.devcontainer/`, `dev` | proposed | ideation §16: "a plan, not files created" |
 | `./dev setup / doctor / build / test / deploy` contributor entry point | proposed | ideation §16 "to implement" |
@@ -198,6 +201,11 @@ client-supplied history when an idle cache entry is unavailable.
 | Shipped notices and source availability match the actual build configuration (core vs. enabled optional modules) | confirmed | ideation §17, D-017; includes any shipped platform components; a build that self-reports its license profile is the obvious mechanism |
 | Versioned releases with a changelog and a compatibility policy for the artifact format and management API | proposed | *agent-suggested.* Release conventions are an M1 decision; artifact compatibility guarantees additionally require D-018's dense and MoE evidence |
 | Contribution policy: whether external PRs are accepted; DCO or CLA | open | flagged in ideation §21 alongside the license; single-developer today (D-016) |
+| User installation through native package managers: a project-hosted, signed apt repository with arm64 packages for Spark first | confirmed | D-027; the user path, distinct from the developer setup path (D-012) |
+| Optional copyleft modules as separate packages in a separate repository component, mirroring D-017's tiers | proposed | *agent-suggested.* apt components make the license profile a visible install choice and keep the default install to the core |
+| systemd unit, non-root service user, FHS layout (config under `/etc`, state and artifacts under a configurable data directory), drain-before-restart upgrades | proposed | *agent-suggested* consequences of D-027; settle the layout before M3's endpoint so paths do not move later |
+| CI builds installable `.deb` packages from M1, before the repository is published | proposed | *agent-suggested.* Late packaging is where notices, paths, and dependencies go wrong |
+| Homebrew and other package managers | deferred | follow their platforms (D-026, D-027) |
 | Inventory which MiaAI-Lab files are actually AGPL versus MIT ExLlamaV3 upstream before designing the optional-module boundary; document AGPL's network clause for a served process | proposed | *agent-suggested.* The AGPL exposure may be a small glue and patch set |
 
 ## Testing and evidence
@@ -211,6 +219,15 @@ client-supplied history when an idle cache entry is unavailable.
 | Resident-hit path measured independently from the miss path; cold storage vs warm OS cache vs warm residency separated | confirmed | |
 | Canonical A→B→A through an unmodified client, with resident reuse, forced spill/restore, and bounded-cache fallback cases | confirmed | M4's first useful product gate; report elapsed time, bytes read/written, reused/recomputed prompt tokens, and numerical checks |
 | Paging feasibility assessed before M2 against the full-swap floor; matched-configuration and normal reference-configuration comparisons | confirmed | [performance evidence](architecture.md#performance-evidence); D-021/D-025: first-cut estimates, then a measured reference A→B→A once setup runs; spike sizes M4/M5, M4 validates switching and M5/M7 validate paging/optimizations |
+
+## Platforms
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| NVIDIA DGX Spark, one or more nodes | confirmed | D-004; the primary target |
+| Other NVIDIA CUDA hardware for development and tests | confirmed | the workstation's RTX 3080 Ti for local smoke tests; supported-target status is earned separately and may use more direct transfer paths |
+| Apple silicon, single machine | deferred | D-026: not until demand; boundaries kept portable at no cost; memory API verified when a port is considered |
+| AMD, single machine | deferred | D-026: same posture |
 
 ## Model targets
 
@@ -277,7 +294,7 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    handling. → M0 decision, or explicit deferral only until before M2; see
    the [progress gate](architecture.md#reservation-progress-gate). A
    conservative default is acceptable and gets tested in M2 and tuned in M5.
-   Candidate: turn/step-scoped leases with eviction only at quiescent
-   boundaries, which D-019's time slicing provides (see the Runtime core
-   rows). Under D-020, v0 has one active phase per node plus suspended state,
+   Candidate: turn/step-scoped leases with eviction only at completed
+   boundaries established by the scheduler (see the Runtime core rows).
+   Under D-020, v0 has one active phase per node plus suspended state,
    which bounds the envelope problem.

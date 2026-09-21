@@ -76,6 +76,12 @@ affected docs. Until then, these govern.
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
+- **NVIDIA first; portable boundaries when free.** The core holds no vendor
+  types; device memory, paging, and transport go through narrow provider
+  interfaces, with CUDA VMM the only implementation for now. Apple silicon
+  and AMD are plausible later single-machine targets: do nothing for them,
+  sacrifice nothing on NVIDIA, but don't foreclose them. The CPU-only build
+  and the fake backend are the guardrail. (D-026)
 - **Develop on x86-64 Linux, cross-build, test on Spark over SSH.** Native
   builds and CPU tests run on the workstation; ARM concurrency, VMM, kernel,
   and distributed tests run on the Sparks, which in the owner's environment
@@ -167,7 +173,7 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-025. M4 targets A→B→A with retained state;
+contracts are recorded through D-027. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Both Sparks are reachable over SSH; the direct interconnect is not yet cabled.

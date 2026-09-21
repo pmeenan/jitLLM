@@ -17,7 +17,9 @@ within configured retention limits; expired caches can be rebuilt from the
 history clients provide.
 Standard web-API clients such as Cursor, OpenCode, and Codex work unmodified,
 and with more than one node a single conductor places models across the
-cluster and routes requests.
+cluster and routes requests. NVIDIA and DGX Spark come first; the memory,
+paging, and transport boundaries are kept portable so Apple silicon or AMD
+single-machine ports stay possible later.
 
 Initial target: one or two NVIDIA DGX Sparks, developed from an x86-64 Linux
 workstation. Model support is earned per checkpoint and tracked in a support
@@ -47,7 +49,7 @@ the work, reviews it, and is the sole committer.
 **Pre-code. Milestone M0 (plan the plan).** The design brief is in
 [docs/ideation.md](docs/ideation.md); the living plan, feature matrix,
 architecture skeleton, and decision log are in `docs/`. No application code
-exists yet.
+exists yet. Planned distribution is a signed apt repository for DGX Spark.
 
 The first useful product target is M4: chat with A, switch to B under memory
 pressure, then resume A with retained state, through an unmodified client.

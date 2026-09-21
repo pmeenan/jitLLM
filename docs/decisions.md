@@ -29,6 +29,64 @@ the owner's M0 triage answers and review fixes from the same day.
 
 ---
 
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted)
+
+**Decision.** The user-facing installation path is the platform's package
+manager. For DGX Spark that is apt with a project-hosted, signed repository
+serving arm64 packages. The developer setup path (mise, project-owned SDK
+provisioning, D-012) is separate and is not what users run. Other package
+managers follow their platforms (D-026) if and when those are targeted.
+
+**Context.** Owner's direction on 2026-09-20 during M0 triage, noting it
+matters little at this stage but should be targeted.
+
+**Consequences.** Packaging is real M7 scope, not an afterthought: a systemd
+unit, a non-root service user, an FHS layout (configuration under `/etc`,
+state and artifacts under a configurable data directory), an upgrade path
+that drains before restart, and package dependencies that express the CUDA
+and driver requirements without conflicting with NVIDIA's packages. Optional
+copyleft modules can ship as separate packages in a separate repository
+component so the default install is the core and enabling a module is an
+explicit user action, mirroring D-017; whether to do it that way is a
+proposed row. Filesystem and service layout should be settled before the
+endpoint lands in M3 so paths do not move later. Repository hosting and
+signing keys are an M7 decision.
+
+**Reopen if.** The primary platform stops being Debian-based, or users need
+container-only distribution instead.
+
+## D-026: NVIDIA and DGX Spark first; keep the memory, paging, and transport boundaries portable when it costs nothing  (2026-09-20, status: accepted)
+
+**Decision.** The primary target is NVIDIA hardware, DGX Spark first. The
+base concepts apply to Apple silicon and AMD equivalents on single machines,
+so where abstracting paging, memory, and RDMA or transport operations adds no
+complexity and no performance penalty, do it: the core (catalog, ledgers,
+reservations and leases, eviction policy, scheduler, conductor, artifact
+index, sessions) contains no vendor types; device memory and transfer
+operations go through narrow provider interfaces, with CUDA VMM as the first
+and only implementation; platform properties (unified memory, VMM
+granularity, direct storage path, RDMA) are probed capabilities, not
+constants. No work is done for other platforms until there is demand and it
+makes sense, and nothing is sacrificed on NVIDIA to enable them.
+
+**Context.** Owner's direction on 2026-09-20 during M0 triage.
+
+**Consequences.** The deterministic fake backend and the CPU-only build are
+the portability guardrail: the core builds and its tests pass with no vendor
+SDK present. Compute kernels are per-platform by nature and are not
+abstracted beyond the backend operation contract; a substrate that already
+runs on several platforms would make a port mostly a memory-provider job,
+which is a consideration for open question 4. The artifact's canonical form
+stays platform-neutral; vendor layouts are optional alternatives (D-009).
+Unified memory as one budget (D-004) generalizes to Apple silicon and AMD
+APUs; if it costs nothing, the ledger keys by memory domain so a
+discrete-GPU platform is a data difference rather than a redesign. Each
+platform's memory and transfer APIs are verified when a port is actually
+considered, not now.
+
+**Reopen if.** An abstraction is measured to cost performance or clarity on
+NVIDIA (NVIDIA wins), or a port is undertaken (which gets its own decisions).
+
 ## D-025: Measure the switching baseline once the reference runs  (2026-09-20, status: accepted; amends D-021)
 
 **Decision.** Artifact size divided by measured read bandwidth remains a
@@ -95,6 +153,13 @@ resending history; define a separate persistence contract and resource
 guarantee before promising that behavior.
 
 ## D-023: Cluster topology is discovered or configured, never baked in; one conductor; replicas allowed  (2026-09-20, status: accepted)
+
+*Delivery clarification (M0 review): the M0/M1 design obligation below is met
+by configured membership, one configured conductor, and capability/health
+probes. This is the M4a implementation path. Automatic discovery, election,
+and replica delivery follow the explicit revisit triggers in
+[plan.md](plan.md#deferred-delivery-and-proposals); those mechanisms do not
+block M0/M1. The topology and replica scope remains unchanged.*
 
 **Decision.** The application never hardcodes node names, counts, or roles.
 Cluster membership and per-node capabilities come from configuration and
@@ -204,6 +269,12 @@ state. The ladder rewrite places concurrency-when-it-fits around M4/M5.
 coordinator must balance.
 
 ## D-019: Primary workload is one user switching among a library of models, with conversation state preserved  (2026-09-20, status: accepted; retention bounds amended by D-024)
+
+*Switch-boundary clarification (M0 review): the quiescent switch below is a
+scheduler-established handoff. A request for another model signals intent;
+the scheduler confirms the relevant GPU, I/O, and network completions before
+releasing residency leases or reclaiming backing, preserving suspended live
+state under D-007. Request arrival alone changes no reclamation eligibility.*
 
 **Decision.** The workload jitLLM is optimized for first is a single user, or
 a single user's agent plus subagents, switching automatically among a library
