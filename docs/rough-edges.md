@@ -27,6 +27,45 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-003: nvme-cli 2.8 feature control requires --value, and zero has a different printed form  (2026-09-21, status: worked-around)
+
+Environment: Spark, installed nvme-cli 2.8-1ubuntu0.1. During the bounded
+interrupt-coalescing comparison, a command using `set-feature -f 8 -v 263`
+set zero: `-v` is **verbosity**, not value, in this version; the value option
+is `-V` or `--value`. Also, `get-feature` prints nonzero as
+`Current value:0x00000107` but zero as `Current value:00000000`. A parser
+requiring `0x` rejected zero, including during the attempted cleanup.
+
+The hardware readback exposed the mismatch before any A/B measurement was
+retained. The original value was restored with
+`nvme set-feature /dev/nvme0 --feature-id=8 --value=263`, then independently
+read back as `0x107`. The comparison was rerun in full with long options,
+both output forms accepted, and verified restoration. Do not trust mocks
+based on remembered short flags for a device-control command: check the
+installed tool's help and read back the actual state. The retained
+[coalescing harness](experiments/io-path/coalescing.py) records the original
+value before changes and bounds/restores its temporary setting.
+
+## RE-002: cuFile compatibility mode rejects a descriptor opened with O_NOFOLLOW  (2026-09-21, status: worked-around)
+
+Environment: `spark`, GB10, driver 580.178.04, installed libcufile package
+1.15.1.6-1 (reported API version 2.12), Linux 7.0.0-1019-nvidia, ext4.
+The I/O spike opened its private regular file with
+`O_RDONLY | O_DIRECT | O_CLOEXEC | O_NOFOLLOW`; `cuFileHandleRegister`
+failed with **5019 / CU_FILE_INVALID_FILE_OPEN_FLAG**. The library log
+reported unsupported open flags `229376`. Native direct reads on the same
+descriptor worked.
+
+The comparison harness keeps its validated original descriptor open,
+reopens `/proc/self/fd/<fd>` with `O_RDONLY | O_DIRECT | O_CLOEXEC`, and
+checks device/inode identity before registering that new descriptor with
+cuFile. This preserves file identity without following the original user
+pathname again. Registration and subsequent GPU-verified reads then passed.
+Do not respond by removing path protections from the original file open.
+See the [I/O experiment](experiments/io-path/README.md) and its retained
+`main.cc`. This workaround is confined to the comparison backend; the
+native direct-file candidate does not need it.
+
 ## RE-001: CUDA 13.0 NVCC rejects C++23 even with a C++23-capable Clang host  (2026-09-21, status: worked-around)
 
 Environment: x86-64 Ubuntu 24.04, NVCC V13.0.88, Ubuntu Clang 18.1.3;

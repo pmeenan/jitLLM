@@ -1,0 +1,73 @@
+{
+  "experiment": "M0 I/O path comparison",
+  "date": "2026-09-21",
+  "host": "spark-c4e2",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.178.04",
+  "kernel": "7.0.0-1019-nvidia",
+  "filesystem": "ext4",
+  "ssd": "SAMSUNG MZALC4T0HBL1-00B07",
+  "firmware": "NXHB202Q",
+  "pcie_link": "32.0 GT/s x4",
+  "page_bytes": 4096,
+  "statx_dio_mem_align": 512,
+  "statx_dio_offset_align": 512,
+  "toolchain_provenance": "../toolchain-smoke/artifacts.json",
+  "toolchain_manifest_sha256": "42a9935000b937e26b9c8347b468e45e5f5263ebd9b5b341c37efc477232473c",
+  "build": {
+    "clang": "22.1.8",
+    "nvcc": "13.4.92",
+    "cuda_toolkit": "13.4.2",
+    "host_target": "aarch64-linux-gnu -march=armv8-a",
+    "cuda_target": "sm_121",
+    "dialect": "C++23",
+    "ptx_jit": "disabled"
+  },
+  "binaries": {
+    "io-path": "b6e05aa4e7cc31ed74742ebae9bf19fe02f29cf834532ce23edb7ba67975c84f",
+    "kernel.cubin": "ab4a6e32ff60f3ee2cb59ce8d7a9ccf642de6b8bc2280a2a5e480fbfe977801f"
+  },
+  "additional_dependencies": [
+    {
+      "name": "libcufile-13-0",
+      "package_version": "1.15.1.6-1",
+      "reported_api_version": "2.12",
+      "category": "platform_runtime",
+      "tier": "separate platform terms under D-017; experiment only",
+      "header_sha256": "43c5c3b738673f0c1dd6bab8c978d5c5382f848c3504a179268488b6b7bb309f",
+      "shared_library_sha256": "0dc9520a096013cc4009564dcd7824923eb2850fc35dc5812efe3ec9fa4d0068"
+    },
+    {
+      "name": "nvme-cli",
+      "package_version": "2.8-1ubuntu0.1",
+      "category": "declared_tool",
+      "tier": "tooling exception under D-017; not linked or incorporated",
+      "license_evidence": "Installed /usr/share/doc/nvme-cli/copyright: default GPL-2+, with file-specific GPL-2 and other notices; no source incorporated"
+    }
+  ],
+  "dataset": {
+    "bytes": 34359738368,
+    "file": "private synthetic data.bin outside repository",
+    "creation": "exclusive O_DIRECT writes, offset-specific pattern() in main.cc, fdatasync",
+    "contents_definition": "pattern(word_index), little-endian 32-bit words",
+    "artifacts_schema": "not a model or spill format"
+  },
+  "measurement_cases": 221,
+  "completed_transfer_or_scan_operations": 6427118,
+  "coalescing_original": 263,
+  "coalescing_final": 263,
+  "swiotlb_bounce_events": 0,
+  "files": {
+    "build.sh": "d0b0b0ef8119f1079178288feac491ccd2de65d99d24540cfd304b7d5c35ebf1",
+    "coalescing.py": "427be9883bc697588f724f61d92ed096583ef371febe16528b8e0eadaf0c2995",
+    "kernel.cu": "267a3b1ab087ef36dfbf453f88dbcec1f686525b9a661e0404377bdc1a24b02c",
+    "main.cc": "e7fd637a4fc54d872936f43fc86f66ca23c9ef31e0e434dbce9fd5b7f62694b0",
+    "pack.py": "ff1fd40b11a262868885213e4badf7e0c5fcfcfcdebdab1bf4a409c4a770ab17",
+    "run.py": "b45710afc3406c80c18ba2f0afe81390e594c4faa3a17525e3b11ea07271bc4d",
+    "summarize.py": "579571d2440948575cee9bb4957babdea89a0f65f6e2b469ca061fc27dbc3087",
+    "trace.py": "0b7a3135ff697374da5917b08b8bc5c694dde66aa999a5710cb1bc3841320ef4",
+    "README.md": "62c2b196b427eb5e90237659f76e51485c58cd3dea2fbce56fbd49b00706d21d"
+  },
+  "results_report": "README.md",
+  "raw_output_policy": "External scratch only; not versioned in Git."
+}

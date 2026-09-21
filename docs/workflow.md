@@ -64,6 +64,14 @@ downgrade a heavy-path change to the light loop on their own.
 - **Evidence, not adjectives.** A performance or capability claim in a note
   or doc carries the measurement and its provenance (host, driver, toolkit,
   artifact, policy) or is not made.
+- **Aggregate experiment results in Git; raw output outside it.** Keep the
+  measured latency/throughput tables, sample counts, conditions, limitations,
+  conclusions, and enough provenance to interpret or repeat the experiment.
+  Reusable harnesses and dependency pins stay in the repository. Validate raw
+  samples, histograms, logs, traces, and telemetry in external scratch; do not
+  add them to Git or make the checked-in report depend on a raw-result bundle.
+  Captured inputs for benchmark replay also stay external; keep their verified
+  identities and retrieval/supply instructions with the replay harness.
 - **Tests travel with behaviour.** A behaviour change without a test needs a
   stated reason in the handoff note.
 - **One stream of work at a time.** Check `git status` first; if there are

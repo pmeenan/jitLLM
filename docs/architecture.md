@@ -40,8 +40,8 @@
   unleased ≠ may be lost; reconstructible ≠ already stored in the right
   format; resident ≠ available without admission (§4).
 - **Memory model of the target.** One Spark = one 128 GB unified budget. Two
-  Sparks = two domains over a network. Storage on Spark is staged through
-  pinned host memory (D-004).
+  Sparks = two domains over a network. Validated Spark storage uses direct
+  file DMA into GPU-accessible host VMM without a staging copy (D-004, D-034).
 - **Explicit VMM plus catalog.** Driver-API VMM; accessing absent backing is
   a bug; every allocation registered; unknown allocations non-evictable;
   typed IDs and generations, raw pointers only at the backend boundary
@@ -52,7 +52,9 @@
 - **Artifacts.** Prepared, versioned, hashed, atomically published; no
   process state serialized; checkpoints untrusted. Initial encoding and
   layout are experimental; compatibility guarantees require dense and MoE
-  import/execution/eviction/restore evidence (D-009, D-018).
+  import/execution/eviction/restore evidence (D-009, D-018). Import repacks
+  weights for whole-extent DMA; the initial Spark profile uses 2 MiB aligned
+  payload extents with an expert/tensor index (D-035).
 - **Dependency policy.** Own code Apache-2.0; incorporated core implementation
   uses Apache-2.0 / BSD / MIT / MPL-2.0, with other implementation licenses in
   optional, fully removable modules. Declared tools and platform dependencies
@@ -251,6 +253,34 @@ resources may share an extent; the manager knows the full dependency closure
 and charges each physical extent once. Shared or tied weights need content
 and representation identity, not matching tensor names.
 
+Small tensors and state blocks may be suballocated within backing (D-035).
+Their logical sizes, validity, and leases are distinct from the provider's
+physical mapping/release granularity and from the storage request size.
+Freeing a suballocation can create a reusable hole subject to address,
+alignment, and lifetime constraints; the whole backing is still occupied
+until every occupant and outstanding registration/consumer permits release.
+Immutable weight slots retain their imported extent layout/content identity;
+padding or unused slots cannot host unrelated allocations while whole-extent
+reloads may overwrite them. General/mutable reuse must also respect restore
+footprints, content generations, and representation compatibility.
+The ledger distinguishes reusable suballocated bytes from physically released
+bytes. Owning all model address spaces in one process does not change the
+provider's minimum unmap/release unit. Moving live contents to consolidate
+holes would require a separately validated relocation/completion policy;
+compaction is not implied by suballocation.
+
+Pool capacity is distinct from allocation and transfer size. Steady-state
+paging reuses backing after old consumers complete; release/create is not
+required per read. D-033's baseline retains useful contents and directly
+hands compatible backing to admitted replacements. A large slab kept mapped
+could instead host software-managed slots with tensor views; 1 GiB slabs do
+not imply 1 GiB transfers. Compare this owner-proposed alternative against
+retained small handles before changing the baseline (D-035). Include address
+stability, backend views, registrations, fragmentation, and pressure-driven
+shrink; the current CUDA mapping API does not promise arbitrary interior
+offset remapping of a large handle. Growth/retention stays within the node
+budget and OS headroom; artifact extents do not fix physical handle size.
+
 Conceptual state machine (real transitions also carry content generations,
 consumer counts, and cancellation tokens):
 
@@ -339,6 +369,33 @@ preceding context that must miss, and shared-byte accounting. Compare each
 branch's logits with its uncached reference and report shared-prefix reuse
 separately from longer-history reuse.
 
+### Prepared paging layout (§11)
+
+Making a model available includes import into an immutable paging artifact,
+with metadata describing architecture, tokenizer, execution representation,
+and the index from logical resources to stored extents (D-009, D-035).
+Publication follows complete validation; interrupted preparation is not an
+available model. The artifact is a logical unit that may have file shards.
+Its container and metadata encoding remain open question 5; runtime paging
+does not inherit the source checkpoint's tensor ordering.
+
+The initial Spark profile stores payload extents at 2 MiB file boundaries
+with initialized tail padding. Each extent populates compatible independent
+VMM backing directly; tensor views refer to logical bytes within that backing.
+Small tensors with compatible use/lifetimes may share an extent. Expert-local
+and layer-local ranges favor bulk reads, while shared weights keep one
+representation and shared ownership. Repacking must honor actual backend
+strides and quantization blocks without CPU payload transformations at page-in.
+
+Weight misses fetch whole extents; adjacent missing ranges may form larger
+requests when both file and destination ranges are contiguous and protected.
+Resident holes are not overwritten to manufacture a sequential read. Sparse
+row requests also resolve to whole extents initially, with useful-byte/read
+amplification measured separately. This layout favors sequential work inside
+a resource group; routing can still select distant groups. No physical NAND
+placement or all-sequential workload is promised. Mutable state has separate
+spill files and generation/retention rules; metadata need not use 2 MiB I/O.
+
 ### Lifecycles (§8)
 
 Page-in: commit capacity for the actual missing extents → obtain backing →
@@ -351,9 +408,14 @@ wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation.
 
-Storage backends sit behind one read/write completion interface: native file
-I/O with pinned staging and cuFile compatibility mode (both compared in the M0
-I/O spike), native GDS (non-Spark, later), remote extent transfer (later).
+Storage backends sit behind one read/write completion interface. D-034 selects
+native direct-file I/O into GPU-accessible host VMM on validated Spark
+configurations, with bounded asynchronous submission and no CPU payload copy.
+Device VMM with a validated DMA staging path remains a provider option;
+cuFile compatibility mode is a comparison path, not required for the initial
+runtime. Native GDS (supported non-Spark targets) and remote extent transfer
+remain later backends. Host-VMM GGML execution and full registration/reclaim
+lifetimes are part of the M2 integration proof.
 
 ### Routing boundary for MoE (§7)
 
@@ -508,9 +570,10 @@ ranges below are per-run medians, in microseconds; they exclude SSD I/O.
 | 128 MiB | 3384.05–3811.23 | 5.34–5.63 | 804.44–835.35 | 985.80–1010.94 | 449.96–472.11 |
 
 These are idle values; the [report](experiments/vmm-microbench/README.md)
-retains raw samples, p95/max generation, concurrency measurements, source,
-hashes, commands, and limitations. All 3,600 timed calls with independent
-background kernels returned while their completion events remained pending.
+summarizes p95/max and concurrency measurements, with source/build provenance,
+commands, and limitations; raw output stays outside Git. All 3,600 timed calls
+with independent background kernels returned while their completion events
+remained pending.
 This does not prove no GPU stalls or model-throughput impact. At 128 MiB,
 release medians rose to 618–651 µs with background work.
 
@@ -527,13 +590,41 @@ Live useful contents remain resident until policy reclaims them. Granularity
 is queried, not baked into core identities or on-disk formats; read batches
 can span extents. SSD and model measurements may revise this initial policy.
 
+### I/O path follow-up (2026-09-21)
+
+The [M0 comparison](experiments/io-path/README.md) selects **regular files,
+direct I/O, and GPU-accessible host-backed VMM** (D-034), amending D-004's
+mandatory staging copy. On the Spark's Samsung PCIe 5.0 ×4 SSD, the native
+io_uring path measured 14.903–14.968 GB/s with four 2 MiB reads in flight;
+the 180-second run sustained 14.962 GB/s without a sustained thermal decline.
+GPU scanning of host VMM matched device VMM at about 242 GB/s. CPU submission
+and completion work remains; CPU payload copies and a separate staging copy
+are absent from the selected path. Capability checks and DMA evidence are
+retained in the report, not inferred from unified memory alone.
+
+Start with two 2 MiB requests for latency-sensitive loads and up to four for
+bulk reads: 4–8 MiB of catalog-charged destination backing, with no extra
+staging allocation on this path. A device-VMM fallback needs its own bounded,
+charged DMA staging buffers. Cold/warm OS-cache measurements are separated;
+buffered full-file reads under 100 GiB of held memory forced file-cache
+reclamation, whereas direct reads kept file cache empty. Concurrent memory
+scans lost about 10% throughput with the in-place path; one physical budget
+also means shared bandwidth. The scan is not a GGML/model performance proof.
+
+The SSD's observed interrupt-coalescing feature is a separate latency tuning
+point, tested with the original value restored afterwards. Raw block,
+NVMe passthrough, and SPDK were not timed because the only drive holds mounted
+root; no raw performance advantage is claimed. M2 still validates actual
+GGML pointers/kernels and cancellation/registration/reclaim lifetimes; M4
+settles mixed read/write scheduling and spill retention/write-rate limits.
+
 ## Open architecture questions
 
 The architecture-shaping questions are numbered in
 [features.md](features.md#open-questions-answer-during-m0): VMM granularity,
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
 dependency mechanism, license and API surface, reservation guarantees. Initial
-VMM and toolchain answers are recorded above (D-033 and D-032); the matrix
+VMM, I/O, and toolchain answers are recorded above (D-033, D-034, and D-032); the matrix
 tracks each question's remaining scope. Purely technical additions to resolve
 while drafting:
 
@@ -551,9 +642,8 @@ while drafting:
   turn/step-scoped leases (2026-09-21). Optimistic MoE
   execution is deferred until the pessimistic M5 path is correct and measured;
   its future design must still handle a miss when the current step fills RAM.
-- Whether direct I/O is the default read path, and whether the staging copy
-  can be dropped on Spark through GPU in-place access to system-allocated
-  memory.
+- The storage queue's final sleep/poll policy and model-driven tuning of
+  request sizes/depths; host-VMM GGML and reclaim validation under D-034.
 - Where the conductor lives (inside its node's runtime process or a
   sidecar), how it represents cluster-wide capacity,
   placement, and replicas, and how a routed request's streaming response

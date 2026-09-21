@@ -30,6 +30,189 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-035: Import models into paging artifacts aligned with managed backing  (2026-09-21, status: accepted; specializes D-009 and D-034)
+
+**Decision.** Making a model available includes preparing and atomically
+publishing its immutable paging artifact and resource index. Source GGUF or
+other checkpoints are import inputs; their tensor order and packing do not
+dictate runtime reads. Perform lossless layout changes once at import so
+stored payloads directly populate the backend's executable VMM layout, with
+no CPU payload copying, unpacking, or reshuffling during page-in. Preserve
+quantization and numerical meaning unless an explicit transformation is
+requested (D-009).
+
+For the initial Spark representation, use **2 MiB aligned payload extents
+and whole-extent weight reads**, matching D-033/D-034's independent backing.
+Read one or more complete extents per application request; initialize and
+store tail padding so even the final extent can be read in full. This is a
+chosen artifact profile, not a hardware minimum I/O size. Record the profile,
+extent size, and layout version; query provider compatibility before loading
+and reject or explicitly re-import incompatible representations. Smaller
+kernel/NVMe requests below the application interface do not violate it.
+
+Logical allocation, physical backing/reclamation, and I/O request sizes are
+distinct. Suballocate small tensors and state blocks within backing where
+compatible; they need not each occupy 2 MiB. A freed suballocation can be
+reused within its address/alignment/lifetime constraints, but it does not
+return physical capacity while another occupant retains the same VMM handle.
+Smaller objects can have independent validity and leases; the containing
+backing remains protected by their union. One process owning all models does
+not permit a sub-granularity unmap or release. Do not credit reusable holes
+as physically released bytes. The whole-extent weight-read policy is chosen
+for bulk DMA, not derived as a requirement from VMM granularity.
+
+Immutable weight suballocations follow the imported extent's fixed layout
+and content identity. Padding and unused logical slots are not a general
+cross-model free pool while that extent remains in use: a whole-extent reload
+or integrity check still covers them. General/mutable suballocation reuse
+must also respect population/restore footprints and content-generation and
+representation compatibility; pointer fit alone is insufficient.
+
+Backing retention is a separate policy from its allocation unit. Normal
+paging reuses admitted backing after old consumers complete; it does not
+require a release/create cycle per read. Keep useful contents until capacity
+or retention policy requires reclamation (D-007/D-033), within the node's
+budget and OS headroom. A permanently mapped large slab with software-managed
+slots is a valid alternative to independent small handles; a 1 GiB slab can
+contain 512 of these 2 MiB stored extents without requiring 1 GiB I/O.
+The artifact layout must not freeze that physical-pool implementation.
+
+The owner's large-slab proposal needs an explicit comparison before changing
+D-033's baseline: retained small handles versus larger allocations (including
+1 GiB) kept mapped and reused through tensor views. Large slabs couple
+physical release and constrain relocation; keeping a pool large does not by
+itself require large handles. The current
+[CUDA VMM API](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__VA.html)
+requires zero `cuMemMap` allocation offset, so arbitrary interior slots of
+one large handle must not be assumed independently remappable. Fixed mapped
+slots avoid that operation but require the backend, aliases, registrations,
+and any captured pointers to tolerate the chosen address/lifetime scheme.
+Measure those choices on a real paging cycle, not isolated create/free costs.
+
+**Layout contract.**
+
+- Pack weights used together into contiguous file ranges: layer-local dense
+  resources and each routed expert's private weights, subject to the backend's
+  executable tensor shapes, strides, and quantization-block rules. Record
+  shared/tied resources separately in the dependency closure; do not duplicate
+  them into every expert. Padding is not permission to change tensor shapes.
+- Pack compatible small tensors into a shared extent where their use and
+  lifetimes fit; do not pad every tensor or row to 2 MiB. Shared extents have
+  one physical reclamation lifetime and are protected by all consumers. Charge
+  all padded backing bytes once, not just useful tensor bytes. Independently
+  pageable expert groups must not accidentally share tail backing with
+  unrelated experts; immutable and mutable contents never share an extent.
+- The index maps model/layer/expert/tensor identity to extent IDs, file/shard
+  offsets, logical lengths, stored lengths, relative destination offsets, and
+  integrity information covering deterministic padding as well as payload.
+  Tensor views and actual addresses are rebuilt at load; serialized pointers
+  and CUDA handles remain forbidden. Admission covers the backend's actual
+  read ranges, including any required kernel-readable padding. An extent is
+  usable only after its full transfer and required validation complete;
+  runtime validation must preserve the no-CPU-payload-copy contract.
+- Coalesce adjacent missing extents only when file ranges and destination
+  ranges permit direct transfer and all destination backing is admitted and
+  protected. Disk adjacency alone does not permit one read into scattered
+  destinations. Never overwrite resident/live backing to bridge a gap; extra
+  prefetch requires its own bounded admission and accounting.
+- A known checkpoint working set can be submitted as bounded asynchronous
+  batches, with completion tracked per range and consumers released when
+  their dependency closure is ready. Independent small operations may overlap
+  bulk I/O; interleaving does not guarantee hidden latency. Prioritize required
+  reads over speculative reads and background writes, preserve data and
+  capacity dependencies, and measure the last required completion/consumer stall as
+  well as bandwidth. A barrier waits for required work, not unrelated spill.
+- Sparse immutable tables also start with whole-extent reads: row lookups
+  resolve to their containing extents, deduplicate misses, and use the loaded
+  rows in place. Measure useful bytes versus transferred/resident bytes.
+  A smaller-read path requires explicit evidence and a revised validity and
+  accounting contract; it is not an automatic exception to this default.
+- Mutable prefix/conversation/KV spill remains separate from immutable model
+  artifacts. It may use packed extent-sized I/O, but its dirty generations,
+  partial tails, shared ownership, expiry, and recoverable-state publication
+  require their own M4 policy; optional crash durability remains deferred.
+  Never force tiny cache updates into whole-model rewrites.
+
+**Context and limits.** Owner direction following the I/O spike on 2026-09-21.
+The [measured file path](experiments/io-path/README.md) supports bulk direct
+DMA; it does not measure this model layout. One logical paging artifact may
+use indexed file shards. Reuse a known blob container and own the manifest
+and resource index; open question 5 still chooses the experimental encoding.
+[GGUF's specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
+supports tensor offsets and alignment, but changing alignment alone does not
+reorganize expert slices inside a tensor. Container reuse does not imply that
+an ordinary model loader can execute the repacked representation unchanged.
+
+Layout reduces fragmented application reads within a dependency group; it
+cannot make arbitrary routed experts or sparse row requests globally
+sequential, nor guarantee physical SSD placement. M0's schema task must show
+dense, expert, and sparse-table layouts with padding/read amplification and
+the mapping to executable tensor views. M2 proves dense GGML execution and
+evict/restore on that layout; M5 proves the MoE mapping. D-018's compatibility
+gate remains. No model-level performance or padding budget is claimed yet.
+
+**Reopen if.** Real model layouts incur unacceptable padding/read amplification,
+the backend requires a conflicting layout, another provider has incompatible
+granularity, or measured workloads justify a different extent/read policy.
+
+## D-034: Direct regular-file I/O into GPU-accessible host VMM on Spark  (2026-09-21, status: accepted; amends D-004's required staging copy)
+
+**Decision.** Keep prepared artifacts and spill state in regular files. The
+preferred Spark payload path is native `O_DIRECT` I/O into host-backed CUDA
+VMM allocations that the GPU consumes in place. Use a bounded asynchronous
+storage queue; the measured `io_uring` path is the initial implementation
+direction. CPU control work submits and completes requests, but weight/state
+payloads must not pass through CPU copies. Do not silently substitute a
+buffered read or an unverified bounce/copy path when this capability is absent.
+Retain a device-VMM/staged-transfer provider option where its DMA path is
+validated. Small file metadata is not subject to the payload policy.
+
+This amends the **mandatory staging-copy** part of D-004, not its single
+physical budget, explicit network transfers, or lack of native GDS/GPUDirect
+RDMA on Spark. Host VMM is managed backing in that same budget, not CPU
+offload. Keep D-006/D-033's explicit virtual reservation, physical handles,
+mapping/access, and independently reclaimable extents. Query host-VMM support
+and allocation granularity; device and host allocation properties are not
+interchangeable pool entries. Query file direct-I/O alignment (512 B on the
+measured ext4 file), and prepare aligned ranges/tails at import; 2 MiB backing
+granularity is not a universal artifact-padding requirement.
+
+**Evidence.** The [I/O experiment](experiments/io-path/README.md), on `spark`
+/ GB10 / driver 580.178.04 / Samsung PCIe 5.0 ×4 NVMe, measured **14.903–14.968
+GB/s** for direct regular files into host VMM at four 2 MiB requests in flight.
+GPU scans of that host backing reached **242.016–242.598 GB/s**, matching
+device VMM's **241.869–243.331 GB/s** in the same scan. Direct paths retained
+no file page cache; the report summarizes GPU content/negative controls, DMA
+bounce tracing, pressure/compute tests, and sustained-read results. Native
+GDS remains unavailable on Spark; cuFile compatibility adds no required
+capability for this path. Raw block/passthrough/SPDK were not benchmarked:
+the sole SSD holds mounted root, and there is no dedicated unmounted device.
+
+**Consequences.** Start with two 2 MiB destination slots for latency-sensitive
+loads, up to four for bulk reads: **4–8 MiB of already charged destination
+backing**, not an extra staging pool. The baseline two-slot measurement
+gave 14.625–14.845 GB/s at 279 µs median completion, versus about 558 µs
+at four; eight slots added latency without useful bandwidth here. These are
+initial tuning points, not hardcoded queue or extent limits. A staged fallback
+needs a separately accounted bounded pool (initial experiment: 4–8 MiB),
+allocated only when required, and completion-safe reuse. Scheduler/catalog
+locks are never held across I/O waits.
+
+M2 must prove GGML tensor/kernel operation on the chosen host VMM addresses,
+plus registration, unmap/remap, reclaim, failure, and cancellation lifetimes.
+The scan and transfer spike does not replace that proof. Keep the storage
+completion boundary narrow; this does not decide open question 3's overall
+executor/coroutine model. An NVMe controller tuning choice is deployment
+configuration, not a runtime side effect; the separate interrupt-coalescing
+comparison in the report restores the observed original setting.
+
+**Reopen if.** Actual GGML/model kernels regress on host VMM; a target lacks
+the required mapping or DMA capability; driver/kernel changes introduce
+bouncing; model traces need different request sizes/depths; or a dedicated
+raw-device comparison demonstrates a material end-to-end gain worth owning
+allocation, metadata, recovery, and tooling below the filesystem. No raw
+performance advantage or production tail bound is assumed from this spike.
+
 ## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; implements D-006)
 
 **Decision.** Start the CUDA provider with one physical allocation handle per
@@ -949,7 +1132,7 @@ must not silently revert to a vLLM-controlled process architecture.
 **Reopen if.** A hosted engine exposes a memory-management contract that
 satisfies D-006, D-007, and D-008 without owning the process.
 
-## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted)
+## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted; staging-copy requirement amended by D-034)
 
 **Decision.** The initial target is local inference on one or two DGX Sparks
 (Arm CPU, GB10 GPU at compute capability 12.1, 128 GB unified memory). A

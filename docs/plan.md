@@ -60,18 +60,23 @@ needs evidence from the real hardware.
       1 GiB pool kept its physical footprint and contents; releasing its
       handles returned capacity. Initial policy: 2 MiB independent extents,
       completion-safe backing handoff, no standing unused-handle cache.
-      [Report, harness, and raw results](experiments/vmm-microbench/README.md);
+      [Aggregate report and harness](experiments/vmm-microbench/README.md);
       numbers in architecture.md. I/O and model-load optimization remain
       separate measurements, not conclusions of this allocation experiment.
-- [ ] Spike — **I/O path comparison** (open question 2): cuFile compatibility
-      mode vs native file I/O with pinned staging vs direct I/O, under
-      concurrent compute and memory pressure; page-cache duplication and read
-      amplification. Treat direct I/O as the default hypothesis on unified
-      memory, and test GPU in-place access to system-allocated memory read
-      straight from NVMe, which would remove the staging copy on Spark.
-      Measure sustained read throughput over minutes to catch thermal
-      throttling. Output: numbers, a storage-backend decision entry, and
-      staging-budget guidance.
+- [x] Spike — **I/O path comparison** (2026-09-21; open question 2, D-034):
+      compared buffered/direct files, pinned staging, cuFile compatibility,
+      native asynchronous I/O, and GPU in-place access on `spark`.
+      Direct regular files into host VMM reached about 15 GB/s, sustained
+      14.962 GB/s for 180 seconds, and matched device-VMM GPU scan speed.
+      Concurrent compute, 100 GiB held-memory pressure, cache reclamation,
+      sparse/small reads, verified write bursts, and DMA-bounce tracing are
+      in the [aggregate report and harness](experiments/io-path/README.md).
+      Initial budget: two to four 2 MiB destination slots, no extra Spark
+      staging copy. Raw-device alternatives need a dedicated unmounted SSD;
+      no raw performance claim is made. Controller interrupt coalescing was
+      tested separately with its original setting restored. Actual GGML
+      behavior and full registration/reclaim lifetimes remain M2 proof work;
+      mixed read/write and sustained-write/endurance policy remain M4 inputs.
 - [x] Pick the reference engine for the feasibility spike: llama.cpp with
       MoE GGUFs and a small router-logging patch (decided 2026-09-20; the
       lightest install and the owner's preference).
@@ -88,7 +93,8 @@ needs evidence from the real hardware.
         121 GiB node that is a single-model budget sweep: 3-bit fits, Q4 is
         borderline, Q5 and up exceed the node, so it covers the
         forces-paging axis by itself. Its n-gram table is the first concrete
-        sparse-lookup component to page by rows, and its MTP head matters
+        sparse-lookup component: row requests resolve to containing extents
+        (D-035), and its MTP head matters
         for matched-configuration comparisons (D-021).
       - [unsloth gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF):
         25.2B total, 3.8B active, 128 experts, top-8 plus 1 shared; hybrid
@@ -166,7 +172,11 @@ needs evidence from the real hardware.
 - [ ] Re-inventory the Spark-to-Spark direct link once the QSFP/NCCL cable
       is installed (expected 2026-09-21): link state, RDMA devices, NCCL
       version, and the bandwidth a plain host-buffer transfer achieves
-      between `spark` and `spark-b`. Record in architecture.md. Sharded
+      between `spark` and `spark-b`. Also run pinned NCCL tests across the
+      direct link (owner-requested 2026-09-21): point-to-point and collective
+      bandwidth/latency across message sizes, actual transport and interface
+      selection, and host staging/copy behaviour. Do not infer GPUDirect RDMA
+      from a successful NCCL run. Record in architecture.md. Sharded
       execution in M6 waits on this; placement and request routing can use
       the existing network.
 - [ ] Inventory which MiaAI-Lab reference files are actually AGPL versus MIT
@@ -202,12 +212,30 @@ needs evidence from the real hardware.
 - [ ] Scope the **early backend integration proof**, executed alongside M2:
       a small dense model runs from a prepared experimental artifact with
       jitLLM-owned weight/state backing, explicit workspace and completion
-      tracking, and all backend allocations accounted for. Match reference
+      tracking, and all backend allocations accounted for. Include D-034's
+      GPU-accessible host VMM, registered-I/O buffer lifetimes, and reclaim
+      after all consumers complete. Exercise D-035's imported extent layout,
+      packed small tensors, and padded tails with whole-extent reads. Match reference
       logits, then repeat after eviction and restoration of weights and
       state at a completed boundary on a Spark. Exercise cancellation with
       pending work. Use the result to settle internal interfaces before M3;
       the operation contract is settled from this proof, not from the fake
       backend alone (there is no runtime plugin ABI, D-028).
+- [ ] Compare retained backing strategies in the M2 backend/paging proof
+      (owner follow-up 2026-09-21, D-035): D-033's small independent handles
+      versus larger persistently mapped slabs, including 1 GiB, with software
+      suballocation and actual executable tensor views. Keep ordinary paging
+      free of avoidable create/release cycles. Measure warm reuse, remapping
+      and registration costs where required, fragmentation, growing/shrinking
+      the shared pool, concurrent compute, and end-to-end restore latency.
+      Prove alias/captured-pointer/late-I/O safety for any address changes.
+      Both designs retain useful contents within budget; disk transfer size
+      remains independent. Use the result to retain or amend D-033 explicitly.
+      Include checkpoint batches mixing small and bulk transfers: compare
+      serial and bounded asynchronous submission, scheduling order/depth,
+      time to the last required completion, and consumer stalls. M4 extends
+      this to simultaneous demand reads and state write-back with dependency
+      safety and bounded queues. The M0 I/O spike did not measure these mixes.
 - [ ] Define the M4 A→B→A acceptance trace and the bounded retention policy
       (D-024, D-031): memory/spill/metadata limits, independent shared-prefix
       and conversation-continuation reuse/expiry policies, cleanup, cache
@@ -220,9 +248,23 @@ needs evidence from the real hardware.
       and hits on that prefix do not refresh unrelated continuations.
 - [ ] Choose an experimental artifact encoding and layout ABI (open question
       5, D-018), including validation, version rejection, and re-import rules.
+      D-035 settles import-time repacking and the initial Spark profile:
+      2 MiB aligned payload extents, whole-extent weight reads, explicit
+      expert/tensor indexing, and no CPU payload repacking during page-in.
       The immutable data reuses a known aligned container and jitLLM owns
       the manifest and resource index (settled 2026-09-21); pick the
-      container here. Compatibility guarantees wait for dense and MoE
+      container here. Work through dense, expert-axis, tied-weight, small-tensor,
+      sparse-row, and final-tail examples: map stored ranges to executable
+      GGML views, report padding and read amplification, reject invalid ranges,
+      and account for shared extents and backend-readable padding. Include
+      extent-boundary reads, a leased tensor sharing an otherwise evictable
+      extent, resident holes between misses, and interrupted multi-file import.
+      Distinguish logical suballocations/reusable holes from released physical
+      backing; small state blocks do not inherit a 2 MiB logical size.
+      Reject reuse of an immutable extent's padding/unused slots that conflicts
+      with its whole-extent restoration or integrity footprint.
+      Mutable spill encoding remains separate.
+      Compatibility guarantees wait for dense and MoE
       execution and restore evidence; they are not an M0 requirement.
 - [ ] Decide the C++ source-dependency mechanism (open question 7).
 - [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /

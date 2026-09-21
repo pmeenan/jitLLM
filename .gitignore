@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Experiment reports and reproduction tools belong in Git; run output does not.
+/docs/experiments/**/results/
+/docs/experiments/**/raw/
+/docs/experiments/**/logs/
+/docs/experiments/**/traces/
+/docs/experiments/**/*.csv
+/docs/experiments/**/*.csv.license
+/docs/experiments/**/*.jsonl
+/docs/experiments/**/*.jsonl.license
+/docs/experiments/**/*.log
+/docs/experiments/**/*.log.license
+/docs/experiments/**/*.stderr
+/docs/experiments/**/*.stderr.license
+/docs/experiments/**/__pycache__/

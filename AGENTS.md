@@ -47,9 +47,11 @@ affected docs. Until then, these govern.
   allocations, GPU backing, staging, and page cache share 128 GB of unified
   memory, so CPU offload is not a second tier. Two nodes are two memory
   domains connected by a network; cross-node access is explicit object
-  transfer, never shared virtual memory. On Spark, storage transfers go
-  through pinned host staging (no native GDS or GPUDirect RDMA is assumed),
-  but the storage backend itself is not Spark-specific. (D-004)
+  transfer, never shared virtual memory. On validated Spark configurations,
+  prefer direct file DMA into GPU-accessible host VMM without CPU payload
+  copies; native GDS or GPUDirect RDMA is not assumed. The storage backend
+  itself is not Spark-specific.
+  (D-004, D-034)
 - **Explicit CUDA VMM plus a node-wide resource catalog.** Backing is
   reserved, created, mapped, and unmapped by us through the driver API.
   Accessing absent backing is a bug, not a page-in request. Every managed
@@ -74,7 +76,8 @@ affected docs. Until then, these govern.
   addresses or runtime objects. Import validates lengths, paths, hashes, and
   metadata and never executes checkpoint code. Initial formats are explicitly
   experimental; compatibility guarantees follow execution/restore evidence.
-  (D-009, D-018)
+  Import repacks weights into indexed paging extents; the initial Spark
+  profile uses aligned 2 MiB whole-extent reads. (D-009, D-018, D-035)
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
@@ -174,17 +177,19 @@ the human commit gate.
    `docs/` behind the doc map, not here.
 8. **Scratch files stay out of the tree.** Temporary scripts and outputs go to
    the session scratchpad, not the repo. Delete throw-away diagnostics before
-   concluding.
+   concluding. Keep aggregate experiment results, analysis, and provenance in
+   Git; raw samples, logs, traces, and telemetry stay outside the repository.
 
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-033; the feature matrix was triaged with
+contracts are recorded through D-035; the feature matrix was triaged with
 the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
-spike selects initial 2 MiB extents and pool policy (D-033). Both Sparks
+spike selects initial 2 MiB extents (D-033); the I/O spike selects direct
+files into GPU-accessible host VMM without a staging copy (D-034). Both Sparks
 are reachable over SSH; the direct interconnect is not yet cabled.
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

@@ -26,9 +26,10 @@ kernel `7.0.0-1019-nvidia`, 48 SMs. No other compute application was reported
 before the experiment. Clocks were not locked, CPUs were not pinned, and
 system background activity was not disabled. A mid-run observation showed
 40 C and 2535 MHz SM clock; this is a snapshot, not a thermal trace.
-Three consecutive processes ran on 2026-09-21; raw outputs and hashes are
-retained in `results/` and `artifacts.json`. SDK provenance remains in the
-smoke's manifest. Binaries and downloaded SDKs remain outside the repository.
+Three consecutive processes ran on 2026-09-21; the aggregate results are
+recorded below, with source/build identities in `artifacts.json`. Raw outputs
+stay in external scratch and are not versioned. SDK provenance remains in
+the smoke's manifest. Binaries and downloaded SDKs stay outside the repository.
 
 Reproduce from the repository root with the existing pinned scratch SDK:
 
@@ -91,8 +92,8 @@ All three processes passed full-content verification before and after remap,
 the verifier negative control, and complete sample validation.
 
 Host-call latency below is the **range of per-run medians**, in microseconds
-(three runs; not a confidence interval). All samples, including tails, remain
-in the raw CSVs. `summarize.py` reports each run's median, nearest-rank p95,
+(three runs; not a confidence interval). The analysis includes all samples,
+including tails. `summarize.py` reports each run's median, nearest-rank p95,
 maximum, event duration, and pending count.
 
 | Background load | Extent MiB | Create µs | Map µs | Set access µs | Unmap µs | Release µs |

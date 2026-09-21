@@ -3,6 +3,9 @@
 
 # M0 toolchain smoke — 2026-09-21
 
+This report keeps aggregate outcomes and reproduction/dependency provenance.
+Raw run output stays in external scratch and is not versioned.
+
 **Passed with C++23 throughout:** workstation Clang native CPU build/run;
 workstation AArch64 CPU and NVCC/Clang CUDA cross builds deployed and run on
 `spark`; native Spark CPU/CUDA fallback build/run. D-032 selects CUDA Toolkit

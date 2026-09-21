@@ -66,12 +66,12 @@ client-supplied history when an idle cache entry is unavailable.
 | Separate commitment and occupancy ledgers | confirmed | D-007 |
 | Completion service tracking GPU, I/O, and network consumers before reclaim | confirmed | ideation §3, §14 |
 | Resumable continuations: suspend a model phase while I/O is pending and run other ready work | confirmed | ideation §7; number and size of suspended phases is bounded |
-| Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, sparse lookup tables, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set. Qwen3.8-Flash-Next's 51B n-gram embedding is the first concrete sparse-lookup component to page by rows |
+| Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, sparse lookup tables, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set. Qwen3.8-Flash-Next's 51B n-gram embedding is the first concrete sparse lookup: row requests resolve to whole stored extents initially (D-035) |
 | Architecture-specific adapters for live and reusable state (KV blocks, compressed attention, sliding window, recurrent) | confirmed | conservative semantics per architecture first |
 | Prefix-cache metadata always consistent with physical eviction (no stale hits) | confirmed | pager invariant 4 |
 | Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
 | Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | confirmed | 2026-09-21: the starting shape (ideation §20), not a frozen interface. Types and async primitives follow open question 3; the M2 backend proof settles the internal contract |
-| Physical-backing pool to amortize allocation overhead | confirmed | 2026-09-21. Pooled but unmapped capacity is visible in the ledger, never hidden; sizing and retention policy come from the M0 VMM spike (ideation §8) |
+| Physical-backing pool to amortize allocation overhead | confirmed | D-033 baseline retains useful contents and hands compatible backing to admitted replacements; no per-read release/create requirement. D-035 records the owner's larger mapped-slab alternative (including 1 GiB) for comparison in the M2 paging proof. Physical capacity, suballocation, and I/O size stay distinct; all held backing is charged |
 | Turn/step-scoped leases with eviction only at scheduler-established completion boundaries as the v1 lease model | confirmed | *agent-suggested*, confirmed 2026-09-21 as the v1 lease model and the direction for open question 9. A switch request alone establishes no quiescence; consumers must complete and suspended live state stays protected. The full question 9 policy (envelope contents, guaranteed versus opportunistic grants, adversarial cases) is still recorded before M2; MoE within-step misses get their progress proof in M5 |
 | Core free of vendor types; device memory, paging, and transfer operations behind narrow provider interfaces, CUDA VMM the first and only implementation | confirmed | D-026; only where it adds no complexity or penalty on NVIDIA |
 | Ledger keyed by memory domain (one domain on unified-memory platforms) so a discrete-GPU platform is a data difference, not a redesign | confirmed | *agent-suggested*, confirmed 2026-09-21: a domain field on the ledger, which passes D-026's zero-cost rule |
@@ -97,20 +97,20 @@ client-supplied history when an idle cache entry is unavailable.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Common internal read/write completion interface across backends | confirmed | ideation §8 |
-| Spark staged path: SSD → pinned host staging → CUDA copy → mapped backing (and the reverse for write-back) | confirmed | D-004 |
-| Bounded, explicitly budgeted staging pool reserved before pressure | confirmed | never allocate unbudgeted RAM in order to evict RAM |
+| Spark direct path: file DMA → GPU-accessible host VMM, consumed in place (and reversed for write-back) | confirmed | D-034 amends D-004's mandatory staging copy; no CPU payload copies; M2 validates actual GGML execution |
+| Bounded, explicitly budgeted staging pool where a validated DMA fallback needs one | confirmed | no separate staging pool for the selected Spark in-place path; never allocate unbudgeted RAM in order to evict RAM |
 | Explicit handling of short transfers, checksum errors, storage exhaustion, alignment, retries, cancellation; bounded queues | confirmed | |
 | Coalesce duplicate loads for the same content generation | confirmed | |
-| Native file I/O + pinned staging backend (queue depth, priority, cancellation control) | confirmed | one of the two initial Spark candidates |
-| cuFile compatibility-mode backend | confirmed | as a benchmark comparison path; whether it ships is the M0 I/O spike's call |
+| Native direct-file I/O backend (queue depth, priority, cancellation control) | confirmed | D-034 selects bounded asynchronous I/O into host VMM on validated Spark configurations; staged DMA remains a provider option |
+| cuFile compatibility-mode backend | confirmed | measured M0 comparison path; D-034 does not select it for the initial runtime |
 | Buffered vs direct-I/O comparison; page-cache duplication and read amplification measured | confirmed | no system-wide cache flushing as runtime policy |
 | Write-back only when preservation requires it; clean weights are never written | confirmed | |
 | Native GDS backend on hardware where the direct path is supported | deferred | 2026-09-21. Earliest M7 (untriggered deferrals are reviewed at M7 planning, plan.md); trigger: a supported target with native GDS appears (D-026); never Spark |
 | Remote extent transfer between nodes (logical object/version/extent over a supported transport) | deferred | 2026-09-21. Earliest after M6; trigger: measured direct-link bandwidth beats local NVMe read and a placed or sharded workload reloads data a peer already holds. Source stays leased until completion; never remote `cuMemMap` |
 | Optional crash durability for spill as a separate policy | deferred | 2026-09-21. M4 retention is same-process and spill is discarded on start. Earliest after M4; trigger: a runtime upgrade or crash during a long conversation forces a noticeable re-prefill, or drain-before-restart upgrades prove insufficient. Ideation §8 distinguishes it from same-process retention |
 | Spill encryption at rest | rejected | *agent-suggested*, rejected 2026-09-21. Nodes are single-owner and local (multi-tenant isolation is a stated non-goal); D-014's "protect spill files" is met by a restricted directory owned by the non-root service user, bounded retention, and cleanup on expiry and on start. Restore-path CPU on unified memory would compete with the model |
-| Direct I/O (`O_DIRECT`) as the default read path on unified memory; buffered reads only where measured to be harmless | confirmed | *agent-suggested*, confirmed 2026-09-21 as the I/O spike's default hypothesis; the spike's measurement decides. On Spark the page cache and GPU-mapped memory are the same DRAM, so a buffered read double-occupies memory the catalog thinks it owns; this also drives artifact alignment rules |
-| Test whether the staging copy is needed at all on Spark: GPU in-place access to system-allocated memory read straight from NVMe | confirmed | *agent-suggested*, confirmed 2026-09-21 as I/O spike scope; if in-place access performs acceptably per the Spark porting guide's memory section, the read path loses a copy |
+| Direct I/O (`O_DIRECT`) as the default payload read path on unified memory | confirmed | measured and selected in D-034; buffered metadata remains allowed, but payload paths must not silently introduce CPU copies; import must honor queried direct-I/O alignment |
+| GPU in-place access to memory read straight from NVMe | confirmed | M0 measured host-NUMA CUDA VMM at full SSD bandwidth and matched device-VMM GPU scan speed; D-034 selects this over a mandatory staging copy, with M2 GGML/lifetime proof still required |
 | Sustained-read thermal behaviour and a spill-write budget for the single NVMe | confirmed | *agent-suggested*, confirmed 2026-09-21 as I/O spike scope. Measure sustained throughput over minutes, not seconds; reads do not wear the drive but KV spill writes do |
 
 ## Model import and prepared artifacts
@@ -118,6 +118,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Owned import pipeline: validate → select layout → pack/shard → index → hash → atomic publish | confirmed | D-009 |
+| Prepared per-model paging artifact aligned with VMM backing; whole-extent weight DMA | confirmed | D-035: making a model available includes repacking; initial Spark profile uses 2 MiB aligned payload extents and padded tails, packs compatible small tensors, indexes experts/tensors, and requires no CPU payload repacking at page-in. Sparse rows initially fetch their containing extents; mutable spill stays separate |
 | Versioned, hashed artifacts supporting bounded range reads without reprocessing | confirmed | D-009, D-018; experimental initially, with explicit rejection of incompatible versions; compatibility guarantees follow dense and MoE restore evidence |
 | Checkpoints treated as untrusted input; no code execution; lengths, paths, hashes, metadata validated | confirmed | D-009 |
 | Resumable import; free-space and peak-temp checks; interrupted imports never appear valid | confirmed | |
@@ -197,7 +198,7 @@ client-supplied history when an idle cache entry is unavailable.
 | File set: `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`, `tools/setup-toolchain`, `tools/check-toolchain`, `cmake/toolchains/`, `CMakePresets.json`, `.devcontainer/` | confirmed | 2026-09-21 as M1 scope, minus the `dev` script (next row); ideation §16 |
 | `setup / doctor / build / test / deploy` contributor entry point as mise tasks | confirmed | 2026-09-21: D-012 already makes mise the task runner, so these are mise tasks rather than a separate `./dev` script (ideation §16) |
 | REUSE-style file-level SPDX identifiers; NOTICE file; SBOM | confirmed | 2026-09-21 (D-029): copyright/license metadata with REUSE lint plus a separate embedded-header check for commentable source and docs, and a NOTICE file from M1; uncommentable files use sidecars or REUSE.toml. The SBOM lands with `.deb` packaging and is tied to the license profile (ideation §17) |
-| Checked-in benchmark trace corpus with regression thresholds in CI | confirmed | *agent-suggested*, confirmed 2026-09-21. Traces from the feasibility spike and the M5 recorder are checked in, or fetched by hash if large; replay runs in CI; thresholds are set once a measured baseline exists. Gating on recorded traces catches policy regressions without Spark time for every change |
+| Benchmark trace replay with external captured inputs and regression thresholds in CI | confirmed | Owner's 2026-09-21 output policy: feasibility/M5 captured traces stay outside Git and are fetched or supplied by verified hash for replay. Keep harnesses, input identities, aggregate baselines, and regression thresholds in Git; set thresholds after measurement. Replay still catches policy regressions without Spark time for every change |
 | Native-on-Spark CMake preset kept as a fallback and diagnostic build alongside the cross build | confirmed | *agent-suggested*, confirmed 2026-09-21 as part of the toolchain smoke in plan.md. The owner reaffirmed cross-compiling as primary (D-011): the C++ side is routine and the toolchain is needed anyway. The one piece with real uncertainty is NVCC with a cross Clang host compiler; a native preset costs little and keeps the first token unblocked if that drags |
 
 ## Release and project surface
@@ -262,9 +263,11 @@ public API scope) ride along as M0 tasks or later-milestone questions.
 2. **Storage I/O path.** cuFile compatibility mode vs native file I/O with
    pinned staging vs direct I/O, measured under concurrent compute and memory
    pressure, including page-cache duplication. Decides the storage service
-   design and staging budget. → M0 spike "I/O path comparison" (needs a
-   Spark). The spike also tests direct I/O as the default and GPU in-place
-   access to system-allocated memory (see the Storage rows).
+   design and staging budget. → Initial path answered by the M0
+   [comparison](experiments/io-path/README.md), D-034: direct regular files,
+   bounded asynchronous submission, and GPU-accessible host VMM without a
+   staging copy. M2 validates GGML/lifetime behavior; model traces still
+   tune queue policy and M4 spill limits.
 3. **Async/task and completion model.** Hand-rolled executor with explicit
    continuations, C++20 coroutines, a sender/receiver library, or something
    else. C++23 does not supply the scheduler, and every interface signature
@@ -284,7 +287,9 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    passed import, execution, eviction, and restoration checks. Experimental
    revisions may require explicit re-import. The blob container is a reused
    known container, not bespoke (settled 2026-09-21); pick which one (see
-   the Artifacts rows).
+   the Artifacts rows). D-035 settles the paging layout direction and initial
+   2 MiB whole-extent Spark profile; concrete encoding and executable layout
+   examples with padding/read-amplification checks remain this task.
 6. **Exact toolchain pins validated as one unit.** Resolved 2026-09-21
    by D-032 and the [toolchain smoke](experiments/toolchain-smoke/README.md):
    LLVM 22.1.8, pinned libstdc++/glibc and Spark sysroot, NVCC 13.4.92
