@@ -1,0 +1,223 @@
+# Feature matrix
+
+The scope ledger for the M0 planning conversations. Three tiers:
+
+- **Confirmed** — stated project scope from the owner's design brief
+  ([ideation.md](ideation.md)) and subsequent owner-approved decisions and
+  review fixes. Milestone assignment happens in [plan.md](plan.md) as the plan
+  firms up.
+- **Proposed** — candidate additions awaiting a yes/no from the project owner.
+  This covers both approaches the brief itself labelled "proposed design" and
+  agent suggestions (marked *agent-suggested*).
+- **Open questions** — things that shape architecture and need an answer
+  during M0.
+
+Status legend: `confirmed` · `proposed` · `open` · `rejected (D-NNN)`
+
+A confirmed feature is scope, not a support promise: model support is earned
+per checkpoint and configuration and tracked in a support matrix (see
+"Testing and evidence").
+
+## Runtime core: catalog, reservations, leases
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| One native execution process per node managing all local models | confirmed | D-005 |
+| Node-wide resource catalog: typed IDs, generations, dependency closure, shared extents charged once | confirmed | D-006; descriptor field groups in ideation §4 |
+| Explicit CUDA VMM backing (reserve / create / map / access / unmap via the driver API) | confirmed | D-006 |
+| Capacity reservations separate from residency leases; request transaction vs execution lease | confirmed | D-007; initial progress policy (question 9) is required before M2 |
+| Lazy commitment: grants never eagerly evict useful cache | confirmed | D-007 |
+| Separate commitment and occupancy ledgers | confirmed | D-007 |
+| Completion service tracking GPU, I/O, and network consumers before reclaim | confirmed | ideation §3, §14 |
+| Resumable continuations: suspend a model phase while I/O is pending and run other ready work | confirmed | ideation §7; number and size of suspended phases is bounded |
+| Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set |
+| Architecture-specific adapters for live and reusable state (KV blocks, compressed attention, sliding window, recurrent) | confirmed | conservative semantics per architecture first |
+| Prefix-cache metadata always consistent with physical eviction (no stale hits) | confirmed | pager invariant 4 |
+| Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
+| Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | proposed | ideation §20 sketch; types and async primitives to design in M0 |
+| Physical-backing pool to amortize allocation overhead | proposed | ideation §8; retained capacity stays in the ledger; sized by the M0 VMM spike |
+
+## Eviction and retention policy
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Global cross-model victim selection at extent granularity | confirmed | D-008; `shrink(model, N)` may exist as a convenience, not as the boundary |
+| Release changes eligibility, not residency; hysteresis, minimum useful residency, reload-cost awareness | confirmed | ideation §9 |
+| Real use tracked separately from prefetch and cancelled planned use | confirmed | |
+| Per-model statistics combined with global comparison so no model monopolizes reclaimable bytes | confirmed | fairness |
+| Compare global LRU vs frequency/recency vs cost-aware heuristic on identical recorded traces | confirmed | report miss bytes, reload repetition, write volume, waiting time — not hit count |
+| Routing/access trace capture and offline replay simulator | confirmed | reference-engine feasibility spike in M0/early M1 before M2; native recording and validation in M5; ideation §7, §9 |
+| Cost-aware eviction heuristic (`eviction_cost_per_reclaimed_byte`) | proposed | ideation §9 calls it a proposed first heuristic, not a measured predictor |
+| Brief wait for an imminent completion instead of evicting expensive contents | proposed | ideation §9 says "consider" |
+| Trace-learned expert co-occurrence prefetch | proposed | *agent-suggested.* Prefetch is confirmed as a concept (Stage 6); learning next-expert likelihood from recorded routing traces is the concrete mechanism to evaluate |
+| Residency warm-start across runtime restarts (persist heat/working-set metadata, re-warm on start) | proposed | *agent-suggested.* Otherwise every restart pays full cold paging; metadata only, never live state |
+
+## Storage and I/O
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Common internal read/write completion interface across backends | confirmed | ideation §8 |
+| Spark staged path: SSD → pinned host staging → CUDA copy → mapped backing (and the reverse for write-back) | confirmed | D-004 |
+| Bounded, explicitly budgeted staging pool reserved before pressure | confirmed | never allocate unbudgeted RAM in order to evict RAM |
+| Explicit handling of short transfers, checksum errors, storage exhaustion, alignment, retries, cancellation; bounded queues | confirmed | |
+| Coalesce duplicate loads for the same content generation | confirmed | |
+| Native file I/O + pinned staging backend (queue depth, priority, cancellation control) | confirmed | one of the two initial Spark candidates |
+| cuFile compatibility-mode backend | confirmed | as a benchmark comparison path; whether it ships is the M0 I/O spike's call |
+| Buffered vs direct-I/O comparison; page-cache duplication and read amplification measured | confirmed | no system-wide cache flushing as runtime policy |
+| Write-back only when preservation requires it; clean weights are never written | confirmed | |
+| Native GDS backend on hardware where the direct path is supported | proposed | later; not Spark |
+| Remote extent transfer between nodes (logical object/version/extent over a supported transport) | proposed | later; source stays leased until completion; never remote `cuMemMap` |
+| Optional crash durability for spill as a separate policy | proposed | ideation §8 distinguishes it from same-process retention |
+| Spill encryption at rest | proposed | *agent-suggested.* One concrete way to meet "protect spill files" (D-014) when spill may hold KV/state derived from prompts |
+
+## Model import and prepared artifacts
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Owned import pipeline: validate → select layout → pack/shard → index → hash → atomic publish | confirmed | D-009 |
+| Versioned, hashed artifacts supporting bounded range reads without reprocessing | confirmed | D-009, D-018; experimental initially, with explicit rejection of incompatible versions; compatibility guarantees follow dense and MoE restore evidence |
+| Checkpoints treated as untrusted input; no code execution; lengths, paths, hashes, metadata validated | confirmed | D-009 |
+| Resumable import; free-space and peak-temp checks; interrupted imports never appear valid | confirmed | |
+| Workstation-side import; target-assisted tuning as an explicit mode with separately keyed results | confirmed | x86 importer, ARM importer, and architecture-independent artifact format are distinct things |
+| Immutable model files separate from mutable spill files | confirmed | |
+| Artifact contents: manifest, tokenizer/config, representation catalog, resource index, immutable data, integrity/provenance, optional plan metadata | proposed | ideation §11 "proposed artifact contents"; the encoding is open question 5 |
+| Multiple backend layouts per artifact | proposed | only when measured value justifies the disk and import cost |
+| Standalone artifact verification tool (checksums, index bounds, manifest consistency) | proposed | *agent-suggested.* Cheap given per-extent checksums; separates "bad artifact" from "pager bug" during bring-up |
+| Model support matrix per checkpoint: unsupported → import-only → resident-correct → paged-correct → distributed-correct → performance-validated | confirmed | ideation §19 |
+
+## Compute backends and execution
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Reuse of kernels, algorithms, and model semantics from vLLM, llama.cpp/GGML, ExLlamaV3/EXL3, FlashInfer, CUTLASS/CuTe under their licenses | confirmed | D-013; which units, per model, is open question 4 |
+| Keep a fully resident fused plan and a pageable split plan where both are useful | confirmed | ideation §7, §10 |
+| Lossless layout transforms separated from quantization/precision changes (the latter need explicit quality evaluation and metadata) | confirmed | |
+| CUDA graphs with dynamic residency decisions outside captured segments; no CUDA API calls from host-function nodes | confirmed | initial approach; ideation §7 |
+| One deliberately managed CUDA context per GPU; explicit streams and library handles | confirmed | initial |
+| Backend operation contract (declares architectures, layouts, quantization, state, workspace, dependencies, graph restrictions, completion) | proposed | ideation §10 "proposed operation contract" |
+| Versioned C ABI for optional separately built backends | proposed | ideation §14. Optional implementation modules (D-017) require a fully removable boundary; whether that is a build-time module or a runtime plugin ABI is the open part, and not before the first real backend exposes its requirements |
+| Triton AOT as an optional build-time kernel route | proposed | ideation §10; keep provenance of generated code |
+| GPU-visible residency table plus compact miss notification | proposed | later fast path; a Boolean check without protection against revocation is unsafe |
+| Executing ready experts while other experts load | proposed | later; not an assumed capability |
+| Speculative decoding | proposed | not committed; benchmarks require matched decoding features plus the reference's normal configuration, even when its speculative decoding is unavailable in jitLLM |
+
+## Two-node execution
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Explicit sharding across two Sparks; a coordinator issues distributed phase IDs | confirmed | ideation §12 |
+| Prepare/commit admission across ranks; no rank enters a collective while another can wait indefinitely on an unapproved allocation | confirmed | |
+| Separately budgeted, stable communication-buffer pool honouring NCCL registration and threading contracts | confirmed | |
+| Ordered collective submission; completion fences for GPU and network consumers | confirmed | |
+| Port the validated target recipe's parallelism first (TP, PP, EP are different plans) | confirmed | |
+| Remote paging (see Storage) | proposed | later |
+
+## Management, inference API, and diagnostics
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| CLI / status endpoint and structured events first | confirmed | ideation §13; a dashboard is not a prerequisite for validating the pager |
+| Versioned local management API: import/list/remove, representation inspection, priorities, residency policies, cancellation, node health, trace capture | confirmed | budget changes are scheduler requests; removal quiesces users |
+| Explainable decisions: memory breakdown, model working sets, request state, eviction decisions (victims, expected cost, bytes recovered, why alternatives were kept), I/O timeline, backend choice | confirmed | ideation §13 views; explainable scheduling is a stated priority |
+| Local-only binding by default; auth and transport protection for remote; no prompt/KV logging by default; opaque request IDs | confirmed | D-014 |
+| Streaming inference API | confirmed | product goal; its compatibility surface is open question 8 |
+| Web dashboard as a separate process over the management API | confirmed | later (Stage 6); must not own the scheduler or take runtime locks |
+| OpenAI-compatible HTTP surface for the inference API | proposed | *agent-suggested* as the likely answer to open question 8: it is what the reference deployments and most clients speak |
+| Admission "explain / what-if" query (why can't this request be admitted now; what would need to be evicted) | proposed | *agent-suggested.* Natural extension of explainability and a debugging tool for progress-envelope bugs |
+| Trace export in Perfetto / Chrome trace-event format for the I/O timeline and scheduling | proposed | *agent-suggested.* Structured events are confirmed; a standard viewer format avoids building a timeline UI early |
+| Target capability probe tool (VMM granularity, GDS mode, RDMA availability, driver/toolkit versions, glibc/ABI) | proposed | *agent-suggested.* The brief says "probe the installed stack"; a first-class tool serves the M0 inventory and the later `doctor` command |
+| Per-model memory quota and priority policy (minimum guarantee, maximum share) | proposed | *agent-suggested.* Fairness is confirmed; explicit knobs give the owner control over the flagship-vs-small-model balance |
+| Model version hot-swap (publish a new artifact version, drain the old, no runtime restart) | proposed | *agent-suggested.* Removal-with-quiesce is confirmed; this is the add-then-drain composition |
+
+## Toolchain, build, and development environment
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| C++23 host runtime, Clang-first; NVCC with Clang host compiler where validated; pinned libstdc++ initially | confirmed | D-010 |
+| Cross-compile from x86-64 to Spark; deploy and test over SSH; explicit targets only | confirmed | D-011 |
+| `mise.toml` + `mise.lock` for tool setup, environment, and tasks | confirmed | D-012 |
+| Project-owned SDK provisioning; native Ubuntu and a reference dev container from the same logic | confirmed | D-012 |
+| Copyleft-components-disabled CI profile with audited dependency closure | confirmed | D-002, D-017; excludes optional implementation dependencies and records declared tools/platform runtimes separately |
+| Optional implementation modules/plugins selectable at build time; incorporated core implementation uses Apache-2.0 / BSD / MIT / MPL-2.0 | confirmed | D-017; default build may use declared platform dependencies under their actual terms; classification never waives license obligations |
+| Reference container pinned by digest; target driver recorded separately from toolkit and library versions | confirmed | ideation §16 |
+| CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | proposed | ideation §14 "proposed engineering conventions"; the obvious default, to confirm in the M0 toolchain decisions |
+| Proposed file set: `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`, `tools/setup-toolchain`, `tools/check-toolchain`, `cmake/toolchains/`, `CMakePresets.json`, `.devcontainer/`, `dev` | proposed | ideation §16: "a plan, not files created" |
+| `./dev setup / doctor / build / test / deploy` contributor entry point | proposed | ideation §16 "to implement" |
+| REUSE-style file-level SPDX identifiers; NOTICE file; SBOM | proposed | ideation §17 "proposed compliance mechanics" |
+| Checked-in benchmark trace corpus with regression thresholds in CI | proposed | *agent-suggested.* Benchmark metrics are confirmed; gating on recorded traces catches policy regressions without Spark time for every change |
+
+## Release and project surface
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Shipped notices and source availability match the actual build configuration (core vs. enabled optional modules) | confirmed | ideation §17, D-017; includes any shipped platform components; a build that self-reports its license profile is the obvious mechanism |
+| Versioned releases with a changelog and a compatibility policy for the artifact format and management API | proposed | *agent-suggested.* Release conventions are an M1 decision; artifact compatibility guarantees additionally require D-018's dense and MoE evidence |
+| Contribution policy: whether external PRs are accepted; DCO or CLA | open | flagged in ideation §21 alongside the license; single-developer today (D-016) |
+
+## Testing and evidence
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Layered tests: native CPU, deterministic simulated backend, single-Spark CUDA, model semantics, multi-model pressure, two-node, packaging/licensing | confirmed | ideation §18 |
+| Mandatory pager invariants (eight, listed in [architecture.md](architecture.md)) enforced by tests | confirmed | |
+| Numerical references against pinned known-working engines with documented tolerances; teacher-forced logits and intermediates, not generated text | confirmed | |
+| Benchmark set: warm decode rate, inter-token latency distribution, bytes read/written per token, exposed stalls, peak occupancy, mixed-model throughput, per-model waiting/fairness, cold and partial-resume latency | confirmed | full provenance (artifact, backend, toolchain, driver, hardware, policy) with every result |
+| Resident-hit path measured independently from the miss path; cold storage vs warm OS cache vs warm residency separated | confirmed | |
+| Paging feasibility assessed before M2; matched-configuration and normal reference-configuration comparisons | confirmed | [performance evidence](architecture.md#performance-evidence); agree workload benefit and generation-stall criteria before M2, validate estimates with real execution in M5/M7 |
+
+## Model targets
+
+| Target | Status | Notes |
+| --- | --- | --- |
+| GLM-5.3-Flash, DeepSeek-v4.1-Flash, Qwen3.8-Flash-Next (via the MiaAI-Lab two-Spark references) | confirmed | as target families and reference recipes; pinned before porting; support earned per checkpoint |
+| ~30B-class dense models (suitable Gemma / Llama variants) | confirmed | intended use case, not a promise for every checkpoint |
+| Small dense model plus synthetic/tiny MoE as the first bring-up vehicles | confirmed | ideation §19: separate execution, import, and pager bugs before a flagship architecture |
+| First vertical-slice checkpoint and backend | open | open question 4 |
+
+## Open questions (answer during M0)
+
+Ordered by how much work a late answer would invalidate. Lesser open items
+from ideation §21 (user-space baseline on the Sparks, graph integration proof,
+public API scope) ride along as M0 tasks or later-milestone questions.
+
+1. **VMM extent granularity, map/unmap cost, and physical-pool strategy on the
+   real Spark driver.** Every pager data structure sizes itself on this.
+   → M0 spike "VMM microbench" in [plan.md](plan.md) (needs a Spark).
+2. **Storage I/O path.** cuFile compatibility mode vs native file I/O with
+   pinned staging vs direct I/O, measured under concurrent compute and memory
+   pressure, including page-cache duplication. Decides the storage service
+   design and staging budget. → M0 spike "I/O path comparison" (needs a
+   Spark).
+3. **Async/task and completion model.** Hand-rolled executor with explicit
+   continuations, C++20 coroutines, a sender/receiver library, or something
+   else. C++23 does not supply the scheduler, and every interface signature
+   depends on this. → M0 decision, prototyped against the fake backend design.
+4. **First vertical-slice model and backend.** Which checkpoint (revision,
+   quantization, tokenizer, kernels, provenance) and which numerical reference
+   engine. Decides M3 and gives the license audit its first real inputs. → M0
+   decision.
+5. **Experimental artifact schema and layout ABI.** Choose metadata encoding,
+   alignment, integrity, sharding representation, and version rejection rules
+   for bring-up. → M0 decision, likely after question 4. D-018 defers
+   compatibility guarantees until a dense model and a small MoE have each
+   passed import, execution, eviction, and restoration checks. Experimental
+   revisions may require explicit re-import.
+6. **Exact toolchain pins validated as one unit.** LLVM version, libstdc++,
+   CUDA toolkit, ARM sysroot, GB10 architecture spelling, Clang as host
+   compiler in the cross configuration. Blocks M1. → M0 spike "toolchain
+   smoke" (workstation for the build, one Spark for the run).
+7. **C++ source-dependency mechanism.** vcpkg, Conan, CPM/FetchContent,
+   submodules, or vendoring, independent of toolchain provisioning. Blocks M1
+   and interacts with the copyleft-disabled profile. → M0 decision.
+8. **Inference API surface.** The streaming inference API's compatibility
+   scope is deferred until a CLI/status path can explain real behaviour.
+   → may ride along to M7. (The license half of this question closed on
+   2026-09-20: Apache-2.0 accepted in D-003, dependency policy in D-017.)
+9. **Initial reservation guarantee and progress envelopes.** How conservative
+   the first scheduler is about serializing phases, and what a "minimum
+   feasible phase" envelope includes (activations, state growth, scratch,
+   staging, comm, graphs, metadata). Include guaranteed versus opportunistic
+   grants, retained continuations, growth limits, and impossible-phase
+   handling. → M0 decision, or explicit deferral only until before M2; see
+   the [progress gate](architecture.md#reservation-progress-gate). A
+   conservative default is acceptable and gets tested in M2 and tuned in M5.
