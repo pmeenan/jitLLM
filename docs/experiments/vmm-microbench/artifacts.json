@@ -1,0 +1,20 @@
+{
+  "experiment_date": "2026-09-21",
+  "host": "spark-c4e2",
+  "driver": "580.178.04",
+  "sdk_provenance": "../toolchain-smoke/artifacts.json",
+  "build": "D-032 cross profile; see README.md and build.sh",
+  "files": {
+    "main.cc": "9df2793fe2c11138550e083b3a54a34b15a7d9887232e5e9b0fad7c8e4f7cc97",
+    "kernel.cu": "d08f0b1c580495ce968a355e23ec8215ca17c3034f5a6c8acaf528d9eff3ee6e",
+    "build.sh": "2b94c4b63fe4747ef515a66b563d8869207a616d4cd5930117aa383f3bf73f3d",
+    "summarize.py": "857316197d5b708bc4fef838c1c620fc3a0c1956a72ebf36d3b5e1bd05fd4104",
+    "results/final-run-1.csv": "43c0e89e5258b0c311268f03d51b184959e0dcb1a5091a8a0653b98f2bd9f964",
+    "results/final-run-2.csv": "1237aac125ae513a3d203130e7f5b9c0ad5f0ba522d7fb4990a00b8639ed9e53",
+    "results/final-run-3.csv": "170c6e2f2f50eb6a4cee618a7e4b182dc244dcd39509139401f261ea5a9528bb"
+  },
+  "binaries": {
+    "vmm-microbench": "a08fda8e0ae18173f6865ec7f5249c239d5f22bdd744406262c440167ee93d8a",
+    "kernel.cubin": "8393f896decc80ca28399edf78e5818d22e8d14fa7814de53e3cc3daf25b7d4a"
+  }
+}

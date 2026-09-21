@@ -254,9 +254,11 @@ public API scope) ride along as M0 tasks or later-milestone questions.
 
 1. **VMM extent granularity, map/unmap cost, and physical-pool strategy on the
    real Spark driver.** Every pager data structure sizes itself on this.
-   → M0 spike "VMM microbench" in [plan.md](plan.md) (needs a Spark). Also
-   settle the initial extent policy; dependency-group scoring is deferred
-   until the Eviction row's measurement trigger.
+   → Answered for the initial provider on 2026-09-21 (D-033): 2 MiB
+   independently reclaimable extents, compatible backing handoff without a
+   standing unused-handle cache. [Measured costs and retention](experiments/vmm-microbench/README.md).
+   I/O/model traces may revise the policy; dependency-group scoring remains
+   deferred until the Eviction row's measurement trigger.
 2. **Storage I/O path.** cuFile compatibility mode vs native file I/O with
    pinned staging vs direct I/O, measured under concurrent compute and memory
    pressure, including page-cache duplication. Decides the storage service

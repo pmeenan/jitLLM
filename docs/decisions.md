@@ -30,6 +30,54 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; implements D-006)
+
+**Decision.** Start the CUDA provider with one physical allocation handle per
+independently reclaimable extent, using the queried minimum granularity:
+2 MiB for the measured Spark device-local allocation properties. Keep that
+as a provider capability, not a universal core or artifact-format constant.
+Larger I/O and scheduling batches may span adjacent extents without making
+their physical lifetimes indivisible. Do not assume a subrange of one large
+physical allocation is independently returnable to the OS.
+
+Start without a standing cache of unused physical handles (idle free-pool
+target zero). When reclaiming eligible contents for an already admitted
+load, allow a compatible handle to pass directly to that load after all old
+consumers complete, with explicit unmap/remap/access and content-readiness
+tracking as needed. This avoids unnecessary release/create work; it is not a
+measured end-to-end speedup. Otherwise release unused unmapped handles.
+Useful resident contents remain cached according to policy: releasing a
+residency lease does not evict them or turn their handles into a free pool.
+Any handle held during handoff still counts against physical occupancy.
+Never pre-evict useful contents to stock a free pool.
+
+**Evidence.** The [retained microbench](experiments/vmm-microbench/README.md)
+ran three times on `spark` / GB10, driver 580.178.04, with the D-032
+cross-built toolchain. Minimum and recommended granularity were both 2 MiB.
+At 2 MiB, per-run idle medians were 49–53 µs create, 0.50–0.54 µs map,
+36–38 µs access, 47–63 µs unmap, and 27 µs release (rounded). Mapping alone
+is not the cost of making bytes usable. Larger extents reduce some costs
+per byte but make reclamation coarser. All 3,600 measured calls with an
+independent 10 ms background kernel returned before its completion event;
+this is evidence for this test, not an asynchronous/nonblocking API guarantee.
+An unmapped 1 GiB pool retained its footprint and verified contents until
+its physical handles were released. OS/CUDA memory snapshots then recovered
+approximately that capacity.
+
+**Consequences.** The 2 MiB choice prioritizes fine reclamation at the hardware
+minimum as the first baseline, not a proven optimal transfer size. The pool
+policy avoids holding empty memory in a workload whose useful cache already
+exceeds capacity, while preserving direct reuse when there is an actual
+consumer. Mapping calls run outside global catalog/scheduling locks; mapping
+completion and data-transfer completion are separate readiness conditions.
+SSD throughput, page-in latency, model throughput, memory-pressure tails,
+and graph/registration survival are not established by this experiment.
+
+**Reopen if.** The I/O spike or model traces show that larger physical extents,
+batched driver operations, or a bounded unused-handle cache improve measured
+end-to-end latency enough to justify their occupancy/reclamation cost. Reprobe
+when device, driver, allocation properties, or sharing requirements change.
+
 ## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins)
 
 **Decision.** Start M1 with Clang/LLD 22.1.8 from apt.llvm.org

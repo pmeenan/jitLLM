@@ -53,10 +53,16 @@ needs evidence from the real hardware.
       hashes, commands, and limits are in the
       [smoke report](experiments/toolchain-smoke/README.md).
       M1 still owns declarative provisioning and CMake presets.
-- [ ] Spike — **VMM microbench** (open question 1): on a Spark, measure VMM
-      granularity, map/unmap latency vs extent size, cost under concurrent
-      kernels, and physical-pool retention behaviour. Output: numbers in
-      architecture.md plus an extent-size and pool decision entry.
+- [x] Spike — **VMM microbench** (2026-09-21; open question 1, D-033):
+      three runs on `spark` measured 2 MiB minimum/recommended granularity,
+      allocation/map/access/unmap/release costs across 2–128 MiB extents,
+      and costs with independent background kernels. A retained, unmapped
+      1 GiB pool kept its physical footprint and contents; releasing its
+      handles returned capacity. Initial policy: 2 MiB independent extents,
+      completion-safe backing handoff, no standing unused-handle cache.
+      [Report, harness, and raw results](experiments/vmm-microbench/README.md);
+      numbers in architecture.md. I/O and model-load optimization remain
+      separate measurements, not conclusions of this allocation experiment.
 - [ ] Spike — **I/O path comparison** (open question 2): cuFile compatibility
       mode vs native file I/O with pinned staging vs direct I/O, under
       concurrent compute and memory pressure; page-cache duplication and read

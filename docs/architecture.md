@@ -493,13 +493,49 @@ driver (595.91.07) is newer than the targets', so a kernel that runs locally is 
 NVMe and one filesystem to work with, shared with the OS. The interconnect
 half of the inventory is a separate plan task after cabling.
 
+### VMM microbench follow-up (2026-09-21)
+
+Three runs on `spark` / GB10, driver 580.178.04, using the D-032 cross SDK,
+measured device-local pinned VMM allocations with no export handles.
+Minimum and recommended granularity were both **2 MiB**. Host-call latency
+ranges below are per-run medians, in microseconds; they exclude SSD I/O.
+
+| Extent | Create | Map | Set access | Unmap | Release |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 MiB | 48.72–53.41 | 0.50–0.54 | 35.94–37.70 | 46.66–63.21 | 26.61–27.04 |
+| 8 MiB | 178.57–196.75 | 0.72–1.26 | 72.10–81.10 | 116.77–156.06 | 43.62–46.66 |
+| 32 MiB | 797.66–925.62 | 4.40–5.06 | 251.44–261.12 | 321.18–327.59 | 134.56–142.52 |
+| 128 MiB | 3384.05–3811.23 | 5.34–5.63 | 804.44–835.35 | 985.80–1010.94 | 449.96–472.11 |
+
+These are idle values; the [report](experiments/vmm-microbench/README.md)
+retains raw samples, p95/max generation, concurrency measurements, source,
+hashes, commands, and limitations. All 3,600 timed calls with independent
+background kernels returned while their completion events remained pending.
+This does not prove no GPU stalls or model-throughput impact. At 128 MiB,
+release medians rose to 618–651 µs with background work.
+
+Reserving 1 GiB of virtual addresses did not change observed free memory.
+Creating sixteen 64 MiB handles reduced free memory by about 1034 MiB;
+unmapping them while retaining the handles left that footprint intact.
+Every word survived remapping and verification. Releasing the handles after
+unmapping recovered the allocation, with 4–5 MiB baseline drift in the
+system-level snapshots. A deliberate corruption verified the check itself.
+
+D-033 starts with 2 MiB independent physical extents, compatible backing
+handoff to waiting admitted loads, and no standing unused-handle cache.
+Live useful contents remain resident until policy reclaims them. Granularity
+is queried, not baked into core identities or on-disk formats; read batches
+can span extents. SSD and model measurements may revise this initial policy.
+
 ## Open architecture questions
 
 The architecture-shaping questions are numbered in
 [features.md](features.md#open-questions-answer-during-m0): VMM granularity,
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
-dependency mechanism, license and API surface, reservation guarantees. Purely
-technical additions to resolve while drafting:
+dependency mechanism, license and API surface, reservation guarantees. Initial
+VMM and toolchain answers are recorded above (D-033 and D-032); the matrix
+tracks each question's remaining scope. Purely technical additions to resolve
+while drafting:
 
 - Exception policy and error-result type for the runtime; what crosses the
   boundary of optional build-time backends (no runtime plugin ABI, D-028).
