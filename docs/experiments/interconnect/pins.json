@@ -1,0 +1,142 @@
+{
+  "nccl": {
+    "url": "https://github.com/NVIDIA/nccl.git",
+    "tag": "v2.30.7-1",
+    "commit": "73cf112295c33aee2b895f329f592f2a9b4b0f97",
+    "runtime_sha256": "d1167afaa7486bb5c4a33de86b91f45a0f1d09b5ce5f3d2246e37bd35cbe02b9"
+  },
+  "nccl_tests": {
+    "url": "https://github.com/NVIDIA/nccl-tests.git",
+    "commit": "b4d5beebca8a76cf01335f724d154b9b9d394d96",
+    "version": "2.20.0",
+    "sha256": {
+      "all_gather_perf": "6931980581485c6b9fae4fdd07d6d7b34323bdd61f44eff71c254e800bbc7ed9",
+      "all_reduce_perf": "c0ee96fdd1002c92a3d519ff3a32f5daa4aa8cf83128bcce056257ccf0734b7e",
+      "sendrecv_perf": "be900b1b25147e6d9951fd106c4e6057057ee78ef274c5129fd7824f96e54c2f"
+    }
+  },
+  "compiler": {
+    "g++": "13.3.0",
+    "nvcc": "13.0.88",
+    "cpu": "armv8.2-a",
+    "gpu": "sm_121",
+    "ptx_jit": false
+  },
+  "debs": [
+    {
+      "pin": "libgfortran5=14.2.0-4ubuntu2~24.04.1",
+      "file": "libgfortran5_14.2.0-4ubuntu2~24.04.1_arm64.deb",
+      "sha256": "99e5f2383ce0325fb7876c118494a8dd486afa30546102f14c26b93667ee2c70"
+    },
+    {
+      "pin": "libgfortran-13-dev=13.3.0-6ubuntu2~24.04.1",
+      "file": "libgfortran-13-dev_13.3.0-6ubuntu2~24.04.1_arm64.deb",
+      "sha256": "922394470fee49037f7c45caf5610aae41dd835902d243b92a17207d40aee1b9"
+    },
+    {
+      "pin": "gfortran-13-aarch64-linux-gnu=13.3.0-6ubuntu2~24.04.1",
+      "file": "gfortran-13-aarch64-linux-gnu_13.3.0-6ubuntu2~24.04.1_arm64.deb",
+      "sha256": "49158066d0dbcc16760d3bbb9c3a9847513419f37bbd4ce4a8c8b0b19eb45a65"
+    },
+    {
+      "pin": "gfortran-13=13.3.0-6ubuntu2~24.04.1",
+      "file": "gfortran-13_13.3.0-6ubuntu2~24.04.1_arm64.deb",
+      "sha256": "dad06597db308738be25b5e8d65a249335754e0ec386680d33e405aa04144665"
+    },
+    {
+      "pin": "libevent-extra-2.1-7t64=2.1.12-stable-9ubuntu2.1",
+      "file": "libevent-extra-2.1-7t64_2.1.12-stable-9ubuntu2.1_arm64.deb",
+      "sha256": "47ef6ae6b9b7f4c7adafc65b1fed804ac724b496dbb0dcdb1ea0eee48c3082e2"
+    },
+    {
+      "pin": "libevent-pthreads-2.1-7t64=2.1.12-stable-9ubuntu2.1",
+      "file": "libevent-pthreads-2.1-7t64_2.1.12-stable-9ubuntu2.1_arm64.deb",
+      "sha256": "75e86a8f7d0d179bfd3f23c2c92fb8a15daeedd9555bb7d32010a36d2c1ad986"
+    },
+    {
+      "pin": "libevent-openssl-2.1-7t64=2.1.12-stable-9ubuntu2.1",
+      "file": "libevent-openssl-2.1-7t64_2.1.12-stable-9ubuntu2.1_arm64.deb",
+      "sha256": "f73bf81b3499f7daf889401a034c010b04b98f16d83bfbcf69d658a962f96f01"
+    },
+    {
+      "pin": "libevent-dev=2.1.12-stable-9ubuntu2.1",
+      "file": "libevent-dev_2.1.12-stable-9ubuntu2.1_arm64.deb",
+      "sha256": "bc795fdff8a4ac2f6c1b1b2b23b0b0913cec627f1268fbbfe2ab95aa5a0e2285"
+    },
+    {
+      "pin": "libfabric1=1.17.0-3build2",
+      "file": "libfabric1_1.17.0-3build2_arm64.deb",
+      "sha256": "8469b772a884e6b5a42bd3fcae0e37de50adc0d4e942c648882c6ab5ecdf7036"
+    },
+    {
+      "pin": "libhwloc15=2.10.0-1build1",
+      "file": "libhwloc15_2.10.0-1build1_arm64.deb",
+      "sha256": "ad0c62924b223fe7ba6843103a300aed887c1db25ae325aadda483397aacf84d"
+    },
+    {
+      "pin": "libjs-jquery=3.6.1+dfsg+~3.5.14-1",
+      "file": "libjs-jquery_3.6.1+dfsg+~3.5.14-1_all.deb",
+      "sha256": "8cd2eccd9c73c78c8dfdc5394861c63645f7e114553f29b4d9f15628625d191d"
+    },
+    {
+      "pin": "libjs-jquery-ui=1.13.2+dfsg-1",
+      "file": "libjs-jquery-ui_1.13.2+dfsg-1_all.deb",
+      "sha256": "53c4ec6c6edf44eefb60dd6c51fd6a84a94e41ec366b3ff3b885f6eaf2a8515b"
+    },
+    {
+      "pin": "libmunge2=0.5.15-4ubuntu0.1",
+      "file": "libmunge2_0.5.15-4ubuntu0.1_arm64.deb",
+      "sha256": "7e9261b18fe9695a1c1d21504adc0ea6b0f92aaee3017a6d4dc4aa6e01c93ff8"
+    },
+    {
+      "pin": "libhwloc-plugins=2.10.0-1build1",
+      "file": "libhwloc-plugins_2.10.0-1build1_arm64.deb",
+      "sha256": "d487d61487dffa8bb0e411b06114e7fe43086ad5b5fa1aabb9dd4569830baa93"
+    },
+    {
+      "pin": "libpmix2t64=5.0.1-4.1build1",
+      "file": "libpmix2t64_5.0.1-4.1build1_arm64.deb",
+      "sha256": "2ce32e8989e1db0c7e29d3459a26e84030bb11276268a0178729b5a1db703b42"
+    },
+    {
+      "pin": "libopenmpi3t64=4.1.6-7ubuntu2",
+      "file": "libopenmpi3t64_4.1.6-7ubuntu2_arm64.deb",
+      "sha256": "237515678a6e4b8dd629040fe6a3e87a399cd1ba36e8b583df50528f8242b750"
+    },
+    {
+      "pin": "libnuma-dev=2.0.18-1ubuntu0.24.04.1",
+      "file": "libnuma-dev_2.0.18-1ubuntu0.24.04.1_arm64.deb",
+      "sha256": "5093fce3230ca74e0098c4dbdc4a4591cc89dc12cca7b094d4e2d2b065095467"
+    },
+    {
+      "pin": "libhwloc-dev=2.10.0-1build1",
+      "file": "libhwloc-dev_2.10.0-1build1_arm64.deb",
+      "sha256": "6a4ed49f4a23b48457a0090ad1d211be74aa22a72becf034ddb803f2788580e8"
+    },
+    {
+      "pin": "libpmix-dev=5.0.1-4.1build1",
+      "file": "libpmix-dev_5.0.1-4.1build1_arm64.deb",
+      "sha256": "e6dbbb6b2cc8732c30cf8fee712ba9edb52d5f7114584143415a2dc25226a70b"
+    },
+    {
+      "pin": "openmpi-common=4.1.6-7ubuntu2",
+      "file": "openmpi-common_4.1.6-7ubuntu2_all.deb",
+      "sha256": "1246554675cd86baa4e7e2e4195bed0f7a16d6538d484c347e2379f82791f821"
+    },
+    {
+      "pin": "openmpi-bin=4.1.6-7ubuntu2",
+      "file": "openmpi-bin_4.1.6-7ubuntu2_arm64.deb",
+      "sha256": "6344943263d67fa9066e30147c9bc9c610ea9044a5f7d8be8d9a52b5d4e6c5b6"
+    },
+    {
+      "pin": "libopenmpi-dev=4.1.6-7ubuntu2",
+      "file": "libopenmpi-dev_4.1.6-7ubuntu2_arm64.deb",
+      "sha256": "677f55e64281a4b1ce033e8a2530652095f94d5689cdb3a07381ca89bc6d8eb1"
+    }
+  ],
+  "perftest_sha256": {
+    "ib_write_bw": "c1ca49d71a37697898778eac27893bdb671baae32249b6244e79da07fdd80bf8",
+    "ib_read_bw": "c27f09bbfa5692b01266764af4bc0fa01a9dbf1106c85a7de5226589d8057606",
+    "ib_send_lat": "d4f7f7c0d47d57b28491a097791310d5e4703be7aeb21fea06986da2d7ff39ec"
+  }
+}

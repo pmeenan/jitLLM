@@ -80,10 +80,22 @@ needs evidence from the real hardware.
 - [x] Pick the reference engine for the feasibility spike: llama.cpp with
       MoE GGUFs and a small router-logging patch (decided 2026-09-20; the
       lightest install and the owner's preference).
-- [ ] Install llama.cpp on a Spark in a container so the host baseline in
-      architecture.md stays clean; record exactly what was installed.
+- [x] Install llama.cpp on a Spark in a container so the host baseline in
+      architecture.md stays clean (2026-09-21): digest-pinned ARM64 CUDA
+      image, source `b29c606e2`, and hash-verified Gemma 4 UD-Q4_K_M execute
+      on `spark`. GPU inference and cross-process slot restore passed;
+      Gemma requires `--swa-full` for the tested reuse path (RE-004), with
+      its additional memory cost recorded. Exact identities, expert/state
+      accounting, reproducible harness, and limits are in the
+      [reference setup report](experiments/reference-setup/README.md).
+      No host toolchain/driver/security changes or HF key were needed.
+      Ornith (MIT, confirmed by owner) is now validated in the switching
+      experiment below; Qwen remains an unexecuted candidate. Installation
+      alone did not complete switching or route-trace experiments.
       Candidate trace models, owner-provided, with facts from their model
-      cards as read on 2026-09-20 (re-verify at install time):
+      cards as read on 2026-09-20 (repository access/revisions/licenses
+      rechecked 2026-09-21; Gemma's structure and memory accounting were
+      verified in setup, Ornith's in the subsequent A→B→A experiment):
       - [unsloth Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF):
         125B core parameters, 6B active, 512 experts, top-10 plus 1 shared, expert
         intermediate dim 640, plus a 51B n-gram embedding table and a 4B MTP
@@ -103,8 +115,9 @@ needs evidence from the real hardware.
         Fits easily: the subagent and switch-latency case, with mixed KV
         lifetimes for the spill study.
       - [ornith-ai/Ornith-1.5-35B-A3B-GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF):
-        36B total, about 3B active, `qwen35moe` architecture (expert count
-        not on the card; read it from the GGUF metadata); 262K context.
+        36B total, about 3B active on the card, `qwen35moe` architecture;
+        the selected GGUF verifies 256 experts, top-8 plus a shared FFN,
+        40 primary layers and one stored MTP layer; 262K context.
         Q4_K_M about 22 GB. A second small model for replica and
         multi-model-switching traces.
       Gaps these three leave, to fill only if cheap: a few-large-experts,
@@ -115,17 +128,26 @@ needs evidence from the real hardware.
       state bytes per token, and headroom on one node. The owner's local
       Ollama blobs are plain GGUFs usable for workstation-side dry runs on
       the RTX 3080 Ti where they fit.
-- [ ] **Reference A→B→A experiment** (D-025): once the pinned reference setup
-      runs, measure a long conversation on A, a request to B under memory
-      pressure, and a continuation on A. Use an all-resident control and a
-      budget that forces displacement. Include end-to-end first-token waits,
-      state save/restore or re-prefill, bytes read/written, and reused versus
-      recomputed prompt tokens. Verify applicable reference routing and
-      prompt-cache save/restore on the chosen checkpoints; record unavailable
-      paths and any harness actions. Pin the trace, settings, engine revision,
-      and target environment for M4 to repeat. Separate cold storage, warm OS
-      cache, and warm residency; follow the comparison protocol. This is an
-      M0/early-M1 deliverable before M2, not a new runtime implementation.
+- [x] **Reference A→B→A experiment** (2026-09-21, D-025): 27 verified cycles
+      on `spark`, Gemma 4 UD-Q4_K_M → Ornith 1.5 Q4_K_M → Gemma, with an
+      18,339-token continuation. Three repeats of nine cases distinguish
+      resident, warm/cold file cache, restore/recompute, 80 GiB locked
+      physical pressure, and default-SWA/cache optimizations. Under the
+      matched forced-displacement budget, median first-token waits are
+      21.232 s outward and 18.304 s back with retained state; recomputing
+      A's prompt takes 25.236 s on return. Warm restore returns in 4.062 s;
+      live residency in 0.089 s. Native LRU, durable save/restore, actual
+      block I/O, state bytes, memory and bounded observed swap are verified.
+      A reuses 18,297 tokens and processes 42; all outputs match, and a
+      separate early/late notebook recall probe passes. B's recurrent-state
+      continuation also passes. Default SWA still re-prefills after restore
+      (RE-004); decode speeds differ by state lifecycle and are reported.
+      Exact pins, external trace identity, measured ranges, tooling and
+      limitations are in the [aggregate report](experiments/reference-aba/README.md).
+      Normal optimization probes use the same forced one-model policy;
+      normal concurrent placement and the large-model pair remain unvalidated.
+      This completes the first reference switching baseline, not jitLLM
+      execution or paging feasibility. M4 can replay this exact trace.
       Comparator datapoint: Athena's Engine reports a 46 s measured switch
       between DeepSeek V4 Flash and Qwen3.8 Flash Next on one GB10 and a
       2.1 s restore of a 141k-token conversation from disk (creator-reported;
@@ -169,16 +191,18 @@ needs evidence from the real hardware.
       the measured reference experiment and feasibility evidence. These
       govern M4/M5/M7 acceptance for named workloads; no numeric thresholds
       are assumed in this plan.
-- [ ] Re-inventory the Spark-to-Spark direct link once the QSFP/NCCL cable
-      is installed (expected 2026-09-21): link state, RDMA devices, NCCL
-      version, and the bandwidth a plain host-buffer transfer achieves
-      between `spark` and `spark-b`. Also run pinned NCCL tests across the
-      direct link (owner-requested 2026-09-21): point-to-point and collective
-      bandwidth/latency across message sizes, actual transport and interface
-      selection, and host staging/copy behaviour. Do not infer GPUDirect RDMA
-      from a successful NCCL run. Record in architecture.md. Sharded
-      execution in M6 waits on this; placement and request routing can use
-      the existing network.
+- [x] Complete the Spark-to-Spark direct-link baseline. The owner configured
+      the `sparky` DAC cluster on 2026-09-21; the
+      [baseline](experiments/interconnect/README.md) passed 78 host-buffer
+      test pairs and 27 pinned NCCL runs. The two PCIe interfaces share one
+      physical 200 Gb/s port: combined writes measured 184.76 Gb/s in either
+      direction, reads 150.10 Gb/s with default queue settings. Large NCCL
+      SendRecv/AllReduce reached 22.35/22.20 GB/s; supported result checks
+      passed. Channel logs and counters verify actual HCA use; source and
+      allocation logs establish GPU access to mapped host communication
+      buffers, not GPUDirect RDMA. Message-size sweeps, ranges, pins and
+      limitations are recorded with the report and in architecture.md.
+      Sharded-model, asymmetric-pressure and failure tests remain M6 work.
 - [ ] Inventory which MiaAI-Lab reference files are actually AGPL versus MIT
       ExLlamaV3 upstream before designing the optional-module boundary, and
       note AGPL's network clause for a served process in the licensing docs.
@@ -385,7 +409,7 @@ has a promised date; each should leave a usable, testable result.
 - **M6 — Sharded model execution (two Sparks here).** Build on M4a's
   configured cluster; add explicit sharding for the flagship, coordinated
   admission, stable communication buffers, and ordered collectives. Needs
-  the direct Spark-to-Spark link (cable expected 2026-09-21) and the relevant
+  the direct Spark-to-Spark link baseline (DAC configured 2026-09-21) and the relevant
   single-node model/paging evidence. *Gate:* both ranks remain correct under
   asymmetric pressure, cancellation, and controlled failure; no timeout is
   treated as proof of reclaimed memory. Placement-only use already works at M4a.

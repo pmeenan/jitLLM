@@ -1,0 +1,72 @@
+{
+  "recorded_on": "2026-09-21",
+  "purpose": "M0 external reference installation and smoke; not a jitLLM dependency lock",
+  "engine": {
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "discovery_tag": "full-cuda13-v0.4.1",
+    "platform": "linux/arm64",
+    "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "reported_version": "0.4.1-dev (build 10964, commit b29c606e2)",
+    "compiler": "GNU 14.2.0 for Linux aarch64",
+    "category": "external reference tool; not incorporated into jitLLM",
+    "license": "MIT (llama.cpp/GGML); container dependencies retain their own terms",
+    "image_size_bytes": 3051638872,
+    "server_sha256": "b2e1769c9d08b1e3b18282928f91ca11de61ec2020d38cdd389d462b0c223351",
+    "cuda_backend_sha256": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e"
+  },
+  "model": {
+    "repository": "unsloth/gemma-4-26B-A4B-it-GGUF",
+    "revision": "c099eb48e663fd284577b04978a94ffccb261841",
+    "filename": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    "size_bytes": 16947541728,
+    "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+    "license": "Apache-2.0",
+    "license_url": "https://ai.google.dev/gemma/apache_2",
+    "category": "external benchmark input; not redistributed",
+    "base_repository": "google/gemma-4-26B-A4B-it",
+    "base_revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+    "scope": "text-only; no vision projector or MTP artifact"
+  },
+  "container_runtime_versions": {
+    "cuda-cudart-13-3": "13.3.29-1",
+    "libcublas-13-3": "13.5.1.27-1",
+    "libc6:arm64": "2.39-0ubuntu8.9",
+    "libstdc++6:arm64": "14.2.0-4ubuntu2~24.04.1",
+    "libgomp1:arm64": "14.2.0-4ubuntu2~24.04.1",
+    "libssl3t64:arm64": "3.0.13-0ubuntu3.9",
+    "python3": "3.12.3-0ubuntu2.1",
+    "numpy": "2.2.6",
+    "gguf_installed": "0.19.0"
+  },
+  "upstream_source_sha256": {
+    "LICENSE": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+    ".devops/cuda.Dockerfile": "8e70fdecc05ad1bfc5936888455f55788fb1c501e9f58d0383f6c268598d16db",
+    ".github/workflows/docker.yml": "9acb5185667a28b81abac72b32f2028bc79c654abeda7e0687b86097d1733764",
+    "ggml/src/ggml-cuda/CMakeLists.txt": "8810366d36247b5e4f923f58f92a340ba6071ad5700ef4e5af7eb0cb7f7bc67a",
+    "tools/server/README.md": "57e27013809e4976e71a76fe83a5930779634401d6dbdf2d941fd5432889eb9e",
+    "gguf-py/gguf/gguf_reader.py": "d0ea743200e19d7ef0a4c969edcc4a6dba8e3656a790b217e3bdc7b31170718e"
+  },
+  "candidate_recheck": [
+    {
+      "repository": "unsloth/gemma-4-26B-A4B-it-GGUF",
+      "revision": "c099eb48e663fd284577b04978a94ffccb261841",
+      "gated": false,
+      "installed": true,
+      "declared_license": "Apache-2.0"
+    },
+    {
+      "repository": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "revision": "12393612fd4f730ff5aadc23e9b8f9648aa49ceb",
+      "gated": false,
+      "installed": false,
+      "declared_license": "MIT; also confirmed by owner 2026-09-21"
+    },
+    {
+      "repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+      "gated": false,
+      "installed": false,
+      "declared_license": "Qwen Community License 1.0; not evaluated for this installation"
+    }
+  ]
+}

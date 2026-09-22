@@ -27,6 +27,70 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-005: Spark perftest warmup option stalled an RDMA-CM sweep  (2026-09-21, status: worked-around)
+
+Environment: both Sparks, kernel `7.0.0-1019-nvidia`, ConnectX firmware
+`28.45.4028`, `rdma-core 50.0-2ubuntu0.2`, Ubuntu perftest
+`24.01.0+0.38-1build2` (binary reports 6.20), RoCE v2 / MTU 1024.
+An `ib_write_bw -d rocep1s0f1 -R -p 18700 -a -n 1000 --report_gbits
+--perform_warm_up` server/client pair failed to finish within 90 seconds;
+both remote timeouts returned 124. Removing the optional warmup flag
+completed the sweep, and the subsequent repeated baseline passed. Duration
+tests discard a one-second start/end margin instead.
+
+This is an observed option-combination timeout, not an isolated root cause
+or evidence that the DAC requires a reboot. The excluded pilot receipt and
+logs remain in workstation `/tmp/jitllm-interconnect/host-sweep/`; the
+[baseline report](experiments/interconnect/README.md) records the working
+protocol. Also, `ib_write_bw --version` prints `Version: 6.20` but exits 1;
+do not treat that informational exit as a failed transfer.
+
+## RE-004: llama.cpp Gemma slot restore reports success but default SWA re-prefills  (2026-09-21, status: worked-around)
+
+Environment: `spark-c4e2`, GB10, driver 580.178.04; pinned llama.cpp
+`b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` in the CUDA 13.3 ARM64 container;
+Gemma 4 26B A4B Unsloth UD-Q4_K_M. Full identities and the retained
+[smoke harness](experiments/reference-setup/README.md) accompany the result.
+
+With an 8192-token context, f16 K/V, one slot, batch/microbatch 512, and
+default SWA retention, the slot save and fresh-process restore endpoints
+both reported **627 tokens / 141,268,896 bytes**. A 639-token continuation
+then re-evaluated **all 639 tokens**; the server logged a full prompt
+re-processing fallback due to missing cache data. The equivalent resident
+continuation evaluated 18 tokens after an internal checkpoint rollback.
+The prompt was shorter than the 1024-token sliding window. Successful
+serialization counters therefore do not establish useful continuation reuse.
+
+The pinned [server source](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/tools/server/server-context.cpp)
+uses SWA coverage thresholds and context checkpoints when deciding whether
+the common prefix can be reused. `--swa-full` disables that SWA checkpoint
+path. With it, two runs restored the 627-token prefix, evaluated only the
+12-token extension, and matched all 32 resident-continuation output token
+IDs. This is a measured workaround for this pinned configuration, not a
+general fix for all hybrid models or proof of long-context coverage.
+
+Cost: logged KV allocation grows from **460 MiB** (160 global + 300 SWA)
+to **1760 MiB** (160 global + 1600 full-SWA) at this context. Keep the
+normal/windowed and full-SWA reference configurations separate in the
+A→B→A experiment and include their actual memory costs. To reproduce the
+negative control, remove only `--swa-full` from an external copy of
+`smoke.py`; its restore assertions must fail rather than report a pass from
+the matching API counters. The two differing continuation token streams in
+the negative control alone are not evidence of corrupted KV: they used
+different prefill paths. No upstream fix is claimed.
+
+Long-context follow-up: the [A→B→A report](experiments/reference-aba/README.md)
+reproduces this behavior at context 32,768. Three default-SWA restore trials
+reported 18,303 restored tokens but processed all 18,339 continuation input
+tokens. Full-SWA restore reused 18,297 and processed 42, matching every
+118-token output. The six-token difference between saved and reusable
+counts is legitimate: Gemma's canonical chat template removes the empty
+generation-only thinking marker from completed turns. Compare the actual
+longest common token prefix, not just the save API's count. A separate
+early/late notebook recall check passed. Also retain the measured decode
+speed distinction (about 27–28 tokens/s live/recomputed full-SWA versus
+46–47 after restore/default SWA); its cause was not isolated here.
+
 ## RE-003: nvme-cli 2.8 feature control requires --value, and zero has a different printed form  (2026-09-21, status: worked-around)
 
 Environment: Spark, installed nvme-cli 2.8-1ubuntu0.1. During the bounded

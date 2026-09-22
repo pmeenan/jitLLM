@@ -527,8 +527,9 @@ software. These names are the owner's environment, not application
 configuration (D-023). `spark` (master, also `spark-a`) and `spark-b` resolve from the
 workstation and from each other, and SSH is configured in both directions
 between the nodes (verified 2026-09-20 with a hop from each to the other).
-That traffic currently rides the management Ethernet; the direct QSFP link is
-still uncabled (see the RDMA row).
+That initial traffic used management Ethernet. The owner configured the
+direct DAC cluster on 2026-09-21; its current link inventory follows the
+historical platform snapshot below.
 
 | Item | `spark` (hostname `spark-c4e2`) and `spark-b` (hostname `spark-56f5`) |
 | --- | --- |
@@ -539,7 +540,7 @@ still uncabled (see the RDMA row).
 | CUDA | Toolkit 13.0 (`nvcc` V13.0.88, package cuda-toolkit-13-0 13.0.3-1) at `/usr/local/cuda-13.0` |
 | Storage | One Samsung NVMe (MZALC4T0HBL1), 3.7 TB, root filesystem, about 3.5 TB free. No separate data volume |
 | GDS / cuFile | GDS 1.15.1.6, libcufile 2.12, gds-tools installed. `use_compat_mode: true`, `allow_compat_mode: true`, `nvidia_fs` not loaded, cuFile RDMA library not loaded. Matches the compatibility-mode-only constraint in D-004 |
-| RDMA / interconnect | `mlx5_core`, `mlx5_ib`, `ib_core`, `ib_uverbs`, `rdma_cm` loaded; rdma-core 50.0. **No devices under `/sys/class/infiniband` and no ConnectX netdevs listed.** The direct QSFP link is not cabled yet (cable expected 2026-09-21); only the management Ethernet port is up |
+| RDMA / interconnect | Initial pre-DAC snapshot: `mlx5_core`, `mlx5_ib`, `ib_core`, `ib_uverbs`, `rdma_cm` loaded; rdma-core 50.0; no devices under `/sys/class/infiniband` or ConnectX netdevs listed. Superseded by the link inventory below |
 | NCCL | No `libnccl2` package installed |
 | glibc | 2.39 |
 | Distro toolchain | clang 18.1.3, gcc 13.3.0, cmake 3.28.3, python 3.12.3, git 2.43, docker 29.6.2, nvidia-container-toolkit 1.20.1. No ninja, no mise. Distro defaults, not project pins |
@@ -552,8 +553,75 @@ extracted 13.4.2 components using native GB10 code on the existing R580
 driver through CUDA minor-version compatibility. New driver-dependent
 features and PTX/JIT paths still need separate validation. The workstation
 driver (595.91.07) is newer than the targets', so a kernel that runs locally is not proof it runs on Spark. The I/O spike has one
-NVMe and one filesystem to work with, shared with the OS. The interconnect
-half of the inventory is a separate plan task after cabling.
+NVMe and one filesystem to work with, shared with the OS. Direct-link
+performance was subsequently validated in the M0 baseline below.
+
+### Direct DAC cluster follow-up (2026-09-21)
+
+The owner reports cluster **`sparky`**, two directly connected devices.
+Read-only SSH checks on both nodes confirmed the supplied addresses, link
+state, local routes and RDMA-device mappings. These are environment inventory,
+not hardcoded application topology or a settled jitLLM configuration format.
+
+| SSH alias | Network interface | IPv4 address | RDMA device / port |
+| --- | --- | --- | --- |
+| `spark-b` | `enp1s0f1np1` | `10.100.208.1/24` | `rocep1s0f1/1` |
+| `spark-b` | `enP2p1s0f1np1` | `10.100.209.1/24` | `roceP2p1s0f1/1` |
+| `spark` | `enp1s0f1np1` | `10.100.208.2/24` | `rocep1s0f1/1` |
+| `spark` | `enP2p1s0f1np1` | `10.100.209.2/24` | `roceP2p1s0f1/1` |
+
+All four interfaces report `UP`, **200,000 Mb/s** link rate and **MTU 1500**;
+their RDMA ports report `ACTIVE / LINK_UP`. Each node's route to its peer's
+address selects the corresponding interface and local source address.
+The other two ConnectX netdevs (`enp1s0f0np0`, `enP2p1s0f0np0`) are down.
+Both active interfaces map to the same right-hand physical QSFP port through
+separate PCIe Gen5 ×4 paths (measured 32 GT/s ×4 on each node). The
+[NVIDIA port map](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+explains these two functions; they are not separate 200 Gb/s cables.
+
+Both hosts have `rdma-core 50.0-2ubuntu0.2` and
+`perftest 24.01.0+0.38-1build2`; `ib_write_bw --version` reports 6.20.
+`ib_write_bw`, `ib_read_bw`, `ib_send_lat` and `ibv_devinfo` are available.
+No host `libnccl2` package was reported by `dpkg-query` in the initial link
+inventory; the later baseline used a pinned native build in external scratch.
+These inventory checks ran without sudo
+and changed no network or driver settings. No transfer benchmark, NCCL test,
+end-to-end data validation or GPUDirect RDMA validation was performed in
+this inventory update.
+
+The subsequent [M0 baseline](experiments/interconnect/README.md) completed
+78 host-buffer test pairs and 27 two-GPU NCCL runs on 2026-09-21, without a
+reboot or network/driver changes. Three-run medians: each HCA alone reaches
+about 109 Gb/s for 8 MiB host writes; together they reach **184.76 Gb/s**
+in either direction (consistent with the owner's approximately 185 Gb/s
+Sync result). Combined reads reach **150.10 Gb/s** with default queues.
+Bidirectional writes total 369.28 Gb/s, about 184.64 Gb/s each way.
+Small 8-byte send latency is 1.39–1.40 µs median RTT/2.
+
+Native `sm_121` NCCL 2.30.7 and pinned nccl-tests 2.20.0 reached
+**22.35 GB/s SendRecv**, **22.20 GB/s AllReduce** and **20.40 GB/s AllGather
+bus bandwidth** at 512 MiB, default HCA selection, out-of-place medians.
+All supported result checks passed; SendRecv's in-place check is unsupported
+and excluded. A rounded-to-zero AllGather case is excluded from payload
+metrics. Small/medium operation latency varied materially across repeats;
+the report records size sweeps and ranges rather than extrapolating peak
+bandwidth to generation latency.
+
+All 54 rank logs and per-HCA counter snapshots confirm the selected RDMA
+paths. CUDA reports GPUDirect RDMA and DMA-BUF support as zero. NCCL channel
+and allocation logs, checked against its pinned source, establish **mapped
+host communication buffers**: GPU kernels copy/reduce between user buffers
+and those buffers, and the NIC performs RDMA on them. This is not direct
+registration of user CUDA allocations or zero staging. Exact copy-byte
+counts and CUDA timeline tracing were not measured. Sharded execution,
+asymmetric memory pressure, cancellation and failure tests remain M6 work.
+
+Independent inventory review (2026-09-21): a separate agent repeated the
+read-only address, link, route, RDMA mapping and installed-tool checks on
+both nodes and found the inventory consistent. That pre-benchmark review left
+measured throughput, aggregate link capacity and GPUDirect support unproven;
+M0 baseline testing and M6 execution/failure testing remain distinct.
+No settings changed or transfer benchmarks ran during this review.
 
 ### VMM microbench follow-up (2026-09-21)
 
@@ -617,6 +685,46 @@ NVMe passthrough, and SPDK were not timed because the only drive holds mounted
 root; no raw performance advantage is claimed. M2 still validates actual
 GGML pointers/kernels and cancellation/registration/reclaim lifetimes; M4
 settles mixed read/write scheduling and spill retention/write-rate limits.
+
+### Reference-engine follow-up (2026-09-21)
+
+The [pinned llama.cpp container](experiments/reference-setup/README.md) now
+runs the Gemma 4 26B A4B UD-Q4_K_M text GGUF on `spark`, with all layers
+offloaded and PTX JIT disabled. The 16.95 GB artifact contains 128 experts
+per layer, top-8 plus a shared FFN across 30 layers; the report gives exact
+expert closures, scales, non-expert bytes, and reference allocations.
+Two short synthetic save/restart/restore tests reused all 627 saved tokens
+and matched 32 continuation token IDs. This required `--swa-full`: default
+windowed retention restored the API counts but re-prefilled the prompt
+(RE-004). At context 8192, f16 KV rises from 460 to 1760 MiB with that
+workaround. Docker's cgroup statistics/limit do not establish the node's
+CUDA occupancy or a validated physical-memory pressure mechanism. No host
+baseline settings changed by setup.
+
+The subsequent [A→B→A reference experiment](experiments/reference-aba/README.md)
+passed 27 cycles using Gemma as A and MIT Ornith 1.5 Q4_K_M as B. A's
+18,339-token continuation reused 18,297 tokens and processed 42 after restore;
+all 118 output IDs matched the resident reference. A separate early/late
+notebook recall check also matched and returned the correct facts. Ornith's
+94-token recurrent/KV state survived unload/reload, reused its prefix and
+matched a seven-token continuation. The report includes exact expert closures,
+primary/MTP storage accounting, native LRU behavior and durable-save steps.
+
+An 80 GiB verified locked allocation leaves 41.688 GiB of physical capacity;
+the matched reference's combined CUDA model/state/compute buffers need
+42.603 GiB before host overhead. With cold incoming file caches, median
+first-token waits were 21.232 s A→B and 18.304 s B→A with state restored;
+full re-prefill returned to A in 25.236 s. Warm-cache restore returned in
+4.062 s and live residency in 0.089 s. Each number has three repeats and
+an observed range in the report, together with actual block I/O, 622.424 MiB
+logical spill, sampled memory and bounded whole-node swap activity.
+
+Default-SWA restore still re-prefilled all 18,339 tokens (RE-004). Those
+normal-optimization probes enforce the same one-model policy; simultaneous
+normal placement under pressure was not validated. A decode speed also
+differs across live full-SWA, restored and default-SWA paths, so the slower
+path cannot alone define the generation comparison. Router expert traces,
+large-model switching, tail-stall targets and paging feasibility remain open.
 
 ## Open architecture questions
 
