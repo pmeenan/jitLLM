@@ -56,6 +56,18 @@ external `paging/large-capture-2`, `deepseek-restore-probe-2`, `qwen-capture-1`,
 are retained in the study's aggregate evidence. Do not promote these reference
 observations into a jitLLM numerical or restore-compatibility guarantee.
 
+The [image-reference follow-up](experiments/image-reference/README.md)
+(2026-09-22) also finds a short Gemma configuration difference with this
+llama.cpp revision and its default CUDA fusion/graph settings: a 639-token
+continuation restored from 627 saved tokens matches resident execution, but
+fresh-context full prefill differs at 15 of 32 generated positions, starting
+at zero-based position 17. Full-prefill controls before and after image
+generation match each other, so image switching is not required to reproduce
+the difference. This is a free-running token comparison, not a teacher-forced
+logit diagnosis, and does not establish a common cause with the cases above.
+Preserve the failed cross-mode comparison rather than silently declaring
+cached and recomputed trajectories equivalent.
+
 ## RE-007: Gemma sequence snapshots lose SWA history needed after prompt rollback  (2026-09-21, status: worked-around)
 
 On Spark GB10/driver 580.178.04 and pinned llama.cpp

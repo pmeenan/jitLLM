@@ -128,29 +128,40 @@ needs evidence from the real hardware.
       state bytes per token, and headroom on one node. The owner's local
       Ollama blobs are plain GGUFs usable for workstation-side dry runs on
       the RTX 3080 Ti where they fit.
-- [ ] **Image-generation reference experiment — Qwen-Image-2.1**
-      (owner-added 2026-09-22): add
-      [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1)
-      alongside the text-model experiments. Its model card, checked
-      2026-09-22, describes text-to-image generation and image editing,
-      including RGBA output, with a 7B visual generation component comprising
-      32 single-stream DiT layers and prefix KV reuse. The 7B figure is for
-      that component, not a measured full-pipeline footprint.
-      Pin checkpoint revision, reference implementation, precision, seed,
-      resolution, step count and input images before running; audit the
-      card's Qwen Research License and reference dependencies under D-017.
-      Establish a standalone reference pipeline first; GGML support is
-      unverified. Measure component residency, peak workspace/activation and
-      latent-state bytes, repeated weight access across denoising steps,
-      prefix reuse, I/O, and end-to-end latency as resolution/steps vary.
-      Then measure text → image generation → text switching with retained
-      text state, comparing against full model swaps and checking output
-      correctness against the pinned reference. Probe completion-safe
-      cancellation and useful eviction boundaries between pipeline phases
-      and steps. Spark CPU offload still shares its physical memory budget.
-      This is an experiment target; native image-output execution/API scope
-      and delivery milestones follow feasibility evidence, with no image
-      generation support implied by the existing image-input API scope.
+- [x] **Image-generation reference experiment — Qwen-Image-2.1**
+      (bounded reference study complete, 2026-09-22): the
+      [report, pins and harness](experiments/image-reference/README.md)
+      establish a standalone BF16 Diffusers reference on `spark`, with
+      checkpoint/dependency provenance and research-license boundaries.
+      Twelve image cases cover 512–2048 pixel resolutions, 4/40 steps,
+      editing, repeated outputs, prefix reuse, completed-step cancellation
+      and phase-boundary backing release. The full pipeline has 32.44 GB of
+      parameter storage in execution, not just the advertised 7B generation
+      component; the 2048²/40-step request takes 252.796 s and peaks at
+      56.521 GiB of CUDA allocations. Exact pixels survive cancellation
+      recovery and discarding encoder/denoiser backing after their completed
+      phases; all weights were initially loaded, so lower-budget admission
+      and subsequent image-state restoration remain unproven.
+      Short text → image → text cycles return in 0.044 s with text resident
+      and 3.103 s after state restoration, processing only 12 new tokens.
+      Full recomputation takes 4.155 s in a separate diagnostic and matches
+      its fresh-context control, **but differs from resident text**; the
+      original failed comparison is preserved (RE-008). These are single
+      observations, not latency distributions or measured jitLLM speedups.
+      Image loading is slow and variable; outward harness timings include
+      checksum verification. No cold-cache, forced-pressure or
+      larger-than-memory image result is claimed. Native GGML image execution,
+      pending-work cancellation, output API scope and delivery milestones
+      remain separate follow-up work; existing image-input API scope implies
+      no native image-generation capability.
+- [ ] **Additional reference candidates** (owner-added 2026-09-22):
+      compare Qwen-Image-2.1 GGUF against the completed BF16 image baseline,
+      and add MiMo-V2.6-Flash-RL as a two-Spark sharded reference candidate.
+      [Candidate matrix and source revisions](experiments/model-candidates.md)
+      define the bounded checks and a revisit trigger for smaller MiMo quants.
+      These extend reference coverage; they do not replace the canonical
+      DeepSeek/Qwen switching pair, establish native support, or block M1
+      while waiting for future quantizations.
 - [x] **Reference A→B→A experiment** (2026-09-21, D-025): 27 verified cycles
       on `spark`, Gemma 4 UD-Q4_K_M → Ornith 1.5 Q4_K_M → Gemma, with an
       18,339-token continuation. Three repeats of nine cases distinguish
@@ -536,6 +547,7 @@ dependency-group scoring, optimistic MoE) live in features.md.
 
 | Item | Earliest work / revisit trigger | Scope |
 | --- | --- | --- |
+| Load/temperature-aware GPU operating policy | Earliest M7 evaluation, or earlier diagnosis if reproducible throttling or unexplained shutdowns occur | [Proposed telemetry and optional adaptive clock ceiling](features.md#load--and-temperature-aware-operating-policy-proposal); measure stock/fixed/adaptive policies first, no assumed fault or automatic host changes |
 | Ollama registry and other management compatibility | After the basic subset and relevant native management operation, when a named client needs them | Deferred D-041 candidate; lifecycle mapping needs separate proof |
 | Regex/grammar constrained output | After validated JSON/schema support, when a concrete client requires it | D-043 deferral; no automatic milestone delivery |
 | LoRA adapters | Earliest M7 planning after validated base-model execution, when a concrete adapter workload needs them | D-044 deferral; no automatic delivery |

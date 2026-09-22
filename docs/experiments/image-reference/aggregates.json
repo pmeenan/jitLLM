@@ -1,0 +1,1305 @@
+{
+  "host": "spark-c4e2",
+  "date": "2026-09-22",
+  "samples_per_case": 1,
+  "model_revision": "790c92633540aa0cb11d9abf19eb46d861714758",
+  "torch": "2.14.0+cu130",
+  "cuda": "13.0",
+  "device": "NVIDIA GB10",
+  "components": {
+    "text_encoder": {
+      "parameters": 8767123696,
+      "parameter_bytes": 17534247392,
+      "buffer_bytes": 656
+    },
+    "transformer": {
+      "parameters": 7115124736,
+      "parameter_bytes": 14230249472,
+      "buffer_bytes": 512
+    },
+    "vae": {
+      "parameters": 337740404,
+      "parameter_bytes": 675480808,
+      "buffer_bytes": 0
+    }
+  },
+  "checks": {
+    "fixed_configuration_pixels_match": true,
+    "repeated_edit_matches": true,
+    "after_cancel_matches": true,
+    "phase_release_matches": true
+  },
+  "suite_release": {
+    "cuda_allocated": 33554432,
+    "cuda_reserved": 33554432
+  },
+  "initial_recompute_resident_comparison_failed": true,
+  "recompute_is_separate_diagnostic": true,
+  "cross_mode_text_equivalence_passed": false,
+  "cases": {
+    "after-cancel-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": true,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 1.4748639590034145,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 91073728512,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 32665354752,
+        "cuda_peak_reserved": 32918994944,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10018816
+      },
+      "after_run": {
+        "available_bytes": 88874622976,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 34860957696,
+        "cuda_peak_allocated": 34272155136,
+        "cuda_peak_reserved": 34860957696,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10018816
+      },
+      "after_cleanup": {
+        "available_bytes": 91062771712,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272155136,
+        "cuda_peak_reserved": 34860957696,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10285056
+      },
+      "component_calls": {},
+      "completed_steps": null,
+      "latent_bytes": null,
+      "prefix_kv_bytes": null,
+      "block_call_count_range": [
+        0,
+        0
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "cancel-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": 1,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 0.37099131000286434,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 91073495040,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10014720
+      },
+      "after_run": {
+        "available_bytes": 90833932288,
+        "cuda_allocated": 32496726016,
+        "cuda_reserved": 32918994944,
+        "cuda_peak_allocated": 32665354752,
+        "cuda_peak_reserved": 32918994944,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10014720
+      },
+      "after_cleanup": {
+        "available_bytes": 91073728512,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 32665354752,
+        "cuda_peak_reserved": 32918994944,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10014720
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08316307700442849,
+          "cumulative_request_peak_bytes": 32526751232
+        },
+        "transformer": {
+          "calls": 1,
+          "seconds": 0.28209674199752044,
+          "cumulative_request_peak_bytes": 32665354752
+        }
+      },
+      "completed_steps": 1,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        1,
+        1
+      ],
+      "output": {
+        "cancelled": true,
+        "completed_steps": 1
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": 0.001214937998156529,
+      "cancellation_cleanup_seconds": 0.08490834799886215
+    },
+    "edit-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": true,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 2.7500003919994924,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 91386679296,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 60689105920,
+        "cuda_peak_reserved": 68459429888,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 9125888
+      },
+      "after_run": {
+        "available_bytes": 88287334400,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 35469131776,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 9752576
+      },
+      "after_cleanup": {
+        "available_bytes": 91087622144,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 9875456
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.8021307399976649,
+          "cumulative_request_peak_bytes": 32739221504
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 1.5203736259936704,
+          "cumulative_request_peak_bytes": 33361486336
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 0.25495054599741707,
+          "cumulative_request_peak_bytes": 34814433280
+        },
+        "vae_encode": {
+          "calls": 1,
+          "seconds": 0.11543188599898713,
+          "cumulative_request_peak_bytes": 33058542080
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": 550502400,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "c0b54663a430e812817ace33a6982e0827d0ea8cef3bc66981688248e7206787"
+      },
+      "input_rgb_sha256": "a2d3d87be7f415ec5787bfccbc475c00ef170c2d601af12fa49c2b0f2f7e08e9",
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "edit-repeat-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": true,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 2.076197939000849,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 91087622144,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 9883648
+      },
+      "after_run": {
+        "available_bytes": 88273453056,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 35469131776,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 9883648
+      },
+      "after_cleanup": {
+        "available_bytes": 91073495040,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34814433280,
+        "cuda_peak_reserved": 35469131776,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10006528
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.1600308889974258,
+          "cumulative_request_peak_bytes": 32739221504
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 1.5282733630010625,
+          "cumulative_request_peak_bytes": 33361486336
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 0.25580715000251075,
+          "cumulative_request_peak_bytes": 34814433280
+        },
+        "vae_encode": {
+          "calls": 1,
+          "seconds": 0.09931126599985873,
+          "cumulative_request_peak_bytes": 33058542080
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": 550502400,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "c0b54663a430e812817ace33a6982e0827d0ea8cef3bc66981688248e7206787"
+      },
+      "input_rgb_sha256": "a2d3d87be7f415ec5787bfccbc475c00ef170c2d601af12fa49c2b0f2f7e08e9",
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "instrumented-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 1.4590749420021893,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 88227586048,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 554737664,
+        "process_write_bytes": 299008
+      },
+      "after_run": {
+        "available_bytes": 86071361536,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 34858860544,
+        "cuda_peak_allocated": 34272285696,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 299008
+      },
+      "after_cleanup": {
+        "available_bytes": 88274124800,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272285696,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 565248
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08324341900151921,
+          "cumulative_request_peak_bytes": 32526750720
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 1.093631046001974,
+          "cumulative_request_peak_bytes": 32665354240
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 0.25367444199946476,
+          "cumulative_request_peak_bytes": 34272285696
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "no-cache-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": true,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 1.4252655809978023,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 88338100224,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 843776
+      },
+      "after_run": {
+        "available_bytes": 86166077440,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 34858860544,
+        "cuda_peak_allocated": 34259182080,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 843776
+      },
+      "after_cleanup": {
+        "available_bytes": 88398065664,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34259182080,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1110016
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08305834799830336,
+          "cumulative_request_peak_bytes": 32526750720
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 1.077111076003348,
+          "cumulative_request_peak_bytes": 32652513280
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 0.25277012799779186,
+          "cumulative_request_peak_bytes": 34259182080
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": null,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "phase-release-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": true
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 1.818215445993701,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 91062771712,
+        "cuda_allocated": 32496594944,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272155136,
+        "cuda_peak_reserved": 34860957696,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10289152
+      },
+      "after_run": {
+        "available_bytes": 121409605632,
+        "cuda_allocated": 718516736,
+        "cuda_reserved": 2929721344,
+        "cuda_peak_allocated": 32527481344,
+        "cuda_peak_reserved": 32717668352,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10289152
+      },
+      "after_cleanup": {
+        "available_bytes": 123289780224,
+        "cuda_allocated": 718516736,
+        "cuda_reserved": 1077936128,
+        "cuda_peak_allocated": 32527481344,
+        "cuda_peak_reserved": 32717668352,
+        "process_read_bytes": 626737152,
+        "process_write_bytes": 10555392
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08457854199514259,
+          "cumulative_request_peak_bytes": 32526751232
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 1.1020600039992132,
+          "cumulative_request_peak_bytes": 32527481344
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 0.2611555390030844,
+          "cumulative_request_peak_bytes": 32527481344
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 131072,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [
+        {
+          "component": "text_encoder",
+          "before": {
+            "available_bytes": 91027447808,
+            "cuda_allocated": 32496800256,
+            "cuda_reserved": 32717668352,
+            "cuda_peak_allocated": 32527481344,
+            "cuda_peak_reserved": 32717668352,
+            "process_read_bytes": 626737152,
+            "process_write_bytes": 10289152
+          },
+          "after": {
+            "available_bytes": 108826796032,
+            "cuda_allocated": 14948988416,
+            "cuda_reserved": 15305015296,
+            "cuda_peak_allocated": 32527481344,
+            "cuda_peak_reserved": 32717668352,
+            "process_read_bytes": 626737152,
+            "process_write_bytes": 10289152
+          },
+          "seconds": 0.19667278199631255
+        },
+        {
+          "component": "transformer",
+          "before": {
+            "available_bytes": 108812271616,
+            "cuda_allocated": 14962489344,
+            "cuda_reserved": 15319695360,
+            "cuda_peak_allocated": 32527481344,
+            "cuda_peak_reserved": 32717668352,
+            "process_read_bytes": 626737152,
+            "process_write_bytes": 10289152
+          },
+          "after": {
+            "available_bytes": 123279278080,
+            "cuda_allocated": 732222976,
+            "cuda_reserved": 1090519040,
+            "cuda_peak_allocated": 32527481344,
+            "cuda_peak_reserved": 32717668352,
+            "process_read_bytes": 626737152,
+            "process_write_bytes": 10289152
+          },
+          "seconds": 0.16006353000557283
+        }
+      ],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "plain-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": true,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 207.12168429000303,
+      "run_seconds": 2.192826202001015,
+      "cpu_load_seconds": 0.5631010910001351,
+      "transfer_seconds": 206.5585541429973,
+      "pipeline_reused": false,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 89351917568,
+        "cuda_allocated": 32457959936,
+        "cuda_reserved": 32648462336,
+        "cuda_peak_allocated": 32457959936,
+        "cuda_peak_reserved": 32648462336,
+        "process_read_bytes": 554737664,
+        "process_write_bytes": 28672
+      },
+      "after_run": {
+        "available_bytes": 86041788416,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 34858860544,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 554737664,
+        "process_write_bytes": 28672
+      },
+      "after_cleanup": {
+        "available_bytes": 88227586048,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 554737664,
+        "process_write_bytes": 294912
+      },
+      "component_calls": {},
+      "completed_steps": null,
+      "latent_bytes": null,
+      "prefix_kv_bytes": null,
+      "block_call_count_range": [
+        0,
+        0
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "plain-repeat-512-4": {
+      "configuration": {
+        "size": 512,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": true,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 1.4270270879933378,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 88274124800,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272285696,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 573440
+      },
+      "after_run": {
+        "available_bytes": 86124756992,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 34858860544,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 573440
+      },
+      "after_cleanup": {
+        "available_bytes": 88338100224,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34272154624,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 839680
+      },
+      "component_calls": {},
+      "completed_steps": null,
+      "latent_bytes": null,
+      "prefix_kv_bytes": null,
+      "block_call_count_range": [
+        0,
+        0
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          512,
+          512
+        ],
+        "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "t2i-1024-4": {
+      "configuration": {
+        "size": 1024,
+        "steps": 4,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 6.293950310006039,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 88398065664,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 34259182080,
+        "cuda_peak_reserved": 34858860544,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1118208
+      },
+      "after_run": {
+        "available_bytes": 80166690816,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 41167093760,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1118208
+      },
+      "after_cleanup": {
+        "available_bytes": 88738156544,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1933312
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08496665800339542,
+          "cumulative_request_peak_bytes": 32526750720
+        },
+        "transformer": {
+          "calls": 4,
+          "seconds": 5.158052200000384,
+          "cumulative_request_peak_bytes": 33121288704
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 1.0302036770008272,
+          "cumulative_request_peak_bytes": 39556846080
+        }
+      },
+      "completed_steps": 4,
+      "latent_bytes": 524288,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        4,
+        4
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          1024,
+          1024
+        ],
+        "pixels_sha256": "e2f245e6d3a9adca77b4d032e8de4e1b0769c4c924d491773590b61ad83cafea"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "t2i-1024-40": {
+      "configuration": {
+        "size": 1024,
+        "steps": 40,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 52.58569605299999,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 88738156544,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1941504
+      },
+      "after_run": {
+        "available_bytes": 81678086144,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 41167093760,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 1941504
+      },
+      "after_cleanup": {
+        "available_bytes": 90301566976,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 3194880
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08246996700472664,
+          "cumulative_request_peak_bytes": 32526750720
+        },
+        "transformer": {
+          "calls": 40,
+          "seconds": 51.452004645012494,
+          "cumulative_request_peak_bytes": 33121288704
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 1.007311066998227,
+          "cumulative_request_peak_bytes": 39556846080
+        }
+      },
+      "completed_steps": 40,
+      "latent_bytes": 524288,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        40,
+        40
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          1024,
+          1024
+        ],
+        "pixels_sha256": "7d00b052878a03cc01baccbede3c3cafeca58b8160687ff93e915614387aac8f"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    },
+    "t2i-2048-40": {
+      "configuration": {
+        "size": 2048,
+        "steps": 40,
+        "no_cache": false,
+        "cancel_after": null,
+        "plain": false,
+        "edit": false,
+        "release_phases": false
+      },
+      "load_seconds": 0.0,
+      "run_seconds": 252.79564638999727,
+      "cpu_load_seconds": 0.0,
+      "transfer_seconds": 0.0,
+      "pipeline_reused": true,
+      "pipeline_released": false,
+      "after_load": {
+        "available_bytes": 90301566976,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 39556846080,
+        "cuda_peak_reserved": 41167093760,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 3231744
+      },
+      "after_run": {
+        "available_bytes": 55135592448,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 68459429888,
+        "cuda_peak_allocated": 60689105920,
+        "cuda_peak_reserved": 68459429888,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 3231744
+      },
+      "after_cleanup": {
+        "available_bytes": 91386679296,
+        "cuda_allocated": 32496594432,
+        "cuda_reserved": 32682016768,
+        "cuda_peak_allocated": 60689105920,
+        "cuda_peak_reserved": 68459429888,
+        "process_read_bytes": 555393024,
+        "process_write_bytes": 9089024
+      },
+      "component_calls": {
+        "text_encoder": {
+          "calls": 1,
+          "seconds": 0.08325480100029381,
+          "cumulative_request_peak_bytes": 32526750720
+        },
+        "transformer": {
+          "calls": 40,
+          "seconds": 247.94158329001948,
+          "cumulative_request_peak_bytes": 34942177280
+        },
+        "vae_decode": {
+          "calls": 1,
+          "seconds": 4.382656093999685,
+          "cumulative_request_peak_bytes": 60689105920
+        }
+      },
+      "completed_steps": 40,
+      "latent_bytes": 2097152,
+      "prefix_kv_bytes": 13107200,
+      "block_call_count_range": [
+        40,
+        40
+      ],
+      "output": {
+        "mode": "RGBA",
+        "size": [
+          2048,
+          2048
+        ],
+        "pixels_sha256": "ba9b34ad25ea268c77478e7a269987451c0f93e826112cc7beb7a5ed2cb2db2f"
+      },
+      "input_rgb_sha256": null,
+      "phase_releases": [],
+      "cancellation_return_seconds": null,
+      "cancellation_cleanup_seconds": null
+    }
+  },
+  "switch": [
+    {
+      "mode": "resident",
+      "outward_seconds_including_image_process": 128.4562294790012,
+      "return_first_token_seconds": 0.044078877,
+      "prompt_n": 12,
+      "continuation_tokens": 639,
+      "saved": {
+        "id_slot": 0,
+        "filename": "A.bin",
+        "n_saved": 627,
+        "n_written": 141268896,
+        "timings": {
+          "save_ms": 73.418
+        },
+        "api_elapsed_s": 0.076331734,
+        "durable_elapsed_s": 0.095443364,
+        "allocated_bytes": 141271040
+      },
+      "image_matches": true,
+      "memory": {
+        "sample_interval_ms": 50,
+        "sample_count": 2560,
+        "min_available_bytes": 59998482432,
+        "max_total_minus_available_bytes": 70662721536,
+        "max_dirty_bytes": 6447104,
+        "max_writeback_bytes": 430080
+      },
+      "system_counter_deltas": {
+        "read_bytes": 26009083904,
+        "write_bytes": 17506304,
+        "pswpin": 0,
+        "pswpout": 0,
+        "oom_kill": 0
+      },
+      "text_matches_matched_configuration": true,
+      "text_matches_resident": true,
+      "image": {
+        "configuration": {
+          "size": 512,
+          "steps": 4,
+          "no_cache": false,
+          "cancel_after": null,
+          "plain": true,
+          "edit": false
+        },
+        "load_seconds": 103.12323651099723,
+        "run_seconds": 3.1447366869979305,
+        "cpu_load_seconds": 0.8444255029971828,
+        "transfer_seconds": 102.27879017700616,
+        "pipeline_reused": false,
+        "pipeline_released": true,
+        "after_load": {
+          "available_bytes": 65506361344,
+          "cuda_allocated": 32457959936,
+          "cuda_reserved": 32648462336,
+          "cuda_peak_allocated": 32457959936,
+          "cuda_peak_reserved": 32648462336,
+          "process_read_bytes": 22839455744,
+          "process_write_bytes": 8192
+        },
+        "after_run": {
+          "available_bytes": 62302412800,
+          "cuda_allocated": 32496594432,
+          "cuda_reserved": 34858860544,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 23578415104,
+          "process_write_bytes": 8192
+        },
+        "after_cleanup": {
+          "available_bytes": 97749364736,
+          "cuda_allocated": 33554432,
+          "cuda_reserved": 33554432,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 23578533888,
+          "process_write_bytes": 274432
+        },
+        "component_calls": {},
+        "completed_steps": null,
+        "latent_bytes": null,
+        "prefix_kv_bytes": null,
+        "block_call_count_range": [
+          0,
+          0
+        ],
+        "output": {
+          "mode": "RGBA",
+          "size": [
+            512,
+            512
+          ],
+          "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+        },
+        "input_rgb_sha256": null,
+        "phase_releases": [],
+        "cancellation_return_seconds": null,
+        "cancellation_cleanup_seconds": null
+      }
+    },
+    {
+      "mode": "restore",
+      "outward_seconds_including_image_process": 215.11837670800014,
+      "return_first_token_seconds": 3.102649241,
+      "prompt_n": 12,
+      "continuation_tokens": 639,
+      "saved": {
+        "id_slot": 0,
+        "filename": "A.bin",
+        "n_saved": 627,
+        "n_written": 141268896,
+        "timings": {
+          "save_ms": 99.834
+        },
+        "api_elapsed_s": 0.10325462,
+        "durable_elapsed_s": 0.107035023,
+        "allocated_bytes": 141271040
+      },
+      "image_matches": true,
+      "memory": {
+        "sample_interval_ms": 50,
+        "sample_count": 4332,
+        "min_available_bytes": 84542033920,
+        "max_total_minus_available_bytes": 46119170048,
+        "max_dirty_bytes": 95432704,
+        "max_writeback_bytes": 15204352
+      },
+      "system_counter_deltas": {
+        "read_bytes": 10491731968,
+        "write_bytes": 158494720,
+        "pswpin": 0,
+        "pswpout": 0,
+        "oom_kill": 0
+      },
+      "text_matches_matched_configuration": true,
+      "text_matches_resident": true,
+      "image": {
+        "configuration": {
+          "size": 512,
+          "steps": 4,
+          "no_cache": false,
+          "cancel_after": null,
+          "plain": true,
+          "edit": false
+        },
+        "load_seconds": 186.26650072600023,
+        "run_seconds": 2.189208190997306,
+        "cpu_load_seconds": 0.5191717609995976,
+        "transfer_seconds": 185.74730416500097,
+        "pipeline_reused": false,
+        "pipeline_released": true,
+        "after_load": {
+          "available_bytes": 89385607168,
+          "cuda_allocated": 32457959936,
+          "cuda_reserved": 32648462336,
+          "cuda_peak_allocated": 32457959936,
+          "cuda_peak_reserved": 32648462336,
+          "process_read_bytes": 10491637760,
+          "process_write_bytes": 4096
+        },
+        "after_run": {
+          "available_bytes": 86033477632,
+          "cuda_allocated": 32496594432,
+          "cuda_reserved": 34858860544,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 10491637760,
+          "process_write_bytes": 4096
+        },
+        "after_cleanup": {
+          "available_bytes": 121498546176,
+          "cuda_allocated": 33554432,
+          "cuda_reserved": 33554432,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 10491637760,
+          "process_write_bytes": 270336
+        },
+        "component_calls": {},
+        "completed_steps": null,
+        "latent_bytes": null,
+        "prefix_kv_bytes": null,
+        "block_call_count_range": [
+          0,
+          0
+        ],
+        "output": {
+          "mode": "RGBA",
+          "size": [
+            512,
+            512
+          ],
+          "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+        },
+        "input_rgb_sha256": null,
+        "phase_releases": [],
+        "cancellation_return_seconds": null,
+        "cancellation_cleanup_seconds": null
+      }
+    },
+    {
+      "mode": "recompute",
+      "outward_seconds_including_image_process": 257.3354951240035,
+      "return_first_token_seconds": 4.155209687,
+      "prompt_n": 639,
+      "continuation_tokens": 639,
+      "saved": {
+        "id_slot": 0,
+        "filename": "A.bin",
+        "n_saved": 627,
+        "n_written": 141268896,
+        "timings": {
+          "save_ms": 73.366
+        },
+        "api_elapsed_s": 0.076447659,
+        "durable_elapsed_s": 0.095655721,
+        "allocated_bytes": 141271040
+      },
+      "image_matches": true,
+      "text_matches_resident": false,
+      "control_matches_resident": false,
+      "memory": {
+        "sample_interval_ms": 50,
+        "sample_count": 5195,
+        "min_available_bytes": 83939344384,
+        "max_total_minus_available_bytes": 46721859584,
+        "max_dirty_bytes": 7303168,
+        "max_writeback_bytes": 471040
+      },
+      "system_counter_deltas": {
+        "read_bytes": 2027741184,
+        "write_bytes": 23412736,
+        "pswpin": 0,
+        "pswpout": 0,
+        "oom_kill": 0
+      },
+      "resident_token_mismatch_count": 15,
+      "first_resident_token_mismatch_index": 17,
+      "generated_token_count": 32,
+      "text_matches_matched_configuration": true,
+      "image": {
+        "configuration": {
+          "size": 512,
+          "steps": 4,
+          "no_cache": false,
+          "cancel_after": null,
+          "plain": true,
+          "edit": false
+        },
+        "load_seconds": 234.10526681399642,
+        "run_seconds": 2.1804666249954607,
+        "cpu_load_seconds": 0.5544806420002715,
+        "transfer_seconds": 233.55075782000495,
+        "pipeline_reused": false,
+        "pipeline_released": true,
+        "after_load": {
+          "available_bytes": 88432189440,
+          "cuda_allocated": 32457959936,
+          "cuda_reserved": 32648462336,
+          "cuda_peak_allocated": 32457959936,
+          "cuda_peak_reserved": 32648462336,
+          "process_read_bytes": 1410396160,
+          "process_write_bytes": 4096
+        },
+        "after_run": {
+          "available_bytes": 85109133312,
+          "cuda_allocated": 32496594432,
+          "cuda_reserved": 34858860544,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 1410461696,
+          "process_write_bytes": 4096
+        },
+        "after_cleanup": {
+          "available_bytes": 120570966016,
+          "cuda_allocated": 33554432,
+          "cuda_reserved": 33554432,
+          "cuda_peak_allocated": 34272154624,
+          "cuda_peak_reserved": 34858860544,
+          "process_read_bytes": 1410461696,
+          "process_write_bytes": 270336
+        },
+        "component_calls": {},
+        "completed_steps": null,
+        "latent_bytes": null,
+        "prefix_kv_bytes": null,
+        "block_call_count_range": [
+          0,
+          0
+        ],
+        "output": {
+          "mode": "RGBA",
+          "size": [
+            512,
+            512
+          ],
+          "pixels_sha256": "66072d25acabf853601a10ad88c4cd8f5d191c01d23b5da2a0fde06200fe3120"
+        },
+        "input_rgb_sha256": null,
+        "phase_releases": [],
+        "cancellation_return_seconds": null,
+        "cancellation_cleanup_seconds": null
+      }
+    }
+  ]
+}

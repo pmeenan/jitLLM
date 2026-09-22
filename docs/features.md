@@ -307,13 +307,58 @@ OpenAI-shaped routes, no fourth protocol. Execution evidence is still owed.
 | Apple silicon, single machine | deferred | D-026: not until demand; boundaries kept portable at no cost; memory API verified when a port is considered |
 | AMD, single machine | deferred | D-026: same posture |
 
+## Load- and temperature-aware operating policy (proposal)
+
+Owner-suggested 2026-09-22; no thermal fault is established on our Sparks.
+The [community clock-cap report](https://github.com/tonyd2wild/DGX-Spark-Hard-Poweroff-Fix/tree/abb5372e4be8d6abc30281a18bf7469508212c97)
+uses a fixed GPU clock ceiling and reports fewer hard power-offs after also
+applying memory-pressure mitigations. That combined intervention does not
+isolate the cause or demonstrate an adaptive controller. Treat it as a
+measurement lead, not a validated fix for our hosts. No scripts, services or
+host settings are adopted.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Load/temperature telemetry and optional adaptive GPU clock ceiling | proposed | Observe first; evaluate fixed and adaptive policies on actual Spark workloads before selecting thresholds or promising stability/performance. Earliest M7 evaluation, or earlier if reproducible throttling or unexplained shutdowns justify diagnosis |
+
+Candidate design: sample available temperatures, clocks, utilization,
+throttling reasons, power readings and host memory pressure with timestamps
+and freshness. Unsupported sensors remain unknown, not zero; GPU power is
+not whole-node wall power. Keep memory admission under the existing unified
+physical budget, independently of temperature. Compare stock operation with
+fixed caps across prefill, decode, image denoising and two-node work; record
+latency, throughput, temperature and energy where measurable. Do not borrow
+another host's threshold or assume all phases have decode's clock sensitivity.
+
+If measurements justify automatic control, make it an explicit opt-in policy
+with a bounded clock range, hysteresis, minimum dwell time and gradual
+recovery. Use load/phase and temperature trends rather than a single reading.
+A polling loop cannot guarantee prevention of a sudden hardware power cut;
+it supplements firmware protection. Define stale/missing-sensor and actuator
+failure behavior before enabling it: never raise clocks on stale evidence;
+retain a validated conservative ceiling or suspend new admission and surface
+the fault if a safe setting cannot be established.
+
+Keep any privileged actuator outside the native execution hot path behind a
+narrow node-local supervisor interface. Capability-probe controls and verify
+applied settings; [NVIDIA documents clock-lock/reset controls](https://docs.nvidia.com/deploy/nvidia-smi/),
+but support and permissions must be checked on each target. Coordinate with
+operator policies and other GPU users, define ownership and restart/exit
+behavior, and avoid resetting an operator's existing cap. Publish the active
+policy and its performance effect in diagnostics and benchmark provenance.
+Scheduler responses must preserve completion-aware lifetimes and collective
+ordering. Periodic global cache drops and killing unrelated workloads are
+not part of this proposal; neither substitutes for our memory accounting.
+No implementation milestone or public control contract is committed yet.
+
 ## Model targets
 
 | Target | Status | Notes |
 | --- | --- | --- |
 | GLM-5.3-Flash, DeepSeek-v4.1-Flash, Qwen3.8-Flash-Next (via the MiaAI-Lab two-Spark references) | confirmed | as target families and reference recipes; pinned before porting; support earned per checkpoint |
 | ~30B-class dense models (suitable Gemma / Llama variants) | confirmed | intended use case, not a promise for every checkpoint |
-| [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | Owner-added 2026-09-22; [experiment scope](plan.md): measure iterative denoising, component/workspace/latent-state lifetimes and switching with text models. Checkpoint, reference stack and license audit precede execution; native backend and image-output API support remain unvalidated and unscheduled |
+| [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | [BF16 reference study complete](experiments/image-reference/README.md), including phase release and text switching; [GGUF comparison candidate](experiments/model-candidates.md) added 2026-09-22. Native backend and image-output API support remain unvalidated and unscheduled |
+| MiMo-V2.6-Flash-RL | confirmed experiment target | Owner-added 2026-09-22; [two-Spark reference candidate and smaller-quant follow-up](experiments/model-candidates.md). No local execution or native support validated; sharding remains M6 |
 | Small dense model plus synthetic/tiny MoE as the first bring-up vehicles | confirmed | ideation §19: separate execution, import, and pager bugs before a flagship architecture |
 | First vertical-slice checkpoint and backend | open | open question 4; the substrate direction is GGML-first (D-028, 2026-09-21); the checkpoint, quantization, and numerical reference remain open |
 | Reference engine for the feasibility spike: llama.cpp with MoE GGUFs | confirmed | decided 2026-09-20. Owner-provided candidates with card-verified configs in plan.md: Qwen3.8-Flash-Next (512 experts, top-10 plus 1 shared, 6B active of 125B, plus a 51B n-gram table; 3-bit fits one node, 4-bit is borderline, 5-bit exceeds it), Gemma 4 26B-A4B (128 experts, top-8 plus 1 shared, hybrid sliding-window attention), Ornith-1.5-35B-A3B (`qwen35moe`). This does not decide the runtime substrate (open question 4) |
