@@ -157,14 +157,32 @@ needs evidence from the real hardware.
       pending-work cancellation, output API scope and delivery milestones
       remain separate follow-up work; existing image-input API scope implies
       no native image-generation capability.
-- [ ] **Additional reference candidates** (owner-added 2026-09-22):
-      compare Qwen-Image-2.1 GGUF against the completed BF16 image baseline,
-      and add MiMo-V2.6-Flash-RL as a two-Spark sharded reference candidate.
-      [Candidate matrix and source revisions](experiments/model-candidates.md)
-      define the bounded checks and a revisit trigger for smaller MiMo quants.
-      These extend reference coverage; they do not replace the canonical
-      DeepSeek/Qwen switching pair, establish native support, or block M1
-      while waiting for future quantizations.
+- [x] **Additional reference candidates** (owner-added; bounded references
+      complete 2026-09-22; [candidate matrix](experiments/model-candidates.md)).
+      **Qwen-Image-2.1 GGUF** ([report](experiments/image-gguf/README.md)):
+      pinned stable-diffusion.cpp (GGML) runs the full pipeline from Q4_K_M,
+      Q8_0 and a BF16 control on `spark`; repackaged components were
+      reconciled tensor by tensor with the BF16 baseline. Repeats, cold/warm,
+      a second node, phase-released parameters and budgeted disk-backed
+      denoising (against a same-VAE-tiling control) give exact pixels;
+      quantization shrinks denoiser parameters
+      (4.29 vs 13.25 GiB) but not step time, and this runner is 2–3× slower per
+      step than diffusers BF16. Its 2048² VAE decode buffer is 38.3 GiB;
+      upstream GGML matches the fork through 1024² but aborts there on a
+      32-bit stride assert (RE-011). Releasing encoder/VAE parameters outside
+      their phases cut sampled host memory 30.4→17.2 GiB at 1024²/40; a 3 GiB
+      budget ran the request in about 5 GiB at 2.6× the time. Pixel agreement
+      is not a quality score. **MiMo-V2.6-Flash-RL**
+      ([report](experiments/mimo-reference/README.md)): TP=2/EP=2 on both
+      Sparks with packed MXFP4 experts, 81.9–83.8 GiB weights per rank, both
+      RoCE HCAs, correct greedy smoke, about 2,360 prefill tokens/s, prefix-hit
+      TTFT 8.68→0.36 s at 20K tokens, and 18.5 decode tokens/s (54 ms median,
+      62 ms p99 gaps) without speculation or graphs. Startup needed audited
+      config remote code and `torchcodec` (RE-012). One boot and single
+      requests; no switching, state restore, pressure, concurrency or
+      multimodal cases. Neither establishes native support, replaces the
+      canonical DeepSeek/Qwen switching pair, or blocks M1; smaller MiMo
+      quants remain a revisit trigger.
 - [x] **Reference A→B→A experiment** (2026-09-21, D-025): 27 verified cycles
       on `spark`, Gemma 4 UD-Q4_K_M → Ornith 1.5 Q4_K_M → Gemma, with an
       18,339-token continuation. Three repeats of nine cases distinguish

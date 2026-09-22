@@ -204,7 +204,8 @@ validation remains ahead. The D-048 CPU-only task/completion prototype passed
 on the workstation and Spark; D-050 settles reservation/progress policy, with
 runtime proof still owed in M2. D-051 selects Qwen2.5-0.5B-Instruct FP16 and
 the pinned llama.cpp reference; D-052 adds a mandatory early EXL3 companion.
-Both EXL3 quants passed the bounded Spark reference; remaining M2 proof scope
-is next (plan.md).
+Both EXL3 quants passed the bounded Spark reference. The owner-added
+Qwen-Image GGUF (GGML runner) and two-Spark MiMo references also ran; remaining
+M2 proof scope is next (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

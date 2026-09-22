@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+# Same runner built against upstream GGML at the patched fork's merge base,
+# so the difference is exactly the fork's own commits. Reference only.
+FROM nvidia/cuda@sha256:2396393dc8a031a6faf810894ec8e40c8d80e2a1177cfda0c2bf81acac9aa240
+ARG SDCPP_COMMIT=c92d73c408515c94beef32161bb5960764fde7a0
+ARG GGML_UPSTREAM_COMMIT=8846b79e66747bb9f68597420e95114c177315ce
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates cmake git ninja-build python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-query -W cmake git ninja-build python3 > /opt/build-packages.txt
+RUN git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp /src \
+    && git -C /src checkout --detach "$SDCPP_COMMIT" \
+    && git clone --filter=blob:none https://github.com/ggml-org/ggml /ggml-upstream \
+    && git -C /ggml-upstream checkout --detach "$GGML_UPSTREAM_COMMIT" \
+    && test "$(git -C /src rev-parse HEAD)" = "$SDCPP_COMMIT" \
+    && test "$(git -C /ggml-upstream rev-parse HEAD)" = "$GGML_UPSTREAM_COMMIT"
+RUN cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DSD_USE_UPSTREAM_GGML=ON -DSD_GGML_SOURCE_DIR=/ggml-upstream \
+      -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real \
+      -DSD_WEBP=OFF -DSD_WEBM=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a \
+    && cmake --build /build --target sd-cli -j 16 \
+    && install -m 0755 /build/bin/sd-cli /usr/local/bin/sd-cli
+ENTRYPOINT ["/usr/local/bin/sd-cli"]

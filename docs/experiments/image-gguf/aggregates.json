@@ -1,0 +1,2289 @@
+{
+ "host": "spark-c4e2",
+ "cross_node_host": "spark-56f5",
+ "date": "2026-09-22",
+ "samples_per_case": 1,
+ "device": "NVIDIA GB10",
+ "driver": "580.178.04",
+ "identity": [
+  {
+   "label": "text-encoder",
+   "comparison_dtype": "bfloat16",
+   "candidate_stored_dtypes": {
+    "torch.bfloat16": 750
+   },
+   "reference_stored_dtypes": {
+    "torch.bfloat16": 750
+   },
+   "candidate_tensors": 750,
+   "reference_tensors": 750,
+   "matched_tensors": 750,
+   "candidate_bytes": 17534247392,
+   "matched_bytes": 17534247392,
+   "unmatched_candidate_shapes": []
+  },
+  {
+   "label": "denoiser",
+   "comparison_dtype": "bfloat16",
+   "candidate_stored_dtypes": {
+    "torch.bfloat16": 265
+   },
+   "reference_stored_dtypes": {
+    "torch.bfloat16": 297
+   },
+   "candidate_tensors": 265,
+   "reference_tensors": 297,
+   "matched_tensors": 233,
+   "row_concatenated_tensors": 32,
+   "unused_reference_tensors": 0,
+   "candidate_bytes": 14230249472,
+   "matched_bytes": 14230249472,
+   "unmatched_candidate_shapes": []
+  },
+  {
+   "label": "vae",
+   "comparison_dtype": "bfloat16",
+   "candidate_stored_dtypes": {
+    "torch.bfloat16": 238
+   },
+   "reference_stored_dtypes": {
+    "torch.float32": 238
+   },
+   "candidate_tensors": 238,
+   "reference_tensors": 238,
+   "matched_tensors": 238,
+   "row_concatenated_tensors": 0,
+   "unused_reference_tensors": 0,
+   "candidate_bytes": 675480808,
+   "matched_bytes": 675480808,
+   "unmatched_candidate_shapes": []
+  }
+ ],
+ "cases": {
+  "bf16-1024-4-a": {
+   "case": {
+    "denoiser": "bf16",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "77b4ef1b5aae437191290b5ff3de57333fe15391a8498c271baaf992972e34ad",
+   "outward_seconds": 17.429,
+   "load_seconds": [
+    1.41
+   ],
+   "load_read_seconds": [
+    0.44
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 10.06,
+   "decode_seconds": 3.35,
+   "generate_seconds": 13.57,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 29751.86MB (VRAM 29751.86MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 13571.05MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (29751.86 MB, 1252 tensors, 33 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen_image_2.1_bf16.safetensors": 14230282240,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2517319680,
+   "max_host_used_delta": 41882337280,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "bf16-1024-4-b": {
+   "case": {
+    "denoiser": "bf16",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "77b4ef1b5aae437191290b5ff3de57333fe15391a8498c271baaf992972e34ad",
+   "outward_seconds": 17.454,
+   "load_seconds": [
+    1.5
+   ],
+   "load_read_seconds": [
+    0.61
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 10.11,
+   "decode_seconds": 3.29,
+   "generate_seconds": 13.56,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 29751.86MB (VRAM 29751.86MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 13571.05MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (29751.86 MB, 1252 tensors, 33 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen_image_2.1_bf16.safetensors": 14230282240,
+    "qwen3vl_8b_bf16.safetensors": 16950538240,
+    "qwen_image_2.1_vae_bf16.safetensors": 653045760
+   },
+   "cgroup_read_bytes": 606371840,
+   "cgroup_memory_peak": 3081920512,
+   "max_host_used_delta": 45944954880,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "bf16-1024-40": {
+   "case": {
+    "denoiser": "bf16",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "c2cbe8a6014e9570de61affb8c150243d5dc2ceeec3cc15a39f00f864ec78348",
+   "outward_seconds": 107.989,
+   "load_seconds": [
+    1.27
+   ],
+   "load_read_seconds": [
+    0.47
+   ],
+   "condition_seconds": 0.17,
+   "sampling_seconds": 100.69,
+   "decode_seconds": 3.29,
+   "generate_seconds": 104.16,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 29751.86MB (VRAM 29751.86MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 13571.05MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 906.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (29751.86 MB, 1252 tensors, 33 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen_image_2.1_bf16.safetensors": 14230282240,
+    "qwen3vl_8b_bf16.safetensors": 17507414016,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 27029504,
+   "cgroup_memory_peak": 2571726848,
+   "max_host_used_delta": 44404150272,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "bf16-2048-40": {
+   "case": {
+    "denoiser": "bf16",
+    "placement": "resident",
+    "size": 2048,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "54d67bd828476cd6b0f4c8e1e6e004a2f79697ccdd5494083c71fa52091af5d1",
+   "outward_seconds": 690.485,
+   "load_seconds": [
+    1.28
+   ],
+   "load_read_seconds": [
+    0.45
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 669.64,
+   "decode_seconds": 15.47,
+   "generate_seconds": 685.29,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 29751.86MB (VRAM 29751.86MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 13571.05MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 3609.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 3609.89 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (29751.86 MB, 1252 tensors, 33 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen_image_2.1_bf16.safetensors": 14230282240,
+    "qwen3vl_8b_bf16.safetensors": 17525239808,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 135159808,
+   "cgroup_memory_peak": 2530701312,
+   "max_host_used_delta": 77177171968,
+   "vmstat_delta": {
+    "pswpin": 10027,
+    "pswpout": 52209,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "bf16-512-4": {
+   "case": {
+    "denoiser": "bf16",
+    "placement": "resident",
+    "size": 512,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "8ce9799bac96a40b54ffbfb2fbac4d35921c72fd66c0ebd40b294afb1cadd29c",
+   "outward_seconds": 6.696,
+   "load_seconds": [
+    1.28
+   ],
+   "load_read_seconds": [
+    0.44
+   ],
+   "condition_seconds": 0.17,
+   "sampling_seconds": 1.85,
+   "decode_seconds": 0.86,
+   "generate_seconds": 2.88,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 29751.86MB (VRAM 29751.86MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 13571.05MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 231.20 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 231.20 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (29751.86 MB, 1252 tensors, 33 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen_image_2.1_bf16.safetensors": 14230282240,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 21209088,
+   "cgroup_memory_peak": 2620448768,
+   "max_host_used_delta": 37776547840,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-4-a": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 17.342,
+   "load_seconds": [
+    1.01
+   ],
+   "load_read_seconds": [
+    0.37
+   ],
+   "condition_seconds": 0.17,
+   "sampling_seconds": 10.55,
+   "decode_seconds": 3.37,
+   "generate_seconds": 14.11,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4253745152,
+    "qwen3vl_8b_bf16.safetensors": 16289591296,
+    "qwen_image_2.1_vae_bf16.safetensors": 675315712
+   },
+   "cgroup_read_bytes": 394928128,
+   "cgroup_memory_peak": 3135430656,
+   "max_host_used_delta": 35756658688,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-4-b": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 17.15,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.3
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 10.62,
+   "decode_seconds": 3.25,
+   "generate_seconds": 14.03,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16289853440,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2755862528,
+   "max_host_used_delta": 35011129344,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-4-cold": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": true,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 20.41,
+   "load_seconds": [
+    4.14
+   ],
+   "load_read_seconds": [
+    3.69
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 10.68,
+   "decode_seconds": 3.34,
+   "generate_seconds": 14.18,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 0,
+    "qwen3vl_8b_bf16.safetensors": 0,
+    "qwen_image_2.1_vae_bf16.safetensors": 0
+   },
+   "cgroup_read_bytes": 21570977792,
+   "cgroup_memory_peak": 23435001856,
+   "max_host_used_delta": 33777319936,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-4-disk": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "all-disk",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 17.561,
+   "load_seconds": [
+    0.6,
+    0.2,
+    0.2
+   ],
+   "load_read_seconds": [
+    0.27,
+    0.06,
+    0.01
+   ],
+   "condition_seconds": 1.29,
+   "sampling_seconds": 11.28,
+   "decode_seconds": 3.62,
+   "generate_seconds": 16.35,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 8,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (14436.16 MB, 397 tensors, 16 blocks, VRAM) from CUDA0",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (4391.25 MB, 297 tensors, 5 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16129990656,
+    "qwen_image_2.1_vae_bf16.safetensors": 618778624
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2475843584,
+   "max_host_used_delta": 17897799680,
+   "vmstat_delta": {
+    "pswpin": 11,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "disk",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-4-disk-2g": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "all-disk",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": "cuda0=2",
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 1,
+   "image_sha256": null,
+   "outward_seconds": 42.202,
+   "condition_seconds": 8.24,
+   "sampling_seconds": 32.76,
+   "decode_seconds": null,
+   "generate_seconds": null,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 4.88 MB(VRAM) on CUDA0 (peak across 37 segments)",
+    "qwen_image_2_1 compute buffer size: 583.40 MB(VRAM) on CUDA0 (peak across 34 segments)"
+   ],
+   "segment_log_lines": 144,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:859  - qwen3vl using 37 segments",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 15137288192,
+    "qwen_image_2.1_vae_bf16.safetensors": 506933248
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 1522401280,
+   "max_host_used_delta": 4642541568,
+   "vmstat_delta": {
+    "pswpin": 4,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "disk",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png",
+    "--max-vram",
+    "cuda0=2"
+   ],
+   "load_events": 146,
+   "load_seconds_sum": 27.0,
+   "load_read_seconds_sum": 0.07
+  },
+  "q4-1024-4-disk-3g": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "all-disk",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": "cuda0=3",
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "25f2fcafb97d460cbb0f6f8f440e69d51c5ad9a9d518261358e49c6f79f618ed",
+   "outward_seconds": 45.622,
+   "condition_seconds": 8.51,
+   "sampling_seconds": 28.85,
+   "decode_seconds": 7.06,
+   "generate_seconds": 44.46,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 4.88 MB(VRAM) on CUDA0 (peak across 37 segments)",
+    "qwen_image_2_1 compute buffer size: 583.40 MB(VRAM) on CUDA0 (peak across 34 segments)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 113,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:859  - qwen3vl using 37 segments",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16129990656,
+    "qwen_image_2.1_vae_bf16.safetensors": 618778624
+   },
+   "cgroup_read_bytes": 196608,
+   "cgroup_memory_peak": 1824751616,
+   "max_host_used_delta": 5613469696,
+   "vmstat_delta": {
+    "pswpin": 6,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "disk",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png",
+    "--max-vram",
+    "cuda0=3"
+   ],
+   "load_events": 126,
+   "load_seconds_sum": 23.85,
+   "load_read_seconds_sum": 0.12
+  },
+  "q4-1024-4-disk-3g-cold": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "all-disk",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": "cuda0=3",
+    "cold": true,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "25f2fcafb97d460cbb0f6f8f440e69d51c5ad9a9d518261358e49c6f79f618ed",
+   "outward_seconds": 46.531,
+   "condition_seconds": 9.65,
+   "sampling_seconds": 28.57,
+   "decode_seconds": 7.04,
+   "generate_seconds": 45.31,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 4.88 MB(VRAM) on CUDA0 (peak across 37 segments)",
+    "qwen_image_2_1 compute buffer size: 583.40 MB(VRAM) on CUDA0 (peak across 34 segments)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 113,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:859  - qwen3vl using 37 segments",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0",
+    "model_manager.cpp:1161 - model manager released params backend buffers (368.03 MB, 11 tensors, 1 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 0,
+    "qwen3vl_8b_bf16.safetensors": 0,
+    "qwen_image_2.1_vae_bf16.safetensors": 0
+   },
+   "cgroup_read_bytes": 20248911872,
+   "cgroup_memory_peak": 21882859520,
+   "max_host_used_delta": 4999540736,
+   "vmstat_delta": {
+    "pswpin": 3,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "disk",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png",
+    "--max-vram",
+    "cuda0=3"
+   ],
+   "load_events": 126,
+   "load_seconds_sum": 24.75,
+   "load_read_seconds_sum": 4.31
+  },
+  "q4-1024-4-vae-tiled": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": [
+     "--vae-tiling",
+     "--vae-tile-size",
+     "32x32"
+    ],
+    "image": "jitllm-image-gguf:20260922"
+   },
+   "exit_code": 0,
+   "image_sha256": "25f2fcafb97d460cbb0f6f8f440e69d51c5ad9a9d518261358e49c6f79f618ed",
+   "outward_seconds": 20.71,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.27
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 10.74,
+   "decode_seconds": 6.66,
+   "generate_seconds": 17.55,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2726957056,
+   "max_host_used_delta": 27109056512,
+   "vmstat_delta": {
+    "pswpin": 1,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png",
+    "--vae-tiling",
+    "--vae-tile-size",
+    "32x32"
+   ]
+  },
+  "q4-1024-40": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "82412123c5c9baa353e6cc5e5728775d25563f01bb8fd6c6a2c4399c592b46cb",
+   "outward_seconds": 114.202,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.31
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 106.87,
+   "decode_seconds": 4.14,
+   "generate_seconds": 111.18,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16289853440,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2769870848,
+   "max_host_used_delta": 32661319680,
+   "vmstat_delta": {
+    "pswpin": 2,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-1024-40-phase": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "phase-disk",
+    "size": 1024,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "82412123c5c9baa353e6cc5e5728775d25563f01bb8fd6c6a2c4399c592b46cb",
+   "outward_seconds": 116.194,
+   "load_seconds": [
+    1.0,
+    0.85,
+    0.2
+   ],
+   "load_read_seconds": [
+    0.76,
+    0.79,
+    0.04
+   ],
+   "condition_seconds": 1.67,
+   "sampling_seconds": 109.22,
+   "decode_seconds": 3.54,
+   "generate_seconds": 114.6,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 8,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (14436.16 MB, 397 tensors, 16 blocks, VRAM) from CUDA0",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 0,
+    "qwen3vl_8b_bf16.safetensors": 14233985024,
+    "qwen_image_2.1_vae_bf16.safetensors": 484921344
+   },
+   "cgroup_read_bytes": 6765285376,
+   "cgroup_memory_peak": 8475156480,
+   "max_host_used_delta": 18450370560,
+   "vmstat_delta": {
+    "pswpin": 269,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "diffusion=cuda0,te=disk,vae=disk",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-2048-40": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 2048,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "202c9248f90b4b6d0902c30219ff128d3750e333ec30c597f83301efbbc2818e",
+   "outward_seconds": 780.481,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.31
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 762.02,
+   "decode_seconds": 14.86,
+   "generate_seconds": 777.08,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16289853440,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 217088,
+   "cgroup_memory_peak": 2734239744,
+   "max_host_used_delta": 67436392448,
+   "vmstat_delta": {
+    "pswpin": 28,
+    "pswpout": 1,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q4-512-4": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 512,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "880bde99ba481d22db7253caa43fd55e2a1b2a9e6b365fe4817d13f0897e52ab",
+   "outward_seconds": 5.929,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.3
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 1.95,
+   "decode_seconds": 0.85,
+   "generate_seconds": 2.96,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16289853440,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 393216,
+   "cgroup_memory_peak": 2741202944,
+   "max_host_used_delta": 26483105792,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q8-1024-4": {
+   "case": {
+    "denoiser": "q8_0",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "28d228f0497333c96809baa7fa6b266e173f794d1f7fb9296f10726049493e30",
+   "outward_seconds": 17.235,
+   "load_seconds": [
+    1.21
+   ],
+   "load_read_seconds": [
+    0.35
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 10.29,
+   "decode_seconds": 3.32,
+   "generate_seconds": 13.77,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 23420.68MB (VRAM 23420.68MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 7239.88MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (23420.69 MB, 1284 tensors, 24 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q8_0.gguf": 7591559168,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2601615360,
+   "max_host_used_delta": 37810606080,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q8-1024-40": {
+   "case": {
+    "denoiser": "q8_0",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "ccb74a008be6af9d5db1aea4f6ef1248d76f002281acf214bcb60b8e2bde7ee1",
+   "outward_seconds": 110.015,
+   "load_seconds": [
+    1.21
+   ],
+   "load_read_seconds": [
+    0.38
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 103.05,
+   "decode_seconds": 3.3,
+   "generate_seconds": 106.52,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 23420.68MB (VRAM 23420.68MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 7239.88MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (23420.69 MB, 1284 tensors, 24 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q8_0.gguf": 7591559168,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2582036480,
+   "max_host_used_delta": 36354285568,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q8-2048-40": {
+   "case": {
+    "denoiser": "q8_0",
+    "placement": "resident",
+    "size": 2048,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "81f3d87839aac9650697df1e67296653ce257a89774be871a95ccffa5b2dde51",
+   "outward_seconds": 763.601,
+   "load_seconds": [
+    1.2
+   ],
+   "load_read_seconds": [
+    0.35
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 745.67,
+   "decode_seconds": 13.87,
+   "generate_seconds": 759.74,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 23420.68MB (VRAM 23420.68MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 7239.88MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 39181.00 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (23420.69 MB, 1284 tensors, 24 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q8_0.gguf": 7591559168,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 352256,
+   "cgroup_memory_peak": 2591010816,
+   "max_host_used_delta": 70635778048,
+   "vmstat_delta": {
+    "pswpin": 6,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "q8-512-4": {
+   "case": {
+    "denoiser": "q8_0",
+    "placement": "resident",
+    "size": 512,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": []
+   },
+   "exit_code": 0,
+   "image_sha256": "5e392e3b1a3425ccc8ed0c823862ec6b890c8b5c31263ca3647123874e3bc6bd",
+   "outward_seconds": 6.078,
+   "load_seconds": [
+    1.21
+   ],
+   "load_read_seconds": [
+    0.37
+   ],
+   "condition_seconds": 0.17,
+   "sampling_seconds": 1.77,
+   "decode_seconds": 0.84,
+   "generate_seconds": 2.79,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 23420.68MB (VRAM 23420.68MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 7239.88MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (23420.69 MB, 1284 tensors, 24 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q8_0.gguf": 7591559168,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 1052672,
+   "cgroup_memory_peak": 2582450176,
+   "max_host_used_delta": 30521827328,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  }
+ },
+ "cross_node_cases": {
+  "patched-q4-1024-4": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": [],
+    "image": "jitllm-image-gguf:20260922"
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 19.206,
+   "load_seconds": [
+    2.31
+   ],
+   "load_read_seconds": [
+    0.78
+   ],
+   "condition_seconds": 0.19,
+   "sampling_seconds": 10.61,
+   "decode_seconds": 3.32,
+   "generate_seconds": 14.13,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 17534337024,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 4800630784,
+   "cgroup_memory_peak": 6126682112,
+   "max_host_used_delta": 34228047872,
+   "vmstat_delta": {
+    "pswpin": 5,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "up-q4-512-4": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 512,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": [],
+    "image": "jitllm-image-gguf-upstream:20260922"
+   },
+   "exit_code": 0,
+   "image_sha256": "880bde99ba481d22db7253caa43fd55e2a1b2a9e6b365fe4817d13f0897e52ab",
+   "outward_seconds": 6.134,
+   "load_seconds": [
+    1.28
+   ],
+   "load_read_seconds": [
+    0.6
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 1.92,
+   "decode_seconds": 0.84,
+   "generate_seconds": 2.93,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 132.86 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 2450.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4535541760,
+    "qwen3vl_8b_bf16.safetensors": 14257451008,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 2393292800,
+   "cgroup_memory_peak": 5139513344,
+   "max_host_used_delta": 27579076608,
+   "vmstat_delta": {
+    "pswpin": 0,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "up-q4-1024-4": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 4,
+    "max_vram": null,
+    "cold": false,
+    "extra": [],
+    "image": "jitllm-image-gguf-upstream:20260922"
+   },
+   "exit_code": 0,
+   "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
+   "outward_seconds": 17.653,
+   "load_seconds": [
+    1.4
+   ],
+   "load_read_seconds": [
+    0.7
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 10.54,
+   "decode_seconds": 3.35,
+   "generate_seconds": 14.06,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 2977677312,
+    "qwen3vl_8b_bf16.safetensors": 14865887232,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 3358875648,
+   "cgroup_memory_peak": 6045368320,
+   "max_host_used_delta": 34224427008,
+   "vmstat_delta": {
+    "pswpin": 1,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "up-q4-1024-40": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 1024,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": [],
+    "image": "jitllm-image-gguf-upstream:20260922"
+   },
+   "exit_code": 0,
+   "image_sha256": "82412123c5c9baa353e6cc5e5728775d25563f01bb8fd6c6a2c4399c592b46cb",
+   "outward_seconds": 112.26,
+   "load_seconds": [
+    1.0
+   ],
+   "load_read_seconds": [
+    0.26
+   ],
+   "condition_seconds": 0.15,
+   "sampling_seconds": 105.7,
+   "decode_seconds": 3.37,
+   "generate_seconds": 109.24,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 6,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 520.54 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - wan_vae compute buffer size: 9797.50 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "model_manager.cpp:1161 - model manager released params backend buffers (20572.06 MB, 1284 tensors, 21 blocks, VRAM) from CUDA0"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 4604559360,
+    "qwen3vl_8b_bf16.safetensors": 16581095424,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 0,
+   "cgroup_memory_peak": 2742108160,
+   "max_host_used_delta": 33356394496,
+   "vmstat_delta": {
+    "pswpin": 4,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  },
+  "up-q4-2048-40": {
+   "case": {
+    "denoiser": "q4_k_m",
+    "placement": "resident",
+    "size": 2048,
+    "steps": 40,
+    "max_vram": null,
+    "cold": false,
+    "extra": [],
+    "image": "jitllm-image-gguf-upstream:20260922"
+   },
+   "exit_code": 133,
+   "image_sha256": null,
+   "outward_seconds": 773.345,
+   "load_seconds": [
+    1.22
+   ],
+   "load_read_seconds": [
+    0.44
+   ],
+   "condition_seconds": 0.16,
+   "sampling_seconds": 764.94,
+   "decode_seconds": null,
+   "generate_seconds": null,
+   "params_line": "diffusion_engine.cpp:1294 - total params memory size = 20572.06MB (VRAM 20572.06MB, RAM 0.00MB): text_encoders 15536.43MB(VRAM), diffusion_model 4391.25MB(VRAM), vae 644.38MB(VRAM), controlnet 0.00MB(N/A), extensions 0.00MB(N/A)",
+   "compute_buffers": [
+    "qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "segment_log_lines": 4,
+   "segment_log_sample": [
+    "  disable_prefetch: false,",
+    "  disable_segmented_compute: false,",
+    "ggml_runner.cpp:994  - qwen3vl compute buffer size: 5.49 MB(VRAM) on CUDA0 (peak across 1 segment)",
+    "ggml_runner.cpp:994  - qwen_image_2_1 compute buffer size: 2071.54 MB(VRAM) on CUDA0 (peak across 1 segment)"
+   ],
+   "page_cache_before": {
+    "qwen-image-2.1-Q4_K_M.gguf": 3889963008,
+    "qwen3vl_8b_bf16.safetensors": 16027758592,
+    "qwen_image_2.1_vae_bf16.safetensors": 675512320
+   },
+   "cgroup_read_bytes": 1268547584,
+   "cgroup_memory_peak": 3983835136,
+   "max_host_used_delta": 65419276288,
+   "vmstat_delta": {
+    "pswpin": 21,
+    "pswpout": 0,
+    "oom_kill": 0
+   },
+   "sd_cli_args_tail": [
+    "--rng",
+    "cuda",
+    "--backend",
+    "cuda0",
+    "--params-backend",
+    "cuda0",
+    "--eager-load",
+    "--diffusion-fa",
+    "--disable-image-metadata",
+    "-v",
+    "-o",
+    "/out/image.png"
+   ]
+  }
+ },
+ "comparisons": [
+  {
+   "candidate": "bf16-1024-4-a",
+   "reference": "diffusers/t2i-1024-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 20.7252,
+   "max_abs_diff": 142,
+   "psnr_db": 18.776,
+   "ssim_luma": 0.96122,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "bf16-1024-40",
+   "reference": "diffusers/t2i-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 45.8414,
+   "max_abs_diff": 226,
+   "psnr_db": 11.668,
+   "ssim_luma": 0.71263,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "bf16-2048-40",
+   "reference": "diffusers/t2i-2048-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 57.2718,
+   "max_abs_diff": 255,
+   "psnr_db": 10.767,
+   "ssim_luma": 0.70775,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "bf16-512-4",
+   "reference": "diffusers/plain-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 8.4204,
+   "max_abs_diff": 144,
+   "psnr_db": 23.164,
+   "ssim_luma": 0.94094,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q4-1024-4-a",
+   "reference": "bf16-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 2.5824,
+   "max_abs_diff": 45,
+   "psnr_db": 36.119,
+   "ssim_luma": 0.99394,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q4-1024-4-a",
+   "reference": "diffusers/t2i-1024-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 19.9301,
+   "max_abs_diff": 142,
+   "psnr_db": 18.91,
+   "ssim_luma": 0.96108,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q4-1024-40",
+   "reference": "bf16-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 14.2229,
+   "max_abs_diff": 255,
+   "psnr_db": 19.33,
+   "ssim_luma": 0.88266,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q4-1024-40",
+   "reference": "diffusers/t2i-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 44.5712,
+   "max_abs_diff": 249,
+   "psnr_db": 11.813,
+   "ssim_luma": 0.73602,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q4-2048-40",
+   "reference": "bf16-2048-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 14.0445,
+   "max_abs_diff": 246,
+   "psnr_db": 19.547,
+   "ssim_luma": 0.88386,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q4-2048-40",
+   "reference": "diffusers/t2i-2048-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 56.0237,
+   "max_abs_diff": 255,
+   "psnr_db": 10.933,
+   "ssim_luma": 0.72091,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q4-512-4",
+   "reference": "bf16-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 2.9659,
+   "max_abs_diff": 78,
+   "psnr_db": 35.136,
+   "ssim_luma": 0.98915,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q4-512-4",
+   "reference": "diffusers/plain-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 9.7221,
+   "max_abs_diff": 153,
+   "psnr_db": 22.498,
+   "ssim_luma": 0.93675,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q8-1024-4",
+   "reference": "bf16-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.4468,
+   "max_abs_diff": 14,
+   "psnr_db": 49.936,
+   "ssim_luma": 0.99869,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q8-1024-4",
+   "reference": "diffusers/t2i-1024-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 20.7085,
+   "max_abs_diff": 141,
+   "psnr_db": 18.785,
+   "ssim_luma": 0.96131,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q8-1024-40",
+   "reference": "bf16-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 13.0438,
+   "max_abs_diff": 218,
+   "psnr_db": 18.31,
+   "ssim_luma": 0.87777,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q8-1024-40",
+   "reference": "diffusers/t2i-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 43.6774,
+   "max_abs_diff": 235,
+   "psnr_db": 11.912,
+   "ssim_luma": 0.71907,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q8-2048-40",
+   "reference": "bf16-2048-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.8369,
+   "max_abs_diff": 178,
+   "psnr_db": 39.497,
+   "ssim_luma": 0.9945,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q8-2048-40",
+   "reference": "diffusers/t2i-2048-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 57.3527,
+   "max_abs_diff": 255,
+   "psnr_db": 10.761,
+   "ssim_luma": 0.70864,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q8-512-4",
+   "reference": "bf16-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.5729,
+   "max_abs_diff": 79,
+   "psnr_db": 44.613,
+   "ssim_luma": 0.99759,
+   "kind": "quantized-vs-sdcpp-bf16"
+  },
+  {
+   "candidate": "q8-512-4",
+   "reference": "diffusers/plain-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 8.5603,
+   "max_abs_diff": 140,
+   "psnr_db": 23.161,
+   "ssim_luma": 0.94138,
+   "kind": "sdcpp-vs-diffusers-bf16"
+  },
+  {
+   "candidate": "q4-1024-4-a",
+   "reference": "q4-1024-4-cold",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-b",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "bf16-1024-4-b",
+   "reference": "bf16-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-40-phase",
+   "reference": "q4-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-disk",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-disk-3g",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.1208,
+   "max_abs_diff": 6,
+   "psnr_db": 57.265,
+   "ssim_luma": 0.99913,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-disk-3g-cold",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.1208,
+   "max_abs_diff": 6,
+   "psnr_db": 57.265,
+   "ssim_luma": 0.99913,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-vae-tiled",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": false,
+   "mean_abs_diff": 0.1208,
+   "max_abs_diff": 6,
+   "psnr_db": 57.265,
+   "ssim_luma": 0.99913,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "q4-1024-4-disk-3g",
+   "reference": "q4-1024-4-vae-tiled",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "same-configuration-control"
+  },
+  {
+   "candidate": "upstream-1/patched-q4-1024-4",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "cross-node-control"
+  },
+  {
+   "candidate": "upstream-1/up-q4-512-4",
+   "reference": "q4-512-4",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "cross-node-control"
+  },
+  {
+   "candidate": "upstream-1/up-q4-1024-4",
+   "reference": "q4-1024-4-a",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "cross-node-control"
+  },
+  {
+   "candidate": "upstream-1/up-q4-1024-40",
+   "reference": "q4-1024-40",
+   "modes": [
+    "RGBA",
+    "RGBA"
+   ],
+   "identical_pixels": true,
+   "mean_abs_diff": 0.0,
+   "max_abs_diff": 0,
+   "psnr_db": null,
+   "ssim_luma": 1.0,
+   "kind": "cross-node-control"
+  }
+ ],
+ "example_sd_cli_args": [
+  "--diffusion-model",
+  "/models/0-qwen_image_2.1_bf16.safetensors",
+  "--llm",
+  "/models/1-qwen3vl_8b_bf16.safetensors",
+  "--vae",
+  "/models/2-qwen_image_2.1_vae_bf16.safetensors",
+  "-p",
+  "A red ceramic teapot on a plain wooden table, soft daylight, no text.",
+  "-W",
+  "1024",
+  "-H",
+  "1024",
+  "--steps",
+  "4",
+  "--seed",
+  "42",
+  "--cfg-scale",
+  "1.0",
+  "--sampling-method",
+  "euler",
+  "--rng",
+  "cuda",
+  "--backend",
+  "cuda0",
+  "--params-backend",
+  "cuda0",
+  "--eager-load",
+  "--diffusion-fa",
+  "--disable-image-metadata",
+  "-v",
+  "-o",
+  "/out/image.png"
+ ]
+}

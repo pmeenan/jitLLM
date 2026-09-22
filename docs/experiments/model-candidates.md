@@ -3,15 +3,15 @@
 
 # Additional reference-model candidates
 
-Owner-added and source-inspected 2026-09-22. These are planned comparisons,
-not measured jitLLM support. No weights were downloaded or new inference run
-for this inventory. Existing reference results and the canonical
+Owner-added and source-inspected 2026-09-22; the first bounded reference for
+each ran the same day (reports linked below). These are external references,
+not measured jitLLM support. Existing reference results and the canonical
 DeepSeek/Qwen switching workload remain unchanged.
 
-| Candidate | Reference role | Next evidence needed |
+| Candidate | Reference role | Status and next evidence |
 | --- | --- | --- |
-| Qwen-Image-2.1 GGUF | Quantized image-component footprint and repeated denoising, compared with the [BF16 study](image-reference/README.md) | Compatible pinned runner, complete pipeline budget, output-quality comparison and phase/switch timings |
-| MiMo-V2.6-Flash-RL | Large sparse MoE across two Spark memory domains | Reproduce a bounded text-only sharded reference, then switching/state and multimodal cases separately |
+| Qwen-Image-2.1 GGUF | Quantized image-component footprint and repeated denoising, compared with the [BF16 study](image-reference/README.md) | [Bounded GGML-runner study done](image-gguf/README.md): pinned stable-diffusion.cpp, component identity reconciled, full-pipeline memory, same-runner quantization agreement, phase release and budgeted disk-backed denoising. Next, only if scheduled: native GGML execution in jitLLM, a quality metric beyond pixel agreement, text↔image switching with this runner |
+| MiMo-V2.6-Flash-RL | Large sparse MoE across two Spark memory domains | [Bounded text-only TP=2/EP=2 reference done](mimo-reference/README.md). Next: switching/state and multimodal cases separately, repeated boots and concurrency; native sharding remains M6 |
 | Future smaller MiMo quantizations | Single-Spark resident or forced-paging case | Revisit when an artifact and compatible packed kernels exist; measure full execution budget and quality |
 
 ## Qwen GGUF
@@ -31,6 +31,9 @@ The quant card lists source revision
 `b3179ad355be050328e483a9dfdd9e60cd62adfa`; our BF16 baseline uses the upstream
 Qwen revision `790c92633540aa0cb11d9abf19eb46d861714758`. Reconcile component
 identities before attributing output differences to quantization alone.
+Reconciled 2026-09-22: the two revisions share all weights, and the
+repackaged text encoder, VAE and BF16 denoiser match the baseline tensor by
+tensor ([GGUF study](image-gguf/README.md#identity-and-reconciliation)).
 
 ## MiMo
 
@@ -54,7 +57,9 @@ patches, dependencies and artifact terms before reproduction. Keep our
 configured topology and local/authenticated access policy.
 The recipe pins checkpoint revision `3b38d063180c3e4aed9691fdc735f3d10b266ee4`,
 different from the card/config inventory above. Reconcile those artifacts
-before using this inventory to interpret a reproduction. The recipe declares
+before using this inventory to interpret a reproduction. Reconciled 2026-09-22:
+only the README, report PDF and a DFlash config JSON fix differ; weights,
+configs and tokenizer are identical ([reference](mimo-reference/README.md#identity)). The recipe declares
 AGPL-3.0; inspecting its results does not authorize incorporating its code
 into the Apache-2.0 core.
 

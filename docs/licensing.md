@@ -74,6 +74,20 @@ libllama change with MIT upstream context and The ggml authors' notice in
 `UPSTREAM-NOTICE.txt`, only to reproduce a negative result. The runner does
 not build it, and nothing from it enters jitLLM.
 
+## Additional reference candidates
+
+The [Qwen-Image GGUF study](experiments/image-gguf/README.md) runs
+stable-diffusion.cpp and its patched GGML fork (both MIT) as external
+reference tools built from pinned sources; the GGUFs and Comfy-Org files
+remain under the Qwen Research License, like the BF16 study. The
+[MiMo reference](experiments/mimo-reference/README.md) uses the MIT-declared
+checkpoint, the pinned SGLang (Apache-2.0) image and hash-pinned `torchcodec`
+0.16.0 (BSD-3-Clause, Meta), plus one audited checkpoint configuration file
+executed for config parsing only. The AGPL-3.0 MiaAI MiMo recipe was read as
+documentation; none of its code or patches ran or entered this repository.
+No weights are redistributed, and neither study clears a container's full
+component closure or approves any of these for jitLLM's core.
+
 ## Pinned reference inventory
 
 The links below identify the exact trees inspected; moving branch names are

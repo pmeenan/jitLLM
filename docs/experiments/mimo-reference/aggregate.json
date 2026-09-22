@@ -1,0 +1,527 @@
+{
+  "events": {
+    "guards started": 3.883,
+    "containers started": 6.625,
+    "healthy": 617.85,
+    "workload finished": 672.468,
+    "containers removed": 680.481,
+    "guards stopped": 687.953
+  },
+  "error": null,
+  "released": {
+    "spark": {
+      "seconds": 680.863,
+      "mem_available": 126675185664,
+      "compute_apps": []
+    },
+    "spark-b": {
+      "seconds": 681.255,
+      "mem_available": 126665547776,
+      "compute_apps": []
+    }
+  },
+  "not_released": [],
+  "preflight": {
+    "spark": {
+      "mem_available": 125995069440,
+      "compute_apps": []
+    },
+    "spark-b": {
+      "mem_available": 126548373504,
+      "compute_apps": []
+    }
+  },
+  "post_boot_state": {
+    "spark": {
+      "mem_available": 25662136320,
+      "compute_apps": [
+        "872101",
+        "872627"
+      ]
+    },
+    "spark-b": {
+      "mem_available": 26761695232,
+      "compute_apps": [
+        "711780",
+        "712127"
+      ]
+    }
+  },
+  "server_args_head": [
+    "python3",
+    "-m",
+    "sglang.launch_server",
+    "--model-path",
+    "/model",
+    "--served-model-name",
+    "mimo",
+    "--trust-remote-code",
+    "--tp-size",
+    "2",
+    "--ep-size",
+    "2",
+    "--nnodes",
+    "2",
+    "--node-rank",
+    "0",
+    "--dist-init-addr",
+    "10.100.208.2:29500",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "30000",
+    "--context-length",
+    "32768",
+    "--max-total-tokens",
+    "131072",
+    "--max-running-requests",
+    "4",
+    "--chunked-prefill-size",
+    "2048",
+    "--page-size",
+    "64",
+    "--kv-cache-dtype",
+    "fp8_e4m3",
+    "--swa-full-tokens-ratio",
+    "0.03",
+    "--mem-fraction-static",
+    "0.85",
+    "--attention-backend",
+    "triton",
+    "--enable-multimodal",
+    "--mm-attention-backend",
+    "triton_attn",
+    "--moe-runner-backend",
+    "flashinfer_mxfp4",
+    "--moe-a2a-backend",
+    "none",
+    "--moe-dense-tp-size",
+    "1",
+    "--weight-loader-drop-cache-after-load",
+    "--enable-cache-report",
+    "--random-seed",
+    "42",
+    "--log-level",
+    "info",
+    "--disable-cuda-graph"
+  ],
+  "nodes": {
+    "spark": {
+      "guard": {
+        "mem_total": 130661203968,
+        "mem_available_start": 125991825408,
+        "min_mem_available": 20218609664,
+        "min_at_seconds": 571.819,
+        "guard_bytes": 6442450944,
+        "guard_triggered": null,
+        "vmstat_delta": {
+          "pswpin": 96,
+          "pswpout": 3225,
+          "oom_kill": 0
+        }
+      },
+      "jitllm-mimo-rank0": [
+        "Detected MiMo-V2 mxfp4 routed-expert layout. [x4]",
+        "Hybrid SWA model detected. architectures=['MiMoV2ForCausalLM']",
+        "spark-c4e2:129:129 [0] NCCL INFO NCCL version 2.30.7+cuda13.3",
+        "spark-c4e2:129:129 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [1]roceP2p1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:10.100.208.2<0>",
+        "spark-c4e2:129:129 [0] NCCL INFO Using network IB [x2]",
+        "spark-c4e2:129:129 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/IB/0 [x128]",
+        "spark-c4e2:129:129 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/IB/0 [x128]",
+        "Load weight begin. avail mem=111.90 GB",
+        "Preparing DSv4 MXFP4 experts for FlashInfer SM120 CUTLASS W4A8 (layer: model.layers.1.mlp.experts)... [x47]",
+        "Load weight end. elapsed=507.11 s, type=MiMoV2ForCausalLM, quant=fp8, fmt=e4m3, avail mem=29.96 GB, mem usage=81.94 GB.",
+        "Full KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 131072, K size: 0.42 GB, V size: 0.28 GB",
+        "SWA KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 3904, K size: 0.11 GB, V size: 0.07 GB",
+        "SWAKVPool mem usage: 0.89 GB, swa size: 3904, full size: 131072",
+        "Memory pool end. avail mem=28.93 GB",
+        "max_total_num_tokens=131072, chunked_prefill_size=2048, max_prefill_tokens=16384, max_running_requests=4, context_len=32768, available_gpu_mem=24.21 GB",
+        "Init Unified Radix Cache. Components: (<ComponentType.FULL: 0>, <ComponentType.SWA: 1>). Tree Core: UnifiedTreeCore",
+        "The server is fired up and ready to roll!"
+      ]
+    },
+    "spark-b": {
+      "guard": {
+        "mem_total": 130661203968,
+        "mem_available_start": 126538678272,
+        "min_mem_available": 21440409600,
+        "min_at_seconds": 575.612,
+        "guard_bytes": 6442450944,
+        "guard_triggered": null,
+        "vmstat_delta": {
+          "pswpin": 10,
+          "pswpout": 5,
+          "oom_kill": 0
+        }
+      },
+      "jitllm-mimo-rank1": [
+        "Detected MiMo-V2 mxfp4 routed-expert layout. [x3]",
+        "Hybrid SWA model detected. architectures=['MiMoV2ForCausalLM']",
+        "spark-56f5:130:130 [0] NCCL INFO NCCL version 2.30.7+cuda13.3",
+        "spark-56f5:130:130 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [1]roceP2p1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:10.100.208.1<0>",
+        "spark-56f5:130:130 [0] NCCL INFO Using network IB [x2]",
+        "spark-56f5:130:130 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/IB/0 [x128]",
+        "spark-56f5:130:130 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0 [x128]",
+        "Load weight begin. avail mem=113.54 GB",
+        "Load weight end. elapsed=454.85 s, type=MiMoV2ForCausalLM, quant=fp8, fmt=e4m3, avail mem=29.72 GB, mem usage=83.82 GB.",
+        "Full KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 131072, K size: 0.42 GB, V size: 0.28 GB",
+        "SWA KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 3904, K size: 0.11 GB, V size: 0.07 GB",
+        "SWAKVPool mem usage: 0.89 GB, swa size: 3904, full size: 131072",
+        "Memory pool end. avail mem=29.41 GB",
+        "Init Unified Radix Cache. Components: (<ComponentType.FULL: 0>, <ComponentType.SWA: 1>). Tree Core: UnifiedTreeCore",
+        "Traceback (most recent call last):",
+        "AttributeError: 'NoneType' object has no attribute 'set_server_stop_hook'"
+      ]
+    }
+  },
+  "workload": {
+    "summary": {
+      "smoke_answers": [
+        "42",
+        "42",
+        "42"
+      ],
+      "smoke_contains_42": true,
+      "smoke_identical": true
+    },
+    "cases": [
+      {
+        "case": "smoke-0",
+        "first_content_seconds": 0.2051,
+        "total_seconds": 0.3111,
+        "content_chunks": 2,
+        "usage": {
+          "prompt_tokens": 25,
+          "total_tokens": 28,
+          "completion_tokens": 3,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "stop",
+        "text": "42",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 20495800,
+            "rcv": 20513728
+          },
+          "roceP2p1s0f1": {
+            "xmit": 18320432,
+            "rcv": 18337500
+          }
+        },
+        "gap_seconds": {
+          "median": 0.05089,
+          "p95": 0.05089,
+          "p99": 0.05089,
+          "max": 0.05089
+        },
+        "decode_tokens_per_second": 39.3
+      },
+      {
+        "case": "smoke-1",
+        "first_content_seconds": 0.2147,
+        "total_seconds": 0.3203,
+        "content_chunks": 2,
+        "usage": {
+          "prompt_tokens": 25,
+          "total_tokens": 28,
+          "completion_tokens": 3,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "stop",
+        "text": "42",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 21304404,
+            "rcv": 21293964
+          },
+          "roceP2p1s0f1": {
+            "xmit": 19117460,
+            "rcv": 19097732
+          }
+        },
+        "gap_seconds": {
+          "median": 0.05563,
+          "p95": 0.05563,
+          "p99": 0.05563,
+          "max": 0.05563
+        },
+        "decode_tokens_per_second": 35.953
+      },
+      {
+        "case": "smoke-2",
+        "first_content_seconds": 0.2225,
+        "total_seconds": 0.3255,
+        "content_chunks": 2,
+        "usage": {
+          "prompt_tokens": 25,
+          "total_tokens": 28,
+          "completion_tokens": 3,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "stop",
+        "text": "42",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 21323428,
+            "rcv": 21334240
+          },
+          "roceP2p1s0f1": {
+            "xmit": 19162752,
+            "rcv": 19163320
+          }
+        },
+        "gap_seconds": {
+          "median": 0.04841,
+          "p95": 0.04841,
+          "p99": 0.04841,
+          "max": 0.04841
+        },
+        "decode_tokens_per_second": 41.316
+      },
+      {
+        "case": "prefill-1k-0",
+        "first_content_seconds": 0.6862,
+        "total_seconds": 0.6863,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 1309,
+          "total_tokens": 1310,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 559446984,
+            "rcv": 559409168
+          },
+          "roceP2p1s0f1": {
+            "xmit": 551013144,
+            "rcv": 550940404
+          }
+        },
+        "text_chars": 6
+      },
+      {
+        "case": "prefill-1k-1",
+        "first_content_seconds": 0.6583,
+        "total_seconds": 0.6584,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 1291,
+          "total_tokens": 1292,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 553882108,
+            "rcv": 553812244
+          },
+          "roceP2p1s0f1": {
+            "xmit": 540544304,
+            "rcv": 540485708
+          }
+        },
+        "text_chars": 1
+      },
+      {
+        "case": "prefill-4k-0",
+        "first_content_seconds": 2.3667,
+        "total_seconds": 2.3667,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 5157,
+          "total_tokens": 5158,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 2182809712,
+            "rcv": 2182954172
+          },
+          "roceP2p1s0f1": {
+            "xmit": 2167600536,
+            "rcv": 2167695952
+          }
+        },
+        "text_chars": 6
+      },
+      {
+        "case": "prefill-4k-1",
+        "first_content_seconds": 2.1614,
+        "total_seconds": 2.1615,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 5133,
+          "total_tokens": 5134,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 2167717944,
+            "rcv": 2167792512
+          },
+          "roceP2p1s0f1": {
+            "xmit": 2162678660,
+            "rcv": 2162770340
+          }
+        },
+        "text_chars": 1
+      },
+      {
+        "case": "prefill-16k-0",
+        "first_content_seconds": 8.6448,
+        "total_seconds": 8.6448,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 20416,
+          "total_tokens": 20417,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 8597591096,
+            "rcv": 8597874128
+          },
+          "roceP2p1s0f1": {
+            "xmit": 8597543200,
+            "rcv": 8597848428
+          }
+        },
+        "text_chars": 1
+      },
+      {
+        "case": "prefill-16k-1",
+        "first_content_seconds": 8.6847,
+        "total_seconds": 8.6848,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 20473,
+          "total_tokens": 20474,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 8624414924,
+            "rcv": 8624948000
+          },
+          "roceP2p1s0f1": {
+            "xmit": 8619264228,
+            "rcv": 8619802884
+          }
+        },
+        "text_chars": 1
+      },
+      {
+        "case": "prefill-16k-1-repeat",
+        "first_content_seconds": 0.363,
+        "total_seconds": 0.363,
+        "content_chunks": 1,
+        "usage": {
+          "prompt_tokens": 20473,
+          "total_tokens": 20474,
+          "completion_tokens": 1,
+          "prompt_tokens_details": {
+            "cached_tokens": 20416
+          },
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 35146628,
+            "rcv": 35131000
+          },
+          "roceP2p1s0f1": {
+            "xmit": 32984124,
+            "rcv": 32973900
+          }
+        },
+        "text_chars": 6
+      },
+      {
+        "case": "decode-256-0",
+        "first_content_seconds": 0.6625,
+        "total_seconds": 14.4293,
+        "content_chunks": 256,
+        "usage": {
+          "prompt_tokens": 1303,
+          "total_tokens": 1559,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 1071768800,
+            "rcv": 1071705884
+          },
+          "roceP2p1s0f1": {
+            "xmit": 1055590048,
+            "rcv": 1055498532
+          }
+        },
+        "gap_seconds": {
+          "median": 0.05398,
+          "p95": 0.06005,
+          "p99": 0.06105,
+          "max": 0.0619
+        },
+        "decode_tokens_per_second": 18.523,
+        "text_chars": 1220
+      },
+      {
+        "case": "decode-256-1",
+        "first_content_seconds": 0.6593,
+        "total_seconds": 14.4373,
+        "content_chunks": 256,
+        "usage": {
+          "prompt_tokens": 1300,
+          "total_tokens": 1556,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "finish_reason": "length",
+        "rdma_bytes": {
+          "rocep1s0f1": {
+            "xmit": 1071608048,
+            "rcv": 1071542204
+          },
+          "roceP2p1s0f1": {
+            "xmit": 1052254132,
+            "rcv": 1052162072
+          }
+        },
+        "gap_seconds": {
+          "median": 0.05403,
+          "p95": 0.05957,
+          "p99": 0.06186,
+          "max": 0.06225
+        },
+        "decode_tokens_per_second": 18.508,
+        "text_chars": 1212
+      }
+    ]
+  }
+}

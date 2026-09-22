@@ -27,6 +27,41 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-012: Pinned SGLang MiMo-V2 startup fails with a misleading processor error without torchcodec  (2026-09-22, status: worked-around)
+
+`lmsysorg/sglang` nightly `0f6761b5` (arm64 digest `9e1fb4c3…`) on both
+Sparks, MiMo-V2.6-Flash-RL. Startup, even for text-only use and with
+`--enable-multimodal`, aborted in the tokenizer manager with
+`No processor registered for architecture: ['MiMoV2ForCausalLM']`. The real
+cause is earlier and swallowed: `multimodal/processors/mimo_v2.py` imports
+`torchcodec`, which the image lacks, and SGLang's processor discovery logs and
+skips modules that fail to import. Two boots were spent before the import
+was tested directly. Workaround: a derived image adding hash-pinned
+`torchcodec` 0.16.0 ([MiMo reference](experiments/mimo-reference/README.md));
+the MiaAI recipe also installs it. The boot without `--enable-multimodal`
+failed identically, so the engine builds this architecture's multimodal
+processor regardless of that flag; dropping the flag with `torchcodec`
+present was not tried. When a registry lookup reports "not
+registered", import the module directly before debugging arguments.
+
+## RE-011: Upstream GGML CUDA broadcast ops abort on strides above 2^32 elements  (2026-09-22, status: open)
+
+stable-diffusion.cpp `c92d73c` built against upstream GGML `8846b79` (CUDA
+13.0.3, `sm_121a`), GB10 `spark-b`, Qwen-Image-2.1 Q4_K_M at 2048²/40. All 40
+denoising steps completed; the Wan VAE decode then failed
+`GGML_ASSERT(s02 <= std::numeric_limits<uint32_t>::max())` in
+`src/ggml-cuda/binbcast.cu:270` (exit 133). The same build matched the
+patched fork's pixels exactly at 512² and 1024². The assert is unchanged in the
+fork and in upstream master `179b60f` (2026-09-22), and upstream master still has
+no CUDA `conv3d.cu`, which the fork adds with implicit-GEMM conv2d/conv3d.
+Plausibly the fork's conv path never materializes the oversized intermediate
+that upstream's im2col path passes to a broadcast op; not verified, and
+upstream master was not executed. Impact: GGML CUDA elementwise/broadcast
+kernels carry 32-bit stride limits, so very large activation or workspace
+tensors (here a 38.3 GiB decode buffer) need chunking or different kernels.
+Check tensor strides against these limits before planning GGML execution of
+high-resolution image/video decoders. [Report](experiments/image-gguf/README.md).
+
 ## RE-010: Adding graph outputs changes logits with CUDA optimizations  (2026-09-22, status: open)
 
 Pinned llama.cpp `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, GB10, driver

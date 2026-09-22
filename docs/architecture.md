@@ -670,7 +670,11 @@ required nodes → establish local residency → commit distributed execution �
 preserve collective order → acknowledge completion or cancellation. Local
 eviction victims may differ per rank. Communication buffers come from a
 separately budgeted pool with stable backing. TP, PP, and EP are different
-plans; port the validated recipe's plan first.
+plans; port the validated recipe's plan first. The first external sharded
+reference ([MiMo TP=2/EP=2](experiments/mimo-reference/README.md)) moved about
+0.84 MB per prefill token and 4 MB per decoded token each way at 18.5
+tokens/s, a small fraction of the measured link: per-step collective latency,
+not bandwidth, is the first transport question for M6.
 
 ### Repository shape (§20; toolchain file set confirmed 2026-09-21, the rest a sketch)
 

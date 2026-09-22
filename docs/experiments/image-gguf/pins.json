@@ -1,0 +1,84 @@
+{
+  "gguf": {
+    "repository": "abenzerps/Qwen-Image-2.1-GGUF",
+    "revision": "c4de66efa2183fb25ecbc185bac509ee37952b41",
+    "files": [
+      {
+        "path": "README.md",
+        "bytes": 5734,
+        "sha256": "5876c09186b61c1e3406ce5bdca2b2ff3cbf7d546b178b7ae16786114a422dac"
+      },
+      {
+        "path": "SHA256SUMS",
+        "bytes": 789,
+        "sha256": "fa79cea455052c731fe50c0790bbeb00abd2e56f32dfacc7d7ec49a2f25766af"
+      },
+      {
+        "path": "qwen-image-2.1-Q4_K_M.gguf",
+        "bytes": 4604557984,
+        "sha256": "833439e91bc1152d28f37aa198c7f6f4218b7de95754c2f7a318a2422ab4b2f8"
+      },
+      {
+        "path": "qwen-image-2.1-Q8_0.gguf",
+        "bytes": 7591557792,
+        "sha256": "9a7ec02f4c9d5cf5b78e8efa6ccd81ec0c35a898defbf8e77ac7c02a32fe0d7e"
+      },
+      {
+        "path": "text_encoders/qwen3vl_8b_bf16.safetensors",
+        "bytes": 17534334616,
+        "sha256": "68bdc82bc1b66851162ae656225e7e2068166b603db19bd5d5a3b90eb12669a9"
+      },
+      {
+        "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+        "bytes": 675509688,
+        "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"
+      }
+    ]
+  },
+  "bf16_control": {
+    "repository": "Comfy-Org/Qwen-Image-2.1",
+    "revision": "5dc5850eb514a3685f6a03a2641728a8f7549c69",
+    "files": [
+      {
+        "path": "README.md",
+        "bytes": 1498,
+        "sha256": "14a7a1f72d0b12a96c55cfea7b374ee007aba093bc25758fecc9edf30b430a0c"
+      },
+      {
+        "path": "diffusion_models/qwen_image_2.1_bf16.safetensors",
+        "bytes": 14230280616,
+        "sha256": "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc"
+      }
+    ]
+  },
+  "bf16_baseline": {
+    "repository": "Qwen/Qwen-Image-2.1",
+    "revision": "790c92633540aa0cb11d9abf19eb46d861714758",
+    "gguf_card_source_revision": "b3179ad355be050328e483a9dfdd9e60cd62adfa",
+    "note": "Weights and configs identical between these revisions; README, .gitattributes and assets/qr.png differ. Files are pinned in ../image-reference/pins.json."
+  },
+  "runner": {
+    "project": "leejet/stable-diffusion.cpp",
+    "license": "MIT",
+    "commit": "c92d73c408515c94beef32161bb5960764fde7a0",
+    "version_string": "master-898-2bb7294-2-gc92d73c",
+    "ggml_submodule": {
+      "repository": "leejet/ggml",
+      "commit": "4bf5f6000653b7881d00963cd6ddb665ccd62a8d",
+      "note": "sd.cpp's patched GGML fork (default SD_USE_UPSTREAM_GGML=OFF)"
+    },
+    "gguf_conversion_commit_on_card": "1330cebae8f2ba99249df846cc0c9444fcbd4308",
+    "base_image": "nvidia/cuda@sha256:2396393dc8a031a6faf810894ec8e40c8d80e2a1177cfda0c2bf81acac9aa240",
+    "base_image_tag": "13.0.3-devel-ubuntu24.04 (arm64 manifest)",
+    "build_packages": {
+      "cmake": "3.28.3-1build7",
+      "git": "1:2.43.0-1ubuntu7.3",
+      "ninja-build": "1.11.1-2",
+      "python3": "3.12.3-0ubuntu2.1"
+    },
+    "cmake": "-DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real -DSD_WEBP=OFF -DSD_WEBM=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a",
+    "built_image": "jitllm-image-gguf:20260922",
+    "built_image_id": "sha256:a84cfa880f77967e9080bc8cbc406b26bf4c3f8b5ce96492f0b9399936b13b63",
+    "analysis_image": "jitllm-image-reference:20260922 (../image-reference/Dockerfile)"
+  }
+}
