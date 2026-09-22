@@ -25,7 +25,9 @@
   multi-node capability and is preferred over paging when it suffices;
   sharding follows for the flagship. Topology is discovered or configured at
   runtime, never baked into the application, and a busy small model may run
-  as replicas across nodes (D-020, D-023).
+  as replicas across nodes (D-020, D-023). The conductor is an in-process
+  role on the designated node; its cluster view cannot grant local capacity
+  or bypass a node's admission authority (D-037).
 - **Switching bar and API baseline.** Never worse than a full swap; seamless
   is the goal, validated against a measured reference cycle (D-021, D-025).
   Standard web-API clients work unmodified; the model field drives switching.
@@ -222,19 +224,20 @@ assumption, not settled scope.
 standard clients (Cursor, OpenCode, Codex, Claude Code, ...)
         |  OpenAI-compatible and Anthropic Messages endpoint
         v
-node A: conductor + jitLLM runtime          (owner's `spark`)
+designated node: jitLLM runtime with conductor role (one process)
         | routes by placement           | model communication (sharded)
         v                               v
-node B..N: jitLLM runtime  <-----------/    (owner's `spark-b`)
-        \------------- management API -------------/
-                  optional dashboard (separate process)
-topology: discovered or configured, never baked in (D-023)
+other configured nodes: jitLLM runtime <---/ (one process per node)
+
+optional dashboard (separate process) -> conductor management front door
+topology: detected paths, enrolled membership; no fixed names/counts (D-038)
 
 x86-64 workstation: editor / builds / CPU tests / import tools -> SSH deploy
 ```
 
 | Component | Responsibilities |
 | --- | --- |
+| Conductor role | Single front door, placement and request routing, advisory cluster view; local admission stays with each node (D-037) |
 | Model registry | Identity, tokenizer/config, adapters, immutable manifests, loaded plans, lifecycle |
 | Execution planner | Select compatible operations / fused segments; declare dependencies, workspace, yield boundaries |
 | Scheduler | Admit requests, advance ready continuations, fairness, distributed phase coordination |
@@ -443,17 +446,161 @@ experts acquired before launch, continuation suspended while I/O is pending.
 CUDA graphs: residency decisions sit outside captured segments; no CUDA API
 calls from host-function nodes.
 
+### Conductor ownership and admission
+
+D-037 places the conductor in its designated node's native runtime. The
+single-node deployment uses that same role and local admission path.
+Dashboard, importer and supervisor remain separate processes. Conductor
+work uses bounded queues and buffers, charged to its node's budget, and
+never enters per-expert dependency acquisition or residency decisions.
+Cluster coordination does not hold a catalog/scheduling lock across network,
+disk or GPU waits. Thread counts and the async implementation remain open.
+
+The following are conceptual records, not a wire schema or public API:
+
+| Record | Owner and meaning |
+| --- | --- |
+| Node view | Conductor's advisory snapshot: configured node identity, runtime incarnation, report revision/freshness, capabilities/compatible plans, health, budget and occupancy/commitment summaries. Reports from an old incarnation or older revision cannot overwrite newer state |
+| Local capacity ledger | Node authority: its execution budget, outstanding capacity commitments and full execution envelopes under question 9's progress policy. Physical occupancy is a separate ledger; cache and lazy commitments are not naively summed or counted as free memory |
+| Placement | Conductor intent and node-confirmed model-instance identity: artifact/plan compatibility, node incarnation, readiness or unknown status. Separate instances can represent future replicas or M6 ranks. Weight residency and extent ownership remain in the node catalog |
+| Retained-state hint | Node-issued, compatibility-scoped hint for placement affinity. The node revalidates existence, identity, permissions and expiry at use. A prefix hit is neither conversation identity nor a refresh of unrelated continuation retention (D-031) |
+| Routed attempt | Conductor request/attempt identity, conductor incarnation, target node incarnation and model instance, dispatch/admission/start/terminal-or-unknown status, and stream progress. The node owns the matching execution record and any capacity grant; observations at the conductor may lag |
+
+Snapshots include enough budget categories to interpret admission: active and
+suspended state, weights/cache, workspace, I/O and communication buffers,
+metadata, non-evictable allocations and OS/runtime headroom. Shared backing
+is counted once locally. Pending retirement remains occupied until local
+completion proves otherwise. Unavailable-node capacity cannot satisfy a
+request elsewhere. Neither aggregate free bytes nor reported model residency
+is permission to run. Exact envelope guarantees remain question 9's gate.
+
+**Whole-model placement (M4a).** Filter candidates by configured membership,
+current runtime identity, health and compatible executable plan/artifact.
+Prefer a feasible placement that avoids paging, using compatible retained
+state and existing model instances as affinity hints; preserve useful contents
+on other nodes. A node with revocable cache is not automatically full, and
+an affinity hit does not override admission. Ranking predicts suitability;
+the chosen node checks reality. No numerical ranking formula is claimed here.
+
+Dispatch one attempt to one node, including when that node is local. The
+node validates identity and plan/state compatibility and serializes its
+capacity decision with other local admissions. It either accepts under its
+progress policy, defers with bounded waiting, or rejects an impossible or
+invalid request. Deferral is not a capacity grant unless the node explicitly
+issues one. Granting capacity alone never evicts useful cache; the node later
+acquires the actual dependency closure and schedules at safe boundaries.
+Switching away from an instance does not evict the whole model or expire its
+retained state. Adding replica records here does not enable automatic replicas.
+
+An attempt's identity is stable across transport retransmission. The node
+must return its existing outcome or reject a retired identity, never turn a
+duplicate into another execution or commitment. Deduplication/terminal records
+are bounded, but pruning them must not make old requests executable again:
+retire their admission namespace or retain a rejection watermark/equivalent
+fence. D-038 uses session sequence high-water marks for this bound; M4a must
+validate their implementation rather than rely on unbounded request tombstones. This is internal dispatch safety, not durable
+exactly-once semantics for client retries.
+
+A rejection or an acknowledged cancellation of queued work permits trying
+another node only if the original node establishes **never started and no
+longer startable**, including rejection of delayed dispatch messages. If
+acceptance/start is uncertain, query or cancel the same attempt on that node;
+if it cannot be resolved within bounded time, fail the client explicitly.
+Do not reroute on a timeout, stale health, or absence of tokens: the node may
+already have changed state or begun execution. A terminal failure after work
+started likewise does not authorize transparent replay.
+
+**Streaming and cancellation.** The executing node sends ordered response
+chunks to the conductor, which owns the client connection and preserves the
+protocol's terminal/error semantics. The local execution path obeys the same
+ordering and buffer limits. Slow clients apply bounded backpressure; if the
+configured buffer/time bound cannot be maintained, cancel or fail instead of
+accumulating unbounded output. No global execution/catalog lock spans a stream
+write. Client disconnect cancels the routed attempt. The node stops further
+submission at supported boundaries and tracks pending GPU, I/O and network
+consumers through completion; cancellation acknowledgement is not a physical
+reclamation receipt. A request may be terminal for the client while cleanup
+remains outstanding. Transport protection/authentication follow D-014; workers'
+internal control endpoints are not extra public inference front doors.
+
+**Restart and uncertain ownership.** Node and conductor process incarnations
+qualify all attempt and control identities. Restarted nodes reject old grants
+and dispatch; old state hints and placements become invalid until explicitly
+revalidated. Process restart is not itself proof that driver/network resources
+are reusable: local recovery must establish safe ownership and completion
+before reporting a usable budget. On conductor connection loss, a worker
+blocks new admission from that connection and initiates bounded cancellation/
+unwind of its orphaned work when the connection-loss deadline is reached.
+A deadline ends client waiting, never substitutes for device completion.
+Resources whose consumers cannot be proven finished stay charged/quarantined
+until a validated recovery establishes safety; report the node unavailable
+instead of promising indefinite successful progress.
+
+Reconnecting or restarting the conductor cannot reconstruct truth from its
+old snapshots. Each worker reconciles or cancels outstanding attempts, fences
+old control/admission sessions and reports current local status before new
+admission through a replacement session. Old attempts may still be retiring;
+new work can use only capacity the local ledger safely makes available. M4a
+has no automatic election, failover, stream resumption or durable replay log.
+Replacement of the configured conductor first requires fencing the previous
+authority; an unreachable process is not proof it is dead. Authentication,
+session fencing, bounded control-record retention and reconciliation mechanics
+are specified in the [initial cluster design](cluster-design.md), D-038;
+they still require implementation validation.
+
+**M6 extension.** A sharded placement maps ranks to separate node domains.
+The conductor coordinates a phase transaction with node-issued capacity
+reservations and readiness for every rank; all required ranks must be ready
+before a matching commit authorizes execution. Each node validates the current
+transaction/incarnations and its own grant before collective submission.
+Prepare failures cancel/unwind participating ranks; unknown rank completion
+never releases another rank's still-consumed buffers. Collective ordering,
+commit/abort races and failure recovery require the M6 protocol and tests;
+M4a whole-model routing does not require distributed prepare/commit. No
+cluster ledger may replace these local authorities with a sum of free bytes.
+
+**Required validation, not results.** The M4a fake transport/node tests and
+Spark integration must cover: two attempts racing on stale reported capacity;
+affinity pointing to expired state; out-of-order reports and stale incarnations;
+duplicated/delayed dispatch after cancellation and dedup-record retirement;
+lost acceptance before any token; slow/disconnected clients; conductor restart
+with a surviving worker; and node loss with pending GPU/I/O consumers. Assert
+no over-admission, duplicate execution, silent rerouting or early reuse, bounded
+client/queue waiting, and continued accounting for unresolved cleanup. M6 adds
+partial preparation, lost commit, mismatched rank generations and node loss
+during a collective. These tests are owed at implementation, not run in M0.
+
+M0 handoff (2026-09-22): D-037 and this section settle ownership and failure
+requirements only. The builder checked the documentation against D-005,
+D-007, D-014, D-020/D-023, D-031 and the pager invariants on the x86-64
+workstation, with local-link and whitespace checks. No executable behavior,
+configuration parser or protocol was added; no runtime tests, builds or Spark
+runs were needed. Numeric bounds and protocol validation remain the named
+future gates, not measured results. Changes remain uncommitted for review.
+
+Independent review (2026-09-22): reviewed the complete four-file diff against
+the handoff, D-005/D-007/D-014/D-020/D-023/D-031, the pager invariants and M0
+scope; no defects found. Re-ran the whitespace check on the x86-64 workstation;
+the builder also validated 57 local documentation links. A separate
+adversarial review found no unresolved issue in stale-capacity races,
+duplicate/delayed dispatch, uncertain acceptance, queued cancellation/reroute,
+deduplication retirement, restart/partition or pending-consumer scenarios.
+These were documentation reviews, not executed transport or hardware tests;
+the implementation validation gates above remain outstanding.
+
 ### Two-node flow (§12)
 
-Placement first (D-020, D-023): the conductor decides which node hosts each
+Placement first (D-020, D-023, D-037, D-038): the conductor decides which node hosts each
 model and routes requests there; a subagent's model on another node while the
 main model stays resident needs no collective and no direct link. M4a starts
-with configured membership and one configured conductor, capability and
+with enrolled membership and one configured conductor, detected network
+paths, canonical QSFP layouts and bounded setup subnet scans under
+[D-038/D-039](cluster-design.md), capability and
 health probes, and request routing with affinity to retained compatible
 state. The node runtime remains authoritative for local admission; a stale
 cluster view cannot authorize unsafe local execution. Unavailable nodes
 cause explicit request failure, not assumed reclamation or silent replay of
-an already-started stream. Replica placement, automatic discovery, and
+an already-started stream. Automatic replica placement, automatic membership changes, and
 conductor election have separate revisit triggers in plan.md. A busy small
 model may later run as replicas on several nodes. Concurrent execution
 without paging requires a supported placement whose working sets and complete execution envelopes fit
@@ -790,10 +937,10 @@ while drafting:
   its future design must still handle a miss when the current step fills RAM.
 - The storage queue's final sleep/poll policy and model-driven tuning of
   request sizes/depths; host-VMM GGML and reclaim validation under D-034.
-- Where the conductor lives (inside its node's runtime process or a
-  sidecar), how it represents cluster-wide capacity,
-  placement, and replicas, and how a routed request's streaming response
-  flows back through it. M4a uses one configured conductor; election is deferred.
+- Native dependency choices and implementation validation for D-038's
+  [cluster design](cluster-design.md): hardware profiles, bootstrap discovery,
+  configuration/transport parsers, authenticated sessions and crash recovery.
+  D-037/D-038 settle ownership and initial contracts; election stays deferred.
 - Cache-memory, spill, metadata, and expiry limits for D-024/D-031's shared
   prompt-prefix and conversation-continuation policies; choose before M4
   from measured state sizes and available headroom.

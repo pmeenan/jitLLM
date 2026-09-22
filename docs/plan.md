@@ -216,15 +216,25 @@ needs evidence from the real hardware.
       matched pinned upstream bytes and hashes. AGPL network-source duties
       and adoption blockers are recorded; no code or module boundary is
       approved by this inventory.
-- [ ] Decide where the conductor lives (inside its node's runtime process or
-      a sidecar) and how cluster-wide admission and placement are represented
-      (D-020). Record in decisions.md.
-- [ ] Define the initial configured cluster (D-023): configuration format,
-      one designated conductor, configured membership, capability and health
-      probes, per-node admission, and affinity to retained compatible state.
-      M4a needs no discovery service, election, or automatic replica placement;
-      their revisit triggers are below. Nothing about node names or counts
-      in code; the owner's `spark`/`spark-b` are one deployment's config.
+- [x] Decide conductor location and admission/placement ownership (2026-09-22,
+      D-037): conductor inside the designated node runtime, advisory per-node
+      cluster view and placements, authoritative local admission, bounded
+      streaming through the front door, and no replay of uncertain attempts.
+      [Architecture](architecture.md#conductor-ownership-and-admission) records
+      lifecycle/failure requirements and future validation cases; D-038 below
+      supplies the configuration and wire/fencing design.
+- [x] Define the initial cluster (2026-09-22, D-038/D-039):
+      [design](cluster-design.md) settles experimental TOML v2, one enrolled
+      conductor/membership, mutual authentication, session fencing and restart
+      reconciliation, bounded queues/records/timeouts, node health/admission
+      and independent retained-state affinity. Owner-requested initial
+      interface/QSFP detection proposes the layout; read-only probes on both
+      Sparks verified adapter/physical-port grouping for the two host paths
+      sharing one cable. D-039 adds single/pair/triangle/switched-N layout
+      classification and bounded dedicated-QSFP subnet scans. Setup discovery
+      and enrolled-member path refresh
+      are M4a scope; automatic membership changes, election and replicas
+      remain deferred. Implementation and adversarial execution are still owed.
 - [ ] Verify the endpoint set the named clients need (Cursor, OpenCode,
       Codex, Claude Code: chat completions, Responses API, Anthropic Messages
       format, streaming and tool-call details) against their current docs;
@@ -400,11 +410,13 @@ has a promised date; each should leave a usable, testable result.
   when both complete execution envelopes fit. This milestone is useful
   without MoE or sharding.
 - **M4a — Configured placement across nodes.** After M4, independently of M5:
-  one configured conductor, configured nodes with capability/health probes,
+  one configured conductor and enrolled nodes, interface/QSFP bootstrap
+  discovery and automatic path detection under D-038, capability/health probes,
   whole-model placement and request routing with state affinity. Run B on
   another node while A stays resident; use the existing network. *Gate:*
-  an unmodified standard client completes the A→B→A flow through one endpoint;
-  each node enforces its full local budget and compatible state reuse; models
+  the D-038/D-039 topology/discovery/configuration/authentication/fencing and bounded-state
+  challenge cases pass; an unmodified standard client completes the A→B→A
+  flow through one endpoint; each node enforces its full local budget and compatible state reuse; models
   run concurrently when placement permits. Stale capacity reports, node loss,
   and cancellation cause bounded failure/unwind without unsafe admission or
   silent replay of a started stream. Honor remote-access protection (D-014).
@@ -450,7 +462,7 @@ dependency-group scoring, optimistic MoE) live in features.md.
 
 | Item | Earliest work / revisit trigger | Scope |
 | --- | --- | --- |
-| Automatic membership discovery | After M4a, when a deployment needs membership changes that configured nodes and explicit reload cannot reasonably serve | Candidate mechanism under D-023; configured topology is the initial path |
+| Automatic membership changes | After M4a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M4a scope |
 | Conductor election | After M4a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
 | Automatic replica placement and balancing | After M4a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |
 

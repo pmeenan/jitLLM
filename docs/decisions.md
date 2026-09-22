@@ -30,6 +30,183 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-039: Detect canonical QSFP layouts and scan dedicated cluster subnets during setup  (2026-09-22, status: accepted; amends D-038)
+
+**Decision.** Setup explicitly proposes single-node, likely direct pair,
+likely direct triangle, and switched/shared-fabric N-node layouts. Count
+physical QSFP port groups, not the Spark's two host interfaces per port;
+merge addresses into nodes only with verified peer identity. Zero connected
+ports suggests single-node only with a complete inventory. One active port
+and one reciprocal peer suggests a direct pair; three nodes with two ports
+each and reciprocal edges form a triangle. Multiple peers reachable through
+one port suggest a shared fabric, including 4+ nodes. Incomplete or conflicting
+observations retain a partial graph rather than inventing missing membership.
+
+Under the owner's dedicated-QSFP-network assumption, a setup window scans
+existing on-link IPv4 subnets on detected QSFP paths by default, with bounded
+probe rate, concurrency, memory, range and time. This replaces D-038's no-sweep
+rule. Management interfaces/default routes are excluded; IPv6 uses scoped
+neighbor/multicast discovery instead of address-space scanning. Responding
+IP/MAC pairs are candidates, never automatic enrollment. ARP can reveal the
+same peer MAC through a switch, so a direct cable remains a topology inference
+unless independently corroborated. Report observed node counts and scan
+coverage separately; silent peers do not become proof of absence.
+
+**Context.** Owner's follow-up on 2026-09-22 specifies single, double-direct,
+triple-direct and N-switched patterns and requests subnet scanning for the
+dedicated network. [The classifier and scan contract](cluster-design.md#layout-classifier)
+turn those patterns into explicit requirements while preserving D-038's
+identity and per-port accounting. No additional hardware was available to
+validate triangle/switched deployment behavior; no active scan was run here.
+
+**Consequences.** Experimental shared/local TOML schema **v2** adds the
+`network.subnet_scan` policy and `initial-v2` limit profile; these supersede
+the unimplemented v1 drafts.
+Internal transport remains protocol v1. M4a validation covers all four layouts,
+ambiguous/partial results and scan bounds. The authority, enrollment, local
+admission and failure contracts are unchanged; existing membership never
+shrinks automatically when a cable or peer disappears.
+
+**Reopen if.** The dedicated-network assumption is unsuitable for a deployment,
+or address allocation/forwarding is needed to make the physical topology
+usable. Such provisioning remains an explicit operation outside this detector.
+
+## D-038: Autodetect initial network paths; enroll a configured cluster with fenced control sessions  (2026-09-22, status: accepted; refines D-023 and implements D-037's cluster-design gate)
+
+*Same-day follow-up: D-039 adds canonical layout classification and dedicated-
+QSFP subnet scanning; its schema v2 supersedes the v1 draft below.*
+
+**Decision.** Initial setup detects interfaces and candidate peer paths,
+particularly the known Spark QSFP layout, and proposes the cluster layout.
+The initiating node is the proposed conductor. An explicit enrollment writes
+one designated conductor and the approved node identities; later startups
+automatically detect and validate paths for those members. Bootstrap discovery
+is in M4a scope, as the owner requested. Automatic membership changes,
+conductor election and automatic replica placement remain deferred.
+
+A versioned hardware profile groups Spark netdevs by adapter and physical
+port metadata, corroborated with PCI/devlink/RDMA information, not by names
+or IP conventions. The measured two active PCI paths share one physical
+200 Gb/s port; speed is not additive. Generic discovery and explicit
+selectors remain available for unrecognized hardware. Detected addresses,
+carrier and neighbor entries do not establish peer identity, cabling topology
+or authority. Discovery changes no OS networking settings. Existing Sync
+configuration is optional evidence, not a prerequisite or a jitLLM trust store.
+
+Use experimental **TOML cluster schema v1**: a shared membership document with
+cluster UUID, revision, designated conductor, enrolled node IDs/public-key pins
+and path policy, plus a local identity/credential/listener/limit document.
+Configuration changes are explicit, atomic and fail closed on mismatched
+membership digests; no hot membership/trust reload initially. Internal
+control/response transport uses mutually authenticated TLS 1.3 over TCP with
+bounded length-prefixed JSON, protocol v1. Bootstrap mDNS is setup-only and
+untrusted; enrollment uses authenticated administrative access or local import.
+Remote client binding remains protected under D-014 and the named-client
+endpoint design; inference/management still have one front door under D-037.
+
+Conductor epochs are durably monotonic; workers retain accepted epoch floors.
+Fresh worker-issued sessions fence prior connections at local admission,
+qualify request IDs, and use sequence high-water marks to reject old requests
+after bounded result-cache retirement. Reconnect reconciles or cancels old
+attempts; changing a transport path never silently replays them. Moving the
+conductor requires stopping/fencing the old authority, not winning a timeout.
+Ready nodes still grant capacity locally under D-007/D-037. Shared state
+hints retain D-031's independent prefix/continuation lifetimes.
+
+**Context.** Owner's request on 2026-09-22: autodetect the initial layout as
+much as possible from interfaces, particularly QSFP, given the known physical
+configuration. Read-only checks on both Sparks established usable adapter/
+physical-port identifiers independent of interface naming; current NVIDIA
+port documentation corroborates the grouping. The
+[design and evidence](cluster-design.md) records what was observed, what
+cannot be inferred, config/transport semantics, initial numeric coordination
+bounds and required validation. Those bounds are policy choices, not hardware
+measurements or a substitute for question 9's progress policy.
+
+**Consequences.** D-023's discovery deferral now concerns automatic membership
+changes, not setup assistance or address/path refresh for known members.
+M4a gains a bounded setup workflow without mandatory subnet editing. No
+runtime code, cryptographic library, parser dependency, network configuration
+change, distributed model support or benchmark result is introduced here.
+M1 selects audited native dependencies and packaging/diagnostic conventions;
+M4a must validate the protocol catalog, discovery, trust, crash recovery,
+backpressure and adversarial cases in the design before claiming support.
+M6 transport/collectives and numeric resource-progress guarantees remain
+separate. Evolving the experimental schema/protocol requires explicit
+versioning; no compatibility with an existing released format is implied.
+
+**Reopen if.** The measured hardware metadata ceases to distinguish shared
+ports, an unsupported network needs forwarding or automated network creation,
+or membership churn/independent conductor upgrades justify a stronger cluster
+control protocol. Preserve explicit trust and node-local memory authority.
+
+## D-037: The conductor is an in-process role; admission authority stays per node  (2026-09-22, status: accepted; resolves D-020's process-location question)
+
+*Cluster-design follow-up (2026-09-22, D-038): the initial configuration,
+network discovery and fenced control-session design are now recorded; their
+implementation validation remains ahead.*
+
+**Decision.** The configured conductor runs inside its node's native jitLLM
+runtime, including the single-node deployment. It owns the client inference
+and management front door, placement policy, bounded request routing, and a
+cluster view of node reports. Every node, including the conductor's own node,
+retains sole authority over its catalog, capacity commitments, residency
+leases, execution and completion. Local dispatch uses the same admission
+contract as remote dispatch; it cannot bypass the local budget.
+
+The cluster view represents **separate memory domains**, not a pooled capacity
+reservation. It records node/runtime incarnations and report freshness,
+capabilities, complete-budget summaries, model-instance placements and
+compatible retained-state hints. It also tracks routed attempts and their
+node-issued admission outcomes. Reports and placement intent never grant
+capacity. A model instance's identity survives partial eviction; a placement
+record does not promise residency or state validity.
+
+For M4a, the conductor selects one node for a whole-model attempt, and that
+node atomically validates the execution envelope against its live commitments
+before admission. It grants, defers within a bounded queue, or rejects; only
+its scheduler can acquire residency and start work. Retransmission of an
+attempt must not create a second execution. After uncertain dispatch, the
+conductor cannot reroute until the original node establishes that execution
+never began and can no longer begin. Timeouts, lost acknowledgements and a
+lack of streamed tokens do not establish that fact. Started or uncertain
+attempts fail explicitly when they cannot be resolved; they are not silently
+replayed. Client retries are new requests, not an exactly-once guarantee.
+
+Responses stream back through the conductor with bounded buffering and
+backpressure. Cancellation propagates to the owning node; client completion
+or disconnect is distinct from resource retirement. A lost node remains an
+unknown domain, not reclaimed capacity. Incarnation checks reject stale
+commands and reports; reconnect/restart reconciles existing attempts before
+new admission. There is no automatic conductor failover, election or stream
+resumption in M4a. Replacing the designated conductor requires fencing the
+old authority, not just declaring it unhealthy.
+
+**Context.** The next M0 task under D-020 asks where coordination lives and
+how admission and placement are represented. An in-process role gives the
+single-node runtime the same front door and ownership model as a cluster,
+without a second local scheduling authority or a mandatory sidecar lifecycle.
+A sidecar would isolate front-door failures and allow separate restarts, but
+those benefits do not yet justify the extra process/control boundary for the
+primary workload. This is a design choice, not a measured latency claim.
+
+**Consequences.** The conductor is outside per-expert routing and paging;
+those remain node-local. Coordination and network buffers count against the
+conductor node's budget. A conductor-runtime failure also loses that node's
+execution and the cluster front door; other nodes retain responsibility for
+safe unwind. [Architecture](architecture.md#conductor-ownership-and-admission)
+records the conceptual ledgers, failure rules and required challenge cases.
+M6 adds coordinated prepare/commit across per-rank capacity reservations;
+this is not a cluster-wide virtual-memory pool or approval of the deferred
+mirrored-ledger shortcut. The configured-cluster schema, wire encoding,
+restart fencing mechanism, numeric queue/time bounds, async model, and
+question 9's capacity-guarantee policy remain their own planning tasks. No
+public API, wire format or implementation is introduced by this decision.
+
+**Reopen if.** Front-door isolation, independent upgrades, a conductor-only
+host, or measured coordination contention justifies a sidecar. Preserve the
+single front door and authoritative local admission if process placement changes.
+
 ## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025)
 
 *Refined the same day at the owner's direction after review: the benefit
@@ -682,6 +859,10 @@ guarantee before promising that behavior.
 
 ## D-023: Cluster topology is discovered or configured, never baked in; one conductor; replicas allowed  (2026-09-20, status: accepted)
 
+*Discovery refinement (2026-09-22, D-038): interface/bootstrap discovery and
+path refresh for enrolled nodes are initial scope; automatic membership
+changes and election remain deferred.*
+
 *Delivery clarification (M0 review): the M0/M1 design obligation below is met
 by configured membership, one configured conductor, and capability/health
 probes. This is the M4a implementation path. Automatic discovery, election,
@@ -768,6 +949,9 @@ reporting still includes switch and switch-back latency and bytes moved.
 full swap.
 
 ## D-020: The coordinator orchestrates the Spark pool: placement, routing, and time-slicing versus concurrency  (2026-09-20, status: accepted)
+
+*Process-location follow-up (2026-09-22, D-037): the conductor is a role
+inside its node's runtime; node-local admission remains authoritative.*
 
 *Terminology and scope note, same day (D-023): "coordinator" is the conductor
 role; the hostname below is the owner's environment, not application

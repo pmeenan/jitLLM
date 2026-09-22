@@ -182,9 +182,9 @@ the human commit gate.
 
 ## Current status
 
-Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-036; the feature matrix was triaged with
-the owner on 2026-09-21. M4 targets A→B→A with retained state;
+Milestone **M0 (plan the plan)** — direction, retention/measurement and
+cluster contracts are recorded through D-039; the feature matrix was triaged
+with the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM

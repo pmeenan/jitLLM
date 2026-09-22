@@ -44,7 +44,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Model library larger than memory, loaded on first request, evicted across the whole library | confirmed | D-019 |
 | Time-sliced (TDMA-style) execution under memory contention; concurrent execution when a supported placement fits the working sets and complete execution envelopes within each node's budget | confirmed | D-019, D-020; aggregate pool capacity alone is insufficient; switch points are quiescent boundaries; concurrency-when-it-fits is required soon after v0 |
 | Single front door: clients talk to the conductor, the cluster's one point of entry, which routes each request to a node running that model | confirmed | D-020, D-022, D-023 |
-| Cluster topology discovered or configured at runtime; no node names, counts, or roles baked into the application | confirmed | D-023; M4a starts with configured membership and one configured conductor; discovery and election delivery have separate triggers in plan.md |
+| Cluster topology discovered or configured at runtime; no node names, counts, or roles baked into the application | confirmed | D-023/D-038/D-039; M4a classifies single/pair/triangle/switched-N QSFP layouts and scans attached dedicated subnets for bootstrap candidates, then enrolls configured membership and one conductor; automatic membership changes and election remain deferred |
 | Multiple replicas of the same model across nodes when concurrent demand on a small model justifies it; the conductor balances across replicas with session or prefix affinity | confirmed | D-023; delivery deferred until measured overlapping demand justifies replication after M4a; affinity follows compatible retained state |
 | Conversation state preserved across a model switch (KV, compressed, or recurrent state kept resident, spilled to SSD, or reconstructed) | confirmed | D-019, D-024; M4 proves retained-state reuse and correct fallback separately; idle cache retention is bounded |
 | Switch-latency metrics: A-to-B first token, B-to-A resume with state, bytes moved per switch, and whether the concurrent or time-sliced path was taken | confirmed | D-019 headline metrics; reported per the comparison protocol |
@@ -155,7 +155,7 @@ client-supplied history when an idle cache entry is unavailable.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Conductor placement and request routing across nodes, ahead of sharding | confirmed | D-020, D-023; M4a uses the existing network after M4 and does not depend on M5 |
+| Conductor placement and request routing across nodes, ahead of sharding | confirmed | D-020, D-023, D-037/D-038; M4a detects paths on the existing network and enrolls members after M4, independently of M5 |
 | Explicit sharding across nodes for the flagship; the conductor issues distributed phase IDs | confirmed | M6, ideation §12; needs the direct link |
 | Prepare/commit admission across ranks for sharded models; no rank enters a collective while another can wait indefinitely on an unapproved allocation | confirmed | placement-only execution does not need it |
 | Separately budgeted, stable communication-buffer pool honouring NCCL registration and threading contracts | confirmed | |
