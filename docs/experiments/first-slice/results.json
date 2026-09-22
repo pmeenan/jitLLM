@@ -1,0 +1,158 @@
+{
+  "recorded_on": "2026-09-22",
+  "inspection": {
+    "model_sha256": "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc",
+    "metadata": {
+      "general.architecture": "qwen2",
+      "general.type": "model",
+      "general.name": "qwen2.5-0.5b-instruct",
+      "general.version": "v0.1",
+      "general.finetune": "qwen2.5-0.5b-instruct",
+      "general.size_label": "630M",
+      "qwen2.block_count": 24,
+      "qwen2.context_length": 8192,
+      "qwen2.embedding_length": 896,
+      "qwen2.feed_forward_length": 4864,
+      "qwen2.attention.head_count": 14,
+      "qwen2.attention.head_count_kv": 2,
+      "qwen2.rope.freq_base": 1000000.0,
+      "qwen2.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+      "general.file_type": 1,
+      "general.quantization_version": 2
+    },
+    "tensor_count": 291,
+    "tensor_types": {
+      "F16": 170,
+      "F32": 121
+    },
+    "stored_elements": 630167424,
+    "tensor_payload_bytes": 1260477952,
+    "embedding_bytes": 272269312,
+    "output_embedding_byte_identical": true,
+    "unique_elements_if_tied": 494032768,
+    "tokenizer": {
+      "tokenizer.ggml.model": "gpt2",
+      "tokenizer.ggml.pre": "qwen2",
+      "tokenizer.ggml.eos_token_id": 151645,
+      "tokenizer.ggml.padding_token_id": 151643,
+      "tokenizer.ggml.bos_token_id": 151643,
+      "tokenizer.ggml.add_bos_token": false
+    },
+    "chat_template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+    "chat_template_matches_pinned_base": false,
+    "vocabulary_entries": 151936,
+    "merge_entries": 151387,
+    "base_config_cross_check": {
+      "source_sha256": "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
+      "shapes": {
+        "num_hidden_layers": {
+          "base": 24,
+          "gguf": 24,
+          "match": true
+        },
+        "hidden_size": {
+          "base": 896,
+          "gguf": 896,
+          "match": true
+        },
+        "intermediate_size": {
+          "base": 4864,
+          "gguf": 4864,
+          "match": true
+        },
+        "num_attention_heads": {
+          "base": 14,
+          "gguf": 14,
+          "match": true
+        },
+        "num_key_value_heads": {
+          "base": 2,
+          "gguf": 2,
+          "match": true
+        },
+        "rope_theta": {
+          "base": 1000000.0,
+          "gguf": 1000000.0,
+          "match": true
+        },
+        "rms_norm_eps": {
+          "base": 1e-06,
+          "gguf": 9.999999974752427e-07,
+          "match": true
+        },
+        "vocab_size": {
+          "base": 151936,
+          "gguf": 151936,
+          "match": true
+        }
+      },
+      "all_shapes_match": true,
+      "context": {
+        "base_max_position_embeddings": 32768,
+        "gguf_context_length": 8192,
+        "match": false
+      },
+      "base_tie_word_embeddings": true
+    }
+  },
+  "cpu_vs_cuda_graphs_disabled": {
+    "left": {
+      "backend": "cpu",
+      "tokens": 76,
+      "vocabulary": 151936,
+      "logit_values": 11547136,
+      "restore_prefix_tokens": 32,
+      "state_bytes": 394201,
+      "repeat_bit_differences": 0,
+      "restore_bit_differences": 0,
+      "logits_sha256": "b907469fbdb19d8d7913cd98d2ba4f144b00bff3141501d1e19e6efecc6f397f",
+      "tokens_sha256": "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21"
+    },
+    "right": {
+      "backend": "cuda",
+      "tokens": 76,
+      "vocabulary": 151936,
+      "logit_values": 11547136,
+      "restore_prefix_tokens": 32,
+      "state_bytes": 394201,
+      "repeat_bit_differences": 0,
+      "restore_bit_differences": 0,
+      "logits_sha256": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+      "tokens_sha256": "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21"
+    },
+    "max_absolute_logit_difference": 0.23757028579711914,
+    "root_mean_square_logit_difference": 0.015205389032228013,
+    "top1_equal_rows": 76,
+    "rows": 76,
+    "interpretation": "Observed backend difference; not a jitLLM acceptance tolerance"
+  },
+  "cuda_fusion_control": {
+    "recorded_on": "2026-09-22",
+    "binary_sha256": "e57c9998b2b576eeee1a4df4e19fb48b6b5dd356cec65fa860e07b29ac87b00d",
+    "setting": "GGML_CUDA_DISABLE_FUSION unset (upstream default, fusion enabled) versus 1; GGML_CUDA_DISABLE_GRAPHS=1 or unset; CUDA_DISABLE_PTX_JIT=1 in every arm",
+    "arm_logits_sha256": {
+      "fusion_on_graphs_off": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+      "fusion_on_graphs_on": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+      "fusion_off_graphs_off": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1",
+      "fusion_off_graphs_on": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1"
+    },
+    "all_arms_repeat_and_restore_bit_differences": 0,
+    "graphs_change_logits": false,
+    "fusion_changes_logits": true,
+    "fusion_on_reproduces_recorded_cuda_logits": true,
+    "fusion_on_vs_off_graphs_off": {
+      "max_absolute_logit_difference": 0.047740936279296875,
+      "root_mean_square_logit_difference": 0.003304913375054328,
+      "top1_equal_rows": 76,
+      "rows": 76
+    },
+    "interpretation": "The selected profile runs with CUDA operation fusion enabled, as the original CUDA run did implicitly. Fusion is a numerical-plan choice; the fusion-disabled hashes identify the matching reference for a native plan that does not fuse. The difference is an observation, not a tolerance."
+  },
+  "limitations": [
+    "Single synthetic 76-token trajectory, no long-context or model-quality test.",
+    "External llama.cpp context round trip only; no jitLLM backing, weight eviction, spill format, cancellation or admission validation.",
+    "Cross-backend differences are observations, not numerical acceptance tolerances.",
+    "An exploratory CUDA-graphs-enabled run also repeated/restored exactly but is not the selected reference profile.",
+    "CUDA fusion enabled/disabled arms repeat and restore exactly within each arm but differ from each other; a native comparison must use the arm matching its fused-operation plan."
+  ]
+}

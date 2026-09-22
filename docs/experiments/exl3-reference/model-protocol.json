@@ -1,0 +1,102 @@
+{
+  "schema": 3,
+  "declared_on": "2026-09-22",
+  "scope": "Final external model measurements after pilot median uncertainty exceeded10% for145-token prefill; kernel settings remain in protocol.json",
+  "seed": 20260922,
+  "held_out_seed": 20260923,
+  "cache_capacity": 4096,
+  "threads": 4,
+  "profiles": {
+    "optimized": {},
+    "attention_eager": {
+      "EXL3_BC_ATTN": "0"
+    }
+  },
+  "profile_note": "Direct Model API resident-compute profiles. Both enable pinned CPU embedding staging for completed-boundary single-token decode, as upstream Generator.decode does; prefill keeps its unpinned default. attention_eager disables only BC attention graphs; gated MLP graphs and other upstream model defaults stay enabled. Full Generator scheduling, batching, sampling and serving are not measured.",
+  "numerical_prefix_tokens": [
+    32,
+    144,
+    145,
+    1023,
+    1024
+  ],
+  "numerical_suffix_tokens": 16,
+  "full_prefill_logits_up_to": 145,
+  "numerical_repeats": 3,
+  "prefill_tokens": [
+    32,
+    144,
+    145,
+    512,
+    1023,
+    1024,
+    2048
+  ],
+  "decode_prefix_tokens": 512,
+  "decode_tokens": 64,
+  "performance_blocks": 2,
+  "trials_per_block": 31,
+  "warmup_calls": 15,
+  "kernel_rows": [
+    1,
+    8,
+    16,
+    32,
+    144,
+    145,
+    1023,
+    1024
+  ],
+  "kernel_real_keys": [
+    "model.layers.0.self_attn.q_proj",
+    "model.layers.0.self_attn.k_proj",
+    "model.layers.0.mlp.up_proj",
+    "model.layers.0.mlp.down_proj",
+    "lm_head"
+  ],
+  "kernel_synthetic_shapes": [
+    [
+      4096,
+      4096
+    ],
+    [
+      4096,
+      14336
+    ],
+    [
+      14336,
+      4096
+    ]
+  ],
+  "kernel_synthetic_rates": [
+    4,
+    5,
+    6,
+    8
+  ],
+  "kernel_repeats": 31,
+  "kernel_replays_per_sample": 10,
+  "statistics": {
+    "latencies": "median/p95/p99 using NumPy linear quantiles; retain raw external samples",
+    "uncertainty": "Seeded 2000-resample bootstrap 95% CI of median; decode token uncertainty resamples whole requests (clusters), decode acceptance uses per-request duration/64. Token p95/p99 are descriptive, not confidence-certified.",
+    "performance_noise_rule": "Before native evaluation set each workload allowance to max(absolute ratio of reference block medians minus1, sum of reference median CI half-widths divided by mean reference median). Allowance above0.10 marks unstable reference and cannot pass native acceptance. Kernel samples use declared first15/last16 subblocks; corroborate beside candidate before acceptance. No arbitrary percentage floor.",
+    "native_comparison": "Repeat reference beside candidate; candidate median ratio<=1+frozen allowance for every workload, with confidence intervals reported; no trading a slow case for a faster mean",
+    "memory": "record current/peak torch allocated/reserved, model/cache/static accounting, CUDA mem info, host RSS/MemAvailable; compare within declared native envelopes, never sum overlapping Spark budgets"
+  },
+  "correctness": {
+    "repeat_restore": "Require all finite, exact bytewise equality for each fixed numerical plan; a failure remains a failure with diagnostic errors reported",
+    "cross_plan": "Record max absolute/RMS/top1 changes between packed/reconstructed and optimized/attention_eager; these observations are not native tolerances",
+    "native_tolerance_gate": "Exact storage and same-plan restore remain mandatory; cross-implementation bounds require independent control evidence plus held-out inputs before native acceptance; no threshold retrofitted to native discrepancy",
+    "captured_kernel": "Captured/replayed outputs must be finite and exactly equal to the warmed eager result for the same plan."
+  },
+  "state_restore": "Synchronize, copy every FP16 cache tensor to CPU with position/batch shape, hash, poison live tensors, restore in place, synchronize, compare all suffix logits; no relocation/process-independent spill claim",
+  "timing": "Separate all-logit correctness probes. Prefill excludes LM head; TTFT proxy includes prefix prefill plus final prompt forward and CPU argmax token availability, excluding tokenization/network. Decode wall includes CPU token availability; GPU event elapsed reported separately. Kernel benchmark graph replay removes Python per-kernel dispatch, profiler supplies selected kernel symbols and active device durations. Decode is teacher-forced, not a free-running sampled trajectory. Numerical prefixes above145 check all suffix logits only.",
+  "limits": [
+    "Finite synthetic input trajectories are not model quality evaluation",
+    "No full32K context validation",
+    "CPU MoE/offload and CPU collectives disabled explicitly by ARM build patch",
+    "No native VMM, pending cancellation, cross-process state restore or paging performance validated",
+    "No speculative decoding or multi-sequence batching"
+  ],
+  "pinned_decode_staging": true
+}

@@ -1,0 +1,188 @@
+{
+  "recorded_on": "2026-09-22",
+  "purpose": "D-051 first dense checkpoint and external numerical reference; not a production dependency lock",
+  "downloaded_files": [
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+      "revision": "9217f5db79a29953eb74d5343926648285ec7e67",
+      "filename": "qwen2.5-0.5b-instruct-fp16.gguf",
+      "size_bytes": 1266425696,
+      "sha256": "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-fp16.gguf"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+      "revision": "9217f5db79a29953eb74d5343926648285ec7e67",
+      "filename": "LICENSE",
+      "size_bytes": 11343,
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/LICENSE"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+      "revision": "9217f5db79a29953eb74d5343926648285ec7e67",
+      "filename": "README.md",
+      "size_bytes": 4856,
+      "sha256": "fa1fede7f775a20f111cc098c00900092020572ce78976970a5b0ad9ca211999",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/README.md"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "config.json",
+      "size_bytes": 659,
+      "sha256": "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/config.json"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "generation_config.json",
+      "size_bytes": 242,
+      "sha256": "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/generation_config.json"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "tokenizer_config.json",
+      "size_bytes": 7305,
+      "sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/tokenizer_config.json"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "tokenizer.json",
+      "size_bytes": 7031645,
+      "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/tokenizer.json"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "merges.txt",
+      "size_bytes": 1671839,
+      "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/merges.txt"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "vocab.json",
+      "size_bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/vocab.json"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "LICENSE",
+      "size_bytes": 11343,
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/LICENSE"
+    },
+    {
+      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+      "filename": "README.md",
+      "size_bytes": 4917,
+      "sha256": "b19c806a904db6dc878a0462e70b551f6b7ac78dfbb88c2eb966ca2b9109ae15",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/7ae557604adf67be50417f59c2c2f167def9a775/README.md"
+    }
+  ],
+  "reference": {
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "discovery_tag": "full-cuda13-v0.4.1",
+    "platform": "linux/arm64",
+    "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "reported_version": "0.4.1-dev (build 10964, commit b29c606e2)",
+    "compiler": "GNU 14.2.0 for Linux aarch64",
+    "category": "external reference tool; not incorporated into jitLLM",
+    "license": "MIT (llama.cpp/GGML); container dependencies retain their own terms",
+    "image_size_bytes": 3051638872,
+    "server_sha256": "b2e1769c9d08b1e3b18282928f91ca11de61ec2020d38cdd389d462b0c223351",
+    "cuda_backend_sha256": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+    "model_scope": "published Qwen2.5-0.5B-Instruct FP16 GGUF; no conversion executed",
+    "container_runtime_versions": {
+      "cuda-cudart-13-3": "13.3.29-1",
+      "libcublas-13-3": "13.5.1.27-1",
+      "libc6:arm64": "2.39-0ubuntu8.9",
+      "libstdc++6:arm64": "14.2.0-4ubuntu2~24.04.1",
+      "libgomp1:arm64": "14.2.0-4ubuntu2~24.04.1",
+      "libssl3t64:arm64": "3.0.13-0ubuntu3.9",
+      "python3": "3.12.3-0ubuntu2.1",
+      "numpy": "2.2.6",
+      "gguf_installed": "0.19.0"
+    },
+    "headers": {
+      "include/llama.h": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda",
+      "ggml/include/ggml.h": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6",
+      "ggml/include/ggml-backend.h": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2",
+      "ggml/include/ggml-opt.h": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+      "ggml/include/ggml-cpu.h": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+      "ggml/include/ggml-alloc.h": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23",
+      "ggml/include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+    },
+    "headers_scope": "Every source-tree header reference.cc includes transitively (g++ -MM against the pinned tree); each hash also matches upstream at source_revision"
+  },
+  "profile": {
+    "context_tokens": 512,
+    "batch_tokens": 64,
+    "microbatch_tokens": 64,
+    "sequences": 1,
+    "threads": 8,
+    "kv_type": "F16",
+    "flash_attention": false,
+    "cuda_graphs": false,
+    "cuda_fusion": "enabled: GGML_CUDA_DISABLE_FUSION unset (upstream default); the disabled arm is recorded as a matching-plan control in results.json",
+    "cuda_disable_ptx_jit": true,
+    "gpu_layers": 999,
+    "cpu_gpu_layers": 0,
+    "teacher_forcing": "32-token first batch, then one token per step; logits for every position; 76 tokens from fixed source text",
+    "restore": "complete context state after 32 tokens, free original context, create new context, restore then continue; same model backing",
+    "sampling": "none; raw logits, no penalties or sampling transforms"
+  },
+  "host": {
+    "name": "spark-c4e2",
+    "architecture": "aarch64",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.178.04",
+    "kernel": "7.0.0-1019-nvidia"
+  },
+  "harness": {
+    "reference.cc_sha256": "7c0d8eab4b812482bfc58ef3e9b8dcba07ee8685430d533ee1a142c7687c1205",
+    "executable_sha256": "e57c9998b2b576eeee1a4df4e19fb48b6b5dd356cec65fa860e07b29ac87b00d",
+    "compiler": "GNU 13.3.0 (image default g++ -> g++-13), inside pinned external image; verified from the executable's .comment section",
+    "flags": [
+      "-std=c++23",
+      "-O2",
+      "-march=armv8-a",
+      "-Wall",
+      "-Wextra",
+      "-Wpedantic",
+      "-Werror"
+    ]
+  },
+  "base_checkpoint_scope": "Pinned config/tokenizer/license cross-check only; safetensors weights not downloaded, no source-conversion equivalence or exact derivative lineage attested",
+  "model_terms": {
+    "license": "Apache-2.0",
+    "category": "external model/test data; not incorporated code or redistributed weights"
+  },
+  "workstation_checker_tool": {
+    "name": "NumPy",
+    "version": "2.2.6",
+    "role": "external Python checker only; unpacked outside checkout, no system installation",
+    "provenance": {
+      "filename": "numpy-2.2.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/8c/3d/1e1db36cfd41f895d266b103df00ca5b3cbe965184df824dec5c08c6b803/numpy-2.2.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "size": 16527618,
+      "digests": {
+        "blake2b_256": "8c3d1e1db36cfd41f895d266b103df00ca5b3cbe965184df824dec5c08c6b803",
+        "md5": "2f9ac35f955d9217b6841568ce13d636",
+        "sha256": "fd83c01228a688733f1ded5201c678f0c53ecc1006ffbc404db9f7a899ac6249"
+      }
+    },
+    "license_scope": "NumPy BSD-3-Clause; bundled libraries retain their own notices in the wheel; no application incorporation or redistribution"
+  }
+}

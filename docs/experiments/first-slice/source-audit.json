@@ -1,0 +1,186 @@
+{
+  "date": "2026-09-22",
+  "upstream": "https://github.com/ggml-org/llama.cpp",
+  "revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "host": "x86-64 workstation",
+  "scope": "bounded source-unit selection inventory, not compiled dependency-closure clearance",
+  "adopted_units": [],
+  "executed_upstream_tools": [],
+  "units": [
+    {
+      "id": "ggml-core",
+      "paths": [
+        "ggml/include/ggml.h",
+        "ggml/include/ggml-backend.h",
+        "ggml/include/ggml-alloc.h",
+        "ggml/src/ggml.c",
+        "ggml/src/ggml.cpp",
+        "ggml/src/ggml-alloc.c",
+        "ggml/src/ggml-backend.cpp",
+        "ggml/src/ggml-backend-impl.h",
+        "ggml/src/ggml-quants.c",
+        "ggml/src/ggml-quants.h",
+        "ggml/src/ggml-common.h"
+      ],
+      "declared_license": "MIT (root LICENSE; copyright 2023-2026 The ggml authors)",
+      "role": "future incorporated implementation, core tier candidate",
+      "status": "inspected selection; no source adopted; exact compiled dependency closure remains to audit",
+      "restrictions": [
+        "Preserve root license and per-file notices.",
+        "jitLLM owns scheduler, catalog, VMM and completion; no libllama runtime adoption."
+      ]
+    },
+    {
+      "id": "ggml-cpu",
+      "paths": [
+        "ggml/src/ggml-cpu/CMakeLists.txt",
+        "ggml/src/ggml-cpu/",
+        "ggml/include/ggml-cpu.h"
+      ],
+      "declared_license": "Root MIT; ops.cpp YaRN MIT attribution; optional llamafile/sgemm.cpp full MIT copyright 2024 Mozilla Foundation",
+      "role": "future incorporated implementation, core tier candidate",
+      "status": "inspected CMake selected-set boundaries and license notices; no source adopted",
+      "restrictions": [
+        "Audit exact x86/ARM source closure and OpenMP/other runtime dependencies.",
+        "Disable unused BLAS, KleidiAI and SpacemiT paths unless separately pinned/audited."
+      ]
+    },
+    {
+      "id": "ggml-cuda",
+      "paths": [
+        "ggml/include/ggml-cuda.h",
+        "ggml/src/ggml-cuda/CMakeLists.txt",
+        "ggml/src/ggml-cuda/",
+        "ggml/src/ggml-cuda/vendors/cuda.h"
+      ],
+      "declared_license": "Root MIT; rope.cu YaRN MIT copyright 2023 Jeffrey Quesnelle and Bowen Peng; SDK components have separate platform terms",
+      "role": "future incorporated implementation plus separately recorded D-017 CUDA platform dependencies",
+      "status": "inspected source/build dependency boundaries and notices; no source adopted or VMM proof",
+      "restrictions": [
+        "CUDA runtime, driver, cuBLAS and normal SDK headers have separate exact-component records.",
+        "Optional NCCL and GGML_CUDA_CUB_3DOT2 (FetchContent CCCL v3.2.0) disabled unless explicitly audited.",
+        "GGML internal allocation pools/workspace registration and host-VMM compatibility remain M2 proof obligations."
+      ]
+    },
+    {
+      "id": "qwen2-graph",
+      "paths": [
+        "src/models/qwen2.cpp",
+        "src/models/models.h",
+        "src/llama-graph.cpp",
+        "src/llama-graph.h",
+        "src/llama-arch.cpp",
+        "src/llama-arch.h"
+      ],
+      "declared_license": "MIT (root LICENSE)",
+      "role": "future selected graph operation/tensor mapping adaptation",
+      "status": "inspected Qwen2 graph and immediate include dependencies; no source adopted",
+      "restrictions": [
+        "models.h pulls llama-model/graph/model-loader types; selected graph adaptation is not approval of the libllama scheduler, loader or KV allocator.",
+        "Preserve source identity, notice and modification record for copied/adapted units."
+      ]
+    },
+    {
+      "id": "gguf-reader",
+      "paths": [
+        "ggml/include/gguf.h",
+        "ggml/src/gguf.cpp"
+      ],
+      "declared_license": "MIT (root LICENSE)",
+      "role": "future incorporated parser candidate",
+      "status": "inspected source; no source adopted",
+      "restrictions": [
+        "Not an already-proven jitLLM artifact verifier; own overflow/range/type/layout bounds, limits and negative/fuzz tests remain required."
+      ]
+    },
+    {
+      "id": "hf-converter",
+      "paths": [
+        "convert_hf_to_gguf.py",
+        "conversion/__init__.py",
+        "conversion/base.py",
+        "conversion/qwen.py",
+        "gguf-py/gguf/",
+        "requirements/requirements-convert_hf_to_gguf.txt",
+        "requirements/requirements-convert_legacy_llama.txt",
+        "gguf-py/pyproject.toml"
+      ],
+      "declared_license": "Converter root MIT; gguf-py/LICENSE MIT copyright 2023 Georgi Gerganov; actual Python packages have independent licenses",
+      "role": "external build/import tool candidate only",
+      "status": "inspected for provenance and hazards; neither executed nor incorporated; published GGUF selected instead",
+      "restrictions": [
+        "Converter split includes conversion/; entry-point pin alone is insufficient.",
+        "Actual locked package closure is not established here; upstream torch/transformers pins and broad ranges do not establish full reproducibility.",
+        "Generic converter has trust_remote_code=True paths and torch.load fallback; any future import use requires allowlisted architecture, local verified inputs, safetensors and remote code disabled."
+      ]
+    },
+    {
+      "id": "tokenizer",
+      "paths": [
+        "src/llama-vocab.cpp",
+        "src/llama-vocab.h",
+        "src/unicode.cpp",
+        "src/unicode.h",
+        "src/unicode-data.cpp",
+        "src/unicode-data.h",
+        "scripts/gen-unicode-data.py"
+      ],
+      "declared_license": "Root MIT implementation; BPE attribution to MIT cmp-nct/ggllm.cpp; derived Unicode data requires its own license/provenance resolution",
+      "role": "future tokenizer candidate, incorporation blocked on generated data provenance/license gate",
+      "status": "inspected; no source adopted; direct token IDs avoid need in M2",
+      "restrictions": [
+        "unicode-data.cpp generated file records no input data revision.",
+        "Generator reads unicode.org/Public/UCD/latest/ucd/UnicodeData.txt and Python unicodedata; do not regenerate from moving latest.",
+        "Current https://www.unicode.org/license.txt is Unicode License V3 requiring notice; D-017 allowlist does not list it. Resolve data provenance and allowed inclusion path or deliberately amend policy before copying generated tables."
+      ]
+    },
+    {
+      "id": "chat-rendering",
+      "paths": [
+        "src/llama-chat.cpp",
+        "src/llama-chat.h",
+        "common/chat.cpp",
+        "common/chat.h",
+        "common/jinja/",
+        "vendor/nlohmann/json.hpp",
+        "licenses/LICENSE-jsonhpp"
+      ],
+      "declared_license": "Root MIT for llama-owned source; nlohmann JSON separately MIT with embedded third-party notices",
+      "role": "inspected alternatives; future owned renderer for the pinned template, subject to exact byte/token fixtures",
+      "status": "inspected immediate dependencies and notices; no source adopted",
+      "restrictions": [
+        "Native Jinja now lives at common/jinja, not minja.",
+        "common/chat.cpp imports parser/grammar/common closure; full adoption would require its own bounded audit.",
+        "Smoke uses fixed rendered text, not a template engine. Future native rendering must match the pinned GGUF template, including every enabled tool/message branch; no general Jinja support is implied."
+      ]
+    }
+  ],
+  "sha256": {
+    "LICENSE": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+    "gguf-py/LICENSE": "ef78c7e6659e34c798194f0d344e807c722de70cbca1359ef54772661e11ca38",
+    "ggml/src/gguf.cpp": "b1108d047acf0f81b7bc8863a51541f841946cfeadebd38904376fbf2dd5b654",
+    "ggml/include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4",
+    "src/models/qwen2.cpp": "0da43ff61f449be3a3da8ca2e7cc0eee119b4b8e07c8accce0041998241824e8",
+    "src/llama-vocab.cpp": "b9588d7116c11573b378c43bf3c85f87249ad5eb9626324abded4abc7c91e6dc",
+    "src/unicode.cpp": "b1f3a18646197e21f7300c6d3b45c9faf52a123d58a38d7d54f3f225018da45d",
+    "src/unicode-data.cpp": "95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d",
+    "src/llama-chat.cpp": "0029616465e6d641c1e75a0e0e6e132f3ea6177593735d7f16c89e7edfbbe9a8",
+    "common/chat.cpp": "a226aa0cbf844490cd480bb805c458df16af8771b1ecb53a8fe608e3b2e60d3c",
+    "convert_hf_to_gguf.py": "e9a1da876330bbce9687541ab31736542a01b4ac43c6686126514a50f122fb7f",
+    "conversion/qwen.py": "b783f53598e1a65cb0ef7fbe0d0f52da472e2784f63acf13a5aea00f623cfaa6",
+    "conversion/base.py": "dc08560ff28afa119169061a457def7f4e1ac6bc9a2387516d3653cf663f57b3",
+    "conversion/__init__.py": "940fcf6c47f41185b54c3608da106a9f7e9d6321946e1f2fcad66961b98af37a",
+    "ggml/src/ggml-cpu/llamafile/sgemm.cpp": "e226380b05393302ba91b38d22718d9521700ee2cb7943f83ad316a7a9dcd597",
+    "ggml/src/ggml-cuda/rope.cu": "21b424e872267180570dfbc86e6ea67d1a3ced0efd5273d0f23d36da3c621905",
+    "scripts/gen-unicode-data.py": "1263a483de7fc2b00e4a04a6dd9ef8fe7029f208aa692365b63d43551a7808e5"
+  },
+  "hash_verification": "All listed SHA-256s independently matched raw.githubusercontent.com immutable revision bytes on 2026-09-22.",
+  "global_restrictions": [
+    "No ggml/LICENSE exists at this pin; root LICENSE applies with local notices.",
+    "Root MIT is not a blanket license for vendor/ tree or data-derived tables.",
+    "GGML_NATIVE=OFF, GGML_BACKEND_DL=OFF, explicitly selected CPU/GPU targets; disable unused dependencies.",
+    "External numerical reference is a tool, not an incorporated jitLLM runtime.",
+    "No complete compiled closure, converter run, native runtime, GPU or Spark test was performed for this source audit."
+  ],
+  "unicode_license_source": "https://www.unicode.org/license.txt"
+}

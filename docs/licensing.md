@@ -5,9 +5,74 @@
 
 jitLLM-authored code is Apache-2.0. [D-002, D-003 and D-017](decisions.md)
 govern incorporation, optional modules, tools and platform dependencies.
-This M0 inventory, checked on **2026-09-22**, is evidence for the later
-optional-backend design, not approval to import these repositories or a
+This M0 inventory, checked on **2026-09-22**, is evidence for the first dense
+slice, early EXL3 proof and later optional-backend design, not approval to import these repositories or a
 license audit of their built containers. No implementation was incorporated.
+
+## First dense slice (D-051)
+
+The [selection](first-slice.md) pins the official Qwen2.5-0.5B-Instruct FP16
+GGUF, its base-metadata cross-check and the existing llama.cpp reference.
+[Artifact/tool pins](experiments/first-slice/pins.json) and the
+[bounded source-unit inventory](experiments/first-slice/source-audit.json)
+record immutable revisions, file hashes, actual notices and adoption status.
+Seventeen inspected upstream file hashes matched the immutable GitHub source.
+The inventory is not clearance of the future compiled dependency closure.
+
+| Unit and use | Category / observed terms / disposition |
+| --- | --- |
+| Official Qwen GGUF and base metadata/tokenizer files | External model/test data; both repositories supply the same Apache-2.0 license file. No weights redistributed; retain source terms and required notices with future derived artifacts. Exact source-to-GGUF conversion lineage is unverified |
+| Pinned llama.cpp executable/libraries and GGUF Python inspector | External reference/inspection tools, root MIT and gguf-py MIT; actual container/runtime terms remain in the reference setup record. Used only outside jitLLM serving |
+| Selected GGML core, CPU/CUDA kernels; Qwen2 graph/tensor semantics; native GGUF reader | Future core implementation candidates, root MIT plus local MIT notices (including Mozilla llamafile SGEMM and YaRN authors). Preserve notices and audit the selected compiled closure before adoption. GGML allocator/workspace behavior still needs the M2 proof |
+| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp` lacks exact input-data provenance; its generator uses a moving Unicode URL and Python Unicode data. **Blocked from native incorporation** until provenance/terms and D-017 eligibility are resolved |
+| Chat-template rendering | The pinned template is model data under its source terms. Future owned native rendering must pass exact byte/token fixtures for enabled branches. Full `common/jinja`, chat/parser and vendor closure is not adopted or cleared |
+| HF converter and Python package closure | Inspected only; neither executed nor incorporated. The split converter has remote-code/legacy-checkpoint paths outside the selected model path. Any future use needs independently pinned/audited tools, allowlisted data formats and remote code disabled |
+| CUDA, driver and standard runtimes; NumPy/GGUF Python packages | D-017 platform dependencies and external experiment tools, respectively; retain exact image/component identities and their own terms. No new platform exception or source dependency is approved |
+
+The current [Unicode license](https://www.unicode.org/license.txt) is Unicode
+License V3 with notice requirements. The exact terms for data underlying the
+pinned generated tables must still be traced; do not apply today's text
+retroactively as proof. D-017 does not list that license, so regeneration or
+copying needs a permitted path or a deliberate policy amendment. Fixed token
+IDs keep M2 independent of tokenizer adoption; close this gate before M3.
+No whole-vendor-tree, complete-image or redistribution clearance follows from
+root MIT.
+
+## Early EXL3 companion (D-052)
+
+The [bring-up contract](exl3-bringup.md) and
+[artifact pins](experiments/exl3-reference/pins.json) select two small
+third-party Qwen EXL3 conversions for M2. Their downloaded Apache-2.0 license
+files match the base Qwen license. The [Spark baseline](experiments/exl3-reference/README.md)
+verifies full weight digests, execution and tokenizer/template identity; exact
+conversion/calibration lineage remains unknown. These are external model/test
+data; no weights are redistributed. Any new quantization job needs cleared
+calibration inputs and pinned converter/input provenance.
+
+The external reference uses the ExLlamaV3 revision below, the pinned container
+recipe, three additional hash-pinned wheels and recorded compiler/runtime
+identities. Its [runtime inventory](experiments/exl3-reference/runtime.json)
+records compiled translation units, loaded library hashes and package notice
+identities. An ARM host-helper patch includes MIT source context and retains
+Turboderp's notice in [UPSTREAM-NOTICE.txt](experiments/exl3-reference/UPSTREAM-NOTICE.txt).
+It disables x86 CPU MoE/collective helpers; no device kernels are changed.
+No MiaAI patches or calibration corpus are used by this reference.
+
+Selected MIT device kernels remain core-eligible implementation candidates,
+pending the native selected-file and compiled-closure audit. The external
+PyTorch/driver/toolkit stack is a declared reference tool/platform dependency,
+not incorporated native implementation or clearance to redistribute its
+whole container. Native wrappers must remove upstream allocator, stream and
+scheduling ownership; their actual closure and notices must be audited anew.
+
+## Reference instrumentation
+
+The [fused-routes experiment](experiments/fused-routes/README.md) reads MoE
+routes from the unmodified pinned llama.cpp image with jitLLM-authored
+Apache-2.0 harness code. It retains `route-outputs.patch`, a rejected
+libllama change with MIT upstream context and The ggml authors' notice in
+`UPSTREAM-NOTICE.txt`, only to reproduce a negative result. The runner does
+not build it, and nothing from it enters jitLLM.
 
 ## Pinned reference inventory
 
@@ -154,8 +219,9 @@ license and copyright notices, modifications, implementation/tool/platform
 role, dependency closure, and shipped notice/source obligations. Resolve the
 mixed-provenance cases above or use a verified alternative; neither the EXL3
 format name nor a repository's top-level license clears all implementations.
-M1 builds the provenance tooling; the optional backend remains future work
-under D-028. No new license policy or architectural decision is made here.
+M1 builds the provenance tooling; D-052 advances selected upstream EXL3
+integration to M2. Other optional recipes remain future work under D-028.
+The early proof changes scheduling, not D-017's license policy.
 
 Builder verification on the x86-64 workstation: clean initial working tree;
 read-only Git snapshots of all four listed revisions; tracked-path and notice

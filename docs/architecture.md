@@ -74,6 +74,11 @@
   scheduler/catalog writer per node, bounded provider services and owned
   completion records (D-048). Cancellation/client termination cannot retire
   unfinished consumers or registrations; [design](async-model.md).
+- **Capacity progress.** D-050 grants bounded requests their maximum retained
+  state/growth plus a complete phase envelope; initially one active request
+  per node, holding the slot through all its phases, waits and unwind. The
+  node switches requests/models only at request boundaries; concurrent
+  requests require their full envelopes to fit. [Policy and validation cases](reservation-policy.md).
 - **Artifacts.** Prepared, versioned, hashed, atomically published; no
   process state serialized; checkpoints untrusted. Initial encoding and
   layout are experimental; compatibility guarantees require dense and MoE
@@ -90,6 +95,14 @@
   D-012). D-049 selects a complete, persistent project SDK with declared
   system prerequisites, project-scoped tool selection and shared
   workstation/reference-container provisioning; implementation is M1 work.
+- **First model/reference.** D-051 selects the official Qwen2.5-0.5B-Instruct
+  FP16 GGUF and pinned llama.cpp CUDA reference on Spark, with CPU diagnostics;
+  [identities and numerical contract](first-slice.md). GGML supplies operations,
+  while jitLLM owns execution/backing. D-052 adds a required
+  [small EXL3 companion and upstream performance gates](exl3-bringup.md)
+  before M2 closes. Both external references have run; the
+  [EXL3 baseline](experiments/exl3-reference/README.md) includes real and larger
+  synthetic packed projections. Native support remains unvalidated for both.
 - **Portability posture.** NVIDIA first. The core holds no vendor types;
   device memory, paging, and transport sit behind narrow provider interfaces
   with CUDA VMM as the only implementation for now; platform properties are
@@ -121,21 +134,28 @@ Owner-stated; every one gets tests in the simulated backend and on hardware.
 
 ### Reservation progress gate
 
-Before M2, resolve features.md question 9 in a decision that defines the
-initial admission policy. A conservative schedule is acceptable. Specify
-which grants guarantee progress and which are opportunistic; when a phase
-may start or suspend; and how retained activations, live state and its bounded
-growth, scratch, staging, communications, graphs, metadata, and OS headroom
-fit the budget. Define how an exceeded envelope is handled before unsafe
-submission, including safe rejection or a validated alternative plan when
-the minimum feasible phase cannot fit.
+D-050 settles question 9's initial [reservation policy](reservation-policy.md).
+Guaranteed requests have finite context/output and plan bounds. Fixed
+overhead, all admitted retained state and its maximum growth, non-revocable
+background work, and the largest complete phase envelope must fit the node's
+execution budget after OS/external headroom. Initially one client-facing
+request owns the execution slot through all its phases, I/O suspension and
+completion-aware unwind; the node does not switch requests or models at
+phase boundaries. Concurrent cohorts additionally need all their full phase
+envelopes to fit. Admitted
+state retains its in-memory allowance even when spilled. Opportunistic work
+cannot invalidate existing guarantees. Commitments stay separate from actual
+occupancy, and grants never eagerly evict cache.
 
-M2's fake backend must challenge the policy with competing phases that each
-want to retain activations while waiting for expert loads, growth of live
-state, a permanently impossible phase, and cancellation with late I/O.
-Assert bounded occupancy and eventual completion or safe failure/unwind;
-deferred work must not strand the resources needed by admitted work. Merely
-avoiding an out-of-memory allocation is not proof of progress.
+M2 must execute the policy's adversarial matrix, including request-boundary
+switching, competing suspended phases, future state growth, impossible phases, spill/reclaim saturation,
+fragmentation, sharing, envelope upgrades and cancellation with late I/O.
+Assert bounded occupancy and eventual completion or explicit safe failure;
+unknown completion remains charged and faults affected admission. The real
+GGML/EXL3/VMM proof must validate allocation envelopes and lifetime assumptions.
+M4 adds retention/concurrent-execution evidence and M5 routed expert closures.
+The design decision is complete; merely avoiding OOM is not implementation
+proof of progress.
 
 ### Performance evidence
 
@@ -226,14 +246,20 @@ problem of D-004 seen in the wild. Offering both API flavours is mild
 evidence for the proposed Anthropic Messages row (D-022).
 ### Early backend integration proof
 
-Run a small dense model from a prepared experimental artifact alongside M2's
-resource-core work, before treating the internal backend contract as settled.
+Run D-051's Qwen2.5-0.5B-Instruct FP16 control and D-052's real EXL3 quants
+from prepared experimental artifacts alongside M2's resource-core work,
+before treating the internal backend contract or executable layout as settled.
 jitLLM supplies the weight and state backing, controls the stream, accounts
 for workspace and backend-owned allocations, and tracks completion before
 reuse. Unknown allocations remain non-evictable and budgeted. Check
 teacher-forced logits against a pinned reference, then evict and restore
 weights and retained state at a completed boundary and repeat the comparison
 on a Spark. Include cancellation with pending work to exercise lifetime rules.
+EXL3 adds packed trellis/side-vector closures, per-tensor rates/codebooks,
+bounded reconstruction workspace and pointer-generation checks; conversion
+to FP16 does not satisfy packed execution. Its [acceptance contract](exl3-bringup.md)
+requires kernel performance against upstream in M2, full resident performance
+in M3 and EXL3 switch/restore evidence in M4.
 This proof informs M3 and the interfaces; it does not claim support for
 flagship architectures, and there is no runtime plugin ABI to freeze (D-028).
 
@@ -492,7 +518,7 @@ The following are conceptual records, not a wire schema or public API:
 | Record | Owner and meaning |
 | --- | --- |
 | Node view | Conductor's advisory snapshot: configured node identity, runtime incarnation, report revision/freshness, capabilities/compatible plans, health, budget and occupancy/commitment summaries. Reports from an old incarnation or older revision cannot overwrite newer state |
-| Local capacity ledger | Node authority: its execution budget, outstanding capacity commitments and full execution envelopes under question 9's progress policy. Physical occupancy is a separate ledger; cache and lazy commitments are not naively summed or counted as free memory |
+| Local capacity ledger | Node authority: its execution budget, outstanding capacity commitments and full execution envelopes under D-050. Physical occupancy is a separate ledger; cache and lazy commitments are not naively summed or counted as free memory |
 | Placement | Conductor intent and node-confirmed model-instance identity: artifact/plan compatibility, node incarnation, readiness or unknown status. Separate instances can represent future replicas or M6 ranks. Weight residency and extent ownership remain in the node catalog |
 | Retained-state hint | Node-issued, compatibility-scoped hint for placement affinity. The node revalidates existence, identity, permissions and expiry at use. A prefix hit is neither conversation identity nor a refresh of unrelated continuation retention (D-031) |
 | Routed attempt | Conductor request/attempt identity, conductor incarnation, target node incarnation and model instance, dispatch/admission/start/terminal-or-unknown status, and stream progress. The node owns the matching execution record and any capacity grant; observations at the conductor may lag |
@@ -503,7 +529,8 @@ metadata, non-evictable allocations and OS/runtime headroom. Shared backing
 is counted once locally. Pending retirement remains occupied until local
 completion proves otherwise. Unavailable-node capacity cannot satisfy a
 request elsewhere. Neither aggregate free bytes nor reported model residency
-is permission to run. Exact envelope guarantees remain question 9's gate.
+is permission to run. D-050 defines envelope guarantees; their numeric bounds
+and implementation proof remain M2 work.
 
 **Whole-model placement (M4a).** Filter candidates by configured membership,
 current runtime identity, health and compatible executable plan/artifact.
@@ -674,7 +701,7 @@ accepted leases stay with completion tracking), `retire_completed(token)`,
 blocked global scheduler. D-048 specifies bounded task states and completion
 ownership in [async-model.md](async-model.md). There is no runtime plugin ABI
 (D-028); optional backends are build-time modules behind the operation contract, which is
-finalized after the M2 backend proof.
+finalized after the M2 GGML and EXL3 proofs (D-052).
 
 ## Development host baseline
 
@@ -956,8 +983,10 @@ The architecture-shaping questions are numbered in
 [features.md](features.md#open-questions-answer-during-m0): VMM granularity,
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
 dependency mechanism, license and API surface, reservation guarantees. Initial
-VMM, I/O, task/completion and toolchain answers are recorded (D-033, D-034,
-D-048 and D-032); the matrix tracks each question's remaining scope.
+VMM, I/O, task/completion, reservation policy and toolchain answers are
+recorded (D-033, D-034, D-048, D-050 and D-032); D-051 selects the first
+checkpoint/numerical reference, and D-052 adds the required early EXL3
+companion. The matrix tracks each question's remaining scope.
 Purely technical additions to resolve
 while drafting:
 
@@ -971,8 +1000,8 @@ while drafting:
   in one honest memory breakdown on unified memory.
 - Initial eviction scoring over eligible extents. Dependency-group scoring
   is deferred until trace replay shows a useful improvement over the baseline.
-- Lease granularity and progress for the initial scheduler, now directed at
-  turn/step-scoped leases (2026-09-21). Optimistic MoE
+- D-050 settles initial reservation progress and completed-boundary lease
+  handoff; concrete backend phase bounds need M2 evidence. Optimistic MoE
   execution is deferred until the pessimistic M5 path is correct and measured;
   its future design must still handle a miss when the current step fills RAM.
 - The storage queue's final sleep/poll policy and model-driven tuning of

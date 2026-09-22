@@ -400,7 +400,7 @@ handshake merely waits; admission-state changes serialize with that install.
 Old-session commands, grants and stream chunks are rejected. Reconciliation
 reports old attempts and starts cancellation of orphaned work; no new admission
 uses unaccounted resources. Incomplete cleanup can coexist with new work only
-when the live local ledger admits it safely under D-037/question 9.
+when the live local ledger admits it safely under D-037/D-050.
 
 One supervisor-held per-node process lock prevents a second runtime using the
 same local identity. Authority epochs fence stale traffic, but are **not an
@@ -471,7 +471,8 @@ starting its original attempt. Client retries remain separate requests.
 
 The defaults below are **initial policy choices, not measured safe throughput,
 model-size or latency limits**. They bound coordination overhead and failure
-waiting; question 9 separately defines resource-progress guarantees. This first profile has no numeric override negotiation; peers require the
+waiting; D-050's [reservation policy](reservation-policy.md) separately defines
+resource-progress guarantees. This first profile has no numeric override negotiation; peers require the
 same profile identity, while local memory pressure may reduce actual admission
 below every ceiling. Charge actual allocations to each node.
 
@@ -523,7 +524,7 @@ bytes cannot overrule a competing local admission. The artifact need not be
 resident, but it must be locally prepared/available before execution; M4a
 does not silently transfer checkpoints, KV or extents between nodes. If no
 node can make progress, defer within bounds, time-slice at safe boundaries,
-or explicitly reject under the still-separate question 9 policy.
+or explicitly reject under D-050's reservation policy.
 
 Shared-prefix and conversation-continuation hints remain independent under
 D-031. Retention hints are scoped to the requesting security principal and

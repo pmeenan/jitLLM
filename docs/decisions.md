@@ -30,6 +30,177 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amends D-028 and D-051)
+
+**Decision.** Keep the first GGML/FP16 control, and require native EXL3
+execution alongside it in M2, before settling the operation contract and
+initial executable artifact layout. Select published Qwen2.5-0.5B-Instruct
+4.0 bpw and mixed-rate 4.5 bpw EXL3 fixtures, with immutable identities and
+proof obligations in [exl3-bringup.md](exl3-bringup.md). M3 includes resident
+EXL3 serving, and M4 includes it in the switching/restore matrix. Initial
+EXL3 implementation and performance work is not deferred to flagship models
+or M7.
+
+Preserve the packed trellis, per-tensor rates/codebooks and side-tensor
+closure; conversion to GGUF, requantization or a permanent FP16 shadow does
+not count. Bounded transient reconstruction for a declared large-prefill
+plan is allowed and fully charged. Use selected upstream device kernels
+behind native ownership/completion boundaries, not Python/PyTorch serving.
+The artifact descriptor must represent both GGML and EXL3 requirements;
+storing several alternative layouts of one resource remains a separate
+deferred feature. Backends remain build-time modules, with no runtime plugin ABI.
+
+Require an identical-artifact ExLlamaV3 numerical and performance reference
+on Spark. The target is parity or better within predeclared measured noise:
+kernel/workspace gates in M2, full resident prefill/decode gates in M3, and
+paging/switching comparisons in M4. Record matched settings and normal
+optimized upstream settings; regressions require a fix or an explicit
+owner-approved tradeoff, not an automatic pass. Larger representative kernel
+shapes and later real MoE/sharded cases are necessary before broader
+performance claims. Numerical and performance thresholds are fixed from
+reference controls before evaluating native results.
+
+**Context.** The owner requested an EXL3 quant early because its packing
+differs substantially and support and performance must be first-class.
+Two small quants of the existing architecture exercise mixed per-tensor
+rates, a quantized output head, BF16 embedding, FP16 side vectors/biases and
+codebook metadata without adding a new model graph. Source/header inspection
+establishes that this is not ordinary integer weights plus a scale.
+
+**Consequences.** M2 cannot close with GGML-only evidence. Run and pin the
+external EXL3 baseline in M0/early M1, before accepting native results.
+At selection time only metadata, full tensor descriptors and upstream source
+had been inspected. The subsequent [Spark baseline](experiments/exl3-reference/README.md)
+verifies both full payloads and records reference execution; native
+correctness/performance remain owed. Selected MIT kernels can be core-eligible
+after compiled-closure audit; the EXL3 format does not imply adopting
+optional third-party patches. No runtime or license-policy change follows.
+
+**Reopen if.** A fixture's provenance/runtime compatibility blocks its use,
+or measured native port costs require a different early EXL3 checkpoint or
+execution plan. Replace it with explicit pins and evidence; neither a failed
+small fixture nor later flagship work silently removes the early EXL3 gate.
+
+## D-051: Qwen2.5-0.5B-Instruct FP16 with a pinned llama.cpp numerical reference for the first dense slice  (2026-09-22, status: accepted; resolves open question 4, specializes D-028; early EXL3 companion added by D-052)
+
+**Decision.** M2's early backend proof and M3's first model use Qwen's official
+`qwen2.5-0.5b-instruct-fp16.gguf` at repository revision
+`9217f5db79a29953eb74d5343926648285ec7e67`, SHA-256
+`8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc`.
+Keep its F16/F32 tensor mix without low-bit quantization. Its embedded Qwen2
+BPE tokenizer, chat template and 8,192-token context metadata are authoritative;
+do not replace them with the base checkpoint's different template or 32K
+context declaration. The [selection contract](first-slice.md) pins the base
+cross-check, numerical profile, reuse boundaries and outstanding gates.
+
+The primary numerical reference is the existing digest-pinned llama.cpp
+ARM64 image at source `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, executing
+CUDA on Spark; its CPU path is diagnostic. Compare full teacher-forced raw
+logits at identical token IDs, positions and execution schedules, with F16
+KV, Flash Attention and CUDA graphs disabled and CUDA operation fusion
+enabled (upstream default) in the initial profile. Fusion changes these
+logits, so its setting is part of the numerical plan; the fusion-disabled
+arm is recorded for a native plan that does not fuse. M2
+uses fixed IDs; M3 separately validates tokenizer/template/sampling semantics.
+Cross-implementation tolerances must be measured and declared before native
+acceptance; matching sampled text or inventing a tolerance from a discrepancy
+does not pass. Storage recovery remains exact.
+
+Use selected GGML operations and Qwen2 graph/tensor semantics behind
+jitLLM-owned backing, workspace and completion. The external reference's
+libllama scheduler/loader/KV ownership does not become the native runtime.
+The [source/provenance inventory](experiments/first-slice/source-audit.json)
+distinguishes MIT implementation candidates, model data, tools and platform
+terms. No application implementation is incorporated here. Native tokenizer
+adoption is blocked until its generated Unicode-data provenance and D-017
+eligibility are resolved; fixed-ID M2 work does not need those tables.
+
+**Context.** A small dense full-KV model separates basic import, execution and
+paging defects from MoE/recurrent/SWA complexity. The inspected file includes
+small F32 tensors and byte-identical stored embedding/output matrices, giving
+the artifact and aliasing proof concrete cases. Explicit model license files
+and the existing reference environment make the selected input reproducible.
+The published GGUF is the canonical input; exact conversion lineage to the
+pinned base safetensors has not been established.
+
+**Consequences.** The [bounded reference check](experiments/first-slice/README.md)
+passed on Spark: 76 fixed tokens, all 11,547,136 logits repeat exactly within
+CPU and CUDA, including context restoration after 32 tokens. CPU/CUDA logits
+differ while all 76 top-1 IDs agree. This is reference evidence only, not
+native support, 8K-context validation, a paging/restore ABI or a memory
+envelope. Low-bit quantization, the prepared-artifact container, compiled
+dependency closure and the early backend-proof scope remain separate work.
+
+**Reopen if.** The M2 GGML/owned-backing proof fails, checkpoint-specific
+semantics prevent a bounded first slice, or a newly identified provenance
+restriction blocks the chosen input. A different artifact/profile needs new
+identity and numerical evidence; no silent replacement by a newer model tag.
+
+## D-050: Guarantee bounded requests with retained-state allowance and complete phase envelopes  (2026-09-22, status: accepted; resolves open question 9, specializes D-007 and the D-019/D-020 time-slicing boundary)
+
+**Decision.** Initial inference admission grants guaranteed capacity for a
+finite request under a validated plan. Reserve its maximum retained state
+and growth through the admitted context/output bounds, plus the largest
+additional physical working set required by any phase to complete or safely
+unwind. Include backing granularity, copy-on-write/transition peaks, workspace,
+I/O, graphs, registrations, metadata, output and independent cleanup capacity.
+Unknown allocations remain non-evictable. Numeric envelopes and limits require
+implementation evidence; the [policy](reservation-policy.md) supplies the
+accounting rule, lifecycle and adversarial acceptance cases.
+
+The scheduling quantum is one client-facing request/response, not a phase.
+Start with one active request per node: it holds the execution slot and its
+allowance from its first phase, through I/O waits, dependency discovery,
+completed phase boundaries and cancellation, until the request retires or
+is explicitly terminated and the scheduler proves a completed handoff. The
+node never switches to another request or model mid-request. All admitted
+requests' retained-state bounds must coexist with the largest phase envelope
+and fixed/non-revocable overhead. Other requests run concurrently only when
+the sum of the active members' full phase envelopes also fits; M4 proves the
+all-resident concurrent case required by D-020. A phase cannot borrow another
+admitted request's live-state allowance or depend on its completion to
+escape a capacity wait.
+
+Grants remain lazy and separate from physical occupancy and residency leases.
+Useful revocable cache may occupy unused allowance. Opportunistic warming or
+prefetch never promises inference progress; its accepted operations retain
+accounted capacity until retirement and cannot invalidate guaranteed grants.
+Queued work owns bounded intake storage, not partially acquired model phases.
+Fair selection at request boundaries, bounded queues/output stalls and
+independent cleanup are required. Detect an exceeded envelope before unsafe
+allocation/submission; reject an impossible minimum phase or choose an already
+validated alternative. An envelope upgrade is atomic at a completed boundary
+and cannot become an indefinite wait while retaining partial work.
+
+Initially, admitted retained state keeps its full in-memory allowance even
+when spilled. Guarantees do not rely on idle cache expiry or future free disk
+space. Completed-request state may become bounded reusable cache under D-031;
+mandatory preservation remains protected. Unknown completion quarantines
+backing and faults affected admission under D-048, never frees capacity.
+
+**Context.** The owner's turn/step-scoped lease direction (2026-09-21), D-007's
+lazy commitments, and D-048's completion protocol need a concrete rule against
+two suspended phases holding all capacity while each waits for more. Bounding
+only current state or predicting expert locality cannot provide that rule.
+The conservative serial envelope makes the progress argument explicit without
+assuming a working live-state spill/restore scheduler. On 2026-09-22 the
+owner set the time-slicing boundary at client-facing request/response
+granularity: never switch mid-prompt or mid-response, and run concurrently
+only when both fit. Per-step alternation would reload models on every token
+in the primary agent/subagent workload.
+
+**Consequences.** Question 9's planning policy is complete; execution evidence
+remains M2's fake-backend and GGML/VMM gates, M3's finite request defaults,
+M4's retention/concurrency tests and M5's routed-expert bounds. Worst-case
+state allowances and conservative phase sums may reject otherwise schedulable
+work. No production memory limit, latency guarantee, native model support,
+spill encoding or public interface is introduced here.
+
+**Reopen if.** Measured workloads justify credit for spilled admitted state,
+a more permissive safe schedule, or shared concurrent-phase allowances.
+Require bounded preservation/restore resources, completion-safe lifetime and
+adversarial progress evidence before weakening this policy.
+
 ## D-049: Provision a complete, persistent project SDK alongside system-managed prerequisites  (2026-09-22, status: accepted; refines D-012)
 
 **Decision.** The owner accepted a project-managed, version-pinned development
@@ -69,7 +240,7 @@ mark that implementation complete or change installed runtime packaging.
 version-pinned system packages or a container-only setup. Preserve exact tool
 selection, explicit native/cross targets and reproducible provisioning.
 
-## D-048: Explicit native task states, a single catalog writer and completion-owned lifetimes  (2026-09-22, status: accepted; resolves open question 3)
+## D-048: Explicit native task states, a single catalog writer and completion-owned lifetimes  (2026-09-22, status: accepted; resolves open question 3; reservation policy follows in D-050)
 
 **Decision.** Start with explicit resumable C++23 task state machines and a
 single scheduler/catalog writer per node. Bounded storage, device submission,
@@ -106,7 +277,7 @@ stale generations, invalid reads and unknown completion. It introduces no
 runtime code, public API, wire format or source dependency. It does not prove
 multithreaded wakeups, provider behavior, task-tree/coalesced-page-in cleanup,
 or capacity-reservation progress. Those remain explicit implementation gates;
-question 9 is the next main-plan decision. Runtime queue/worker counts and
+question 9's policy was subsequently settled in D-050. Runtime queue/worker counts and
 polling policy require implementation measurements; fixture sizes are not
 defaults. No changes to D-007's lazy commitment or D-019's completed switching
 boundaries follow from this decision.
@@ -1181,7 +1352,7 @@ first CI `.deb` build in M1.
 CLA), or a contributor base needs a maintainer structure that D-016 does not
 describe.
 
-## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010)
+## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052)
 
 **Decision.** The first vertical slice (M3) executes on GGML/GGUF with jitLLM
 supplying the buffers behind tensors, so weights and state live in
@@ -1836,7 +2007,7 @@ the maximum flexibility cost.
 **Reopen if.** Measurements show the routing boundary's cost is unacceptable
 even on all-resident paths and no split plan mitigates it.
 
-## D-007: Capacity reservations are separate from residency leases; commitment is lazy  (2026-09-20, status: accepted)
+## D-007: Capacity reservations are separate from residency leases; commitment is lazy  (2026-09-20, status: accepted; initial guarantee policy defined in D-050)
 
 **Decision.** Three distinct concepts: *virtual reservation* (address-space
 operation, no physical capacity), *capacity reservation* (admission commitment

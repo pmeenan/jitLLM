@@ -61,18 +61,18 @@ client-supplied history when an idle cache entry is unavailable.
 | One native execution process per node managing all local models | confirmed | D-005 |
 | Node-wide resource catalog: typed IDs, generations, dependency closure, shared extents charged once | confirmed | D-006; descriptor field groups in ideation §4 |
 | Explicit CUDA VMM backing (reserve / create / map / access / unmap via the driver API) | confirmed | D-006 |
-| Capacity reservations separate from residency leases; request transaction vs execution lease | confirmed | D-007; initial progress policy (question 9) is required before M2 |
+| Capacity reservations separate from residency leases; request transaction vs execution lease | confirmed | D-007; D-050 settles guaranteed bounded requests, retained-state/growth and complete phase envelopes; execution proof remains M2 |
 | Lazy commitment: grants never eagerly evict useful cache | confirmed | D-007 |
 | Separate commitment and occupancy ledgers | confirmed | D-007 |
 | Completion service tracking GPU, I/O, and network consumers before reclaim | confirmed | ideation §3, §14 |
-| Resumable continuations: suspend a model phase while I/O is pending and run other ready work | confirmed | ideation §7; number and size of suspended phases is bounded |
+| Resumable continuations: suspend a model phase while I/O is pending and run other ready work | confirmed | ideation §7; D-050 bounds suspended phases and retains their full envelope during waits; another model phase needs a successful concurrent-envelope check |
 | Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, sparse lookup tables, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set. Qwen3.8-Flash-Next's 51B n-gram embedding is the first concrete sparse lookup: row requests resolve to whole stored extents initially (D-035) |
 | Architecture-specific adapters for live and reusable state (KV blocks, compressed attention, sliding window, recurrent) | confirmed | conservative semantics per architecture first |
 | Prefix-cache metadata always consistent with physical eviction (no stale hits) | confirmed | pager invariant 4 |
 | Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
 | Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | confirmed | 2026-09-21: the starting shape (ideation §20), not a frozen interface. D-048 settles explicit native task states and completion ownership; the M2 backend proof settles the internal contract |
 | Physical-backing pool to amortize allocation overhead | confirmed | D-033 baseline retains useful contents and hands compatible backing to admitted replacements; no per-read release/create requirement. D-035 records the owner's larger mapped-slab alternative (including 1 GiB) for comparison in the M2 paging proof. Physical capacity, suballocation, and I/O size stay distinct; all held backing is charged |
-| Turn/step-scoped leases with eviction only at scheduler-established completion boundaries as the v1 lease model | confirmed | *agent-suggested*, confirmed 2026-09-21 as the v1 lease model and the direction for open question 9. A switch request alone establishes no quiescence; consumers must complete and suspended live state stays protected. The full question 9 policy (envelope contents, guaranteed versus opportunistic grants, adversarial cases) is still recorded before M2; MoE within-step misses get their progress proof in M5 |
+| Turn/step-scoped leases with eviction only at scheduler-established completion boundaries as the v1 lease model | confirmed | *agent-suggested*, confirmed 2026-09-21; D-050 records the full question 9 policy and adversarial cases. Owner 2026-09-22: leases may end at step boundaries, but the node switches requests/models only at client-facing request/response boundaries (concurrent only when both fit). A switch request alone establishes no quiescence; consumers must complete and suspended live state stays protected. Backend phase bounds need M2 evidence; MoE within-step misses get their progress proof in M5 |
 | Core free of vendor types; device memory, paging, and transfer operations behind narrow provider interfaces, CUDA VMM the first and only implementation | confirmed | D-026; only where it adds no complexity or penalty on NVIDIA |
 | Ledger keyed by memory domain (one domain on unified-memory platforms) so a discrete-GPU platform is a data difference, not a redesign | confirmed | *agent-suggested*, confirmed 2026-09-21: a domain field on the ledger, which passes D-026's zero-cost rule |
 
@@ -125,7 +125,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Workstation-side import; target-assisted tuning as an explicit mode with separately keyed results | confirmed | x86 importer, ARM importer, and architecture-independent artifact format are distinct things |
 | Immutable model files separate from mutable spill files | confirmed | |
 | Artifact contents: manifest, tokenizer/config, representation catalog, resource index, immutable data, integrity/provenance, optional plan metadata | confirmed | 2026-09-21: the required content set (ideation §11); the encoding is open question 5 |
-| Multiple backend layouts per artifact | deferred | 2026-09-21. Earliest M7 (alternative kernels and plans); trigger: a second backend needs a different layout and measurement justifies the disk and import cost |
+| Multiple alternative backend layouts of the same resource per artifact | deferred | 2026-09-21. Earliest M7; trigger: measurement justifies storing alternatives' disk/import cost. D-052 already requires representation-aware descriptors and separate GGML/EXL3 prepared artifacts in M2; this deferral does not postpone EXL3 support |
 | Reuse a known container for the immutable blobs (GGUF- or safetensors-style aligned tensor data) and own only the manifest and resource index | confirmed | *agent-suggested*, confirmed 2026-09-21 as the principle; the specific container is chosen in the question 5 schema task. Re-packing experts into contiguous aligned extents is justified; inventing a container is not. Keeps tooling available while D-018 keeps the format experimental |
 | Standalone artifact verification tool (checksums, index bounds, manifest consistency) | confirmed | *agent-suggested*, confirmed 2026-09-21; delivered with the M3 importer. Cheap given per-extent checksums; separates "bad artifact" from "pager bug" during bring-up |
 | Model support matrix per checkpoint: unsupported → import-only → resident-correct → paged-correct → distributed-correct → performance-validated | confirmed | ideation §19 |
@@ -136,20 +136,20 @@ client-supplied history when an idle cache entry is unavailable.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Reuse of kernels, algorithms, and model semantics from vLLM, llama.cpp/GGML, ExLlamaV3/EXL3, FlashInfer, CUTLASS/CuTe under their licenses | confirmed | D-013; which units, per model, is open question 4 |
+| Reuse of kernels, algorithms, and model semantics from vLLM, llama.cpp/GGML, ExLlamaV3/EXL3, FlashInfer, CUTLASS/CuTe under their licenses | confirmed | D-013; D-051 records the first dense slice's GGML/Qwen2 source-unit inventory and adoption gates; other models still need their own selection/audit |
 | Keep a fully resident fused plan and a pageable split plan where both are useful | confirmed | ideation §7, §10 |
 | Lossless layout transforms separated from quantization/precision changes (the latter need explicit quality evaluation and metadata) | confirmed | |
 | CUDA graphs with dynamic residency decisions outside captured segments; no CUDA API calls from host-function nodes | confirmed | initial approach; ideation §7 |
 | One deliberately managed CUDA context per GPU; explicit streams and library handles | confirmed | initial |
-| Backend operation contract (declares architectures, layouts, quantization, state, workspace, dependencies, graph restrictions, completion) | confirmed | 2026-09-21: the starting shape (ideation §10), finalized after the M2 backend proof exposes the first real backend's requirements |
-| Early backend integration proof using jitLLM-owned memory, explicit workspace and completion, then eviction and restoration | confirmed | Run alongside M2 before settling the internal contract; small dense model, prepared artifact, reference-logit comparisons on a Spark; informs M3 without freezing a plugin ABI |
+| Backend operation contract (declares architectures, layouts, quantization, state, workspace, dependencies, graph restrictions, completion) | confirmed | 2026-09-21 starting shape (ideation §10); D-052 requires both real GGML and EXL3 M2 proofs before settling the contract |
+| Early backend integration proof using jitLLM-owned memory, explicit workspace and completion, then eviction and restoration | confirmed | D-051 FP16 control plus D-052 real small EXL3 quants in M2: complete packed dependencies, reference logits, restore/cancellation and upstream kernel performance on Spark; informs M3 without freezing a plugin ABI |
 | Versioned C ABI for optional separately built backends | rejected | rejected 2026-09-21 (D-028). Optional implementation modules (D-017) are build-time modules behind the operation contract; the removable boundary is a build-profile property, not a runtime plugin ABI. Ideation §14 |
 | Triton AOT as an optional build-time kernel route | deferred | 2026-09-21. Earliest M7 (alternative kernels and plans); trigger: a needed kernel exists only as Triton source. Keep provenance of generated code (ideation §10) |
 | GPU-visible residency table plus compact miss notification | deferred | Earliest M7, after M5 demonstrates material host-boundary overhead; a Boolean check without protection against revocation is unsafe |
 | Executing ready experts while other experts load | deferred | 2026-09-21. Earliest M7, after the M5 baseline; trigger: M5 traces show partial-availability windows that would hide material stall time. Not an assumed capability |
 | Speculative decoding | deferred | 2026-09-21. Earliest M7; trigger: matched-configuration comparisons show the reference's speculative decoding is the dominant gap on a named workload. Benchmarks require matched decoding features plus the reference's normal configuration, even when its speculative decoding is unavailable in jitLLM. Qwen3.8-Flash-Next ships a 4B MTP head, so its matched comparison must state whether MTP is used |
 | Optimistic MoE execution: device-visible residency table, kernels flag a miss, restart from the missed layer | deferred | *agent-suggested.* Earliest M7, after the pessimistic M5 baseline is correct and measured host-boundary cost warrants it; must prove safe revocation, replay of mutable state, and progress when a step's leases fill memory |
-| GGML/GGUF as the first compute substrate, with jitLLM supplying the buffers behind tensors; EXL3 kernels ported later for the flagship recipes | confirmed | *agent-suggested*, confirmed 2026-09-21 as the direction for open question 4 (D-028); the checkpoint and numerical reference remain that question's task. GGML is MIT, torch-free, has a C API and broad quant and tokenizer coverage; the reference recipes are EXL3 and torch-bound. The M2 backend proof checks that GGML runs on jitLLM-owned memory before the contract is settled. GGML also runs on Metal, ROCm/HIP, and Vulkan, so a later port would be mostly a memory-provider job (D-026) |
+| GGML/GGUF first with a required early EXL3 companion, both using jitLLM-owned backing | confirmed | D-028/D-051 retain the FP16 control; owner requested early EXL3 on 2026-09-22 (D-052). Real packed EXL3 execution and kernel performance are M2 gates; resident EXL3 serving/performance M3, switching/restore M4. [Fixtures and contract](exl3-bringup.md). Tokenizer/model semantics need their own audited units; other GGML backends preserve D-026's portability boundary |
 
 ## Two-node execution
 
@@ -360,7 +360,7 @@ No implementation milestone or public control contract is committed yet.
 | [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | [BF16 reference study complete](experiments/image-reference/README.md), including phase release and text switching; [GGUF comparison candidate](experiments/model-candidates.md) added 2026-09-22. Native backend and image-output API support remain unvalidated and unscheduled |
 | MiMo-V2.6-Flash-RL | confirmed experiment target | Owner-added 2026-09-22; [two-Spark reference candidate and smaller-quant follow-up](experiments/model-candidates.md). No local execution or native support validated; sharding remains M6 |
 | Small dense model plus synthetic/tiny MoE as the first bring-up vehicles | confirmed | ideation §19: separate execution, import, and pager bugs before a flagship architecture |
-| First vertical-slice checkpoint and backend | open | open question 4; the substrate direction is GGML-first (D-028, 2026-09-21); the checkpoint, quantization, and numerical reference remain open |
+| First vertical-slice checkpoints and backends | confirmed | D-051: official Qwen2.5-0.5B-Instruct FP16 GGUF and llama.cpp reference ([contract](first-slice.md)); D-052 adds required same-model 4.0 bpw and mixed-rate 4.5 bpw EXL3 with ExLlamaV3 reference ([contract](exl3-bringup.md)). Both external references have run; EXL3 includes two quants and 176 kernel cases ([report](experiments/exl3-reference/README.md)); native support remains unvalidated for both |
 | Reference engine for the feasibility spike: llama.cpp with MoE GGUFs | confirmed | decided 2026-09-20. Owner-provided candidates with card-verified configs in plan.md: Qwen3.8-Flash-Next (512 experts, top-10 plus 1 shared, 6B active of 125B, plus a 51B n-gram table; 3-bit fits one node, 4-bit is borderline, 5-bit exceeds it), Gemma 4 26B-A4B (128 experts, top-8 plus 1 shared, hybrid sliding-window attention), Ornith-1.5-35B-A3B (`qwen35moe`). This does not decide the runtime substrate (open question 4) |
 
 ## Open questions (answer during M0)
@@ -391,16 +391,19 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    one scheduler/catalog writer per node, bounded provider services and
    completion-owned lifetimes. [Design and prototype](async-model.md);
    CPU-only event-order checks passed on the workstation and Spark. Actual
-   concurrency/provider integration remains M2; reservation progress is
-   still question 9.
+   concurrency/provider integration remains M2; D-050 answers the separate
+   reservation-policy question 9.
 4. **First vertical-slice model and backend.** Which checkpoint (revision,
    quantization, tokenizer, kernels, provenance) and which numerical reference
-   engine. Decides M3 and gives the license audit its first real inputs. → M0
-   decision. Substrate direction settled 2026-09-21: GGML/GGUF-first with
-   jitLLM supplying the buffers behind tensors, EXL3 kernels ported later for
-   the flagship recipes (D-028; see the Compute rows); the checkpoint and
-   numerical reference remain open. Prove the selected backend can use
-   jitLLM-owned memory alongside M2 before settling the internal contract.
+   engine. Decides M3 and gives the license audit its first real inputs.
+   → Answered 2026-09-22 (D-051): [official Qwen2.5-0.5B-Instruct FP16
+   GGUF and pinned llama.cpp numerical reference](first-slice.md), with exact
+   embedded tokenizer/template identity and a source-unit provenance inventory.
+   The bounded external reference passed on Spark; native support, numerical
+   acceptance thresholds and Unicode-data clearance remain implementation
+   gates. D-052 adds required small EXL3 fixtures and upstream performance
+   gates; the bounded Spark reference is recorded. Prove both GGML and EXL3 can use
+   jitLLM-owned memory alongside M2 before settling the contract (D-028/D-052).
 5. **Experimental artifact schema and layout ABI.** Choose metadata encoding,
    alignment, integrity, sharding representation, and version rejection rules
    for bring-up. → M0 decision, likely after question 4. D-018 defers
@@ -432,11 +435,11 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    feasible phase" envelope includes (activations, state growth, scratch,
    staging, comm, graphs, metadata). Include guaranteed versus opportunistic
    grants, retained continuations, growth limits, and impossible-phase
-   handling. → M0 decision, or explicit deferral only until before M2; see
-   the [progress gate](architecture.md#reservation-progress-gate). A
-   conservative default is acceptable and gets tested in M2 and tuned in M5.
-   Direction settled 2026-09-21: turn/step-scoped leases with eviction only
-   at completed boundaries established by the scheduler (see the Runtime
-   core rows); the policy entry with envelope contents and adversarial cases
-   is still owed before M2. Under D-020, v0 has one active phase per node
-   plus suspended state, which bounds the envelope problem.
+   handling. → Answered 2026-09-22 (D-050): guaranteed finite requests,
+   maximum retained-state/growth allowance, initially one complete phase
+   envelope held through waits and unwind, and full-envelope admission for
+   supported concurrency. Spill does not reduce admitted state commitments;
+   opportunistic work cannot consume guaranteed headroom. The
+   [policy and adversarial cases](reservation-policy.md) implement the
+   owner's completed-boundary lease direction. Numeric envelopes and runtime
+   progress evidence remain M2/M4/M5 gates, not results of the design decision.

@@ -1,0 +1,86 @@
+{
+  "recorded_on": "2026-09-22",
+  "purpose": "Fusion-preserving MoE route observation for the external llama.cpp reference (RE-006), using the unmodified pinned image; not a jitLLM runtime dependency",
+  "reference": {
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "license": "MIT (llama.cpp/GGML); UPSTREAM-NOTICE.txt",
+    "headers": {
+      "include/llama.h": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda",
+      "ggml/include/ggml.h": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6",
+      "ggml/include/ggml-alloc.h": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23",
+      "ggml/include/ggml-backend.h": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2",
+      "ggml/include/ggml-cpu.h": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+      "ggml/include/ggml-opt.h": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+      "ggml/include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+    }
+  },
+  "harness": {
+    "source": "route_capture.cc",
+    "build": [
+      "g++",
+      "-std=c++23",
+      "-O2",
+      "-march=armv8-a",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I/source/include",
+      "-I/source/ggml/include",
+      "/harness/route_capture.cc",
+      "-L/app",
+      "-Wl,-rpath,/app",
+      "-lllama",
+      "-lggml",
+      "-lggml-base",
+      "-o",
+      "/output/capture"
+    ]
+  },
+  "workload": {
+    "spec": "paging-feasibility normal-spec.json (external)",
+    "spec_sha256": "15c59100734505e53291aabdd302f666e8741fa82dda7be5ab9b5e9a9233cbb2",
+    "models": [
+      "A",
+      "B"
+    ],
+    "configuration": {
+      "batch": 512,
+      "reuse": 1,
+      "swa_full": 0
+    },
+    "reference_capture": "external paging/normal-capture-2 (legacy session_capture, CUDA fusion and graphs disabled); verified against its receipt before comparison"
+  },
+  "rejected_graph_output_patch": {
+    "file": "route-outputs.patch",
+    "files": {
+      "src/llama-graph.h": {
+        "upstream_sha256": "7fc78de176f3512fb437342785ca1bc67d84c4bfecdaab860b3cd8b16d498142",
+        "patched_sha256": "1ce7ffb6f21352ca19498c3e79bb7d896f034c4088a36a70edbaa938a0bb47d6"
+      },
+      "src/llama-graph.cpp": {
+        "upstream_sha256": "90f5c6f082790599124630680ba1293d702b369e9ce9088680d210b69905c8d3",
+        "patched_sha256": "824f77723f0bb000471d9ec851a61525671d15a02291121f2d1087023e211355"
+      },
+      "src/llama-model.cpp": {
+        "upstream_sha256": "dc852c79709927631135ff9482e7fa7597d9b975a1867eb49003c14f93594ad3",
+        "patched_sha256": "ac80c33e0a4acccbd5f243fecd46c5479a5f56e69dcc3287023193aa1194cf53"
+      }
+    },
+    "llama_version_header": {
+      "LLAMA_VERSION": "0.4.1-dev",
+      "LLAMA_COMMIT": "b29c606e2"
+    },
+    "compile_flags": [
+      "-std=c++17",
+      "-O3",
+      "-DNDEBUG",
+      "-fPIC",
+      "-march=armv8-a",
+      "-DLLAMA_BUILD",
+      "-DLLAMA_SHARED"
+    ],
+    "scope": "Rebuilt only libllama from patched sources with the image's default g++ (GCC 13.3.0) and the flags above; the image's GGML/CUDA libraries were unchanged. The patched library with JITLLM_ROUTE_OUTPUTS unset matched the official library bit-for-bit; with it set, the appended output copies changed logits.",
+    "status": "Rejected design, retained to reproduce its negative result; not used by run_routes.py"
+  }
+}

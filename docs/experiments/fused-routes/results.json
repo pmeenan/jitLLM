@@ -1,0 +1,1036 @@
+{
+  "recorded_on": "2026-09-22",
+  "scope": "External llama.cpp reference instrumentation only; no jitLLM runtime, paging or performance claim. Raw events, predictions, logit-hash files and logs stay outside Git; receipts identify them.",
+  "raw_root": "spark:/home/pmeenan/.local/share/jitllm/fused-routes-20260922",
+  "host": "spark-c4e2",
+  "gpu": "NVIDIA GB10, 580.178.04",
+  "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "workload": {
+    "spec_sha256": "15c59100734505e53291aabdd302f666e8741fa82dda7be5ab9b5e9a9233cbb2",
+    "models": {
+      "A": "Gemma 4 26B A4B UD-Q4_K_M (30 layers, 128 experts, top-8)",
+      "B": "Ornith 1.5 35B Q4_K_M (40 layers, 256 experts, top-8)"
+    },
+    "configuration": "batch/ubatch 512, prefix reuse on, default SWA, F16 KV, Flash Attention, all layers on GPU, CUDA_DISABLE_PTX_JIT=1; fusion and CUDA graphs at upstream defaults unless the arm says nofusion (both disabled)"
+  },
+  "final_design": {
+    "method": "mode 4: eval callback requests data only at each layer's GLU that consumes a MUL_MAT_ID using that layer's ffn_moe_topk IDs, then reads those IDs; upstream image and libraries unmodified",
+    "run": "run-2",
+    "harness_sha256": "ff9a1c7e130bca9f719839e80075af67ba0af351eba88106a0f771262eaa6431",
+    "runner_sha256": "7a09313816d18cda7f54bbddb8f7cdc6b06886e626d65c135904f32fc339e621",
+    "compare_sha256": "d8174d74236a3050f6ac404102e2aa4e6792109355c2067f90c8940b12f3272d",
+    "executable_sha256": "7a6c0826ab6ec710bb54f0f998ab951090dfd2c7ad8c618165ad1f600710c69c",
+    "arms": [
+      {
+        "name": "A-untraced",
+        "model": "A",
+        "mode": 0,
+        "env": [],
+        "events.jsonl_sha256": "ca87e7a7af0672678e045b9f90221c052d539dbee64145d4608088430cdb83db",
+        "predictions_sha256": "f93442084ac01b69a2db6d26b284167561622059c1f58c158451fdf374087091",
+        "logits_sha256": "0a60e0844e7a23fe20fd0fab9ba95c65df5408da94a87bd571c09b54c4f81609",
+        "log_sha256": "ab170a93104f57de315527b4735e32ffeaaa422be3a77be35a7284af084198f4"
+      },
+      {
+        "name": "A-legacy-split",
+        "model": "A",
+        "mode": 1,
+        "env": [],
+        "events.jsonl_sha256": "481710801590e05e3e53a9fe59dc610689625d5e531a64c872fb72abc8d9ee09",
+        "predictions_sha256": "c9d5ce560f2f7be34d1f0b8ad356139bdb81c134c774440f7fec47ad631a54e7",
+        "logits_sha256": "790de5b0daced49c1f8a2a2dd848914c10c45b562752deca31b6a5233b07863e",
+        "log_sha256": "2959a08af794e48fcec9aa06a2ddd1c2944d8d68156729ba0ab483b36f2815b9"
+      },
+      {
+        "name": "A-fusion-boundary",
+        "model": "A",
+        "mode": 4,
+        "env": [],
+        "events.jsonl_sha256": "309fddb3c22599bde70987a1956f6e946e6acb90bad4083a7d799dfec2ccc94e",
+        "predictions_sha256": "f93442084ac01b69a2db6d26b284167561622059c1f58c158451fdf374087091",
+        "logits_sha256": "0a60e0844e7a23fe20fd0fab9ba95c65df5408da94a87bd571c09b54c4f81609",
+        "log_sha256": "765d51c563ea3c047e809188f01aa95f3685546acf4b324ecf5263920772244e"
+      },
+      {
+        "name": "A-untraced-nofusion",
+        "model": "A",
+        "mode": 0,
+        "env": [
+          "--env",
+          "GGML_CUDA_DISABLE_FUSION=1",
+          "--env",
+          "GGML_CUDA_DISABLE_GRAPHS=1"
+        ],
+        "events.jsonl_sha256": "bc681eea2a211eab83753d64afaa5568c77265fe363cf29c40f2244aedbf3415",
+        "predictions_sha256": "92f1e7613480136e48b558a1c63bdd5f95407a6ab10d5224c93643eaa4b25cce",
+        "logits_sha256": "7b3c0071531adf1ce5fe89d72fe39199d5eb74d61b6038eeca556a9b64c3f394",
+        "log_sha256": "702cc8ff45485a8ae12bc7f70253818e87dbb41df1759191d5297c600f708a46"
+      },
+      {
+        "name": "A-fusion-boundary-nofusion",
+        "model": "A",
+        "mode": 4,
+        "env": [
+          "--env",
+          "GGML_CUDA_DISABLE_FUSION=1",
+          "--env",
+          "GGML_CUDA_DISABLE_GRAPHS=1"
+        ],
+        "events.jsonl_sha256": "2e2fc2abf278102fa586d7ff30ecf57cfa3337c50fe3a2c2c3028f7bce1962bf",
+        "predictions_sha256": "92f1e7613480136e48b558a1c63bdd5f95407a6ab10d5224c93643eaa4b25cce",
+        "logits_sha256": "7b3c0071531adf1ce5fe89d72fe39199d5eb74d61b6038eeca556a9b64c3f394",
+        "log_sha256": "77a511a69ceaa7c2dc7385bf6a4b994d1323c99a6c7104a53085488f89d1dcc3"
+      },
+      {
+        "name": "B-untraced",
+        "model": "B",
+        "mode": 0,
+        "env": [],
+        "events.jsonl_sha256": "b2ba9162c0d53a643c6ed3a8cc0dffdf29d54b0ea8d55a5899e2fcb9e7542e95",
+        "predictions_sha256": "a4d2ba63b834697499331f2212edaedaaaa428ddb2e29cc235cb79c8d50f027e",
+        "logits_sha256": "ca7b0dc134f9d542c256e0570d8ec1bc073f76c774bcf21b558ce5cabdfb6645",
+        "log_sha256": "4ad491c68e3f624e4c7f0ef173778434df02963f668b78293f06853b36420265"
+      },
+      {
+        "name": "B-legacy-split",
+        "model": "B",
+        "mode": 1,
+        "env": [],
+        "events.jsonl_sha256": "90c170c46d5393b93f14970e88ae252677666725994fa7010df132268939f581",
+        "predictions_sha256": "86bc7a76de208c816386087a5fc4348b1518919548745d5c4f3107e0655f54cb",
+        "logits_sha256": "d3015f9c31e04efd578cfeb30708b74ea9d4ccddc8f99e26329d728cc970b2b4",
+        "log_sha256": "f4a7db2e33d778a95d9aef6f7d7d512682f13c8b9c0a6841ce5767c58635031a"
+      },
+      {
+        "name": "B-fusion-boundary",
+        "model": "B",
+        "mode": 4,
+        "env": [],
+        "events.jsonl_sha256": "ad71d5188977118d510b5930174efe872497f9b7840d4e88de75d643b157de5c",
+        "predictions_sha256": "a4d2ba63b834697499331f2212edaedaaaa428ddb2e29cc235cb79c8d50f027e",
+        "logits_sha256": "ca7b0dc134f9d542c256e0570d8ec1bc073f76c774bcf21b558ce5cabdfb6645",
+        "log_sha256": "78503fcebc6e78df8a6a320fbe76ebdd4829468238d8952d8118aec5a65129b3"
+      },
+      {
+        "name": "B-untraced-nofusion",
+        "model": "B",
+        "mode": 0,
+        "env": [
+          "--env",
+          "GGML_CUDA_DISABLE_FUSION=1",
+          "--env",
+          "GGML_CUDA_DISABLE_GRAPHS=1"
+        ],
+        "events.jsonl_sha256": "14a20e16055135d1f27e7452a7a0038237e0c05eb70f9e4666762b4f2d6b50f4",
+        "predictions_sha256": "0dbaac9592cc8c57d7e6d4d2384427c6e8f497e2c0e26d25ad47d65a4b03e864",
+        "logits_sha256": "6675eff487b2450fc1a2ac9fb309cac75d99eca8a8e6aefde5904ec66d275bd1",
+        "log_sha256": "8517722f504ab9e0af064f263e402433356fd7dc3cac6e014728cbe5230e1660"
+      },
+      {
+        "name": "B-fusion-boundary-nofusion",
+        "model": "B",
+        "mode": 4,
+        "env": [
+          "--env",
+          "GGML_CUDA_DISABLE_FUSION=1",
+          "--env",
+          "GGML_CUDA_DISABLE_GRAPHS=1"
+        ],
+        "events.jsonl_sha256": "55aea2c8211f54dd92525ca995157f3e382e2e463ebe13123e0035dbbe4fb354",
+        "predictions_sha256": "0dbaac9592cc8c57d7e6d4d2384427c6e8f497e2c0e26d25ad47d65a4b03e864",
+        "logits_sha256": "6675eff487b2450fc1a2ac9fb309cac75d99eca8a8e6aefde5904ec66d275bd1",
+        "log_sha256": "2234de58277748a175a85ec1e6c04ac46f936d5794d4be8d28d1dbe2cf06dbf6"
+      }
+    ],
+    "comparisons": {
+      "A": {
+        "fusion_boundary_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          }
+        },
+        "legacy_split_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 55,
+            "first_different_record": 18
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 3072,
+            "first_different_record": 0
+          }
+        },
+        "fusion_boundary_nofusion_vs_untraced_nofusion": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          }
+        },
+        "untraced_nofusion_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 51,
+            "first_different_record": 18
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 3072,
+            "first_different_record": 0
+          }
+        },
+        "untraced_nofusion_vs_reference_untraced_predictions": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "boundary_routes_nofusion_vs_reference_legacy_routes": {
+          "events": 94110,
+          "different_events": 0,
+          "rows": 1117920,
+          "different_ordered_rows": 0,
+          "different_expert_sets": 0
+        },
+        "boundary_routes_vs_legacy_split_routes": {
+          "events": 94110,
+          "different_events": 32582,
+          "rows": 1117920,
+          "different_ordered_rows": 683311,
+          "different_expert_sets": 411979
+        },
+        "boundary_routes_fusion_vs_nofusion": {
+          "events": 94110,
+          "different_events": 34642,
+          "rows": 1117920,
+          "different_ordered_rows": 725654,
+          "different_expert_sets": 452483
+        },
+        "reference": {
+          "untraced": "A-b512-r1-s0-t0",
+          "legacy_routes": "A-b512-r1-s0-t1"
+        }
+      },
+      "B": {
+        "fusion_boundary_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          }
+        },
+        "legacy_split_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 99,
+            "first_different_record": 76
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 3071,
+            "first_different_record": 1
+          }
+        },
+        "fusion_boundary_nofusion_vs_untraced_nofusion": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 0,
+            "first_different_record": null
+          }
+        },
+        "untraced_nofusion_vs_untraced": {
+          "predictions": {
+            "records": 3072,
+            "different_records": 110,
+            "first_different_record": 46
+          },
+          "logit_hashes": {
+            "records": 3072,
+            "different_records": 3072,
+            "first_different_record": 0
+          }
+        },
+        "untraced_nofusion_vs_reference_untraced_predictions": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "boundary_routes_nofusion_vs_reference_legacy_routes": {
+          "events": 123000,
+          "different_events": 0,
+          "rows": 202600,
+          "different_ordered_rows": 0,
+          "different_expert_sets": 0
+        },
+        "boundary_routes_vs_legacy_split_routes": {
+          "events": 123000,
+          "different_events": 70460,
+          "rows": 202600,
+          "different_ordered_rows": 74038,
+          "different_expert_sets": 33466
+        },
+        "boundary_routes_fusion_vs_nofusion": {
+          "events": 123000,
+          "different_events": 71735,
+          "rows": 202600,
+          "different_ordered_rows": 139897,
+          "different_expert_sets": 87689
+        },
+        "reference": {
+          "untraced": "B-b512-r1-s0-t0",
+          "legacy_routes": "B-b512-r1-s0-t1"
+        }
+      }
+    },
+    "route_set_differences_fusion_vs_nofusion_by_layer": {
+      "note": "These counts compare two plans: upstream optimizations enabled, and fusion and CUDA graphs both disabled. The increasing differences with layer depth are consistent with accumulated numerical drift, but the controls do not isolate fusion from CUDA graphs and did not measure router scores or selection margins. Boundary/untraced output comparisons match exactly within each tested configuration.",
+      "A": [
+        {
+          "layer": 0,
+          "prefill_different_sets": 4,
+          "prefill_rows": 34196,
+          "decode_different_sets": 0,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 1,
+          "prefill_different_sets": 373,
+          "prefill_rows": 34196,
+          "decode_different_sets": 24,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 2,
+          "prefill_different_sets": 2018,
+          "prefill_rows": 34196,
+          "decode_different_sets": 86,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 3,
+          "prefill_different_sets": 1964,
+          "prefill_rows": 34196,
+          "decode_different_sets": 131,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 4,
+          "prefill_different_sets": 2612,
+          "prefill_rows": 34196,
+          "decode_different_sets": 90,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 5,
+          "prefill_different_sets": 6168,
+          "prefill_rows": 34196,
+          "decode_different_sets": 142,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 6,
+          "prefill_different_sets": 7038,
+          "prefill_rows": 34196,
+          "decode_different_sets": 144,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 7,
+          "prefill_different_sets": 6572,
+          "prefill_rows": 34196,
+          "decode_different_sets": 142,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 8,
+          "prefill_different_sets": 9441,
+          "prefill_rows": 34196,
+          "decode_different_sets": 205,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 9,
+          "prefill_different_sets": 11856,
+          "prefill_rows": 34196,
+          "decode_different_sets": 280,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 10,
+          "prefill_different_sets": 13490,
+          "prefill_rows": 34196,
+          "decode_different_sets": 326,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 11,
+          "prefill_different_sets": 14883,
+          "prefill_rows": 34196,
+          "decode_different_sets": 300,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 12,
+          "prefill_different_sets": 16462,
+          "prefill_rows": 34196,
+          "decode_different_sets": 421,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 13,
+          "prefill_different_sets": 15902,
+          "prefill_rows": 34196,
+          "decode_different_sets": 462,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 14,
+          "prefill_different_sets": 17453,
+          "prefill_rows": 34196,
+          "decode_different_sets": 517,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 15,
+          "prefill_different_sets": 18860,
+          "prefill_rows": 34196,
+          "decode_different_sets": 475,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 16,
+          "prefill_different_sets": 18024,
+          "prefill_rows": 34196,
+          "decode_different_sets": 450,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 17,
+          "prefill_different_sets": 19245,
+          "prefill_rows": 34196,
+          "decode_different_sets": 431,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 18,
+          "prefill_different_sets": 18729,
+          "prefill_rows": 34196,
+          "decode_different_sets": 433,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 19,
+          "prefill_different_sets": 19492,
+          "prefill_rows": 34196,
+          "decode_different_sets": 449,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 20,
+          "prefill_different_sets": 19768,
+          "prefill_rows": 34196,
+          "decode_different_sets": 440,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 21,
+          "prefill_different_sets": 18369,
+          "prefill_rows": 34196,
+          "decode_different_sets": 409,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 22,
+          "prefill_different_sets": 17738,
+          "prefill_rows": 34196,
+          "decode_different_sets": 382,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 23,
+          "prefill_different_sets": 21858,
+          "prefill_rows": 34196,
+          "decode_different_sets": 508,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 24,
+          "prefill_different_sets": 22426,
+          "prefill_rows": 34196,
+          "decode_different_sets": 520,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 25,
+          "prefill_different_sets": 23108,
+          "prefill_rows": 34196,
+          "decode_different_sets": 545,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 26,
+          "prefill_different_sets": 22915,
+          "prefill_rows": 34196,
+          "decode_different_sets": 536,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 27,
+          "prefill_different_sets": 23744,
+          "prefill_rows": 34196,
+          "decode_different_sets": 532,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 28,
+          "prefill_different_sets": 23115,
+          "prefill_rows": 34196,
+          "decode_different_sets": 452,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 29,
+          "prefill_different_sets": 28247,
+          "prefill_rows": 34196,
+          "decode_different_sets": 777,
+          "decode_rows": 3068
+        }
+      ],
+      "B": [
+        {
+          "layer": 0,
+          "prefill_different_sets": 0,
+          "prefill_rows": 1997,
+          "decode_different_sets": 0,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 1,
+          "prefill_different_sets": 0,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 2,
+          "prefill_different_sets": 56,
+          "prefill_rows": 1997,
+          "decode_different_sets": 28,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 3,
+          "prefill_different_sets": 239,
+          "prefill_rows": 1997,
+          "decode_different_sets": 98,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 4,
+          "prefill_different_sets": 560,
+          "prefill_rows": 1997,
+          "decode_different_sets": 173,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 5,
+          "prefill_different_sets": 627,
+          "prefill_rows": 1997,
+          "decode_different_sets": 229,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 6,
+          "prefill_different_sets": 746,
+          "prefill_rows": 1997,
+          "decode_different_sets": 237,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 7,
+          "prefill_different_sets": 875,
+          "prefill_rows": 1997,
+          "decode_different_sets": 373,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 8,
+          "prefill_different_sets": 1034,
+          "prefill_rows": 1997,
+          "decode_different_sets": 448,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 9,
+          "prefill_different_sets": 1018,
+          "prefill_rows": 1997,
+          "decode_different_sets": 453,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 10,
+          "prefill_different_sets": 940,
+          "prefill_rows": 1997,
+          "decode_different_sets": 409,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 11,
+          "prefill_different_sets": 1127,
+          "prefill_rows": 1997,
+          "decode_different_sets": 462,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 12,
+          "prefill_different_sets": 1251,
+          "prefill_rows": 1997,
+          "decode_different_sets": 539,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 13,
+          "prefill_different_sets": 1412,
+          "prefill_rows": 1997,
+          "decode_different_sets": 610,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 14,
+          "prefill_different_sets": 1428,
+          "prefill_rows": 1997,
+          "decode_different_sets": 623,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 15,
+          "prefill_different_sets": 1542,
+          "prefill_rows": 1997,
+          "decode_different_sets": 686,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 16,
+          "prefill_different_sets": 1575,
+          "prefill_rows": 1997,
+          "decode_different_sets": 770,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 17,
+          "prefill_different_sets": 1611,
+          "prefill_rows": 1997,
+          "decode_different_sets": 793,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 18,
+          "prefill_different_sets": 1680,
+          "prefill_rows": 1997,
+          "decode_different_sets": 850,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 19,
+          "prefill_different_sets": 1661,
+          "prefill_rows": 1997,
+          "decode_different_sets": 921,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 20,
+          "prefill_different_sets": 1743,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1101,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 21,
+          "prefill_different_sets": 1713,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1064,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 22,
+          "prefill_different_sets": 1689,
+          "prefill_rows": 1997,
+          "decode_different_sets": 978,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 23,
+          "prefill_different_sets": 1693,
+          "prefill_rows": 1997,
+          "decode_different_sets": 971,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 24,
+          "prefill_different_sets": 1773,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1126,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 25,
+          "prefill_different_sets": 1758,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1240,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 26,
+          "prefill_different_sets": 1766,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1179,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 27,
+          "prefill_different_sets": 1785,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1192,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 28,
+          "prefill_different_sets": 1808,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1120,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 29,
+          "prefill_different_sets": 1812,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1179,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 30,
+          "prefill_different_sets": 1815,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1162,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 31,
+          "prefill_different_sets": 1826,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1240,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 32,
+          "prefill_different_sets": 1833,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1114,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 33,
+          "prefill_different_sets": 1831,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1116,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 34,
+          "prefill_different_sets": 1800,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1119,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 35,
+          "prefill_different_sets": 1863,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1326,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 36,
+          "prefill_different_sets": 1884,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1357,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 37,
+          "prefill_different_sets": 1845,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1347,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 38,
+          "prefill_different_sets": 1858,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1385,
+          "decode_rows": 3068
+        },
+        {
+          "layer": 39,
+          "prefill_different_sets": 1863,
+          "prefill_rows": 1997,
+          "decode_different_sets": 1330,
+          "decode_rows": 3068
+        }
+      ]
+    }
+  },
+  "rejected_graph_output_patch": {
+    "method": "route-outputs.patch appends a ggml_cont copy of each layer's IDs as a graph output after every other node; patched libllama only",
+    "run": "run-1 (model A only; the run stopped at a comparison-format bug before model B)",
+    "libllama_patched_sha256": "53e9c4242b5b9943e0355754cfe36732463160ca792c50b5d261a38ef8ff1015",
+    "capture_sha256": "11554381a4c787c35aa4f836e4c7ee5da63c4a00b2eefed4a00a78af8f386d2e",
+    "arms": {
+      "A-official-legacy-split": {
+        "events.jsonl": "cdaf2fd6c273dd9792a212dafd9fde913bee87fb1c0dd82da50593856f452597",
+        "predictions": "c9d5ce560f2f7be34d1f0b8ad356139bdb81c134c774440f7fec47ad631a54e7",
+        "logits": "790de5b0daced49c1f8a2a2dd848914c10c45b562752deca31b6a5233b07863e",
+        "log": "83bd5533b16004c12aa00a8c347d7198aa496e9e05be5778d7f6dabc6e15af08",
+        "libllama": "/app/libllama.so.0"
+      },
+      "A-official-untraced": {
+        "events.jsonl": "83d2fd153e0f838504cb81944c56bae31806afde7f3120f39d1c5ca5451138e2",
+        "predictions": "f93442084ac01b69a2db6d26b284167561622059c1f58c158451fdf374087091",
+        "logits": "0a60e0844e7a23fe20fd0fab9ba95c65df5408da94a87bd571c09b54c4f81609",
+        "log": "8469cd1361faee7de0e382d6b906c214110072dfccac5c081cfc275e99eec140",
+        "libllama": "/app/libllama.so.0"
+      },
+      "A-official-untraced-nofusion": {
+        "events.jsonl": "c32872f42fff4c86efbe7b792b9f8a6c47ca930f3a7ec7db5948ed602916a10f",
+        "predictions": "92f1e7613480136e48b558a1c63bdd5f95407a6ab10d5224c93643eaa4b25cce",
+        "logits": "7b3c0071531adf1ce5fe89d72fe39199d5eb74d61b6038eeca556a9b64c3f394",
+        "log": "5afa6496bde419d3c31e2f8988f6d4b7eea5d1654272eb5159c70149e22cc63c",
+        "libllama": "/app/libllama.so.0"
+      },
+      "A-patched-graph-outputs": {
+        "events.jsonl": "f848a55cebb92c798430b5ce386802dcc77f2406440481a03d22fbe95596d4d3",
+        "predictions": "3db3c6131f0098eb8d2e0ea322daf25d964f93cd58334eb5b92b482c83633e69",
+        "logits": "8c7232e6a8b5acd31254f00cc9388350a5e81adb7718938b62d487ec3044bce4",
+        "log": "c58603bd4c4921e13ed90ec3b034d45c8e9ca56c8bdd3e4c1d899f5e0b331831",
+        "libllama": "/output/lib/libllama.so.0"
+      },
+      "A-patched-graph-outputs-nofusion": {
+        "events.jsonl": "b09fb69e0661e8d304f863c25468b470ccae06910df5a343dcda39e4a9f4d455",
+        "predictions": "92f1e7613480136e48b558a1c63bdd5f95407a6ab10d5224c93643eaa4b25cce",
+        "logits": "7b3c0071531adf1ce5fe89d72fe39199d5eb74d61b6038eeca556a9b64c3f394",
+        "log": "fd73d8a850bd69ac1252fd9e640a5286d20917ad79bfc0afd74498593e05f486",
+        "libllama": "/output/lib/libllama.so.0"
+      },
+      "A-patched-untraced": {
+        "events.jsonl": "2fa0d85a2bc3d36a1eea6afc11c22cfc666caf07a82fbe67395b3f2cbc3d5aed",
+        "predictions": "f93442084ac01b69a2db6d26b284167561622059c1f58c158451fdf374087091",
+        "logits": "0a60e0844e7a23fe20fd0fab9ba95c65df5408da94a87bd571c09b54c4f81609",
+        "log": "d292a20235603e9a9d0a1f1ef30bfd47ec28a0cc4ada78ddb980f67737188835",
+        "libllama": "/output/lib/libllama.so.0"
+      }
+    },
+    "comparisons": {
+      "patched_untraced_vs_official_untraced": {
+        "predictions": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        }
+      },
+      "graph_outputs_vs_official_untraced": {
+        "predictions": {
+          "records": 3072,
+          "different_records": 44,
+          "first_different_record": 18
+        },
+        "logit_hashes": {
+          "records": 3072,
+          "different_records": 3072,
+          "first_different_record": 0
+        }
+      },
+      "legacy_split_vs_official_untraced": {
+        "predictions": {
+          "records": 3072,
+          "different_records": 55,
+          "first_different_record": 18
+        },
+        "logit_hashes": {
+          "records": 3072,
+          "different_records": 3072,
+          "first_different_record": 0
+        }
+      },
+      "graph_outputs_nofusion_vs_official_untraced_nofusion": {
+        "predictions": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 3072,
+          "different_records": 0,
+          "first_different_record": null
+        }
+      },
+      "graph_output_routes_vs_legacy_split_routes": {
+        "events": 94110,
+        "different_events": 32639,
+        "rows": 1117920,
+        "different_ordered_rows": 684128,
+        "different_expert_sets": 411313
+      }
+    }
+  },
+  "short_diagnostics": {
+    "input": "model A request 0 prompt plus 16 decode tokens (17 outputs)",
+    "capture_sha256": "7a6c0826ab6ec710bb54f0f998ab951090dfd2c7ad8c618165ad1f600710c69c",
+    "input_sha256": "d6c07929ceeda7905a6389e9ab174bf20428ecbc98a9abe78b42ceff720d2a78",
+    "arms": {
+      "d1-official-untraced": {
+        "events.jsonl": "b87d6c84407c38fd3e40ce771da3e7b481c16a4f7b9f2c935f81e7503330b87e",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "75eab7cd52662e453685d77e900fa51114073f9aaf8c1ead5d05899ee65e4aac",
+        "log": "2112e5e62c76ad619d39d6de3ecbf9eb49c630cde5e53046cfde14c0802a9d72"
+      },
+      "d2-official-callback-only": {
+        "events.jsonl": "5ed0e1fe455b853fea5ee6490bccb619a0fc3cced618475f6938ad7c9d3d4700",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "75eab7cd52662e453685d77e900fa51114073f9aaf8c1ead5d05899ee65e4aac",
+        "log": "219631f9f0c16bd1a384780d40bbf9e324a908190d3bf9abc770c6f1aa627dd6"
+      },
+      "d3-patched-outputs-nocallback": {
+        "events.jsonl": "96f1ad7596c66826659e770ef5b1c01f37e741079738afc6dd5fb8d0e9abe875",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "3bd452c56d85639b83af4cfefabeae6a53bb3e7a7484ceeb5a41a25c527bb1c6",
+        "log": "116b4007902cecea0e601e75cb4be95c68372de6dc95ef9da1e555b0e00a3c79"
+      },
+      "d4-patched-outputs-read": {
+        "events.jsonl": "eaf7260200fa66becf7c73635d4bf7df985bd32b153e492739939e8422843f96",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "3bd452c56d85639b83af4cfefabeae6a53bb3e7a7484ceeb5a41a25c527bb1c6",
+        "log": "961788480d39e969b81df6d5ece652bafd5484166d5833478c9dffb21d8345e9"
+      },
+      "d5-official-untraced-repeat": {
+        "events.jsonl": "9ca6de8813f55c25154f0e0e8a37141937acecfb2c52cce1646755bac9a92c9f",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "75eab7cd52662e453685d77e900fa51114073f9aaf8c1ead5d05899ee65e4aac",
+        "log": "dfd55811cc6ff992d1bdf303b630c0b76b6746ddb127520723628320a81ab2ca"
+      },
+      "d6-official-boundary": {
+        "events.jsonl": "6352081130234e319cc2c4480bc2051ebfefb591f014713d6cb232861915c4c7",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "75eab7cd52662e453685d77e900fa51114073f9aaf8c1ead5d05899ee65e4aac",
+        "log": "decf2dd455fed231e2ca9277df2aaafd642ea6790b6da280b3d9310641af208e"
+      },
+      "d7-official-legacy": {
+        "events.jsonl": "8e26dedd25f50ab6dc44edd1a609a8c2b1fc0d646910cce10c26556af75bb184",
+        "predictions": "5e20cd36a232423767b9c5bb28511577937a9c75391a676d0c29f0e50c67c3c6",
+        "logits": "2ed72b296de30758d55c075b9070ad41c0c139e9ded3728b87c6c5d30227a3d6",
+        "log": "cb1325795e18a8d1194c4f269c64cd25f168108197c458c1780cf60f5863777c"
+      }
+    },
+    "comparisons": {
+      "d2-official-callback-only_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        }
+      },
+      "d3-patched-outputs-nocallback_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 17,
+          "first_different_record": 0
+        }
+      },
+      "d4-patched-outputs-read_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 17,
+          "first_different_record": 0
+        }
+      },
+      "d5-official-untraced-repeat_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        }
+      },
+      "d6-official-boundary_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        }
+      },
+      "d7-official-legacy_vs_d1-official-untraced": {
+        "predictions": {
+          "records": 17,
+          "different_records": 0,
+          "first_different_record": null
+        },
+        "logit_hashes": {
+          "records": 17,
+          "different_records": 17,
+          "first_different_record": 0
+        }
+      }
+    }
+  }
+}

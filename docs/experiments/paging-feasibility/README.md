@@ -49,7 +49,8 @@ The source archive is pinned there too. Execution host is `spark-c4e2`,
 NVIDIA GB10, driver **580.178.04**, kernel **7.0.0-1019-nvidia**.
 CUDA libraries remain those of the existing CUDA 13.3 image (cudart 13.3.29-1,
 cuBLAS 13.5.1.27-1). PTX JIT was disabled. The standalone reference harness uses
-the image's GCC 14.2.0, C++23, explicit `-march=armv8-a`, and warnings as errors;
+the image's default `g++`, GCC 13.3.0 (upstream libraries were built with
+GCC 14.2.0), C++23, explicit `-march=armv8-a`, and warnings as errors;
 it does not change D-032's Clang-first runtime toolchain.
 
 ## Replay contract and budget

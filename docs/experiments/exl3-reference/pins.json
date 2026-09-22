@@ -1,0 +1,324 @@
+{
+  "recorded_on": "2026-09-22",
+  "purpose": "D-052 small EXL3 external Spark reference: verified full artifacts, build/runtime identities and bounded numerical/performance evidence",
+  "inspected_upstream": {
+    "repository": "https://github.com/turboderp-org/exllamav3",
+    "revision": "6b84a21b6f1e5da3f291b9e1019061f0de788279",
+    "role": "Executed external single-GPU reference with arm-reference.patch; native implementation adoption still requires its own selected closure audit"
+  },
+  "fixtures": [
+    {
+      "repository": "blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw",
+      "revision": "7009334dc77ad71f6a98d942d6df3ec64017f565",
+      "filename": "model.safetensors",
+      "published_size_bytes": 588951098,
+      "published_sha256": "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b",
+      "verification_scope": "Full model.safetensors size and SHA256 verified on Spark; all listed metadata/tokenizer files verified; optimized and attention_eager profiles executed; bounded repeat/restore controls passed",
+      "range": "bytes 0-1048575/588951098",
+      "header_bytes": 84622,
+      "header_sha256": "bbf1bec3071764737fe5493060d50d7764cad9d02b39c0629b6c0fcde315b13d",
+      "tensor_count": 798,
+      "tensor_types": {
+        "BF16": 50,
+        "F16": 410,
+        "I32": 169,
+        "I16": 169
+      },
+      "trellis_tensor_count": 169,
+      "per_tensor_bits": {
+        "4.0": 168,
+        "8.0": 1
+      },
+      "tensor_payload_bytes": 588866468,
+      "tensor_storage_manifest_matches_header": true,
+      "side_tensor_suffix_counts": {
+        "weight": 50,
+        "suh": 169,
+        "svh": 169,
+        "bias": 72,
+        "mcg": 169,
+        "trellis": 169
+      },
+      "metadata_files_verified": [
+        {
+          "filename": "README.md",
+          "size_bytes": 4823,
+          "sha256": "4044a1097523bc4de703427e2fed739740c773b45910d32641b857c42071afc3"
+        },
+        {
+          "filename": "LICENSE",
+          "size_bytes": 11343,
+          "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+        },
+        {
+          "filename": "config.json",
+          "size_bytes": 996,
+          "sha256": "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c"
+        },
+        {
+          "filename": "quantization_config.json",
+          "size_bytes": 233415,
+          "sha256": "27c9a95283ec60af72b1bffdaa3c4f5b86401f34284dd44ddee47ca1a02e0d03"
+        },
+        {
+          "filename": "generation_config.json",
+          "size_bytes": 242,
+          "sha256": "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6"
+        },
+        {
+          "filename": "tokenizer.json",
+          "size_bytes": 7031645,
+          "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        },
+        {
+          "filename": "tokenizer_config.json",
+          "size_bytes": 7305,
+          "sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583"
+        },
+        {
+          "filename": "merges.txt",
+          "size_bytes": 1671839,
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+        },
+        {
+          "filename": "vocab.json",
+          "size_bytes": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ],
+      "retrieval_url": "https://huggingface.co/blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw/resolve/7009334dc77ad71f6a98d942d6df3ec64017f565/model.safetensors",
+      "reference_expectations": {
+        "source": "Derived from the hash-verified config.json and quantization_config.json; selected trellis and side-vector shapes cross-checked against the inspected safetensors header.",
+        "vocab_size": 151936,
+        "real_kernel_shapes": {
+          "model.layers.0.self_attn.q_proj": {
+            "k": 896,
+            "n": 896,
+            "K": 4
+          },
+          "model.layers.0.self_attn.k_proj": {
+            "k": 896,
+            "n": 128,
+            "K": 4
+          },
+          "model.layers.0.mlp.up_proj": {
+            "k": 896,
+            "n": 4864,
+            "K": 4
+          },
+          "model.layers.0.mlp.down_proj": {
+            "k": 4864,
+            "n": 896,
+            "K": 4
+          },
+          "lm_head": {
+            "k": 896,
+            "n": 151936,
+            "K": 8
+          }
+        }
+      }
+    },
+    {
+      "repository": "blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.5bpw",
+      "revision": "030d3a4173c5a3e27e3c27dd7f6ab0fc00636d00",
+      "filename": "model.safetensors",
+      "published_size_bytes": 611257914,
+      "published_sha256": "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc",
+      "verification_scope": "Full model.safetensors size and SHA256 verified on Spark; all listed metadata/tokenizer files verified; optimized and attention_eager profiles executed; bounded repeat/restore controls passed",
+      "range": "bytes 0-1048575/611257914",
+      "header_bytes": 84622,
+      "header_sha256": "8b73c9bbbf49b530ee3e5fa4c250407d4614d14bcdbb3c5396bedf570a3e0cde",
+      "tensor_count": 798,
+      "tensor_types": {
+        "BF16": 50,
+        "F16": 410,
+        "I32": 169,
+        "I16": 169
+      },
+      "trellis_tensor_count": 169,
+      "per_tensor_bits": {
+        "6.0": 8,
+        "5.0": 118,
+        "4.0": 42,
+        "8.0": 1
+      },
+      "tensor_payload_bytes": 611173284,
+      "tensor_storage_manifest_matches_header": true,
+      "side_tensor_suffix_counts": {
+        "weight": 50,
+        "suh": 169,
+        "svh": 169,
+        "bias": 72,
+        "mcg": 169,
+        "trellis": 169
+      },
+      "metadata_files_verified": [
+        {
+          "filename": "README.md",
+          "size_bytes": 4823,
+          "sha256": "0af3341c887a4902cf6aa8d1ab300ff313d2ff9e2a132562f4df88c24a3b54c3"
+        },
+        {
+          "filename": "LICENSE",
+          "size_bytes": 11343,
+          "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+        },
+        {
+          "filename": "config.json",
+          "size_bytes": 923,
+          "sha256": "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c"
+        },
+        {
+          "filename": "quantization_config.json",
+          "size_bytes": 233415,
+          "sha256": "b7d6bf29739927f7cf4aeb88eabb86ce10029dbce2618329462339fea2c4edfd"
+        },
+        {
+          "filename": "generation_config.json",
+          "size_bytes": 242,
+          "sha256": "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6"
+        },
+        {
+          "filename": "tokenizer.json",
+          "size_bytes": 7031645,
+          "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        },
+        {
+          "filename": "tokenizer_config.json",
+          "size_bytes": 7305,
+          "sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583"
+        },
+        {
+          "filename": "merges.txt",
+          "size_bytes": 1671839,
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+        },
+        {
+          "filename": "vocab.json",
+          "size_bytes": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ],
+      "retrieval_url": "https://huggingface.co/blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.5bpw/resolve/030d3a4173c5a3e27e3c27dd7f6ab0fc00636d00/model.safetensors",
+      "reference_expectations": {
+        "source": "Derived from the hash-verified config.json and quantization_config.json; selected trellis and side-vector shapes cross-checked against the inspected safetensors header.",
+        "vocab_size": 151936,
+        "real_kernel_shapes": {
+          "model.layers.0.self_attn.q_proj": {
+            "k": 896,
+            "n": 896,
+            "K": 6
+          },
+          "model.layers.0.self_attn.k_proj": {
+            "k": 896,
+            "n": 128,
+            "K": 6
+          },
+          "model.layers.0.mlp.up_proj": {
+            "k": 896,
+            "n": 4864,
+            "K": 5
+          },
+          "model.layers.0.mlp.down_proj": {
+            "k": 4864,
+            "n": 896,
+            "K": 5
+          },
+          "lm_head": {
+            "k": 896,
+            "n": 151936,
+            "K": 8
+          }
+        }
+      }
+    }
+  ],
+  "initial_metadata_inspection": {
+    "host": "x86-64 Linux workstation",
+    "network": "Immutable Hugging Face metadata and HTTP 206 byte ranges, bounded to the first 1 MiB per model",
+    "checks": [
+      "Reject duplicate safetensors header keys",
+      "Check all tensor shapes, dtypes and byte spans",
+      "Check contiguous nonoverlapping payload ranges against published file size",
+      "Match every tensor name, shape, dtype and byte count against quantization_config.json tensor_storage",
+      "Hash downloaded metadata and exact safetensors JSON header bytes"
+    ],
+    "limits": [
+      "Published full-payload digests not locally verified",
+      "No payload values inspected or checkpoint code executed",
+      "No Spark run, numerical comparison or performance measurement",
+      "Tokenizer/template hashes and compiled reference closure remain reference-task gates"
+    ],
+    "scope": "Historical selection-stage inspection only; subsequent full execution evidence below supersedes these original limits"
+  },
+  "reference_build": {
+    "host": "spark-c4e2",
+    "device": "NVIDIA GB10",
+    "compute_capability": "12.1",
+    "driver": "580.178.04",
+    "base_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "local_image_tag": "jitllm-exl3-reference:20260922",
+    "local_image_id": "sha256:5d405cce512e8bb8c9886501fbec2b4323565a691f6d838b76a076cd5d787537",
+    "image_scope": "Locally rebuilt from Dockerfile; final accepted model and kernel runs use this image. Not published.",
+    "patch": "arm-reference.patch",
+    "notice": "UPSTREAM-NOTICE.txt",
+    "host_compiler": "GNU13.3.0, -march=armv8-a, upstream C++20 -Ofast",
+    "cuda_compiler": "NVCC13.0.88, sm_121, upstream -O3 --use_fast_math",
+    "driver_ptx_jit_disabled": true,
+    "triton_compilation_enabled": true,
+    "extension_compile_jobs": 8,
+    "compiled_translation_units": 181,
+    "container_limits": {
+      "host_memory_bytes": 34359738368,
+      "memory_plus_swap_bytes": 34359738368,
+      "shm_bytes": 2147483648,
+      "note": "Not a complete CUDA/unified-memory bound"
+    },
+    "runtime_inventory": "runtime.json",
+    "scope": "External reference tool/platform closure, not native compiled-closure clearance or whole-image redistribution approval",
+    "recorded_file_sha256": {
+      "Dockerfile": "8b3e628ca068a66769dfa7ada90071c89b228176657c20e1a2eb6dc31fc08d74",
+      "requirements-extra.txt": "fa3baf39a22a622802671cbe54100cd8f1ec53581dd7565ceac41c635565f865",
+      "arm-reference.patch": "3192e8bcb82df08d3ebe1df3e3c2fa5eb03228912a3dae722d7db7e73423c063",
+      "measure.py": "e1d689256260bbfc57fd1352f50f276563797259d3118c253b5b80ae7eb7e574",
+      "checks.py": "f4d9b33e533edf56cad1b3005e65ab7c2d063c094e6be1faac64f0c86f9a8ba5",
+      "inspect_runtime.py": "4fc35927bb24e6948dadd2d4bd113f86da57c6e55a3b1894583f1345b48168f3",
+      "summarize.py": "d1b4516de3e2da2dd765f377459e3b3a09fdb1d070db05dd152d777312ef922f",
+      "protocol.json": "f8d36eea302415711a6c1ed1f5b5bfdaf1a8f16fa55f1d2b0b4665fea10b84b1",
+      "model-protocol.json": "b5572e5223fc2a7dccc04fa26b74b6530a575c7abf13b88f608fbfaad6d1a9b5",
+      "runtime.json": "ec54e591498561e59dc28abddf2a82026507081ab81bd46d9730f17d000df98e",
+      "aggregates.json": "fbd14edeb5401238582020ab72494a1c7c1b8d27af5d553176230852ddef98b8",
+      "kernel-repeat-control.json": "0978096ff478a04c2402598b57a18d1671e0a38b8da28c13e93534ef275b11ba",
+      "../image-reference/requirements.txt": "de01de30a3679a3e11c46a3fd46d59cbab12c1286cfea0ce7fc778daf3824f2b",
+      "cxx-target": "0a7989ee094b367230cda4d3ab1fde468f0772ba61fec24fbc8e09f90670db15",
+      "fetch.py": "0f2b8a01c3fab5c3a2ea583be983e431876079ffc0d1b4a0a1b57b66d4468f50",
+      "prior-run-controls.json": "ea548f95b00013516d50004488475ab938a7d41997a812cbe903d4a5d7fb8089"
+    },
+    "source_tree_sha256": "87d7ca70d557e119d02201cf6787df9403a194417b9eac80d375024acf896b86"
+  },
+  "evidence": {
+    "aggregate_file": "aggregates.json",
+    "model_protocol": "model-protocol.json",
+    "kernel_protocol": "protocol.json",
+    "model_profiles": 4,
+    "kernel_cases": 176,
+    "raw_root": "spark:/home/pmeenan/.local/share/jitllm/exl3-reference-20260922/results",
+    "raw_receipts": "aggregates.json:raw_receipts",
+    "native_support_validated": false,
+    "cross_implementation_tolerances_established": false,
+    "held_out_seed_executed": false,
+    "measurement_scope": "Direct Model API resident compute, with pinned CPU embedding staging for decode; full Generator serving control remains M3 work",
+    "prior_kernel_instability": "kernel-repeat-control.json; retained despite a quieter final repeat; require a stable matched reference/candidate comparison before native acceptance",
+    "prior_model_instability": "prior-run-controls.json; the first complete 9-trial model set exceeded 10% at 145-token prefill in all four profiles; 145-token prefill remains flagged for a stable matched reference/candidate comparison before native acceptance",
+    "held_out_trajectory": {
+      "status": "declared 2026-09-22, not executed",
+      "generator": "numpy.random.default_rng(20260923).integers(0, 151643, size=1040, dtype=numpy.int64) with NumPy 2.2.6",
+      "id_range": "regular Qwen2.5 vocabulary 0-151642; special tokens 151643-151664 excluded",
+      "little_endian_int64_sha256": "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c",
+      "prefixes": "numerical_prefix_tokens with the same 16-token teacher-forced suffix",
+      "note": "measure.py tokens() adds its seed argument as an offset; seed 20260923 there would shift every ID by one on the same stride-37 progression and is not an independent held-out input"
+    },
+    "plan_verification": "summarize.py derives each kernel case's plan and trellis rate from profiled symbols and rejects disagreement with the declared row-count plan; rerun on the external raw bundle reproduced aggregates.json byte-for-byte"
+  }
+}

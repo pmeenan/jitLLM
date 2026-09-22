@@ -1,0 +1,570 @@
+{
+ "recorded_on": "2026-09-22",
+ "scope": "Earlier complete external runs excluded from aggregates.json. Retained so their instability is not erased by later quieter repeats. Allowances use summarize.py noise(): model blocks compare per-block summaries; kernel samples split first 15/last 16. Raw bundles stay external under the report's raw_root; receipts identify them. Prior runner/protocol text is identified by hash only and is not reconstructed.",
+ "model_runs": {
+  "nine_trial_first_complete_set": {
+   "note": "First complete model set: 9 trials per block (counted from raw samples). Every profile exceeded the 10% allowance at 145-token prefill, the packed-to-reconstruction dispatch boundary. Numerical repeat/restore controls passed. The model protocol was then re-declared with 31 trials and 15 warmups (model-protocol.json).",
+   "runs": [
+    {
+     "run": "final-4.0bpw-attention_eager",
+     "fixture": "4.0bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+     "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+     "trials_per_block": 9,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.15035267341481415,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.15035267341481415
+     },
+     "unstable_cases": [
+      {
+       "kind": "prefill",
+       "prefix_tokens": 145,
+       "relative_allowance": 0.15035267341481415
+      }
+     ],
+     "raw_receipts": [
+      {
+       "path": "final-4.0bpw-attention_eager/manifest.json",
+       "sha256": "4e9e0a6137dd651658f126fb48b0c6daa29a818e581e8c77e77fbeac3eac4af8",
+       "bytes": 7446
+      },
+      {
+       "path": "final-4.0bpw-attention_eager/performance.json",
+       "sha256": "6a60d42e6b169e324b0f4c95ad7f92a09cc4884261f60660300102a1707c99fb",
+       "bytes": 102528
+      },
+      {
+       "path": "final-4.0bpw-attention_eager/numerical.json",
+       "sha256": "65ae114bf8a9266e0d210304789bd58e6da63877114a166e00d8687150f963c1",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "final-4.0bpw-optimized",
+     "fixture": "4.0bpw",
+     "profile": "optimized",
+     "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+     "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+     "trials_per_block": 9,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.12108073167951726,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.12108073167951726
+     },
+     "unstable_cases": [
+      {
+       "kind": "prefill",
+       "prefix_tokens": 145,
+       "relative_allowance": 0.12108073167951726
+      }
+     ],
+     "raw_receipts": [
+      {
+       "path": "final-4.0bpw-optimized/manifest.json",
+       "sha256": "c30281494dda253ac86d18973ed6bba70fc5e318f885ac1c96215367e97fb539",
+       "bytes": 7597
+      },
+      {
+       "path": "final-4.0bpw-optimized/performance.json",
+       "sha256": "96fd08d5f19220710db08e5829951b25f5327fe48374c2790d0134cf808327c3",
+       "bytes": 102545
+      },
+      {
+       "path": "final-4.0bpw-optimized/numerical.json",
+       "sha256": "65ae114bf8a9266e0d210304789bd58e6da63877114a166e00d8687150f963c1",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "final-4.5bpw-attention_eager",
+     "fixture": "4.5bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+     "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+     "trials_per_block": 9,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.10398967418651024,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.10398967418651024
+     },
+     "unstable_cases": [
+      {
+       "kind": "prefill",
+       "prefix_tokens": 145,
+       "relative_allowance": 0.10398967418651024
+      }
+     ],
+     "raw_receipts": [
+      {
+       "path": "final-4.5bpw-attention_eager/manifest.json",
+       "sha256": "f10a2f02b3622021750e1f0d39438e762bdb79af75df14684cc451dcc34e234a",
+       "bytes": 7446
+      },
+      {
+       "path": "final-4.5bpw-attention_eager/performance.json",
+       "sha256": "a341e2f4fd29346db619b735c4325f0b5c4dec752cff9c822b768d155fa2b6d9",
+       "bytes": 102541
+      },
+      {
+       "path": "final-4.5bpw-attention_eager/numerical.json",
+       "sha256": "272a7e79f23df1b969e410f06c6be090de185dfef74143b2b7b0b2aeebbdf38e",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "final-4.5bpw-optimized",
+     "fixture": "4.5bpw",
+     "profile": "optimized",
+     "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+     "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+     "trials_per_block": 9,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.12144702129596785,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.12144702129596785
+     },
+     "unstable_cases": [
+      {
+       "kind": "prefill",
+       "prefix_tokens": 145,
+       "relative_allowance": 0.12144702129596785
+      }
+     ],
+     "raw_receipts": [
+      {
+       "path": "final-4.5bpw-optimized/manifest.json",
+       "sha256": "f65d7cab0d8a580230b97b9b0d883c98eea57c9d761a8f5b099ea3d4e7ad0be2",
+       "bytes": 7597
+      },
+      {
+       "path": "final-4.5bpw-optimized/performance.json",
+       "sha256": "6b5ff650f14e2ee0b36707bc9dbce0d9970ce57fcb0e44dbb8731ae6a0320458",
+       "bytes": 102533
+      },
+      {
+       "path": "final-4.5bpw-optimized/numerical.json",
+       "sha256": "272a7e79f23df1b969e410f06c6be090de185dfef74143b2b7b0b2aeebbdf38e",
+       "bytes": 25311
+      }
+     ]
+    }
+   ]
+  },
+  "thirty_one_trial_exploratory_repeats": {
+   "note": "Exploratory 31-trial repeats before the accepted run (runner/protocol revisions before the final pinned-staging protocol). None exceeded 10%; 145-token prefill remained the largest allowance in 7 of 8 profiles.",
+   "runs": [
+    {
+     "run": "pilot31-4.0bpw-attention_eager",
+     "fixture": "4.0bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "d319f969ec941429c6c17589eaec978971a34f8e96558cdd694a2dc627ed96da",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.05441243714116163,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.05441243714116163
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "pilot31-4.0bpw-attention_eager/manifest.json",
+       "sha256": "d573330a906aab2a5afd0780989b6338242b6d79a87a5c9d26519d544f7d5e45",
+       "bytes": 7445
+      },
+      {
+       "path": "pilot31-4.0bpw-attention_eager/performance.json",
+       "sha256": "0faf4c0f9fbc92c42578982d964d869cfc9d683b14f15e1e6c8efc94587ba09e",
+       "bytes": 278537
+      },
+      {
+       "path": "pilot31-4.0bpw-attention_eager/numerical.json",
+       "sha256": "65ae114bf8a9266e0d210304789bd58e6da63877114a166e00d8687150f963c1",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "pilot31-4.0bpw-optimized",
+     "fixture": "4.0bpw",
+     "profile": "optimized",
+     "runner_sha256": "d319f969ec941429c6c17589eaec978971a34f8e96558cdd694a2dc627ed96da",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.05841738009906835,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.05841738009906835
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "pilot31-4.0bpw-optimized/manifest.json",
+       "sha256": "b4bb783b9062a77022d6ac276228da0add2725105bb912e150fc2c46c56ac414",
+       "bytes": 7597
+      },
+      {
+       "path": "pilot31-4.0bpw-optimized/performance.json",
+       "sha256": "993581e311b57680372ea98653633f22ea974b95f9b7a08257c054fe5c272c6f",
+       "bytes": 278704
+      },
+      {
+       "path": "pilot31-4.0bpw-optimized/numerical.json",
+       "sha256": "65ae114bf8a9266e0d210304789bd58e6da63877114a166e00d8687150f963c1",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "pilot31-4.5bpw-attention_eager",
+     "fixture": "4.5bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "d319f969ec941429c6c17589eaec978971a34f8e96558cdd694a2dc627ed96da",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.053324013197525666,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.053324013197525666
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "pilot31-4.5bpw-attention_eager/manifest.json",
+       "sha256": "3d4aafed74af0121ae07aae54cc8538bf2d377365fe38c360b58ca4e372ecca7",
+       "bytes": 7446
+      },
+      {
+       "path": "pilot31-4.5bpw-attention_eager/performance.json",
+       "sha256": "bd9be44009f91934f61f5c6d9479ee80564024bd9858b7694b24758c66474c3b",
+       "bytes": 278576
+      },
+      {
+       "path": "pilot31-4.5bpw-attention_eager/numerical.json",
+       "sha256": "272a7e79f23df1b969e410f06c6be090de185dfef74143b2b7b0b2aeebbdf38e",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "pilot31-4.5bpw-optimized",
+     "fixture": "4.5bpw",
+     "profile": "optimized",
+     "runner_sha256": "d319f969ec941429c6c17589eaec978971a34f8e96558cdd694a2dc627ed96da",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.06002099339277239,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 512,
+      "relative_allowance": 0.09541298779232155
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "pilot31-4.5bpw-optimized/manifest.json",
+       "sha256": "dae2aab0921869f6e83bd6a274d0d93f8d60be870f1df2dcd7ca49bac6886caf",
+       "bytes": 7597
+      },
+      {
+       "path": "pilot31-4.5bpw-optimized/performance.json",
+       "sha256": "0ba9c023c3b9aa2bd937b37b75f753b79b4c5ac187283ccc2898cae6d61311bf",
+       "bytes": 278542
+      },
+      {
+       "path": "pilot31-4.5bpw-optimized/numerical.json",
+       "sha256": "272a7e79f23df1b969e410f06c6be090de185dfef74143b2b7b0b2aeebbdf38e",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "unpinned-decode-4.0bpw-attention_eager",
+     "fixture": "4.0bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "30797cacab328bb262e07f50b97aec8e029d328391a3a9bfc38d198ec79b3287",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.04307796197002553,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.04307796197002553
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "unpinned-decode-4.0bpw-attention_eager/manifest.json",
+       "sha256": "a786a42f6a80be29991cd6d25461adc1ccfdff888ab6e0c63ff22082f1f11c13",
+       "bytes": 7447
+      },
+      {
+       "path": "unpinned-decode-4.0bpw-attention_eager/performance.json",
+       "sha256": "6c1a6da660838dc7e532ff61916177cc1b05404d6cdc9e1a375c65da5e913df8",
+       "bytes": 278685
+      },
+      {
+       "path": "unpinned-decode-4.0bpw-attention_eager/numerical.json",
+       "sha256": "c87d5aac5be02b3e932c89ff39f9bcfabd15920e89fa3d999ac4218c02aebdc9",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "unpinned-decode-4.0bpw-optimized",
+     "fixture": "4.0bpw",
+     "profile": "optimized",
+     "runner_sha256": "30797cacab328bb262e07f50b97aec8e029d328391a3a9bfc38d198ec79b3287",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.09398099017683992,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.09398099017683992
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "unpinned-decode-4.0bpw-optimized/manifest.json",
+       "sha256": "4a7bc70f9797177f55878ed133534a90d7624ebc50faac444b70b12006a88190",
+       "bytes": 7596
+      },
+      {
+       "path": "unpinned-decode-4.0bpw-optimized/performance.json",
+       "sha256": "9a2d322a5a707ef5c418e457eb9fb2698f80fd72760b38cc6b9e896659a2edbd",
+       "bytes": 278644
+      },
+      {
+       "path": "unpinned-decode-4.0bpw-optimized/numerical.json",
+       "sha256": "c87d5aac5be02b3e932c89ff39f9bcfabd15920e89fa3d999ac4218c02aebdc9",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "unpinned-decode-4.5bpw-attention_eager",
+     "fixture": "4.5bpw",
+     "profile": "attention_eager",
+     "runner_sha256": "30797cacab328bb262e07f50b97aec8e029d328391a3a9bfc38d198ec79b3287",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.06804897030601509,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.06804897030601509
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "unpinned-decode-4.5bpw-attention_eager/manifest.json",
+       "sha256": "9c9336c960a264b0a22b649223363ca70ff80ad6eb4a13459424d33cfca10a37",
+       "bytes": 7446
+      },
+      {
+       "path": "unpinned-decode-4.5bpw-attention_eager/performance.json",
+       "sha256": "fd201a61554841fb80312ccbdb0b46588ffea9336104ee70de887db22a76b952",
+       "bytes": 278612
+      },
+      {
+       "path": "unpinned-decode-4.5bpw-attention_eager/numerical.json",
+       "sha256": "f34bc0ba174e7d6d44e9005e06ce8ffa77ff76d17bdf796e67c2e376ade8b75e",
+       "bytes": 25311
+      }
+     ]
+    },
+    {
+     "run": "unpinned-decode-4.5bpw-optimized",
+     "fixture": "4.5bpw",
+     "profile": "optimized",
+     "runner_sha256": "30797cacab328bb262e07f50b97aec8e029d328391a3a9bfc38d198ec79b3287",
+     "protocol_sha256": "26f0f950f9952d0797d8419a938669ff684cfaf71170d513130cec65a5987d3b",
+     "trials_per_block": 31,
+     "numerical_passed": true,
+     "prefill_145_relative_allowance": 0.04916496857208672,
+     "largest_allowance": {
+      "kind": "prefill",
+      "prefix_tokens": 145,
+      "relative_allowance": 0.04916496857208672
+     },
+     "unstable_cases": [],
+     "raw_receipts": [
+      {
+       "path": "unpinned-decode-4.5bpw-optimized/manifest.json",
+       "sha256": "9e57f8e9d3ece4dda47afe1461102e59f33182fc3a0e0c338753030b9917f1d7",
+       "bytes": 7599
+      },
+      {
+       "path": "unpinned-decode-4.5bpw-optimized/performance.json",
+       "sha256": "ab643abf1ad780fae34ae6e0043888f978d64f8c5e6ab11e360a26b1e644d3e5",
+       "bytes": 278686
+      },
+      {
+       "path": "unpinned-decode-4.5bpw-optimized/numerical.json",
+       "sha256": "f34bc0ba174e7d6d44e9005e06ce8ffa77ff76d17bdf796e67c2e376ade8b75e",
+       "bytes": 25311
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "kernel_runs": {
+  "note": "Earliest kernel runs. Their records lack the ten-invocation 'profiled_invocations' field of the accepted graph timing, so the timing method differs and these allowances are not directly comparable. The later pilot-launch runs (same protocol, different runner) had no case above 10% (largest 0.0941). control-kernels-* is recorded separately in kernel-repeat-control.json.",
+  "runs": [
+   {
+    "run": "kernels-4.0bpw",
+    "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+    "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+    "cases": 40,
+    "unstable_kernel_cases": [],
+    "raw_receipts": [
+     {
+      "path": "kernels-4.0bpw/manifest.json",
+      "sha256": "d79c4358a02dd2bc71c50e04c6954de3419c6ac020ddc9ad89076ce85f3c20e3",
+      "bytes": 7306
+     },
+     {
+      "path": "kernels-4.0bpw/kernels.json",
+      "sha256": "27c1302eaa99e79766cac2f9beabf243e1cbe012b250649d99f43bc889deed35",
+      "bytes": 123054
+     }
+    ]
+   },
+   {
+    "run": "kernels-4.5bpw",
+    "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+    "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+    "cases": 40,
+    "unstable_kernel_cases": [
+     {
+      "name": "model.layers.0.mlp.down_proj",
+      "rows": 16,
+      "noise": {
+       "relative_allowance": 0.10559602431990606,
+       "stable_for_native_gate": false
+      }
+     }
+    ],
+    "raw_receipts": [
+     {
+      "path": "kernels-4.5bpw/manifest.json",
+      "sha256": "db55ab91fafba0218386131d82d6efe4455bb4e2db5fe3629483f1148ab84326",
+      "bytes": 7306
+     },
+     {
+      "path": "kernels-4.5bpw/kernels.json",
+      "sha256": "74f760541b5285ac588f58b5c59ae83deb934f126e6cb3ff56f5139458335c7f",
+      "bytes": 123269
+     }
+    ]
+   },
+   {
+    "run": "kernels-synthetic",
+    "runner_sha256": "a28121565144e8d93fdb09c56db53a986dc3ffa260633684182c2ccc1f67d991",
+    "protocol_sha256": "58c5c0682a087fc81e3d805c3908f6150d2470ebb0afe57935c308536c494fa3",
+    "cases": 96,
+    "unstable_kernel_cases": [
+     {
+      "name": "synthetic-4096-4096-K8",
+      "rows": 1,
+      "noise": {
+       "relative_allowance": 0.10119525775519726,
+       "stable_for_native_gate": false
+      }
+     }
+    ],
+    "raw_receipts": [
+     {
+      "path": "kernels-synthetic/manifest.json",
+      "sha256": "6caf711a05572ce151c7cdf10cf58a56dc300973945e350c314c1134603694bf",
+      "bytes": 7329
+     },
+     {
+      "path": "kernels-synthetic/kernels.json",
+      "sha256": "d5842c317da7a929cf80f9a13eddbede1466c8703609d069652668f49a5d15f2",
+      "bytes": 281287
+     }
+    ]
+   }
+  ],
+  "pilot_launch_runs": [
+   {
+    "run": "pilot-launch-kernels-4.0bpw",
+    "runner_sha256_prefix": "d319f969ec94",
+    "protocol_sha256_prefix": "58c5c0682a08",
+    "raw_receipts": [
+     {
+      "path": "pilot-launch-kernels-4.0bpw/manifest.json",
+      "sha256": "696cf18ba73c1b0886ea94ceac861403b021ab17df52da8de5abeb2b3072a36e",
+      "bytes": 7299
+     },
+     {
+      "path": "pilot-launch-kernels-4.0bpw/kernels.json",
+      "sha256": "56326d6d6db71a07a2ab6148874b6fa2c0397877910ad0b164c507b313fc9756",
+      "bytes": 123112
+     }
+    ]
+   },
+   {
+    "run": "pilot-launch-kernels-4.5bpw",
+    "runner_sha256_prefix": "d319f969ec94",
+    "protocol_sha256_prefix": "58c5c0682a08",
+    "raw_receipts": [
+     {
+      "path": "pilot-launch-kernels-4.5bpw/manifest.json",
+      "sha256": "df71652b8324d1a857d25c13c128c022b4a83c14b1fb569d88f3267443e554a9",
+      "bytes": 7299
+     },
+     {
+      "path": "pilot-launch-kernels-4.5bpw/kernels.json",
+      "sha256": "c510e45040118ed1d07756f8115af41c4acc4404a92265a3a421a453c281e51c",
+      "bytes": 123234
+     }
+    ]
+   },
+   {
+    "run": "pilot-launch-kernels-synthetic",
+    "runner_sha256_prefix": "d319f969ec94",
+    "protocol_sha256_prefix": "58c5c0682a08",
+    "raw_receipts": [
+     {
+      "path": "pilot-launch-kernels-synthetic/manifest.json",
+      "sha256": "f89242ac2f9e4b5e612a8f8a5844b8707644049539c5427d04bbb4205e195c54",
+      "bytes": 7330
+     },
+     {
+      "path": "pilot-launch-kernels-synthetic/kernels.json",
+      "sha256": "8553ec1be11dc462d5e10fe2c2625667882fcec40fedc200009f5dc38f222cb6",
+      "bytes": 281337
+     }
+    ]
+   }
+  ]
+ },
+ "acceptance_consequence": "145-token prefill for all four model profiles joins synthetic-4096-4096-K5 at 1,024 rows as a flagged workload: native acceptance needs a stable reference repeated beside the candidate at the frozen allowance rule; the accepted run's sub-10% allowance alone does not clear it."
+}

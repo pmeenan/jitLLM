@@ -27,6 +27,44 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-010: Adding graph outputs changes logits with CUDA optimizations  (2026-09-22, status: open)
+
+Pinned llama.cpp `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, GB10, driver
+580.178.04, Gemma 4 26B A4B. A libllama patch that only appended copies of
+each layer's routing IDs as graph outputs changed every logit row and 44 of
+3,072 teacher-forced predictions with CUDA fusion and graphs enabled. It
+changed nothing with both disabled, and the patched library matched the
+official one bit-for-bit with the feature off. An eval callback that never requests data
+also changed nothing. Extending a tensor's lifetime or adding outputs
+changes the compute-buffer layout. A change in which fusions qualify is a
+plausible explanation, but these controls disabled fusion and CUDA graphs
+together: neither their individual roles nor the specific affected operation
+was isolated.
+
+Treat any graph-shape or lifetime change (instrumentation, extra outputs,
+debug copies) as a potential numerical-plan change under CUDA optimizations.
+Reference controls and jitLLM's own GGML integration must compare optimized
+logits exactly before assuming an observation point is transparent. See the
+[fused-routes experiment](experiments/fused-routes/README.md#rejected-design-routes-as-graph-outputs).
+
+## RE-009: Pinned ExLlamaV3 compiles x86-only CPU helpers on Spark  (2026-09-22, status: worked-around)
+
+ExLlamaV3 `6b84a21b6f1e5da3f291b9e1019061f0de788279`, Spark AArch64,
+GCC 13.3.0, CUDA 13.0.88 and PyTorch 2.14.0+cu130. Import builds every
+extension translation unit, including x86 CPU feature probes, CPU MoE and
+CPU collectives. The unmodified build fails on `__builtin_cpu_supports` in
+`avx512_target.cpp`; host spin waits also use `__builtin_ia32_pause`.
+
+The [external reference patch](experiments/exl3-reference/arm-reference.patch)
+returns false for x86 capability probes on ARM, makes unsupported CPU MoE
+and CPU-reduction entry points fail explicitly, and uses the ARM `yield`
+instruction for host spin waits. EXL3 GPU kernel bodies are unchanged.
+This is a bounded **single-GPU reference build**, not a portable CPU backend
+or validation of upstream CPU offload or tensor-parallel collectives.
+The [baseline report](experiments/exl3-reference/README.md) records the build
+and execution identities. Native jitLLM integration still adopts only its
+audited operation closure; it does not inherit this whole external extension.
+
 ## RE-008: Extended reference runs do not always preserve exact top-1 predictions  (2026-09-21, status: open)
 
 Pinned llama.cpp `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, GB10,
@@ -126,9 +164,21 @@ their individual effects or prove bitwise-logit equivalence.
 
 Keep instrumented-route experiments explicitly matched to their control
 configuration, and keep their timing separate from the reference's normal
-optimized path. A later observation point might preserve normal fusion but
-needs its own alias/lifetime and numerical checks. See the
+optimized path. See the
 [paging-feasibility experiment](experiments/paging-feasibility/README.md).
+
+**Fusion-preserving capture (2026-09-22).** Reading each layer's IDs at the
+end of its gated-activation fusion group, before the down projection
+consumes them, keeps upstream fusion and CUDA graphs: logits were
+bit-identical to untraced runs on all 3,072 Gemma and 3,072 Ornith outputs,
+using the unmodified image
+([fused-routes experiment](experiments/fused-routes/README.md)). With fusion
+and graphs off, the same read point reproduces the study's recorded routes
+exactly. The optimized plan and the plan with both disabled select different
+expert sets in 40–43% of token-layer rows, rising with depth. The study's
+routes describe the plan with fusion and graphs disabled. New captures should
+use the boundary read and re-check untraced equality per model/revision; the
+recorded captures were not redone.
 
 ## RE-005: Spark perftest warmup option stalled an RDMA-CM sweep  (2026-09-21, status: worked-around)
 

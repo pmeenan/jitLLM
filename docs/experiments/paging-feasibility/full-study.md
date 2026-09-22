@@ -26,7 +26,7 @@ a declared 21-minute schedule, with actual prompts growing from 1,699 to
 2,790 for DeepSeek and 1,865 to 2,974 for Qwen.
 
 Captures use the same digest-pinned llama.cpp image/revision as the reference
-cycle, C++23, GCC 14.2 in that image, explicit ARMv8-A, f16 state, Flash
+cycle, C++23, the image's GCC 13.3.0 for harnesses, explicit ARMv8-A, f16 state, Flash
 Attention, all primary layers on GPU, and no checkpoint code. Gemma/Ornith
 run on `spark-c4e2`; DeepSeek runs on `spark-56f5` and Qwen on
 `spark-c4e2`, both GB10 with driver
@@ -42,7 +42,11 @@ A repeated untraced control matched all 3,072. The pinned CUDA backend can fuse
 across the routed-index node; callback synchronization changes graph partitioning.
 Both controls and captures therefore disable **CUDA fusion and CUDA graphs**.
 See [RE-006](../../rough-edges.md). This validates routing within that matched
-configuration, not numerical equivalence to the normal optimized engine.
+configuration, not numerical equivalence to the normal optimized engine. A
+later [fusion-preserving capture](../fused-routes/README.md) keeps upstream
+optimized logits bit-exact and shows the optimized plan and the plan with
+fusion/graphs disabled select different expert sets in 40–43% of token-layer
+rows; these captures were not re-recorded.
 Teacher-forced inputs originate from the optimized reference. Top-1 agreement
 is not bitwise logit equality, and capture call times are not throughput evidence.
 Some small captures overlapped on the GPU, so those times are diagnostic only.

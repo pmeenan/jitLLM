@@ -6,8 +6,9 @@
 D-048 answers M0 question 3: start with explicit, resumable C++23 task state
 machines, one node-local scheduler/catalog writer, and bounded provider
 services. This is an internal design, not application code or a frozen backend
-ABI. M2's real GGML/VMM proof still settles the operation contract. Question 9
-separately decides which capacity reservations guarantee progress.
+ABI. M2's real GGML/VMM proof still settles the operation contract. D-050's
+[reservation policy](reservation-policy.md) separately defines guaranteed
+capacity and retained-state/phase envelopes.
 
 ## Execution and thread ownership
 
@@ -135,8 +136,8 @@ unchanged.
 Budget task/continuation bytes, waiters, operation records, ready entries,
 submission entries, provider completion storage, cancellation state, cleanup
 commands, snapshots and output buffers before admission. Limits are explicit
-configuration/internal profile values; M1/M2 choose runtime numbers with
-question 9's memory envelope. No unbounded `std::function` queue or task per
+configuration/internal profile values; M1/M2 choose runtime numbers within
+D-050's memory envelope. No unbounded `std::function` queue or task per
 tensor is implicit in this design.
 
 An admitted operation owns a result slot until consumed. The initial protocol
@@ -165,10 +166,13 @@ C++ memory ordering.
 
 This ensures infrastructure can drain a full queue, conditional on provider
 completion or explicit fault handling. It does not prove a suspended model
-phase can obtain more memory. The reservation/progress-envelope decision
-(question 9) must still bound retained state and prevent circular capacity
-waits. Time-slicing occurs only at scheduler-established completion boundaries;
-no task API authorizes mid-operation eviction.
+phase can obtain more memory. D-050 bounds retained state/growth and keeps
+the complete phase allowance through waits to prevent circular capacity
+waits; M2 must validate that policy. Time-slicing between requests occurs
+only at client-facing request boundaries, after a scheduler-established
+completed handoff; no task API authorizes mid-operation eviction. Another
+request's phases can run during an I/O wait only when their full concurrent
+envelopes pass D-050's admission check.
 
 ## Why explicit states first
 

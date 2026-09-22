@@ -83,8 +83,10 @@ affected docs. Until then, these govern.
   compiler where validated. Build-time tooling may use Python. (D-010)
 - **GGML first, behind an operation contract; optional backends are
   build-time modules.** The first vertical slice executes on GGML with
-  jitLLM owning the buffers behind tensors; EXL3 and other kernels follow
-  as build-time backends. There is no runtime plugin ABI. (D-028)
+  jitLLM owning the buffers behind tensors; a real EXL3 companion is required
+  in M2 before settling the artifact/backend contracts, with upstream
+  performance gates. Backends are build-time modules; no runtime plugin ABI.
+  (D-028, D-052)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
   interfaces, with CUDA VMM the only implementation for now. Apple silicon
@@ -185,8 +187,8 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
-cluster/API, task/completion and SDK provisioning choices are recorded through
-D-049; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+cluster/API, task/completion, reservation and SDK choices are recorded through
+D-052; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
@@ -199,7 +201,10 @@ recorded (plan.md). Qwen route estimates are conditional on numerical drift;
 unvalidated spill continuations use conservative recomputation. The owner
 accepted workload-scoped switching/stall targets in D-036; implementation
 validation remains ahead. The D-048 CPU-only task/completion prototype passed
-on the workstation and Spark; reservation/progress policy is the next main-plan
-decision.
+on the workstation and Spark; D-050 settles reservation/progress policy, with
+runtime proof still owed in M2. D-051 selects Qwen2.5-0.5B-Instruct FP16 and
+the pinned llama.cpp reference; D-052 adds a mandatory early EXL3 companion.
+Both EXL3 quants passed the bounded Spark reference; remaining M2 proof scope
+is next (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

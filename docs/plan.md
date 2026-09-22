@@ -324,30 +324,55 @@ needs evidence from the real hardware.
       saturation, partial submission and uncertain completion. Real threading,
       provider and GGML/VMM lifetime validation remain M2; reservation progress
       is the separate question 9 decision below.
-- [ ] Decide the initial reservation guarantee and progress envelopes (open
-      question 9) before M2: guaranteed versus opportunistic grants, retained
-      continuation memory, bounded state growth, safe admission/serialization,
-      and rejection or a validated alternative when a phase cannot fit.
-      Record the policy and the adversarial cases it must pass; see
-      [architecture.md](architecture.md#reservation-progress-gate).
-      Direction settled 2026-09-21: turn/step-scoped leases with eviction
-      only at scheduler-established completion boundaries (features.md);
-      the policy entry is still owed.
-- [ ] Decide the first vertical-slice checkpoint and numerical reference
-      (open question 4); the substrate is GGML-first (D-028, 2026-09-21).
-      Record provenance and license status of every reused unit.
-- [ ] Scope the **early backend integration proof**, executed alongside M2:
-      a small dense model runs from a prepared experimental artifact with
+- [x] Decide the initial reservation guarantee and progress envelopes
+      (2026-09-22, D-050): [policy and adversarial cases](reservation-policy.md)
+      settle guaranteed bounded requests, maximum retained-state/growth
+      allowances, complete phase envelopes held through waits and unwind,
+      request/response-granularity switching (never mid-request; owner
+      2026-09-22) and full-envelope checks for supported concurrency. Grants remain lazy;
+      opportunistic work cannot invalidate them, and spilled admitted state
+      keeps its in-memory allowance. Impossible phases fail or use an already
+      validated alternative. Numeric envelopes and executed progress/lifetime
+      proof remain M2, with retention/concurrency in M4 and routed phases in M5.
+- [x] Decide the first vertical-slice checkpoint and numerical reference
+      (2026-09-22, D-051): [Qwen2.5-0.5B-Instruct official FP16 GGUF](first-slice.md),
+      exact artifact/tokenizer/template identity and pinned llama.cpp CUDA
+      reference, with CPU diagnostics. The [bounded reference check](experiments/first-slice/README.md)
+      passes 76-token repeat/context-restore comparisons on Spark; native
+      support, numeric acceptance thresholds and context-size validation
+      remain M2/M3. Source-unit licenses/provenance are recorded; generated
+      Unicode data needs explicit clearance before native tokenizer adoption.
+- [x] Require a real EXL3 companion early (2026-09-22, D-052):
+      [contract and pinned small fixtures](exl3-bringup.md) add same-model
+      4.0 bpw and mixed-rate 4.5 bpw EXL3 to M2 before settling the artifact
+      layout/operation contract. Preserve packed execution and side tensors;
+      upstream kernel performance is an M2 gate, resident serving performance
+      an M3 gate, and EXL3 switching/restore an M4 gate.
+- [x] Run the **small EXL3 reference baseline** (2026-09-22): both full-hash
+      D-052 quants execute on Spark in the pinned ExLlamaV3 environment;
+      tokenizer/template identities, repeated-logit and in-place cache restore
+      controls pass. The [report](experiments/exl3-reference/README.md) records
+      four direct Model API profiles and 176 real/synthetic kernel cases,
+      dispatch boundaries, tracked memory and statistical comparison rules.
+      Full Generator serving controls remain M3 work. ARM host
+      helpers require a bounded patch; device kernels are unchanged. Native
+      numerical tolerances, complete physical-memory envelopes and reference
+      cases flagged unstable remain acceptance gates, not inferred passes.
+- [ ] Scope the remaining **early backend integration proof**, executed alongside M2:
+      D-051's FP16 control and D-052's EXL3 fixtures run from prepared artifacts with
       jitLLM-owned weight/state backing, explicit workspace and completion
       tracking, and all backend allocations accounted for. Include D-034's
       GPU-accessible host VMM, registered-I/O buffer lifetimes, and reclaim
       after all consumers complete. Exercise D-035's imported extent layout,
       packed small tensors, and padded tails with whole-extent reads. Match reference
-      logits, then repeat after eviction and restoration of weights and
-      state at a completed boundary on a Spark. Exercise cancellation with
+      logits against each representation's own reference, then repeat after
+      eviction and restoration of weights and state at a completed boundary
+      on a Spark. Exercise cancellation with
       pending work. Use the result to settle internal interfaces before M3;
       the operation contract is settled from this proof, not from the fake
-      backend alone (there is no runtime plugin ABI, D-028).
+      backend alone (there is no runtime plugin ABI, D-028/D-052). Include
+      EXL3 trellis/side-vector closures, mixed rates/codebooks, bounded
+      reconstruction peaks and the D-052 lifetime/performance challenge cases.
 - [ ] Compare retained backing strategies in the M2 backend/paging proof
       (owner follow-up 2026-09-21, D-035): D-033's small independent handles
       versus larger persistently mapped slabs, including 1 GiB, with software
@@ -382,14 +407,18 @@ needs evidence from the real hardware.
       the manifest and resource index (settled 2026-09-21); pick the
       container here. Work through dense, expert-axis, tied-weight, small-tensor,
       sparse-row, and final-tail examples: map stored ranges to executable
-      GGML views, report padding and read amplification, reject invalid ranges,
-      and account for shared extents and backend-readable padding. Include
+      GGML views and EXL3 trellis/side-vector views, report padding and read
+      amplification, reject invalid ranges, and account for shared extents
+      and backend-readable padding. Include
       extent-boundary reads, a leased tensor sharing an otherwise evictable
       extent, resident holes between misses, and interrupted multi-file import.
       Distinguish logical suballocations/reusable holes from released physical
       backing; small state blocks do not inherit a 2 MiB logical size.
       Reject reuse of an immutable extent's padding/unused slots that conflicts
       with its whole-extent restoration or integrity footprint.
+      Include explicit EXL3 format/codebook/per-tensor rate metadata, derived
+      side-vector identity and complete kernel dependencies (D-052). Neither
+      one global bitrate nor a GGML-only view descriptor is sufficient.
       Mutable spill encoding remains separate.
       Compatibility guarantees wait for dense and MoE
       execution and restore evidence; they are not an M0 requirement.
@@ -461,25 +490,38 @@ has a promised date; each should leave a usable, testable result.
   deterministic fake backend, real VMM smoke harness. *Prerequisites:*
   paging-feasibility results recorded and M4/M5 scope adjusted if warranted
   (D-021, D-025); measured reference cycle and acceptance criteria recorded;
-  reservation policy and progress envelopes are recorded. *Gate:* adversarial completion,
-  cancellation, competing suspended-phase, state-growth, and impossible-phase
-  tests pass with the fake backend and no vendor SDK present; repeated
-  map/load/evict/restore checks succeed on a Spark.
+  reservation policy and progress envelopes are recorded. *Gate:* every
+  M2 row of D-050's [adversarial matrix](reservation-policy.md#worked-cases-and-implementation-gates)
+  passes with the fake backend and no vendor SDK present — including
+  completion, cancellation with late I/O, request-boundary switching,
+  competing suspended phases, state growth, impossible phases, spill/reclaim
+  saturation, fragmentation, sharing/forks, envelope-upgrade races, full
+  queues during cancellation, budget reduction and unknown completion;
+  repeated map/load/evict/restore checks succeed on a Spark.
   Run the early backend integration proof alongside this work; it must pass
-  before settling the internal contract and closing M2. The proof covers one
-  small dense model and its state, with correctness checked before and after
-  restoration; full serving integration follows in M3.
+  before settling the internal contract and closing M2. The proof covers the
+  small dense FP16 control **and both real EXL3 fixtures** (D-052), their
+  native prefill/decode and state, with correctness before and after
+  restoration. EXL3 kernel time/workspace gates against the pinned Spark
+  reference must pass; a loader or FP16 conversion is insufficient.
+  Full serving integration follows in M3.
 - **M3 — One resident model, end to end.** Import a manageable model (small
   dense first) with the standalone artifact verifier, GGML-backed native
-  execution (D-028), tokenizer/state/sampling baseline, and the
+  execution plus the D-052 native EXL3 companion, tokenizer/state/sampling
+  baseline, and the
   Chat Completions, Responses and Anthropic Messages surfaces, model listing
   and Messages token counting, plus machine-readable API/model capability
   discovery, with `/v1/models` entries in D-046's OpenRouter metadata shape,
   under the front-door contract (D-040/D-041/D-045/D-046/D-047;
   [contract and client tests](client-api-baseline.md)). *Gate:* teacher-forced and
-  intermediate comparisons against a pinned reference; bounded, explainable
+  intermediate comparisons against a pinned reference; finite default
+  context/output bounds bound every admitted API request (D-050); bounded, explainable
   memory usage; at least one named client completes a chat through the
-  endpoint unmodified. M2's backend proof supplies the integration evidence;
+  endpoint unmodified with each representation. EXL3 resident prefill/decode,
+  time-to-first-token measurements meet the predeclared upstream parity gates,
+  with memory within the declared bounds in [the contract](exl3-bringup.md);
+  performance is not left
+  until M7. M2's backend proof supplies the integration evidence;
   M2/M3 implementation may overlap while their gates remain explicit.
 - **M4 — First useful product: A→B→A with partial retention.** Two small
   supported model contexts, one shared local budget, partial eviction of a
@@ -489,7 +531,9 @@ has a promised date; each should leave a usable, testable result.
   long conversation on A, request B under pressure, then resume A. *Gate:*
   only selected extents displaced; untouched data remains resident; reload
   only missing dependencies. Exercise both resident state reuse and forced
-  spill/restore. A compatible retained prefix resumes without a full
+  spill/restore, including an EXL3 model context in the matrix (D-052), with
+  representation-specific state identity and matched EXL3 reference controls.
+  A compatible retained prefix resumes without a full
   re-prefill; process only new input and any declared cache-block tail.
   Report switch/switch-back latency distributions, bytes read/written,
   peak memory/spill use, and prompt tokens reused versus recomputed against
@@ -535,7 +579,9 @@ has a promised date; each should leave a usable, testable result.
   two-large-model pair is an M7 configuration because the study's estimates
   place its demand-paging stalls at the gap limit without overlap. Small-MoE
   numerics remain correct after eviction and restoration. The M4 switching
-  floor continues to apply.
+  floor continues to apply. Extend the early EXL3 proof to representative
+  routed-expert closures and kernel/performance baselines before claiming
+  EXL3 MoE support; dense-only evidence does not cover expert batching (D-052).
   With M4's dense evidence, assess artifact compatibility guarantees in a
   separate decision (D-018).
 - **M6 — Sharded model execution (two Sparks here).** Build on M4a's
@@ -545,7 +591,8 @@ has a promised date; each should leave a usable, testable result.
   single-node model/paging evidence. *Gate:* both ranks remain correct under
   asymmetric pressure, cancellation, and controlled failure; no timeout is
   treated as proof of reclaimed memory. Placement-only use already works at M4a.
-- **M7 — Performance and product.** Alternative compatible kernels and plans,
+- **M7 — Performance and product.** Further compatible kernels and plans
+  beyond the required M2/M3 EXL3 baseline (D-052),
   prefetch, selective CUDA graphs, dashboard, optional API extensions
   (sessions, hints; D-022),
   packaging as signed apt packages for Spark with notices (D-027). *Gate:* measured results meet the agreed workload

@@ -1,0 +1,75 @@
+{
+  "scope": "Prior repeat control with identical kernel timing; model decode subsequently enabled pinned embedding staging. Preserve earlier unstable kernel evidence rather than selecting a quieter repeat. Full raw bundle stays external.",
+  "prior_aggregate_sha256": "98e549103e33bc0517d1e9b608c1acea9a5ea304c8c1e58bccebbe5f3cd4dd0f",
+  "prior_raw_aggregate": "unpinned-decode-aggregates.json",
+  "runner_sha256": "30797cacab328bb262e07f50b97aec8e029d328391a3a9bfc38d198ec79b3287",
+  "unstable_kernel_cases": [
+    {
+      "fixture": "synthetic",
+      "name": "synthetic-4096-4096-K5",
+      "rows": 1024,
+      "noise": {
+        "relative_allowance": 0.1055680044731627,
+        "stable_for_native_gate": false
+      }
+    }
+  ],
+  "raw_receipts": [
+    {
+      "path": "control-kernels-4.0bpw/manifest.json",
+      "sha256": "56986542e8fe85901d69f3774b287a2f052ecc1a7c0903d7ed9c50128d8956f6",
+      "bytes": 7301
+    },
+    {
+      "path": "control-kernels-4.0bpw/kernels.json",
+      "sha256": "8b1803eee3b7eb172edb5407b4fb9f3a9c248f6771f789447a27920a59e6f1df",
+      "bytes": 124498
+    },
+    {
+      "path": "control-kernels-4.5bpw/manifest.json",
+      "sha256": "e004c3948c5ab75029bc9b4349b44d0af47524cbdf4550b0c1f1906d75d83af1",
+      "bytes": 7301
+    },
+    {
+      "path": "control-kernels-4.5bpw/kernels.json",
+      "sha256": "470614550cc6223cc6537edf1f9cac33e21822f782034fa8df9c6111762e0cf1",
+      "bytes": 124549
+    },
+    {
+      "path": "control-kernels-synthetic/manifest.json",
+      "sha256": "74a0be3e3f44e586ef0efc00adb83e4c40a83a66b8721288482f9eaed413e2a3",
+      "bytes": 7332
+    },
+    {
+      "path": "control-kernels-synthetic/kernels.json",
+      "sha256": "68e8adcb420d3f41b4119dc1bfbee652d96bf0ff6f6986e2445212d57626aa2d",
+      "bytes": 285478
+    }
+  ],
+  "prior_runner_reconstruction": {
+    "base": "measure.py",
+    "method": "Apply each literal current-to-prior replacement exactly once, then verify runner_sha256; kernel path is byte-identical.",
+    "replacements": [
+      {
+        "current": "return {\"attn_mode\": \"flash_attn\", \"cache\": cache, \"past_len\": p, \"batch_shape\": (1, capacity),\n                \"pinned_staging\": bool(p) and protocol[\"pinned_decode_staging\"]}",
+        "prior": "return {\"attn_mode\": \"flash_attn\", \"cache\": cache, \"past_len\": p, \"batch_shape\": (1, capacity)}"
+      },
+      {
+        "current": "\"batch_shape\": (1, capacity), \"last_tokens_only\": 1,\n                \"pinned_staging\": bool(p) and protocol[\"pinned_decode_staging\"]}",
+        "prior": "\"batch_shape\": (1, capacity), \"last_tokens_only\": 1}"
+      }
+    ]
+  },
+  "prior_protocol_reconstruction": {
+    "base": "protocol.json",
+    "set": {
+      "schema": 2,
+      "profile_note": "attention_eager disables only BC attention graphs; gated MLP graphs and all other upstream defaults stay enabled"
+    },
+    "remove": [
+      "pinned_decode_staging"
+    ],
+    "serialization": "json.dumps(value, indent=2) plus newline; retain existing key order",
+    "sha256": "0628055e446bbc086a86628628be08191311e6a02df48bb217df6416ebad59bd"
+  }
+}
