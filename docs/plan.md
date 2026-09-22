@@ -128,6 +128,29 @@ needs evidence from the real hardware.
       state bytes per token, and headroom on one node. The owner's local
       Ollama blobs are plain GGUFs usable for workstation-side dry runs on
       the RTX 3080 Ti where they fit.
+- [ ] **Image-generation reference experiment — Qwen-Image-2.1**
+      (owner-added 2026-09-22): add
+      [Qwen/Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1)
+      alongside the text-model experiments. Its model card, checked
+      2026-09-22, describes text-to-image generation and image editing,
+      including RGBA output, with a 7B visual generation component comprising
+      32 single-stream DiT layers and prefix KV reuse. The 7B figure is for
+      that component, not a measured full-pipeline footprint.
+      Pin checkpoint revision, reference implementation, precision, seed,
+      resolution, step count and input images before running; audit the
+      card's Qwen Research License and reference dependencies under D-017.
+      Establish a standalone reference pipeline first; GGML support is
+      unverified. Measure component residency, peak workspace/activation and
+      latent-state bytes, repeated weight access across denoising steps,
+      prefix reuse, I/O, and end-to-end latency as resolution/steps vary.
+      Then measure text → image generation → text switching with retained
+      text state, comparing against full model swaps and checking output
+      correctness against the pinned reference. Probe completion-safe
+      cancellation and useful eviction boundaries between pipeline phases
+      and steps. Spark CPU offload still shares its physical memory budget.
+      This is an experiment target; native image-output execution/API scope
+      and delivery milestones follow feasibility evidence, with no image
+      generation support implied by the existing image-input API scope.
 - [x] **Reference A→B→A experiment** (2026-09-21, D-025): 27 verified cycles
       on `spark`, Gemma 4 UD-Q4_K_M → Ornith 1.5 Q4_K_M → Gemma, with an
       18,339-token continuation. Three repeats of nine cases distinguish
@@ -235,10 +258,49 @@ needs evidence from the real hardware.
       and enrolled-member path refresh
       are M4a scope; automatic membership changes, election and replicas
       remain deferred. Implementation and adversarial execution are still owed.
-- [ ] Verify the endpoint set the named clients need (Cursor, OpenCode,
-      Codex, Claude Code: chat completions, Responses API, Anthropic Messages
-      format, streaming and tool-call details) against their current docs;
-      record the baseline surface as a D-022/D-030 follow-up.
+- [x] Verify the named-client API requirements against current official docs
+      (2026-09-22, D-040): the [baseline](client-api-baseline.md) specifies
+      Chat Completions, Responses (required by Codex), Messages and token
+      counting, model listing, JSON/SSE and tool round trips. Cursor's exact
+      custom-endpoint behavior is not fully documented and remains an explicit
+      M3 validation gap, as does executed compatibility for every client.
+      Local-only defaults remain intact; no serving implementation is claimed.
+- [x] Triage the owner-requested [API capability assessment](api-capabilities.md)
+      (2026-09-22, D-041/D-042): confirmed Ollama subset, discovery (M3/M4a),
+      continuation close (M4), download/warm jobs, staged text-resource/image/
+      audio-file inputs, MCP management, single-owner sharing controls and
+      later embeddings. Ollama registry/management compatibility, live
+      audio/video and batch/background jobs have explicit deferral triggers.
+      Exact schemas and unassigned delivery milestones remain planning work;
+      no implementation support is claimed.
+- [x] Triage the follow-up [vLLM API comparison](vllm-api-assessment.md)
+      (2026-09-22, D-043/D-044): direct compatibility tested with unmodified
+      clients; tokenization/rendering, JSON/schema/strict tools, reasoning,
+      reranking, metrics/health/load and raw Completions/token diagnostics
+      confirmed. Regex/grammar, LoRA and classification/reward/pooling remain
+      workload-driven deferrals; generic worker RPC, training and split-serving
+      deployment controls are excluded from the client baseline. Delivery
+      milestones and precise compatibility profiles remain planning work.
+- [x] Review the API contract documents against live client docs and fix the
+      gaps (2026-09-22, D-045): Claude Code's Anthropic-shape model discovery,
+      default-on alias fields, error-wording recovery, request-class and
+      context-compacted signals and the attribution block; Codex timeouts,
+      retries and returned reasoning items; front-door listener, auth and
+      CORS defaults; admission status codes and the keepalive rule;
+      `keep_alive`, alias echo and extension carriage. Execution evidence is
+      still owed in M3.
+- [x] Triage the [OpenRouter assessment](openrouter-api-assessment.md)
+      (2026-09-22, D-046): model-metadata fields ride with M3 discovery and
+      the per-model endpoints shape with M4a availability; the `reasoning`
+      object, `reasoning_details` and cached-token usage join D-043's
+      Chat Completions contract; `session_id`/`user`/`metadata` are hints;
+      the `models` array is reserved as the spelling should fallback ever be
+      accepted, which it is not; plugins, transforms, auto-router, pricing,
+      credits and generation stats are excluded. No fourth protocol;
+      execution evidence still owed. D-047 corrects reasoning wire fields and
+      signed-block format, rejects unsupported Responses storage, and scopes
+      SSE keepalives separately from non-streaming JSON/deadline handling;
+      the baseline carries their acceptance cases.
 - [ ] Decide the async/task and completion model (open question 3), ideally
       prototyped against the fake-backend design.
 - [ ] Decide the initial reservation guarantee and progress envelopes (open
@@ -322,7 +384,11 @@ needs evidence from the real hardware.
       layout in decisions.md.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
-      criteria.
+      criteria, including unassigned D-041–D-044 API delivery (Ollama subset,
+      warm/install jobs, file modalities, MCP, sharing controls, embeddings,
+      compatible tokenization/rendering, constrained output, reasoning,
+      reranking, metrics/health/load, raw Completions/token diagnostics and
+      D-046's OpenRouter reasoning/cache spellings and hint fields).
 
 **Exit criteria:** the owner has walked features.md and says the plan is good
 enough to build from; open questions 1–7 and 9 are answered or explicitly
@@ -333,7 +399,8 @@ paging-feasibility result, measured reference switching baseline, agreed
 performance criteria, and question 9's policy are required before M2, even if
 deferred out of M0; feasibility sizes M4/M5 rather than gating viability
 (D-021, D-025). Question 8 is resolved by
-D-022; endpoint verification is an M0/M1 task. M0 exits on the owner's call,
+D-022; endpoint documentation verification is recorded in D-040 and D-045;
+executed client compatibility remains M3 work. M0 exits on the owner's call,
 not on a checklist reaching zero. Both Sparks are reachable (`spark`, `spark-b`); the toolchain, VMM, I/O,
 interconnect, reference switching, and bounded paging-feasibility evidence
 is recorded above. Sharded two-node reference execution remains separate
@@ -376,8 +443,11 @@ has a promised date; each should leave a usable, testable result.
 - **M3 — One resident model, end to end.** Import a manageable model (small
   dense first) with the standalone artifact verifier, GGML-backed native
   execution (D-028), tokenizer/state/sampling baseline, and the
-  OpenAI-compatible endpoint plus the Anthropic Messages format (D-022,
-  D-030). *Gate:* teacher-forced and
+  Chat Completions, Responses and Anthropic Messages surfaces, model listing
+  and Messages token counting, plus machine-readable API/model capability
+  discovery, with `/v1/models` entries in D-046's OpenRouter metadata shape,
+  under the front-door contract (D-040/D-041/D-045/D-046/D-047;
+  [contract and client tests](client-api-baseline.md)). *Gate:* teacher-forced and
   intermediate comparisons against a pinned reference; bounded, explainable
   memory usage; at least one named client completes a chat through the
   endpoint unmodified. M2's backend proof supplies the integration evidence;
@@ -400,7 +470,9 @@ has a promised date; each should leave a usable, testable result.
   weight/state restoration. Branching histories,
   edits, incompatible identity, expiry, and spill exhaustion yield correct
   reuse, recomputation from supplied history, or explicit errors as appropriate;
-  cache expiry never destroys admitted suspended work. Independent
+  cache expiry never destroys admitted suspended work. D-041 adds a final-turn
+  flag and explicit idempotent release of one continuation, completion-safe
+  and independent of shared-prefix retention. Independent
   conversations reuse a shared system prefix with isolated mutable suffixes;
   continuation release/expiry leaves eligible shared-prefix reuse intact,
   while shared-prefix hits do not refresh unrelated continuations. Exercise
@@ -412,7 +484,9 @@ has a promised date; each should leave a usable, testable result.
 - **M4a — Configured placement across nodes.** After M4, independently of M5:
   one configured conductor and enrolled nodes, interface/QSFP bootstrap
   discovery and automatic path detection under D-038, capability/health probes,
-  whole-model placement and request routing with state affinity. Run B on
+  whole-model placement and request routing with state affinity, plus
+  discoverable cluster model availability (D-041, in D-046's per-model
+  endpoints shape). Run B on
   another node while A stays resident; use the existing network. *Gate:*
   the D-038/D-039 topology/discovery/configuration/authentication/fencing and bounded-state
   challenge cases pass; an unmodified standard client completes the A→B→A
@@ -462,6 +536,12 @@ dependency-group scoring, optimistic MoE) live in features.md.
 
 | Item | Earliest work / revisit trigger | Scope |
 | --- | --- | --- |
+| Ollama registry and other management compatibility | After the basic subset and relevant native management operation, when a named client needs them | Deferred D-041 candidate; lifecycle mapping needs separate proof |
+| Regex/grammar constrained output | After validated JSON/schema support, when a concrete client requires it | D-043 deferral; no automatic milestone delivery |
+| LoRA adapters | Earliest M7 planning after validated base-model execution, when a concrete adapter workload needs them | D-044 deferral; no automatic delivery |
+| Classification/reward/generic pooling APIs | Earliest M7 planning after validated base-model execution, when a concrete model/task workload needs them | D-044 deferral; not implied by embedding/reranking support |
+| Live audio/video input | Earliest M7 planning after initial file-input evidence, when a concrete workload establishes streaming/synchronization requirements | Deferred D-042 candidate; not an automatic M7 deliverable |
+| Batch/background inference jobs | Earliest M7 planning after validated request scheduling, when a concrete workload justifies scheduling/storage needs | Deferred D-042 candidate; ordinary background request priority is already confirmed |
 | Automatic membership changes | After M4a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M4a scope |
 | Conductor election | After M4a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
 | Automatic replica placement and balancing | After M4a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |

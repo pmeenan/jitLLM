@@ -172,9 +172,9 @@ client-supplied history when an idle cache entry is unavailable.
 | Versioned local management API: import/list/remove, representation inspection, priorities, residency policies, cancellation, node health, trace capture | confirmed | budget changes are scheduler requests; removal quiesces users |
 | Explainable decisions: memory breakdown, model working sets, request state, eviction decisions (victims, expected cost, bytes recovered, why alternatives were kept), I/O timeline, backend choice | confirmed | ideation §13 views; explainable scheduling is a stated priority |
 | Local-only binding by default; auth and transport protection for remote; no prompt/KV logging by default; opaque request IDs | confirmed | D-014 |
-| Streaming inference API compatible with standard web-API clients (Cursor, OpenCode, Codex, Claude Code named) | confirmed | D-022, D-030; endpoint set verified per client in M0/M1 |
+| Streaming inference API compatible with standard web-API clients (Cursor, OpenCode, Codex, Claude Code named) | confirmed | D-022, D-030; D-040 documentation baseline and D-045 front-door contract; executed per-client compatibility remains M3 work |
 | Web dashboard as a separate process over the management API | confirmed | later (Stage 6); must not own the scheduler or take runtime locks |
-| OpenAI-compatible HTTP surface (chat completions at minimum) | confirmed | D-022 baseline; Responses API and streaming/tool-call details verified per named client |
+| OpenAI-compatible HTTP surface (chat completions at minimum) | confirmed | D-040: Chat Completions plus Responses, JSON/SSE and tools; model listing and Messages token counting included |
 | Anthropic Messages API format alongside the OpenAI-compatible surface | confirmed | *agent-suggested*, confirmed 2026-09-21 (D-030): Claude Code is a named client and speaks it, so the format ships in the M3 baseline surface. Athena's Engine offers both flavours, mild evidence that Spark users expect it |
 | Admission "explain / what-if" query (why can't this request be admitted now; what would need to be evicted) | confirmed | *agent-suggested*, confirmed 2026-09-21 for M4's basic status and diagnostics. Natural extension of explainability and a debugging tool for progress-envelope bugs |
 | Trace export in Perfetto / Chrome trace-event format for the I/O timeline and scheduling | confirmed | *agent-suggested*, confirmed 2026-09-21 for M4's basic status and diagnostics. Structured events are confirmed; a standard viewer format avoids building a timeline UI early |
@@ -228,6 +228,76 @@ client-supplied history when an idle cache entry is unavailable.
 | Paging feasibility assessed before M2 against the full-swap floor; matched-configuration and normal reference-configuration comparisons | confirmed | [performance evidence](architecture.md#performance-evidence); D-021/D-025: first-cut estimates, then a measured reference A→B→A once setup runs; spike sizes M4/M5, M4 validates switching and M5/M7 validate paging/optimizations |
 | Athena's Engine as a closed-source comparator for the normal-reference view (46 s full swap and 2.1 s context restore on one GB10, creator-reported) | confirmed | *agent-suggested*, confirmed 2026-09-21 as an optional comparator install (plan.md reference experiment). Nothing reusable; numbers include speculative decoding; install on a Spark only if its terms allow and only as a comparator. The 46 s includes checkpointing the active session; the pair does not both fit in 128 GB |
 
+## API additions and triage (2026-09-22)
+
+Owner-requested [Ollama and API assessment](api-capabilities.md). Listing,
+per-request model selection, on-demand activation, HF download/import, separate
+system content and optional session/release build on confirmed scope above.
+The two triage groups are owner-approved in D-041/D-042. Deferred work retains
+explicit triggers; confirmed scope does not imply runtime support.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Optional native Ollama API compatibility profile | confirmed | Owner approved 2026-09-22, D-041: listing/details and chat/generation, tested with a named client. Preload/unload and partial-residency mapping remain separate follow-ups; delivery milestone still to assign |
+| Ollama registry downloads and other model-management compatibility | deferred | Owner approved deferral 2026-09-22, D-041: revisit when a named client needs them; earliest after basic subset and relevant native management operation |
+| Machine-readable API and per-model capability discovery | confirmed | Owner approved 2026-09-22, D-041: schemas/features/model limits in M3, cluster availability in M4a; discovery does not reserve capacity |
+| Explicit final-turn flag and idempotent continuation close | confirmed | Owner approved 2026-09-22, D-041, M4: targeted conversation release with completion-safe cleanup and independent shared-prefix retention; exact schema remains to design |
+| Asynchronous warm/install job surface | confirmed | Owner approved 2026-09-22, D-041: progress/status/cancellation/retry, validated prepared publication, warming subject to capacity, no implicit downloads from inference; delivery milestone still to assign |
+| Typed text resources, images and audio-file inputs | confirmed | Owner approved 2026-09-22, D-042: incremental delivery with validated models/backends and bounded preprocessing; output modalities separate, delivery milestones still to assign |
+| Live audio/video input | deferred | Owner approved deferral 2026-09-22, D-042: concrete workload must establish streaming/synchronization needs; earliest M7 planning after initial file-input evidence, not an automatic deliverable |
+| Optional MCP management adapter | confirmed | Owner approved 2026-09-22, D-042: after native management API, separate process exposing discovery/status and explicitly authorized actions; no arbitrary tool execution in runtime |
+| Application permissions, priorities, queue waits, cancellation and bounded progress events | confirmed | Owner approved 2026-09-22, D-042: interactive/background request priority and maximum queue waits within single-owner scope, not production multitenant isolation; delivery milestones still to assign |
+| Embedding API | confirmed | Owner approved 2026-09-22, D-042: later scope with a validated embedding model/output contract; delivery milestone still to assign |
+| Batch/background inference jobs | deferred | Owner approved deferral 2026-09-22, D-042: concrete workload must justify scheduling/storage requirements; earliest M7 planning after request scheduling is validated, not an automatic deliverable or implied by background request priority |
+
+## vLLM API follow-up triage (2026-09-22)
+
+The owner requested a [vLLM comparison](vllm-api-assessment.md) after the
+D-041/D-042 triage. D-043 confirms direct wire compatibility as the default
+and the first three additions; D-044 completes this triage.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| General tokenization/counting and authorized prompt preview | confirmed | Owner approved 2026-09-22, D-043: vLLM-compatible tokenize/detokenize/tokenizer_info and prompt rendering for supported formats; same tokenizer/template as inference, no admission guarantee |
+| JSON/schema-constrained output and strict tool arguments | confirmed | Owner approved 2026-09-22, D-043: standard response_format JSON-object/schema and strict tools plus vLLM structured_outputs.json; documented subset, explicit unsupported/incomplete handling |
+| Regex/grammar constrained-output extensions | deferred | Owner approved 2026-09-22, D-043: revisit for a concrete client requirement, earliest after validated JSON/schema support; no automatic milestone delivery |
+| Per-model reasoning output/control contract | confirmed | Owner approved 2026-09-22, D-043: protocol-compatible reasoning/final/tool fields and streaming, including vLLM reasoning; advertise model-supported controls and reject unsupported settings |
+| Reranking alongside embeddings | confirmed | Owner approved 2026-09-22, D-044: existing rerank/v1/v2 contracts where supported, tested with unmodified retrieval clients and validated models; later delivery, milestone to assign |
+| Prometheus metrics and compatible health/load queries | confirmed | Owner approved 2026-09-22, D-044: /metrics, compatible queries, metric names reused only with matching meaning; paging measurements separate, bounded labels and authorization |
+| Raw Completions and bounded token/logprob diagnostics | confirmed | Owner approved 2026-09-22, D-044: OpenAI-compatible /v1/completions, standard log-probability fields and bounded vLLM-compatible token diagnostics; delivery milestone to assign |
+| LoRA adapters | deferred | Owner approved deferral 2026-09-22, D-044: concrete adapter workload required; earliest M7 planning after validated base-model execution, not automatic delivery |
+| Classification, reward and generic pooling APIs | deferred | Owner approved workload-driven scope 2026-09-22, D-044: concrete model/task demand required; earliest M7 planning after validated base-model execution |
+| Generic worker RPC, training controls and split-serving deployment APIs in the client baseline | rejected | Owner approved exclusion 2026-09-22, D-044; specialized runtime/deployment controls do not belong in this baseline. Compatible prompt-rendering endpoints remain confirmed in D-043 |
+
+## Front-door contract and review fixes (2026-09-22)
+
+A review of the D-040–D-044 documents against live client documentation found
+gaps the owner directed to be fixed; D-045 records the resulting
+public-interface rules. Scope is the [client API baseline](client-api-baseline.md).
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Single inference front door with a separate local-only management listener; anonymous loopback access until a credential is configured; per-operation authorization | confirmed | Owner-directed 2026-09-22, D-045. Non-loopback binding requires credentials and transport protection (D-014); the Ollama profile shares the front door on a configurable port and 11434 is not claimed by default |
+| Cross-origin policy: loopback origins by default, configured list otherwise, wildcard only on loopback with a credential; loopback `Host` check | confirmed | D-045; the equivalent of Ollama's `OLLAMA_ORIGINS` and host guard for browser-hosted local clients |
+| Admission-outcome HTTP status contract and SSE-streaming keepalive rule (headers and first event on admission, pings or SSE comments through switches, `retry-after` at most 60 s); non-streaming returns one JSON outcome within the request deadline | confirmed | D-045/D-047; derived from documented Claude Code and Codex timeout and retry behavior; verified in M3 acceptance |
+| Standard-client advisory signals: Claude Code request-class and context-compacted headers (opt-in on a custom base URL), `cache_control`/`prompt_cache_key`, Ollama `keep_alive` mapping | confirmed | D-045; hints steer priority and retention and never identify a conversation or grant retention (D-031) |
+| Anthropic-shape `GET /v1/models` on the shared path; alias echo in `model` with resolved identity in an extension header; namespaced extension headers | confirmed | D-045; Claude Code's opt-in discovery and its `claude` ID filter; exact names with M1 versioning |
+| Strip Claude Code's attribution block from prefix identity; alias auxiliary requests to the main model by default | confirmed | D-045; without the first, D-031's shared-prefix reuse never fires for Claude Code; without the second, side requests cause switch storms |
+
+## OpenRouter extension vocabulary (2026-09-22)
+
+Owner-requested [OpenRouter assessment](openrouter-api-assessment.md), triaged
+by the owner on 2026-09-22 (D-046): spellings adopted on the existing
+OpenAI-shaped routes, no fourth protocol. Execution evidence is still owed.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| OpenRouter model-metadata fields in `/v1/models` entries; per-model `endpoints` shape for M4a cluster availability | confirmed | Owner approved 2026-09-22, D-046: rides with M3 discovery (D-041) and M4a availability; values from the artifact, configured limits and the implemented profile only, pricing and uptime omitted |
+| OpenRouter `reasoning` request object, `reasoning`/`reasoning_details` output with jitLLM-signed blocks, and `cached_tokens`/`cache_write_tokens` usage | confirmed | Owner approved 2026-09-22, D-046: the Chat Completions spelling under D-043's reasoning contract, current vLLM also uses `reasoning`; `reasoning_content` is legacy-only, and signed blocks use SDK-supported `format: "unknown"` (D-047); cache fields report real prefix reuse only; delivery milestone assigned with D-043's reasoning contract when the ladder is rewritten |
+| `session_id`, `user` and `metadata` as advisory hints | confirmed | Owner approved 2026-09-22, D-046: affinity, attribution and retention preferences under D-045's signal rules; never identity, retention grants or authorization |
+| `models` array with `provider.require_parameters`/`quantizations` as the opt-in fallback spelling | deferred | Owner approved 2026-09-22, D-046: reserved as the spelling if alternative-model fallback is ever accepted; fallback itself stays a D-042 design suggestion, never silent; no earliest milestone until fallback is accepted |
+| OpenRouter plugins, transforms, auto-router, routing suffixes, pricing, credits, service tiers and generation stats | rejected | Owner approved exclusion 2026-09-22, D-046: server-side tools, lossy prompt rewrites and billing have no local meaning; `transforms` and `plugins` are rejected explicitly, cost fields omitted |
+
 ## Platforms
 
 | Platform | Status | Notes |
@@ -243,6 +313,7 @@ client-supplied history when an idle cache entry is unavailable.
 | --- | --- | --- |
 | GLM-5.3-Flash, DeepSeek-v4.1-Flash, Qwen3.8-Flash-Next (via the MiaAI-Lab two-Spark references) | confirmed | as target families and reference recipes; pinned before porting; support earned per checkpoint |
 | ~30B-class dense models (suitable Gemma / Llama variants) | confirmed | intended use case, not a promise for every checkpoint |
+| [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | Owner-added 2026-09-22; [experiment scope](plan.md): measure iterative denoising, component/workspace/latent-state lifetimes and switching with text models. Checkpoint, reference stack and license audit precede execution; native backend and image-output API support remain unvalidated and unscheduled |
 | Small dense model plus synthetic/tiny MoE as the first bring-up vehicles | confirmed | ideation §19: separate execution, import, and pager bugs before a flagship architecture |
 | First vertical-slice checkpoint and backend | open | open question 4; the substrate direction is GGML-first (D-028, 2026-09-21); the checkpoint, quantization, and numerical reference remain open |
 | Reference engine for the feasibility spike: llama.cpp with MoE GGUFs | confirmed | decided 2026-09-20. Owner-provided candidates with card-verified configs in plan.md: Qwen3.8-Flash-Next (512 experts, top-10 plus 1 shared, 6B active of 125B, plus a 51B n-gram table; 3-bit fits one node, 4-bit is borderline, 5-bit exceeds it), Gemma 4 26B-A4B (128 experts, top-8 plus 1 shared, hybrid sliding-window attention), Ornith-1.5-35B-A3B (`qwen35moe`). This does not decide the runtime substrate (open question 4) |
@@ -302,8 +373,8 @@ public API scope) ride along as M0 tasks or later-milestone questions.
 8. **Inference API surface.** Resolved 2026-09-20 by D-022: standard web-API
    compatibility (Cursor, OpenCode, Codex, and since 2026-09-21 Claude Code,
    D-030) is the baseline, with sessions and hints as optional extensions.
-   Remaining M0/M1 task: verify the exact endpoint set each named client
-   needs, including the Anthropic Messages format for Claude Code. (The
+   Documentation baseline recorded in D-040 and [client-api-baseline.md](client-api-baseline.md);
+   executed client compatibility and Cursor wire details remain M3 work. (The
    license half closed on 2026-09-20: Apache-2.0 in D-003, dependency policy
    in D-017.)
 9. **Initial reservation guarantee and progress envelopes.** How conservative

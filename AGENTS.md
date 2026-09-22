@@ -138,6 +138,7 @@ the human commit gate.
 | [docs/architecture.md](docs/architecture.md) | System structure, data model, lifecycles, pager invariants, environment baseline |
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
+| [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M3 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
 
 ## Rules for all agents
@@ -183,7 +184,7 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement and
-cluster contracts are recorded through D-039; the feature matrix was triaged
+cluster/API contracts are recorded through D-047; the feature matrix was triaged
 with the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).

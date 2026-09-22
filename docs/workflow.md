@@ -14,15 +14,17 @@ lighter than a team with maintainers. The default path from idea to commit is
    [plan.md](plan.md)), adds or updates tests for any behaviour change, runs
    the repo's checks (see the README for the check commands once the
    toolchain lands), and writes a handoff note: what changed, what was
-   verified, on which host, and what was not run and why.
+   verified, on which host, and what was not run and why. The note goes in
+   the agent's final message, for the commit; the docs themselves carry at
+   most a one-line provenance stamp.
 2. **Review.** A separate agent with fresh context reviews the whole
    uncommitted diff against the handoff note. It hunts real defects — data
    loss or corruption, invariant violations, security, broken behaviour,
    claims in docs the code doesn't back — not style or ceremony. Findings are
    file:line claims ranked by severity. The reviewer fixes what it finds (or
    hands back to the builder for anything larger), re-runs the checks, and
-   appends a review note. A clean review is a valid result and is stated as
-   such.
+   reports a review note the same way. A clean review is a valid result and
+   is stated as such.
 3. **Commit.** The human reads both notes and the diff at whatever depth the
    change warrants, and commits. Agents never commit.
 
@@ -78,6 +80,9 @@ downgrade a heavy-path change to the light loop on their own.
   changes you didn't make, you're iterating on in-flight work, not starting
   fresh.
 - **Scratch files stay out of the tree.**
+- **Notes stay out of the docs.** Handoff and review notes live in the final
+  message and the commit, not in the documents they describe. Process detail
+  in a design doc costs every future reader and goes stale on commit.
 - **Fix the docs the change makes wrong** (status paragraph, plan checkbox,
   affected doc, support matrix) in the same change. Docs that describe
   capability are release artifacts; overclaiming is a defect the reviewer

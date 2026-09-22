@@ -34,7 +34,26 @@
   Prefix matching enables bounded state reuse; it identifies neither a
   conversation nor its lifetime. Shared prompt prefixes and conversation
   continuations have independent reuse/expiry policies (D-024, D-031).
-  Sessions and hints are optional extensions (D-022).
+  Sessions and hints are optional extensions (D-022). M3 serves Chat
+  Completions, Responses and Messages with model listing and token counting
+  under the [D-040 client contract](client-api-baseline.md); client compatibility
+  requires per-version execution evidence, including Cursor reachability.
+  D-041 adds discovery, targeted continuation close, download/warm jobs and
+  a tested Ollama subset; [scope and design guidance](api-capabilities.md) keep
+  model residency, conversation retention and artifact installation distinct.
+  D-042 confirms staged file modalities, separate MCP management, single-owner
+  sharing controls and later embeddings; delivery/evidence remain ahead.
+  D-043 requires direct compatibility profiles tested with unmodified tooling
+  and confirms tokenization/rendering, constrained output and reasoning contracts.
+  D-044 adds compatible reranking, monitoring and raw Completions/token
+  diagnostics; specialized runtime/deployment controls stay outside the baseline.
+  D-045 fixes the front-door listener, auth and CORS defaults, the admission
+  status and keepalive rules, and the standard-client signals the baseline
+  honors. D-046 adopts OpenRouter's model-metadata, reasoning and hint
+  spellings on the OpenAI-shaped routes ([assessment](openrouter-api-assessment.md))
+  and excludes its hosted-routing features. D-047 corrects reasoning wire
+  formats, rejects unsupported Responses storage, and distinguishes SSE
+  keepalives from non-streaming JSON outcomes.
 - **Vocabulary.** *Virtual reservation* = address space. *Capacity
   reservation* = admission commitment under a progress policy. *Residency
   lease* = protection of specific backing while consumers run. Never
@@ -359,7 +378,11 @@ even when the source context used full-SWA allocation (RE-007). In that case
 restore an earlier compatible checkpoint or recompute; successful deserialization
 and tail removal do not authorize reuse.
 Independent branches may share compatible immutable prefixes, with their
-mutable continuation state isolated.
+mutable continuation state isolated. Client-inserted per-conversation material
+that the endpoint is documented to strip, such as Claude Code's attribution
+block, is removed before prefix identity is computed, and a client's documented
+post-compaction signal releases the prior continuation without touching shared
+prefixes (D-045).
 
 Retain the shared system-prompt prefix independently of longer conversation
 snapshots at supported restore boundaries. With inputs `S + A` and `S + B`,

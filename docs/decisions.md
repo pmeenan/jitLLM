@@ -30,6 +30,395 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-047: Correct reasoning wire formats, stateless storage validation and non-streaming response handling  (2026-09-22, status: accepted; amends D-045/D-046)
+
+**Decision.** Following the owner's approval to fix the API review findings:
+
+- Current vLLM and OpenRouter Chat Completions both use `reasoning` for
+  reasoning text. `reasoning_content` is a legacy spelling, supported only
+  when a pinned older client profile requires and tests it. OpenRouter's
+  `reasoning_details` remains the structured round-trip extension.
+- jitLLM's signed reasoning blocks use the SDK-supported neutral
+  `format: "unknown"`; jitLLM identity and version belong inside the opaque
+  signature, not a new `format` enum value or another provider's signature.
+  The exact pinned client/provider package must preserve text, signatures,
+  ordering and indices through streaming and tool-result pass-back before
+  support is advertised. M1 versions the opaque signature representation.
+- Stateless Responses accepts `store: false`; omission means false for this
+  profile. Explicit `store: true`, non-boolean values, non-null
+  `previous_response_id` and conversation references receive a protocol-shaped
+  400 before admission. No response retrieval is promised.
+- D-045's immediate first event and SSE keepalives apply only to requests
+  selecting SSE streaming. Non-streaming requests, including `stream: false`,
+  receive one JSON result or protocol-shaped JSON error, with headers held
+  until that outcome is known. Never insert SSE events/comments into JSON.
+  Each tested client profile records its non-streaming timeout bound;
+  unsupported long waits are documented, not hidden by changing transport.
+  A server request deadline uses a protocol-shaped 504 error before headers
+  and initiates completion-safe cancellation; disconnects also initiate
+  cancellation. Neither permits backing reclamation before work completes.
+  Pre-admission queue expiry remains D-045's 429. No automatic replay or
+  exactly-once inference guarantee follows from a timeout.
+
+**Context.** [Current vLLM documentation](https://docs.vllm.ai/en/latest/features/reasoning_outputs/)
+renames `reasoning_content` to `reasoning`. OpenRouter's official provider
+[reasoning schema](https://github.com/OpenRouterTeam/ai-sdk-provider/blob/1b22b05352cb0f9243a6c3fdd326038dd3705544/src/schemas/reasoning-details.ts)
+and [format enum](https://github.com/OpenRouterTeam/ai-sdk-provider/blob/1b22b05352cb0f9243a6c3fdd326038dd3705544/src/schemas/format.ts)
+discard blocks with unknown enum values; its neutral `unknown` value is
+supported. Its [stateless Responses contract](https://openrouter.ai/docs/api_reference/responses/overview)
+rejects explicit storage requests. The baseline promises both JSON and SSE.
+
+**Consequences.** These rules supersede D-046's custom-format and vLLM-field
+wording, and narrow D-045's keepalive rule. The baseline and assessments carry
+these corrections and acceptance cases. No runtime compatibility is claimed;
+M1 versioning and execution evidence remain ahead.
+
+**Reopen if.** A pinned client cannot preserve neutral-format signed blocks,
+or a required client needs stored Responses or different timeout semantics.
+
+## D-046: Adopt OpenRouter's extension vocabulary on the OpenAI-shaped routes; exclude its hosted-routing features  (2026-09-22, status: accepted; extends D-041, D-043 and D-045; reasoning wire spelling amended by D-047)
+
+**Decision.** The owner triaged the [OpenRouter assessment](openrouter-api-assessment.md):
+
+- **Model metadata (accepted).** `/v1/models` entries carry OpenRouter's
+  metadata fields: `context_length`, `architecture` (modalities, tokenizer,
+  instruct type), `top_provider.max_completion_tokens`, `supported_parameters`,
+  `default_parameters`, `per_request_limits` and `hugging_face_id`, with values
+  from the artifact, configured limits and the implemented profile only.
+  Pricing and uptime are omitted, never invented. M4a's cluster-availability
+  view uses the per-model `endpoints` shape: one entry per node or replica
+  holding a prepared artifact, `quantization` from the artifact representation,
+  `status` from admission readiness. The native discovery document remains the
+  authoritative superset.
+- **Reasoning and cache reporting (accepted).** Chat Completions accepts the
+  `reasoning` request object (`effort`, `max_tokens`, `exclude`, `enabled`)
+  and emits `reasoning` text and `reasoning_details` blocks, signed by jitLLM
+  under its own `format` value, alongside or instead of vLLM's
+  `reasoning_content` as the profile selects, all under D-043's reasoning
+  contract. Usage reports `prompt_tokens_details.cached_tokens` and
+  `cache_write_tokens` from real prefix reuse only.
+- **Hints (accepted); fallback spelling reserved.** `session_id`, `user` and
+  `metadata` are advisory affinity, attribution and retention preferences
+  under D-045's signal rules, never conversation identity, retention grants
+  or authorization. Alternative-model fallback remains a D-042 design
+  suggestion; if it is ever accepted, OpenRouter's `models` array with
+  `provider.require_parameters` and `provider.quantizations` is its opt-in
+  spelling, with the served model reported. No fallback behavior is
+  implemented by this decision.
+- **Excluded (rejected).** `plugins`, `transforms`, the auto-router, routing
+  suffixes, `provider` preference fields with no local meaning, pricing,
+  credits, `service_tier` and generation stats. `transforms` and `plugins`
+  are rejected explicitly at the wire, never ignored; cost fields are
+  omitted, never reported as zero.
+
+No "OpenRouter profile" is added; these are spellings on the existing
+OpenAI-shaped routes.
+
+**Context.** Owner triage on 2026-09-22 of the owner-requested assessment.
+OpenRouter's vocabulary is what most agent clients' "OpenRouter" provider
+modes already parse, so adopting it where a gap exists lets unmodified
+clients use the feature (D-043). The metadata schema gives D-041's M3
+discovery requirement a shape clients already read.
+
+**Consequences.** Delivery: metadata fields ride with M3 discovery, the
+endpoints shape with M4a cluster availability, reasoning and cache fields
+with D-043's delivery milestone when the ladder is rewritten, hints with the
+D-022 session extension. Evidence rule unchanged: a named client run in
+OpenRouter mode against a custom base URL (OpenCode is the candidate) with
+its version, provider package and configuration pinned before any
+OpenRouter-mode compatibility is claimed. `supported_parameters` lists only
+what the profile implements; `context_length`, modalities and quantization
+come from the artifact and validated support. Pass-back of
+`reasoning_details` follows D-043's ordering and immutability rules. M1
+versioning names any jitLLM `format` value. No implementation is claimed.
+
+**Reopen if.** A named client requires an excluded field, OpenRouter changes
+the schema under a pinned client version, or fallback is accepted under
+D-042 and needs the reserved spelling made concrete.
+
+## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047)
+
+**Decision.** At the owner's direction after review of the D-040–D-044
+documents, the inference front door adopts these public-interface rules:
+
+- **Listeners.** One inference front door per conductor serves `/v1/*`, the
+  Ollama `/api/*` profile and read-only discovery on one configurable port.
+  The management API is a separate listener, local-only by default (D-014).
+  jitLLM does not claim port 11434 by default; Ollama-native clients are
+  pointed at the front door. `GET /` liveness text and `GET /api/version` are
+  served only with the Ollama profile enabled, and `version` reports the
+  Ollama release the profile was tested against alongside a field naming the
+  real server version.
+- **Authentication.** A loopback-bound front door accepts anonymous requests
+  until an inference credential is configured, ignoring any placeholder
+  credential a client presents; configuring one turns anonymous access off
+  unless explicitly re-enabled, after which a request carrying both
+  `Authorization` and `x-api-key` must validate on each. Any non-loopback
+  binding requires credentials and transport protection. Authorization is
+  decided per operation, never by path prefix; an inference credential never
+  carries management authority; discovery output is filtered by caller
+  authority.
+- **CORS and origin checks.** Loopback origins are allowed by default,
+  matching Ollama; other origins require a configured list, and a request
+  whose `Origin` is outside it is refused before any work. JSON routes
+  require `Content-Type: application/json`, so a browser's no-preflight
+  request cannot trigger inference or a release. On a loopback binding the
+  `Host` header must name a loopback address, the machine's hostname or a
+  configured name (the DNS-rebinding guard Ollama applies). A wildcard origin
+  is accepted only on a loopback binding with a credential configured, never
+  together with anonymous access.
+- **Admission outcomes.** Malformed or unsupported requests and context
+  exhaustion are 400 in the protocol's error shape, using documented phrases
+  where a client acts on them; unknown model IDs are 404; a known model with
+  no prepared artifact anywhere is 503 with `x-should-retry: false` and never
+  triggers a download; oversized input is 413; exceeded queue waits, full
+  queues and budget refusals are 429 with an integer `retry-after` of at
+  most 60 s and `x-should-retry: true`; overload or draining is 503 with the
+  same `retry-after` bound. A switch, warm or prefill in progress is not an
+  error. After headers, failures use the protocol's in-stream error form and
+  end without a success marker.
+- **Keepalive.** Response headers and the first protocol event are sent as
+  soon as a request is validated and admitted, before weights load; then
+  keepalives at a pinned interval (`ping` on Messages, SSE comment lines on
+  Chat Completions and Responses) through switches and prefill. Long switches
+  are never signalled through `retry-after`. Model listing answers from the
+  catalog with no I/O and no redirect. Each profile pins its interval and the
+  client bounds it stays inside.
+- **Standard-client signals.** Advisory only, never conversation identity or
+  a retention grant (D-031): Claude Code's `x-claude-code-request-class`
+  maps to D-042 priority classes (`auxiliary` is background, the rest
+  interactive); `x-claude-code-context-compacted` releases the prior
+  continuation with D-041's close semantics, located by affinity through the
+  always-sent `x-claude-code-session-id`/`x-claude-code-agent-id` values
+  within the caller's scope, a no-op when nothing matches. Both are opt-in
+  hint headers on a custom base URL (`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`,
+  v2.1.273+), which the pinned profile sets; absence means default policy.
+  `cache_control`, `prompt_cache_key` and comparable fields are retention
+  preferences; Ollama `keep_alive` maps to `0` = release the requester's own
+  residency lease after its request (eligibility, not eviction, D-007; other
+  consumers untouched), positive = advisory retention preference, negative =
+  explicit rejection.
+- **Model listing and aliases.** `GET /v1/models` serves the Anthropic list
+  shape when the request carries `anthropic-version` or `x-api-key`, else the
+  OpenAI shape; `GET /v1/models/{id}` returns one entry. Entries name the
+  actual model behind an alias. The response `model` field echoes the
+  requested alias; the resolved artifact identity travels in a jitLLM
+  response header and in discovery and diagnostics. Extensions use namespaced
+  headers on every protocol and namespaced body fields only where the
+  protocol tolerates unknown keys; exact names follow M1 versioning.
+- **Claude Code profile.** The attribution block is stripped when it arrives
+  unchanged as the first `system` entry and consists solely of the block, so
+  prefix identity excludes its per-conversation fingerprint; it is never
+  logged. Own thinking blocks are
+  signed and unverifiable ones rejected with the documented wording; adaptive
+  thinking on a non-reasoning model is rejected naming the field; auxiliary
+  and background requests alias to the main model by default.
+
+**Context.** The review on 2026-09-22 checked the live Claude Code gateway
+protocol page, Codex configuration reference, Ollama FAQ/API references and
+OpenRouter documentation. Claude Code's opt-in `GET /v1/models` discovery
+(3 s timeout, no redirects, `claude`/`anthropic` ID filter), its 300 s
+silence watchdog, its `retry-after` and `x-should-retry` handling, its
+opt-in request-class and context-compacted hint headers, its default-on alias
+fields and its error-wording recovery paths are all documented and were
+missing from the baseline. Codex documents a 300 s stream idle default and 4/5 retries. Ollama
+clients send no credentials, probe `GET /` and `/api/version`, and send a
+positive `keep_alive` by default; Ollama's server guards loopback bindings
+with a `Host` check. Switch latency under D-036 makes time to
+first byte the binding client constraint.
+
+**Consequences.** The [baseline](client-api-baseline.md) carries the tables
+and per-profile handling; the [capability assessment](api-capabilities.md)
+carries the Ollama deployment shape. M1 names the extension headers and
+version fields. M3 acceptance verifies every status row, the keepalive rule
+through an induced switch, discovery timing, the recovery paths, the
+context-compacted release and the anonymous-loopback and CORS defaults.
+Anonymous loopback access is a single-owner default under D-014 and vision.md's
+multi-tenant non-goal, not an isolation claim. The `keep_alive` mapping is a
+documented partial Ollama profile, not lifecycle compatibility. No
+implementation, runtime dependency or architecture change is implied.
+
+**Reopen if.** A named client's documented bounds or recovery wording change
+under a pinned version, a deployment beyond a single owner's local nodes is
+adopted (D-014), or a client requires the resolved identity in the standard
+`model` field.
+
+## D-044: Confirm compatible reranking, monitoring and completion APIs; bound specialized scope  (2026-09-22, status: accepted; extends D-043; front-door contract in D-045)
+
+**Decision.** The owner approved the remaining vLLM API-triage group:
+
+- Reranking later alongside embeddings, using existing `/rerank`, `/v1/rerank`
+  and `/v2/rerank` contracts where supported, tested with unmodified retrieval
+  clients and validated ranking models.
+- Prometheus `/metrics` and compatible health/load queries. Reuse metric names
+  only where their meanings match; expose jitLLM paging measurements separately.
+- OpenAI-compatible `/v1/completions`, standard log-probability fields and
+  bounded vLLM-compatible token diagnostics for evaluation/completion tools.
+- Defer LoRA until a concrete adapter workload needs it. Classification,
+  reward and generic pooling remain workload-driven. Generic worker RPC,
+  training controls and split-serving deployment APIs are excluded from the
+  client baseline; D-043's compatible prompt-rendering endpoints remain in scope.
+
+**Context.** Owner approval completes vLLM API triage. Direct wire compatibility
+under D-043 governs; this does not claim every protocol version, model or field
+already works. The [assessment](vllm-api-assessment.md) retains failure cases
+and per-feature validation requirements.
+
+**Consequences.** Delivery milestones remain to assign when rewriting the
+ladder; existing milestone gates are not expanded by implication. Pin each
+selected route's request/response/error/stream contract and test actual clients.
+Metric compatibility includes units, labels and aggregation semantics, not just
+names; unknown measurements are not invented. Limit logprob/token output and
+rerank inputs. Raw completions must preserve their templating semantics.
+LoRA and classification/reward/pooling are earliest M7 planning after validated
+base-model execution and concrete workload demand, not automatic deliverables.
+No execution, runtime dependency or architecture change is implied.
+
+**Reopen if.** Named clients require additional contracts or a concrete workload
+justifies one of the deferred specialized capabilities.
+
+## D-043: Prefer direct API compatibility; confirm tokenization, constrained output and reasoning contracts  (2026-09-22, status: accepted; extends D-040–D-042; further scope in D-044)
+
+**Decision.** The owner requires direct compatibility wherever practical:
+reuse established routes, request fields, response shapes, streaming and error
+behavior, verified with unmodified tooling against a pinned version/feature
+profile. jitLLM-specific features use separate extensions. Document unsupported
+features explicitly; matching an endpoint name alone is not compatibility.
+
+The first vLLM follow-up triage group is approved:
+
+- vLLM-compatible `/tokenize`, `/detokenize`, `/tokenizer_info` and compatible
+  prompt-rendering endpoints for supported request formats, using the same
+  tokenizer/template as inference.
+- Standard `response_format` JSON-object/JSON-schema requests and strict
+  function arguments, plus vLLM's `structured_outputs.json` request form.
+  Begin with a documented schema subset; reject unsupported constraints.
+  Regex/grammar extensions are deferred until a concrete client needs them,
+  earliest after the validated JSON/schema implementation.
+- Protocol-specific reasoning/final/tool fields and streaming, including
+  vLLM-compatible reasoning output. Expose thinking controls only where the
+  model implements them, advertise capabilities and reject unsupported settings.
+
+**Context.** Owner approval after requesting seamless use of existing tooling,
+following the [vLLM API assessment](vllm-api-assessment.md). This is a wire
+compatibility requirement, not numerical equivalence to vLLM or adoption of
+its runtime/process architecture.
+
+**Consequences.** Assign delivery milestones when rewriting the ladder; no
+additional M3 gate is implied. Pin compatibility fixtures and client versions,
+including negative/error and interrupted-stream cases. Bound preprocessing,
+schema compilation and generated state. Rendering cannot expose unauthorized
+server prompt material; structured-output truncation is not successful schema
+completion. Reasoning controls remain model-specific, and provider signatures
+or encrypted state are never fabricated. Exact profiles and schemas precede
+implementation; M1 establishes versioning. Remaining vLLM proposals still
+await triage.
+
+**Reopen if.** A required client's protocol cannot be supported without violating
+resource/lifetime or privacy invariants, or a protocol revision changes the
+selected compatibility contract.
+
+## D-042: Confirm staged multimodal input, MCP management, sharing controls and embeddings  (2026-09-22, status: accepted; extends D-041)
+
+**Decision.** The owner approved the second API-triage group:
+
+- Text resources, images and audio files are confirmed input scope, delivered
+  incrementally with validated models. Live audio/video is deferred until a
+  concrete workload establishes streaming and synchronization requirements.
+- An optional MCP management adapter follows the native management API. It
+  exposes discovery/status and explicitly authorized actions in a separate
+  process; ordinary client tool execution stays outside the inference runtime.
+- Application permissions, interactive/background priority, maximum queue
+  waits, cancellation and bounded progress events are confirmed for cluster
+  sharing within the single-owner workload.
+- Embeddings are confirmed later scope with a validated embedding model.
+  Batch/background inference is deferred until a concrete workload justifies
+  its scheduling and storage requirements. Background priority for ordinary
+  requests does not imply durable background jobs.
+
+**Context.** Owner approval of the second group in the
+[API assessment](api-capabilities.md), completing the requested feature triage.
+Input support is earned per artifact/backend; it does not imply media output,
+all model families, or production multitenant isolation.
+
+**Consequences.** Delivery milestones for these additions remain to assign
+when rewriting the ladder; existing M3/M4/M4a gates are not expanded by
+implication. Deferred live audio/video and batch work are earliest M7 planning,
+only if their workload triggers fire, not automatic M7 deliverables. Before
+implementation, settle versioned schemas, numeric bounds, permissions and
+backend/preprocessing evidence. Media/resource processing must stay budgeted;
+MCP cannot bypass management authorization; timeouts do not prove consumers
+finished. The assessment's optional model fallback, affinity and other details
+not in the approved group remain design suggestions, not accepted interfaces.
+
+**Reopen if.** A supported workload requires different modality transports,
+MCP roles, durable jobs or isolation beyond the single-owner contract.
+
+## D-041: Add a tested Ollama subset, discovery, continuation close and management jobs  (2026-09-22, status: accepted; extends D-040; further scope in D-042)
+
+**Decision.** The owner approved the first four API-triage recommendations:
+
+- A tested Ollama subset for model listing/details and chat/generation.
+  Preload/unload semantics are a separate follow-up, not silently mapped to
+  hints. Ollama registry downloads and other model-management compatibility
+  are deferred until a named client needs them; earliest work follows the
+  basic subset and the relevant native management operation.
+- Machine-readable API schemas, supported features and per-model capabilities
+  and limits in M3; cluster availability follows in M4a.
+- A final-request flag and explicit idempotent continuation release in M4,
+  targeting one conversation, preserving independent shared-prefix retention
+  and waiting for outstanding consumers before reclaiming backing.
+- Download and warm jobs with progress, status, cancellation and retry support.
+  Installation succeeds only after verification, preparation and publication.
+  Warming remains capacity-constrained; inference never implicitly downloads
+  an absent model.
+
+**Context.** Owner approval during API triage, following the documented
+[assessment](api-capabilities.md). Listing, model selection, automatic
+activation, separate system content, HF imports and optional release already
+had confirmed scope. This settles additions to their public API behavior.
+
+**Consequences.** Ollama compatibility is profile-scoped and requires a named
+client test; unsupported lifecycle controls fail explicitly. Native memory and
+completion invariants remain authoritative. Exact schemas, numeric bounds,
+Ollama subset delivery and job delivery milestones remain planning work, not
+new M3 gates by implication. Multimodal input, MCP and broader cluster-sharing
+extensions remain proposed. M1 versioning precedes implementation; no released
+API exists to bump. The assessment records lifecycle races and import/job
+failure cases to test before implementation acceptance.
+
+**Reopen if.** A named client requires additional Ollama semantics, or discovery,
+close or job behavior cannot preserve bounded admission and completion safety.
+
+## D-040: Serve Chat Completions, Responses and Messages in the M3 baseline  (2026-09-22, status: accepted; follows D-022/D-030; front-door contract in D-045)
+
+**Decision.** M3 serves `GET /v1/models`, `POST /v1/chat/completions`,
+`POST /v1/responses`, `POST /v1/messages` and
+`POST /v1/messages/count_tokens` through the inference front door. The
+[client API baseline](client-api-baseline.md) defines the text/tool subset,
+JSON/SSE behavior, unsupported-feature policy and required client evidence.
+Responses initially uses stateless full-history HTTP/SSE; optional sessions
+remain independent. Token counting is included by choice, not because Claude
+Code requires it. This planning contract has no released API version to bump;
+M1 establishes versioning before implementation.
+
+**Context.** The linked official documentation checked on 2026-09-22 shows
+that current Codex requires Responses, OpenCode selects its wire format by
+provider, and Claude Code uses Messages. Cursor's BYOK docs describe chat and
+server-mediated routing but do not establish arbitrary local-model/tool
+compatibility. Its exact custom wire behavior is an explicit M3 validation gap.
+
+**Consequences.** Chat Completions alone cannot fulfill the named-client goal.
+All three protocols need schema/stream/tool tests; advertise compatibility only
+for executed client versions and configurations. M3 retains its at-least-one-
+named-client end-to-end gate, not an all-client compatibility claim. Local-only
+operation remains the default; Cursor does not authorize remote exposure.
+Unsupported semantic features fail explicitly rather than being silently lost.
+
+**Reopen if.** A required client workflow cannot use this bounded surface via
+supported configuration, or client verification establishes another required
+endpoint, tool type or transport.
+
 ## D-039: Detect canonical QSFP layouts and scan dedicated cluster subnets during setup  (2026-09-22, status: accepted; amends D-038)
 
 **Decision.** Setup explicitly proposes single-node, likely direct pair,
