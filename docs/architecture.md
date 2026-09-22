@@ -98,7 +98,9 @@
 - **First model/reference.** D-051 selects the official Qwen2.5-0.5B-Instruct
   FP16 GGUF and pinned llama.cpp CUDA reference on Spark, with CPU diagnostics;
   [identities and numerical contract](first-slice.md). GGML supplies operations,
-  while jitLLM owns execution/backing. D-052 adds a required
+  while jitLLM owns execution/backing and, under D-053, dispatch: kernels are
+  swappable build-time implementations selected per operation and plan, from
+  several sources at once. D-052 adds a required
   [small EXL3 companion and upstream performance gates](exl3-bringup.md)
   before M2 closes. Both external references have run; the
   [EXL3 baseline](experiments/exl3-reference/README.md) includes real and larger
@@ -262,6 +264,13 @@ requires kernel performance against upstream in M2, full resident performance
 in M3 and EXL3 switch/restore evidence in M4.
 This proof informs M3 and the interfaces; it does not claim support for
 flagship architectures, and there is no runtime plugin ABI to freeze (D-028).
+The [proof scope](backend-proof.md) records the stages, oracle ladder and
+cases. D-053 puts dispatch in jitLLM. GGML's backend runtime keeps a hidden
+scratch pool, cuBLAS workspace and its own streams, so it does not execute
+model work. Instead, GGML- and ExLlamaV3-derived kernels, and later others or
+our own, are build-time implementations of operations. Several coexist, and
+the plan selects them per operation, architecture and shape. Implementation
+identity is part of the numerical plan and of cached-state identity.
 
 ## Expected shape (to be validated in the M0 draft)
 

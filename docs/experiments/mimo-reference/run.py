@@ -26,13 +26,13 @@ def ssh(host, command, check=True, timeout=None):
     return subprocess.run(["ssh", host, command], check=check, text=True, capture_output=True, timeout=timeout)
 
 
-def node_state(host):
+def node_state(host, timeout=10):
     script = ("python3 -c \"import json,subprocess;"
               "m={l.split(':')[0]:int(l.split()[1])*1024 for l in open('/proc/meminfo')};"
               "a=subprocess.run(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],"
-              "capture_output=True,text=True).stdout.split();"
+              "capture_output=True,text=True,check=True,timeout=5).stdout.split();"
               "print(json.dumps({'mem_available':m['MemAvailable'],'compute_apps':a}))\"")
-    return json.loads(ssh(host, script).stdout)
+    return json.loads(ssh(host, script, timeout=timeout).stdout)
 
 
 def server_args(cfg, rank):
@@ -97,6 +97,8 @@ def main():
     run_dir = f"{REMOTE}/runs/{args.name}"
     record = {"config": cfg, "server_args_head": server_args(cfg, 0), "events": {}}
     started = time.monotonic()
+    local = args.results.expanduser() / args.name
+    local.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def event(label):
         record["events"][label] = round(time.monotonic() - started, 3)
@@ -112,15 +114,20 @@ def main():
         for f in ("guard.py", "workload.py"):
             subprocess.run(["scp", "-q", str(HERE / f), f"{host}:{run_dir}/"], check=True)
     names = {host: f"jitllm-mimo-rank{rank}" for host, rank in nodes.items()}
-    for host, name in names.items():
-        # Background only the guard (not a subshell holding ssh's stdout), so ssh returns.
-        ssh(host, f"cd {run_dir} || exit 1; nohup python3 guard.py --container {name} --guard-gib {cfg['guard_gib']} "
-                  f"--output guard.json > guard.log 2>&1 < /dev/null & echo $! > guard.pid", timeout=60)
-    event("guards started")
+    guard_attempts = []
+    container_attempts = []
     try:
+        # Track attempts before SSH: a timeout can leave remote work running.
+        for host, name in names.items():
+            guard_attempts.append(host)
+            # Background only the guard (not a subshell holding ssh's stdout), so ssh returns.
+            ssh(host, f"cd {run_dir} || exit 1; nohup python3 guard.py --container {name} --guard-gib {cfg['guard_gib']} "
+                      f"--output guard.json > guard.log 2>&1 < /dev/null & echo $! > guard.pid", timeout=60)
+        event("guards started")
         for host in (worker, head):
             home = ssh(host, "printf %s \"$HOME\"").stdout
             user = ssh(host, "printf %s:%s \"$(id -u)\" \"$(id -g)\"").stdout
+            container_attempts.append(host)
             ssh(host, docker_run(cfg, nodes[host], names[host], home, user))
         event("containers started")
         deadline = time.monotonic() + args.health_timeout
@@ -142,37 +149,76 @@ def main():
             record["workload_stdout"] = out.stdout[-4000:]
             record["workload_returncode"] = out.returncode
             event("workload finished")
+            out.check_returncode()
     except Exception as error:  # record and fall through to teardown
         record["error"] = repr(error)
         event("error")
     finally:
-        for host in (head, worker):
-            name = names[host]
-            ssh(host, f"sudo -n docker stop -t 60 {name}; sudo -n docker logs {name} > {run_dir}/{name}.log 2>&1; "
-                      f"sudo -n docker rm -f {name}", check=False)
-        event("containers removed")
+        def cleanup_attempt(host, phase, action):
+            try:
+                return action()
+            except Exception as error:
+                record.setdefault("cleanup_errors", []).append({
+                    "host": host, "phase": phase, "error": repr(error),
+                })
+                record.setdefault("error", "teardown incomplete; see cleanup_errors")
+                return None
+
         released = {}
-        deadline = time.monotonic() + 300
         pending = set(nodes)
-        while pending and time.monotonic() < deadline:
-            for host in list(pending):
-                state = node_state(host)
-                if not state["compute_apps"]:
-                    released[host] = {"seconds": round(time.monotonic() - started, 3), **state}
-                    pending.discard(host)
-            time.sleep(2)
-        record["released"] = released
-        record["not_released"] = sorted(pending)
-        for host in nodes:
-            ssh(host, f"cd {run_dir} && kill -TERM $(cat guard.pid) && sleep 2", check=False)
-        event("guards stopped")
-        local = args.results.expanduser() / args.name
-        local.mkdir(parents=True, exist_ok=True)
-        for host in nodes:
-            subprocess.run(["rsync", "-a", f"{host}:{run_dir}/", str(local / host)], check=False)
-        (local / "run.json").write_text(json.dumps(record, indent=2) + "\n")
-        print(json.dumps({k: record.get(k) for k in ("events", "error", "released", "not_released")}, indent=2))
+        try:
+            for host in (head, worker):
+                if host not in container_attempts:
+                    continue
+                name = names[host]
+                cleanup_attempt(host, "container", lambda: ssh(
+                    host, f"sudo -n docker stop -t 60 {name}; "
+                    f"sudo -n docker logs {name} > {run_dir}/{name}.log 2>&1; "
+                    f"sudo -n docker rm -f {name}", timeout=90))
+            event("container teardown attempted")
+            deadline = time.monotonic() + 300
+            polling = set(nodes)
+            while polling and time.monotonic() < deadline:
+                for host in sorted(polling):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    state = cleanup_attempt(host, "release observation", lambda: node_state(
+                        host, timeout=min(10, remaining)))
+                    if state is None:
+                        # Unknown is not released. Do not delay healthy-node cleanup
+                        # with repeated attempts to reach a disconnected node.
+                        polling.discard(host)
+                    elif not state["compute_apps"]:
+                        released[host] = {"seconds": round(time.monotonic() - started, 3), **state}
+                        pending.discard(host)
+                        polling.discard(host)
+                if polling:
+                    time.sleep(min(2, max(0, deadline - time.monotonic())))
+        finally:
+            record["released"] = released
+            record["not_released"] = sorted(pending)
+            if pending:
+                record.setdefault("error", "GPU memory release was not confirmed on every node")
+            for host in guard_attempts:
+                cleanup_attempt(host, "guard", lambda: ssh(
+                    host, f"cd {run_dir} && kill -TERM $(cat guard.pid) && sleep 2", timeout=10))
+            event("guard shutdown attempted")
+            # Save the local result even if a remote copy fails or is interrupted.
+            result_path = local / "run.json"
+            result_path.write_text(json.dumps(record, indent=2) + "\n")
+            try:
+                for host in nodes:
+                    cleanup_attempt(host, "results", lambda: subprocess.run(
+                        ["rsync", "-a", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
+                         f"{host}:{run_dir}/", str(local / host)], check=True, timeout=60))
+            finally:
+                result_path.write_text(json.dumps(record, indent=2) + "\n")
+            print(json.dumps({k: record.get(k) for k in (
+                "events", "error", "released", "not_released", "cleanup_errors",
+            )}, indent=2))
+    return 1 if "error" in record else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

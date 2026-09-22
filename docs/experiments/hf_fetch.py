@@ -94,7 +94,7 @@ def verify_tree(root, rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pins", type=Path, default=Path(__file__).with_name("pins.json"))
+    parser.add_argument("--pins", type=Path, required=True, help="an experiment's pins.json")
     parser.add_argument("--section", default="model")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=4)

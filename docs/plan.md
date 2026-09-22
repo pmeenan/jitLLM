@@ -376,21 +376,28 @@ needs evidence from the real hardware.
       helpers require a bounded patch; device kernels are unchanged. Native
       numerical tolerances, complete physical-memory envelopes and reference
       cases flagged unstable remain acceptance gates, not inferred passes.
-- [ ] Scope the remaining **early backend integration proof**, executed alongside M2:
-      D-051's FP16 control and D-052's EXL3 fixtures run from prepared artifacts with
-      jitLLM-owned weight/state backing, explicit workspace and completion
-      tracking, and all backend allocations accounted for. Include D-034's
-      GPU-accessible host VMM, registered-I/O buffer lifetimes, and reclaim
-      after all consumers complete. Exercise D-035's imported extent layout,
-      packed small tensors, and padded tails with whole-extent reads. Match reference
-      logits against each representation's own reference, then repeat after
-      eviction and restoration of weights and state at a completed boundary
-      on a Spark. Exercise cancellation with
-      pending work. Use the result to settle internal interfaces before M3;
-      the operation contract is settled from this proof, not from the fake
-      backend alone (there is no runtime plugin ABI, D-028/D-052). Include
-      EXL3 trellis/side-vector closures, mixed rates/codebooks, bounded
-      reconstruction peaks and the D-052 lifetime/performance challenge cases.
+- [x] Scope the remaining **early backend integration proof**, executed alongside M2
+      (2026-09-22): the [proof scope](backend-proof.md) fixes entry conditions,
+      stages P0–P6, a five-rung numerical oracle ladder (reference, toolchain
+      bridge, native dispatch on conventional memory, host VMM, restored) and
+      the BP case matrix for backing/accounting, numerics, paging, lifetime,
+      failure, performance and kernel coexistence/swapping.
+      Source reading at both pins (not measurement): GGML's CUDA backend hides
+      a never-shrinking, aborting scratch pool, cuBLAS workspaces, its own
+      streams and a GB10 device-flag side effect, chooses kernels/fusions
+      internally and has no custom operation. The owner therefore set
+      **D-053**: jitLLM owns dispatch, and GGML, ExLlamaV3, later or
+      jitLLM-authored kernels are swappable build-time implementations
+      selected per operation and plan, several at once. GGML's operation
+      launchers take a context whose pool, stream and handle jitLLM can supply,
+      with build-time patches for context ownership, device initialization,
+      abort paths and the `static` matrix-multiply routing.
+      ExLlamaV3 device kernels separate from their ATen wrappers; autotuned
+      grids, output dtypes and compile flags are part of the numerical plan.
+      Its GEMV kernel cites GPL-3.0 QTIP code as its structural model: an open
+      provenance gate ([licensing](licensing.md#early-exl3-companion-d-052));
+      until resolved the native plan runs the GEMM kernel where upstream
+      selects GEMV. Execution, thresholds and the contract remain M2 work.
 - [ ] Compare retained backing strategies in the M2 backend/paging proof
       (owner follow-up 2026-09-21, D-035): D-033's small independent handles
       versus larger persistently mapped slabs, including 1 GiB, with software
@@ -516,7 +523,8 @@ has a promised date; each should leave a usable, testable result.
   saturation, fragmentation, sharing/forks, envelope-upgrade races, full
   queues during cancellation, budget reduction and unknown completion;
   repeated map/load/evict/restore checks succeed on a Spark.
-  Run the early backend integration proof alongside this work; it must pass
+  Run the early backend integration proof ([scope](backend-proof.md))
+  alongside this work; it must pass
   before settling the internal contract and closing M2. The proof covers the
   small dense FP16 control **and both real EXL3 fixtures** (D-052), their
   native prefill/decode and state, with correctness before and after

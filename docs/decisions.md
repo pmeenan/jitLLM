@@ -30,6 +30,142 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052)
+
+**Decision.** jitLLM's runtime owns operation dispatch on every device. That
+covers:
+
+- streams and launch order;
+- workspace and scratch;
+- library handles such as cuBLAS;
+- device and context state;
+- fusion choices;
+- completion and errors.
+
+No third-party backend runtime dispatches model work: not GGML's CUDA
+backend, scheduler or graph-compute loop, nor ExLlamaV3's PyTorch
+extension. Their launchers and kernels are reused with build-time
+adaptation; GGML's context struct survives only as a jitLLM-populated
+launcher argument.
+
+**Kernels are implementations of operations** under the operation contract.
+They are compiled in as build-time modules from any compatible source:
+
+- GGML/llama.cpp first;
+- ExLlamaV3 (D-052);
+- later FlashInfer, CUTLASS or other reused units;
+- jitLLM-authored kernels where measurement or a missing capability
+  justifies them (D-013 still forbids rewrite-to-own).
+
+**Several implementations coexist.** More than one implementation of an
+operation can live in one build and one process. Different models, and
+different operations within one model, may use different sources at the
+same time.
+
+**The planner selects the implementation.** Selection is deterministic,
+per operation, architecture, representation/layout, shape range, device
+capability and build profile. The choice is bound into the admitted plan
+(D-050) and visible in diagnostics. Adding or replacing an implementation
+is a build-time change; moving a plan to another compiled implementation
+needs a newly validated plan. No kernel choice is permanent.
+
+**What each implementation declares:**
+
+- supported operations, architectures, layouts and quantization;
+- shape and alignment constraints;
+- numerical behaviour, including accumulation, determinism, fusion and
+  tuning data;
+- its workspace and peak-memory bound;
+- required library handles;
+- graph-capture restrictions;
+- completion semantics.
+
+**What each implementation must do.** It launches only on the stream and
+workspace it is given. It owns no hidden pools, streams or process-wide
+flags. It returns errors instead of exiting or aborting on recoverable
+failures. Patches, context adapters or lifted kernels that make a source
+comply are reviewed build inputs with provenance.
+
+**Implementation identity is part of the numerical plan and of retained
+state's cache identity.** That identity is the source, revision, build flags,
+variant, launch configuration and tuning data. State produced under one
+plan resumes under another only after validated compatibility; otherwise it
+is recomputed. Plans change only at request boundaries or by D-050's atomic
+envelope replacement at a completed boundary. A new implementation
+is not supported until it has:
+
+- reference comparisons;
+- an admission envelope;
+- performance evidence for its configuration.
+
+**Build profiles.** A model is supported in a build profile only if every
+operation in its plan has an eligible implementation in that profile. That
+includes the copyleft-disabled profile (D-017). There is never silent
+substitution. D-028's rejection of a runtime plugin ABI stands.
+
+**GGML specifics.** For GGML, first try to reuse its CUDA operation
+launchers under a jitLLM-supplied context:
+
+- a jitLLM stream;
+- a jitLLM cuBLAS handle and workspace;
+- a `ggml_cuda_pool` implementation over charged workspace;
+- build-time patches for context ownership, the GB10 device-flag side
+  effect and access to the `static` matrix-multiply routing;
+- preflight scratch sizing and error propagation through the selected
+  launchers, replacing upstream's abort paths. Returning null from the
+  pool alone is unsafe because upstream consumers do not check it.
+
+Lift a kernel behind an owned launcher when its launcher needs more change.
+The M2 proof chooses per operation. Fusion is a jitLLM plan choice:
+GGML's fused launchers are separate implementations.
+
+**Context.** Owner direction, 2026-09-22, after the
+[backend-proof](backend-proof.md) source reading. Do not run the backend
+unmodified; build-time changes are acceptable. Never be stuck with one
+kernel. Use several at once, choose the best per model architecture, and
+write our own if needed.
+
+At the llama.cpp pin, GGML's CUDA backend owns things jitLLM must control:
+
+- a never-shrinking scratch pool that aborts when it cannot grow;
+- cuBLAS workspaces;
+- its own streams;
+- a process-wide device flag on GB10.
+
+It also has no custom operation, so EXL3 kernels could only run between GGML
+graph segments. And GGML's graph loop chooses kernels and fusions
+internally, which blocks per-operation choice.
+
+Its operation launchers, by contrast, take a context. That context's
+scratch pool is an abstract interface and its stream and handle members can
+be pre-set ([common.cuh](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/common.cuh#L1207-L1212)).
+ExLlamaV3's wrappers are PyTorch-bound, so the EXL3 plan already rewrote them.
+
+**Consequences.**
+
+- **Plan changes.** The backend proof uses owned dispatch, not GGML's
+  backend runtime, and runs EXL3 kernels on the same stream instead of
+  between GGML graph segments. It must demonstrate coexistence and swapping.
+- **Exact matching gets harder.** Bit-exact comparison with the llama.cpp
+  toolchain bridge requires reproducing its kernel, fusion and cuBLAS
+  choices, or an unfused plan against a fusion-disabled bridge arm.
+- **Maintenance moves to jitLLM.** jitLLM maintains selection logic and
+  adapted launchers, and tracks upstream by explicit re-pinning. Upstream
+  fixes stop being automatic.
+- **Portability.** GGML's other device backends become kernel sources for
+  later providers, not runtimes to adopt (D-026). A port therefore also
+  adapts dispatch; D-028's "mostly a memory-provider job" no longer holds.
+- **Still open for M2.** Exact contract types, the implementation registry
+  and the patch set are settled by the proof.
+
+**Reopen if.** Reopen this decision if any of these happens:
+
+- Owned dispatch cannot meet D-052/D-036 performance gates that an upstream
+  runtime meets, for example launch overhead without graph capture.
+- Adapting a kernel source costs more than it returns.
+- A requirement emerges to load kernels without rebuilding. That would also
+  reopen D-028.
+
 ## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amends D-028 and D-051)
 
 **Decision.** Keep the first GGML/FP16 control, and require native EXL3
@@ -1352,7 +1488,7 @@ first CI `.deb` build in M1.
 CLA), or a contributor base needs a maintainer structure that D-016 does not
 describe.
 
-## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052)
+## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052; dispatch ownership amended by D-053)
 
 **Decision.** The first vertical slice (M3) executes on GGML/GGUF with jitLLM
 supplying the buffers behind tensors, so weights and state live in

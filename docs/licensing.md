@@ -65,6 +65,54 @@ not incorporated native implementation or clearance to redistribute its
 whole container. Native wrappers must remove upstream allocator, stream and
 scheduling ownership; their actual closure and notices must be audited anew.
 
+**Open provenance question: the GEMV kernel.** At the pinned revision,
+[`quant/exl3_gemv_kernel.cuh`](https://github.com/turboderp-org/exllamav3/blob/6b84a21b6f1e5da3f291b9e1019061f0de788279/exllamav3/exllamav3_ext/quant/exl3_gemv_kernel.cuh#L3-L4)
+describes its small-m path as a "QTIP-style structure". It cites
+Cornell-RelaxML/qtip `qtip-kernels/src/inference.cu`.
+
+- The file carries no notice of its own. The same path, with the same QTIP
+  reference, is among the nine headers GLM TP3 vendors from upstream
+  `02aef45c` (below). That earlier version differs from the pinned file.
+- QTIP's repository `LICENSE` at
+  [`e90c6688c8dfae326a3a81b5eb032db7c6680ec0`](https://github.com/Cornell-RelaxML/qtip/tree/e90c6688c8dfae326a3a81b5eb032db7c6680ec0)
+  (head on 2026-09-22) is the GPL-3.0 text. The cited file exists there.
+- ExLlamaV3's README says EXL3 is based on QTIP and calls it a streamlined
+  variant of QTIP.
+
+**What the review scan found.** On 2026-09-22 a review compared both GEMV
+versions with QTIP's kernel sources at that revision, by token sequence.
+Apart from identical PTX `mma` operand strings, it found no shared run of
+20 or more tokens. That is an observation, not the structural comparison
+required below, and not clearance. This inventory draws no conclusion about
+derivation.
+
+**The same gate covers related files.** It applies to any file that
+includes this header, directly or through another header, or follows its
+body:
+
+- upstream `quant/exl3_gemv.cu`, the host wrapper, which includes the header
+  and creates its variants;
+- upstream `quant/exl3_moe_coop_kernel.cuh`, and the files that include it
+  (`quant/exl3_moe_coop.cu`, `comp_units/exl3_moe_coop_inst_*.cu`);
+- upstream `comp_units/exl3_gemv_half_inst.cu`;
+- the GLM, GLM TP3 and DeepSeek `cooperative_moe_kernel.cuh` derivatives.
+
+**Before any of these enters a core-eligible native module:**
+
+1. compare the code structurally with the cited file at a pinned revision;
+2. record the result;
+3. have the owner resolve its D-017 disposition.
+
+**What the proof does meanwhile.** The [backend proof](backend-proof.md)
+runs the EXL3 GEMM kernel wherever upstream would select GEMV (m ≤ 8).
+Other dispatch paths are unchanged.
+
+**The other selected kernels are not cleared either.** None of them cites
+QTIP or another third-party source in its own text. The remaining QTIP
+comments sit in host files that dispatch to this path (`exl3_gemm.cu`,
+`exl3_gemv.cuh`). The absence of a citation is not clearance: these
+kernels still need the audit above.
+
 ## Reference instrumentation
 
 The [fused-routes experiment](experiments/fused-routes/README.md) reads MoE
@@ -145,8 +193,8 @@ these categories.
 | Qwen `files/ple_layer_patched.py`; `files/ple_offload/{connector,ple_offload_layer,protocol,worker}.py`; `files/ple_offload/orig/{connector,ple_offload_layer,protocol,worker}.py`; `tp1/files/ple_offload/orig/{connector,ple_offload_layer,protocol,worker}.py` | Apache-2.0/vLLM headers; README expressly preserves file-specific SPDX terms under `files/`. Record headers, but audit modifications and the `tp1/` copies before adoption |
 | Qwen `bench/sweep.py`, `files/build_draft_vocab.py`, `files/evict_page_cache.py`, `files/patch_qsa_fp8_kv.py` | Explicit AGPL-3.0-or-later headers; `files/patch_mtp_draft_vocab.py` also attributes an AGPL-3.0-or-later origin |
 | GLM/DeepSeek `overlay/exl3_fat_gemm.{cu,cuh}`, `overlay/exl3_fat_moe.{cu,cuh}`, `overlay/build_exl3_fat_moe_ext.py`; DeepSeek `overlay/e3v2/exl3_fat_moe.{cu,cuh}`, `overlay/row_store.cpp`, `overlay/engram_{file_backend,layout}.py` | No separate permissive grant found for these current files; use AGPL-default optional classification. Including MIT ExLlamaV3 headers does not make these files MIT |
-| GLM/DeepSeek `extensions/cooperative_moe/native/{cooperative_moe.cu,cooperative_moe_kernel.cuh,exl3_moe_coop.cuh}` and GLM TP3 counterparts plus `tp3/native/dispatch.cu` | Modified native implementations with retained `LICENSE.exllamav3` and documented MIT upstream origin. Downstream specialization is not proven MIT by that notice. Treat as mixed provenance, optional/blocked for permissive-core reuse pending clarification; preserve MIT notices in any permitted combined work |
-| GLM `extensions/cooperative_moe/tp3/vendor/exllamav3_ext/` headers listed below | Nine byte-identical upstream MIT headers verified against the pinned upstream tree; separable MIT candidates, not evidence that the surrounding TP3 module is MIT |
+| GLM/DeepSeek `extensions/cooperative_moe/native/{cooperative_moe.cu,cooperative_moe_kernel.cuh,exl3_moe_coop.cuh}` and GLM TP3 counterparts plus `tp3/native/dispatch.cu` | Modified native implementations with retained `LICENSE.exllamav3` and documented MIT upstream origin. Downstream specialization is not proven MIT by that notice. Treat as mixed provenance, optional/blocked for permissive-core reuse pending clarification; preserve MIT notices in any permitted combined work. `cooperative_moe_kernel.cuh` (native and TP3) includes and follows the GEMV kernel, so its open QTIP question applies |
+| GLM `extensions/cooperative_moe/tp3/vendor/exllamav3_ext/` headers listed below | Nine byte-identical upstream MIT headers verified against the pinned upstream tree; separable MIT candidates, not evidence that the surrounding TP3 module is MIT. Exception: `quant/exl3_gemv_kernel.cuh` carries the open QTIP provenance question in [Early EXL3 companion](#early-exl3-companion-d-052) |
 | GLM `overlay/patch_sparse_mla_slice.py` | Attributes a patch to punkjazz-labs under MIT, but does not provide a separate whole-file license declaration. Resolve source revision, copied portion and later changes; do not promote the entire script to MIT |
 | GLM `overlay/patch_flashkda_tp3.py` and `docs/licenses/Apache-2.0-FlashKDA.txt` | Script names external adaptation and vLLM origins; accompanying Apache license text does not prove every adaptation is Apache. External origin and modifications remain adoption blockers for a permissive classification |
 | ExLlamaV3 `exllamav3/conversion/standard_cal_data/*.utf8` | Calibration corpora contain third-party text, not just upstream-authored implementation. In `code.utf8`, embedded source carries GPL-2.0 SPDX notices and a separate All Rights Reserved notice. These do not license the entire corpus under either term, and the root MIT grant does not clear the embedded material. Corpus use or redistribution needs its own provenance review; no corpus is cleared here |

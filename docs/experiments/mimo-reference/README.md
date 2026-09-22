@@ -214,3 +214,13 @@ python3 docs/experiments/mimo-reference/summarize.py PRIVATE_DIR/RUN > aggregate
 
 Run directories on the nodes and the copied results are private and
 unrotated; remove them when no longer needed.
+
+Teardown makes bounded attempts on each node independently and saves
+`run.json` even when a node or result copy is unavailable. Launch, workload
+or cleanup failures return a nonzero exit status. `cleanup_errors` identifies
+failed steps; `not_released` includes nodes whose GPU release could not be
+confirmed. An unreachable node may still have a container or guard running;
+check that node before another run.
+
+Local orchestration checks (mocked SSH and containers):
+`python3 -m unittest discover -s docs/experiments/mimo-reference -p 'test_run.py'`.

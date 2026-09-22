@@ -81,12 +81,15 @@ affected docs. Until then, these govern.
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
-- **GGML first, behind an operation contract; optional backends are
-  build-time modules.** The first vertical slice executes on GGML with
-  jitLLM owning the buffers behind tensors; a real EXL3 companion is required
-  in M2 before settling the artifact/backend contracts, with upstream
-  performance gates. Backends are build-time modules; no runtime plugin ABI.
-  (D-028, D-052)
+- **jitLLM owns dispatch; kernels are swappable build-time implementations.**
+  jitLLM owns streams, workspace, library handles, fusion choice and
+  completion; third-party backend runtimes never dispatch model work. Kernels
+  from GGML (first), ExLlamaV3 (a real EXL3 companion is required in M2 before
+  settling the artifact/backend contracts, with upstream performance gates),
+  other sources or our own (on measured need) implement operations under one
+  contract; several
+  coexist, and the plan selects per operation, architecture and shape.
+  No runtime plugin ABI. (D-028, D-052, D-053)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
   interfaces, with CUDA VMM the only implementation for now. Apple silicon
@@ -187,8 +190,8 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
-cluster/API, task/completion, reservation and SDK choices are recorded through
-D-052; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+cluster/API, task/completion, reservation, SDK and kernel-dispatch choices are
+recorded through D-053; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
@@ -205,7 +208,9 @@ on the workstation and Spark; D-050 settles reservation/progress policy, with
 runtime proof still owed in M2. D-051 selects Qwen2.5-0.5B-Instruct FP16 and
 the pinned llama.cpp reference; D-052 adds a mandatory early EXL3 companion.
 Both EXL3 quants passed the bounded Spark reference. The owner-added
-Qwen-Image GGUF (GGML runner) and two-Spark MiMo references also ran; remaining
-M2 proof scope is next (plan.md).
+Qwen-Image GGUF (GGML runner) and two-Spark MiMo references also ran. The M2
+backend-proof scope is recorded (docs/backend-proof.md), with an open EXL3
+GEMV provenance gate; D-053 moves kernel dispatch into jitLLM with swappable
+per-operation kernels. The remaining M0 decisions are next (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

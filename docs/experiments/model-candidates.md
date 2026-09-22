@@ -32,8 +32,8 @@ The quant card lists source revision
 Qwen revision `790c92633540aa0cb11d9abf19eb46d861714758`. Reconcile component
 identities before attributing output differences to quantization alone.
 Reconciled 2026-09-22: the two revisions share all weights, and the
-repackaged text encoder, VAE and BF16 denoiser match the baseline tensor by
-tensor ([GGUF study](image-gguf/README.md#identity-and-reconciliation)).
+repackaged text encoder, VAE (after BF16 rounding) and BF16 denoiser match
+the baseline tensor by tensor ([GGUF study](image-gguf/README.md#identity-and-reconciliation)).
 
 ## MiMo
 

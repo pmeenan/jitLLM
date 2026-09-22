@@ -43,6 +43,7 @@ def main():
     run = Path(sys.argv[1])
     record = json.loads((run / "run.json").read_text())
     out = {"events": record["events"], "error": record.get("error"), "released": record.get("released"),
+           "cleanup_errors": record.get("cleanup_errors", []),
            "not_released": record.get("not_released"), "preflight": record.get("preflight"),
            "post_boot_state": record.get("post_boot_state"), "server_args_head": record["server_args_head"],
            "nodes": {}}
