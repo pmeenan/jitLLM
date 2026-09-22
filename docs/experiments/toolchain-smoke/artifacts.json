@@ -240,6 +240,22 @@
       "filename": "libz3-4_4.8.12-3.1build1_arm64.deb",
       "sha256": "7297a82d2c3eee4909108ddfb4d11a04cae10868ad03ee469efed0e9f8250959",
       "source": "Ubuntu noble/universe; apt-get download libz3-4=4.8.12-3.1build1 on matching architecture"
+    },
+    {
+      "package": "libclang-rt-22-dev",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "amd64",
+      "filename": "libclang-rt-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+      "sha256": "5ec77bbfbdae76a6eda76ef9fff0cfd983d6b9c7ea72335a7fed9c99c423a7fb",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-rt-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+    },
+    {
+      "package": "libclang-rt-22-dev",
+      "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+      "architecture": "arm64",
+      "filename": "libclang-rt-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+      "sha256": "6d9d3bb7b4a6c609ade7847c211c675a87d683467741101ef7dd9e64fe6d8278",
+      "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/libclang-rt-22-dev_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
     }
   ],
   "snapshots": {
@@ -366,5 +382,21 @@
       "arm64": "ca7c577e794a02c343c0ddfff585a82599ee6c0d44aaae2479405dea6ce59677"
     },
     "validation": "gpgv verified InRelease; SHA256 authenticated each Packages.gz; package SHA256 checked before extraction"
+  },
+  "sanitizer_followup": {
+    "date": "2026-09-22",
+    "package": "libclang-rt-22-dev",
+    "architectures": [
+      "amd64",
+      "arm64"
+    ],
+    "category": "declared platform dependency: compiler support runtime for instrumented CPU tests (D-017)",
+    "use": "ASan and UBSan archives linked into local experiment executables; not a production runtime dependency",
+    "package_license_declaration": "APACHE-2-LLVM-EXCEPTIONS (Apache-2.0 WITH LLVM-exception); bundled package copyright file includes file-specific MIT/BSD and public-domain declarations",
+    "copyright_path": "usr/share/doc/libclang-rt-22-dev/copyright",
+    "copyright_sha256": "b2ed2fd344e8ddbf2e0c83113bd40fa1853438be61a0ff20af5acd187c07cbf6",
+    "verification": "Same authenticated llvm_repository_verification indexes and compiler revision as D-032; package size and SHA256 checked before extraction",
+    "validation": "Clang 22.1.8 ASan+UBSan async-model suite passed natively on workstation and cross-built for AArch64 on spark-c4e2",
+    "distribution": "Packages, runtime archives and instrumented binaries remain external; no new redistribution or production dependency is approved"
   }
 }

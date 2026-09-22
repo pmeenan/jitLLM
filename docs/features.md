@@ -70,7 +70,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Architecture-specific adapters for live and reusable state (KV blocks, compressed attention, sliding window, recurrent) | confirmed | conservative semantics per architecture first |
 | Prefix-cache metadata always consistent with physical eviction (no stale hits) | confirmed | pager invariant 4 |
 | Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
-| Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | confirmed | 2026-09-21: the starting shape (ideation §20), not a frozen interface. Types and async primitives follow open question 3; the M2 backend proof settles the internal contract |
+| Conceptual native API: `register_resource` / `reserve_capacity` / `acquire_group` / `submit` / `retire_completed` / `reclaim` / `cancel` | confirmed | 2026-09-21: the starting shape (ideation §20), not a frozen interface. D-048 settles explicit native task states and completion ownership; the M2 backend proof settles the internal contract |
 | Physical-backing pool to amortize allocation overhead | confirmed | D-033 baseline retains useful contents and hands compatible backing to admitted replacements; no per-read release/create requirement. D-035 records the owner's larger mapped-slab alternative (including 1 GiB) for comparison in the M2 paging proof. Physical capacity, suballocation, and I/O size stay distinct; all held backing is charged |
 | Turn/step-scoped leases with eviction only at scheduler-established completion boundaries as the v1 lease model | confirmed | *agent-suggested*, confirmed 2026-09-21 as the v1 lease model and the direction for open question 9. A switch request alone establishes no quiescence; consumers must complete and suspended live state stays protected. The full question 9 policy (envelope contents, guaranteed versus opportunistic grants, adversarial cases) is still recorded before M2; MoE within-step misses get their progress proof in M5 |
 | Core free of vendor types; device memory, paging, and transfer operations behind narrow provider interfaces, CUDA VMM the first and only implementation | confirmed | D-026; only where it adds no complexity or penalty on NVIDIA |
@@ -387,7 +387,12 @@ public API scope) ride along as M0 tasks or later-milestone questions.
 3. **Async/task and completion model.** Hand-rolled executor with explicit
    continuations, C++20 coroutines, a sender/receiver library, or something
    else. C++23 does not supply the scheduler, and every interface signature
-   depends on this. → M0 decision, prototyped against the fake backend design.
+   depends on this. → Answered 2026-09-22 (D-048): explicit native task states,
+   one scheduler/catalog writer per node, bounded provider services and
+   completion-owned lifetimes. [Design and prototype](async-model.md);
+   CPU-only event-order checks passed on the workstation and Spark. Actual
+   concurrency/provider integration remains M2; reservation progress is
+   still question 9.
 4. **First vertical-slice model and backend.** Which checkpoint (revision,
    quantization, tokenizer, kernels, provenance) and which numerical reference
    engine. Decides M3 and gives the license audit its first real inputs. → M0

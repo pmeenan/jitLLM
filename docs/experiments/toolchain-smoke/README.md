@@ -22,6 +22,7 @@ CMake presets, mise, clean-container provisioning, and CI remain M1 work.
 | Component | Exact version / selection |
 | --- | --- |
 | Clang and cross LLD | 22.1.8, apt.llvm.org Noble packages `1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80` on x86-64 and ARM |
+| Compiler-rt sanitizer support (2026-09-22 follow-up) | `libclang-rt-22-dev` at the same exact LLVM package version, amd64 and arm64; CPU ASan/UBSan execution validated in the [async experiment](../async-model/README.md) |
 | LLVM compiler dependency | Ubuntu `libz3-4` `4.8.12-3.1build1`, both architectures |
 | Ordinary C++ / CUDA dialect | C++23 / C++23 |
 | libstdc++ and GCC support headers | `libstdc++-13-dev`, `libgcc-13-dev` `13.3.0-6ubuntu2~24.04.1`, both hosts |
@@ -66,7 +67,8 @@ and SDK bytes are local artifacts, not committed.
 1. Fetch the selected `packages` in `artifacts.json`. LLVM and NVIDIA
    entries have exact URLs; the `libz3-4` entries specify the Ubuntu package
    and version to download on each architecture. Check each SHA-256 before
-   extracting with `dpkg-deb -x`. Extract LLVM plus libz3 into
+   extracting with `dpkg-deb -x`. Extract LLVM (including `libclang-rt-22-dev`)
+   plus libz3 into
    `$llvm_root/sdk-amd64` and `$llvm_root/sdk-arm64`, x86 CUDA into
    `$smoke_root/sdk-134`, and ARM CUDA into `$smoke_root/sdk-134-arm`.
    LLVM's InRelease signature, both package-index hashes, and package hashes
@@ -175,13 +177,44 @@ harness, set `CUDA_STD=c++20` and point `CUDA_ROOT` at that older SDK;
 the C++23-specific CUDA assertion/feature probe is then omitted explicitly.
 Its downloaded packages and target subset hash remain in `artifacts.json`.
 
-Not run: `spark-b`, workstation GPU execution, VMM/staging/concurrency tests,
-model kernels, full backend builds, sanitizers, clean-host/container setup,
-or license-profile CI. These are outside this smoke's scope. No performance
+Not run in this original CPU/CUDA smoke: `spark-b`, workstation GPU execution,
+VMM/staging/concurrency tests, model kernels, full backend builds, sanitizers,
+clean-host/container setup, or license-profile CI. The later CPU-only sanitizer
+check is documented below. These are outside this smoke's scope. No performance
 numbers or redistribution permissions are inferred. LLVM and NVCC are build
 tools; glibc/libstdc++/libgcc and CUDA execution components are platform
 runtimes under D-017. Their full license/provenance audit and SDK provisioning
 belong to M1; no third-party implementation is vendored here.
+
+### Compiler-rt follow-up (2026-09-22)
+
+The minimal compiler extraction omitted `libclang-rt-22-dev`; Clang could
+compile ordinary code but could not link an ASan executable. Added the amd64
+and arm64 packages at the **same D-032 LLVM version**, authenticated by the
+existing signed repository indexes and verified package hashes. `packages`
+and `sanitizer_followup` in `artifacts.json` record these inputs. There was no
+compiler incompatibility or permission restriction. For this SDK-based setup,
+extract the package into the matching SDK root so its files populate the
+compiler's resource directory. Installing it only under the system compiler
+path would not complete that extraction.
+
+Both target SDK directories must be present on the workstation for sanitized
+cross builds. Select the ARM SDK's `usr/lib/llvm-22/lib/clang/22` with
+`-resource-dir` when cross-linking; retain the x86 compiler and pinned ARM
+sysroot. The [async-model suite](../async-model/README.md#reproduction) passed
+with Clang ASan+UBSan on the workstation and as a cross-built CPU executable
+on `spark-c4e2`. This validates these CPU tests, not CUDA instrumentation,
+threading, native Spark compilation or other sanitizer modes.
+
+Under D-017 the linked sanitizer archives are compiler support **platform
+dependencies for instrumented tests**, not optional implementation modules or
+a production dependency. The package copyright file declares
+`APACHE-2-LLVM-EXCEPTIONS` (Apache-2.0 with the LLVM exception), with separate
+file-group declarations for bundled components. Its path and SHA-256 are
+recorded for both packages; it is not a complete SDK redistribution audit.
+Downloaded packages and instrumented executables remain outside Git. M1
+provisioning must include the matching runtime packages and sanitizer test
+profile.
 
 ## Handoff
 

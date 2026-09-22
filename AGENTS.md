@@ -138,6 +138,7 @@ the human commit gate.
 | [docs/architecture.md](docs/architecture.md) | System structure, data model, lifecycles, pager invariants, environment baseline |
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
+| [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M3 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
 
@@ -183,10 +184,10 @@ the human commit gate.
 
 ## Current status
 
-Milestone **M0 (plan the plan)** — direction, retention/measurement and
-cluster/API contracts are recorded through D-047; the feature matrix was triaged
-with the owner on 2026-09-21. M4 targets A→B→A with retained state;
-M4a adds configured placement before MoE and sharding. Remaining planning,
+Milestone **M0 (plan the plan)** — direction, retention/measurement,
+cluster/API, task/completion and SDK provisioning choices are recorded through
+D-049; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
 spike selects initial 2 MiB extents (D-033); the I/O spike selects direct
@@ -197,6 +198,8 @@ The 27-trial reference cycle and bounded full paging-feasibility study are
 recorded (plan.md). Qwen route estimates are conditional on numerical drift;
 unvalidated spill continuations use conservative recomputation. The owner
 accepted workload-scoped switching/stall targets in D-036; implementation
-validation remains ahead.
+validation remains ahead. The D-048 CPU-only task/completion prototype passed
+on the workstation and Spark; reservation/progress policy is the next main-plan
+decision.
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

@@ -52,7 +52,10 @@ needs evidence from the real hardware.
       Exact compiler, library, CUDA component, and target-sysroot pins,
       hashes, commands, and limits are in the
       [smoke report](experiments/toolchain-smoke/README.md).
-      M1 still owns declarative provisioning and CMake presets.
+      Matching compiler-rt packages and Clang ASan/UBSan CPU checks on the
+      workstation and Spark were added 2026-09-22; M1 provisioning must
+      include those runtimes. M1 still owns declarative provisioning and
+      CMake presets.
 - [x] Spike — **VMM microbench** (2026-09-21; open question 1, D-033):
       three runs on `spark` measured 2 MiB minimum/recommended granularity,
       allocation/map/access/unmap/release costs across 2–128 MiB extents,
@@ -312,8 +315,15 @@ needs evidence from the real hardware.
       signed-block format, rejects unsupported Responses storage, and scopes
       SSE keepalives separately from non-streaming JSON/deadline handling;
       the baseline carries their acceptance cases.
-- [ ] Decide the async/task and completion model (open question 3), ideally
-      prototyped against the fake-backend design.
+- [x] Decide the async/task and completion model (2026-09-22, D-048):
+      [explicit native task states](async-model.md), one node-local
+      scheduler/catalog writer, bounded provider services and operation-owned
+      completion/cleanup storage. Cancellation never substitutes for resource
+      retirement. The [CPU-only prototype](experiments/async-model/README.md)
+      passed on the workstation and `spark`, including 216 event schedules,
+      saturation, partial submission and uncertain completion. Real threading,
+      provider and GGML/VMM lifetime validation remain M2; reservation progress
+      is the separate question 9 decision below.
 - [ ] Decide the initial reservation guarantee and progress envelopes (open
       question 9) before M2: guaranteed versus opportunistic grants, retained
       continuation memory, bounded state growth, safe admission/serialization,
@@ -392,7 +402,10 @@ needs evidence from the real hardware.
       conventions for an externally consumed project (D-016), and the
       installed layout that packaging will need (FHS paths, service user,
       systemd unit; D-027, confirmed 2026-09-21). Record the pins and the
-      layout in decisions.md.
+      layout in decisions.md. Provisioning split settled 2026-09-22 (D-049):
+      a complete, persistent project SDK, declared system prerequisites and
+      shared workstation/container setup. Implementation and remaining tool
+      pins are still owed.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria, including unassigned D-041–D-044 API delivery (Ollama subset,
@@ -430,11 +443,16 @@ Sketch only — do not start work from these entries. They freely reference
 has a promised date; each should leave a usable, testable result.
 
 - **M1 — Bootstrap.** Repository skeleton, declarative SDK setup (mise plus
-  provisioning), C++23/Clang native build, Spark cross build, ARM/CUDA smoke
-  binary running over SSH, CI with the copyleft-disabled profile, initial
+  shared workstation/container provisioning into a persistent, versioned
+  project SDK; D-012/D-049), C++23/Clang native build, Spark cross build, ARM/CUDA
+  smoke binary running over SSH, CI with the copyleft-disabled profile, initial
   license and provenance tooling (REUSE lint, embedded-header check, NOTICE),
   a first-cut capability probe (the future `doctor` task), and an installable
-  `.deb` build. *Gate:* clean host and container setup;
+  `.deb` build. *Gate:* clean host and container setup with declared OS
+  prerequisites and the complete tool/runtime set for each profile, including
+  formatter, linter, language server, symbolizer and sanitizer runtimes;
+  project tool selection works without global compiler/environment changes
+  or dependency on temporary SDK directories;
   native tests pass, including a CPU-only configuration with no CUDA toolkit
   present (D-026 guardrail); smoke binary runs on a Spark; exact pins recorded;
   any deferred feasibility experiment, measured reference switching baseline,

@@ -70,6 +70,10 @@
 - **Paging semantics.** Extent-level cross-model eviction; selected experts
   acquired on demand; no substitution; release ≠ eviction; lazy commitment
   (D-007, D-008).
+- **Task and completion ownership.** Explicit native task states, one
+  scheduler/catalog writer per node, bounded provider services and owned
+  completion records (D-048). Cancellation/client termination cannot retire
+  unfinished consumers or registrations; [design](async-model.md).
 - **Artifacts.** Prepared, versioned, hashed, atomically published; no
   process state serialized; checkpoints untrusted. Initial encoding and
   layout are experimental; compatibility guarantees require dense and MoE
@@ -83,7 +87,9 @@
 - **Language and build.** C++23, Clang-first, NVCC with Clang host compiler
   where validated, pinned libstdc++ initially; cross-built from x86-64 and
   tested on Spark over SSH; declarative pinned toolchain (D-010, D-011,
-  D-012).
+  D-012). D-049 selects a complete, persistent project SDK with declared
+  system prerequisites, project-scoped tool selection and shared
+  workstation/reference-container provisioning; implementation is M1 work.
 - **Portability posture.** NVIDIA first. The core holds no vendor types;
   device memory, paging, and transport sit behind narrow provider interfaces
   with CUDA VMM as the only implementation for now; platform properties are
@@ -477,7 +483,9 @@ Dashboard, importer and supervisor remain separate processes. Conductor
 work uses bounded queues and buffers, charged to its node's budget, and
 never enters per-expert dependency acquisition or residency decisions.
 Cluster coordination does not hold a catalog/scheduling lock across network,
-disk or GPU waits. Thread counts and the async implementation remain open.
+disk or GPU waits. D-048's [task/completion design](async-model.md) selects
+explicit task states, a single scheduler/catalog writer and bounded service
+lanes; exact worker counts and polling policy remain implementation choices.
 
 The following are conceptual records, not a wire schema or public API:
 
@@ -658,12 +666,14 @@ directory names do not establish legal isolation.
 
 `register_resource(descriptor)`, `reserve_capacity(transaction, envelope)`,
 `acquire_group(reservation, dependencies)` → ready | deferred | impossible |
-cancelled | failed, `submit(plan, lease, context)` → completion token (lease
-ownership transfers to completion tracking), `retire_completed(token)`,
+cancelled | failed, `submit(plan, lease, context)` → owned submission record
+(prepared before provider access, reconciled as not-started/accepted/unknown;
+accepted leases stay with completion tracking), `retire_completed(token)`,
 `reclaim(extents)` (validates generations, reports actual bytes recovered),
 `cancel(transaction)`. Deferred results refer to owned continuations, not a
-blocked global scheduler. There is no runtime plugin ABI (D-028); optional
-backends are build-time modules behind the operation contract, which is
+blocked global scheduler. D-048 specifies bounded task states and completion
+ownership in [async-model.md](async-model.md). There is no runtime plugin ABI
+(D-028); optional backends are build-time modules behind the operation contract, which is
 finalized after the M2 backend proof.
 
 ## Development host baseline
@@ -705,6 +715,12 @@ GB10 was validated with `sm_121` and PTX JIT disabled. The workstation
 compiler SDK was extracted to scratch; the baseline above is historical,
 and system compiler defaults and drivers were not changed. Full M1
 provisioning is still pending.
+
+On 2026-09-22 the SDK added the same-version `libclang-rt-22-dev` packages
+for x86-64 and ARM64. Clang ASan/UBSan passed the
+[CPU-only task/completion experiment](experiments/async-model/README.md)
+natively on the workstation and cross-built on `spark`; pins and reproduction
+are in the smoke manifest and experiment report.
 
 ## Target nodes (DGX Sparks)
 
@@ -940,16 +956,17 @@ The architecture-shaping questions are numbered in
 [features.md](features.md#open-questions-answer-during-m0): VMM granularity,
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
 dependency mechanism, license and API surface, reservation guarantees. Initial
-VMM, I/O, and toolchain answers are recorded above (D-033, D-034, and D-032); the matrix
-tracks each question's remaining scope. Purely technical additions to resolve
+VMM, I/O, task/completion and toolchain answers are recorded (D-033, D-034,
+D-048 and D-032); the matrix tracks each question's remaining scope.
+Purely technical additions to resolve
 while drafting:
 
 - Exception policy and error-result type for the runtime; what crosses the
   boundary of optional build-time backends (no runtime plugin ABI, D-028).
-- Thread topology of the first scheduler: how many service threads for I/O,
-  completion polling, and scheduling, and how continuations are handed off.
-- Whether the resource catalog is a single-writer structure with sharded read
-  paths or partitioned by model from the start.
+- D-048's service lanes and single scheduler/catalog writer are settled;
+  exact worker counts, bounded queue sizes, sleep/wakeup synchronization and
+  polling intervals need M2 implementation/concurrency evidence. Reads use
+  bounded snapshots or owner queries; partitioning needs measured contention.
 - How physical-pool capacity, page-cache usage, and OS headroom are reported
   in one honest memory breakdown on unified memory.
 - Initial eviction scoring over eligible extents. Dependency-group scoring

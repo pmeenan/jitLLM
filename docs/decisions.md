@@ -30,6 +30,93 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-049: Provision a complete, persistent project SDK alongside system-managed prerequisites  (2026-09-22, status: accepted; refines D-012)
+
+**Decision.** The owner accepted a project-managed, version-pinned development
+SDK as the default for M1. Provision it automatically into a persistent,
+versioned location outside the checkout and temporary directories. System
+packages manage declared OS prerequisites and drivers; the project manifest
+selects the LLVM tools, compiler support runtimes, CUDA components and ARM
+sysroot needed by each build profile. The CPU-only profile must work
+without CUDA (D-026).
+
+The SDK must include the complete declared development tool set: compiler,
+linker, formatter, linter, language server, symbolizer and sanitizer runtimes,
+with target runtimes for the enabled native/cross profiles. Preserve D-032's
+validated pins; additional tool pins still require validation. mise and CMake
+select explicit tools and scope environment changes to project tasks. Setup
+does not depend on changing global compiler defaults or shell startup files.
+Native workstation setup and the digest-pinned reference container use the
+same provisioning logic, as D-012 requires.
+
+**Context.** The extracted M0 SDK passed the recorded build and sanitizer
+checks, but the missing compiler-rt package exposed incomplete provisioning.
+Version isolation is useful for the native/cross workflow; extraction alone
+does not resolve all dependencies or isolate the compiler from host libraries.
+System-installed versioned tools may coexist, but their presence does not
+select the project's build toolchain.
+
+**Consequences.** M1 must declare and check host dependencies, provision all
+selected SDK components, and verify the same setup on a clean host/container
+without relying on undeclared workstation libraries or temporary SDK paths.
+Its capability probe reports selected tools, runtime availability and host
+prerequisites. No fully self-contained or security-isolated environment is
+claimed. Existing `/tmp` experiment paths remain historical reproduction
+instructions until M1 provides the persistent setup; this decision does not
+mark that implementation complete or change installed runtime packaging.
+
+**Reopen if.** Maintaining the dependency set proves less reliable than
+version-pinned system packages or a container-only setup. Preserve exact tool
+selection, explicit native/cross targets and reproducible provisioning.
+
+## D-048: Explicit native task states, a single catalog writer and completion-owned lifetimes  (2026-09-22, status: accepted; resolves open question 3)
+
+**Decision.** Start with explicit resumable C++23 task state machines and a
+single scheduler/catalog writer per node. Bounded storage, device submission,
+device completion, network and CPU-worker services exchange owned commands
+and generation-tagged observations. Only the scheduler advances continuations
+and changes admission/catalog state; no provider resumes a task inline. Keep
+completion harvesting independent of potentially blocking provider submission.
+The [design](async-model.md) defines thread roles, submission reconciliation,
+cancellation, queue saturation and retirement; actual backend types remain
+subject to D-028's M2 integration proof.
+
+Reserve bounded task/operation/result/cleanup storage before provider access.
+An accepted operation owns its backing leases and registration references
+until all relevant accesses stop and required registration retirement is
+confirmed. Client termination and task outcome are separate from resource
+retirement. Cancellation is intent, not proof of completion; uncertain
+submission/completion quarantines charged backing and faults affected
+admission. Partial submissions retain every accepted element. Generation
+checks reject stale observations but cannot make late DMA into reused memory
+safe; lifetime holds prevent that reuse. Lease retirement is not eviction.
+
+**Context.** Question 3 asks for the task/completion foundation before native
+interfaces harden. Explicit states expose suspension storage and ownership
+without selecting an execution-framework dependency. Coroutines or a
+sender/receiver library could express the same policy but would still need
+bounded frames, safe destruction, completion joins and provider adapters.
+This is a simplicity/inspectability choice, not a speed comparison or a claim
+that alternatives lack compiler/library support.
+
+**Consequences.** The [deterministic CPU-only prototype](experiments/async-model/README.md)
+passed on the workstation and `spark`: cancellation/late completion, joined
+consumers and registrations, saturated records, partial/early submission,
+stale generations, invalid reads and unknown completion. It introduces no
+runtime code, public API, wire format or source dependency. It does not prove
+multithreaded wakeups, provider behavior, task-tree/coalesced-page-in cleanup,
+or capacity-reservation progress. Those remain explicit implementation gates;
+question 9 is the next main-plan decision. Runtime queue/worker counts and
+polling policy require implementation measurements; fixture sizes are not
+defaults. No changes to D-007's lazy commitment or D-019's completed switching
+boundaries follow from this decision.
+
+**Reopen if.** Real M2 GGML/VMM integration cannot satisfy this ownership
+protocol, measured scheduler contention warrants partitioning, or explicit
+state complexity justifies a bounded coroutine/library layer. Preserve
+completion ownership, per-node admission authority and deterministic testing
+when changing the mechanism.
+
 ## D-047: Correct reasoning wire formats, stateless storage validation and non-streaming response handling  (2026-09-22, status: accepted; amends D-045/D-046)
 
 **Decision.** Following the owner's approval to fix the API review findings:
@@ -941,6 +1028,13 @@ when device, driver, allocation properties, or sharing requirements change.
 
 ## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins)
 
+*2026-09-22 follow-up:* the [smoke manifest](experiments/toolchain-smoke/artifacts.json)
+now includes matching `libclang-rt-22-dev` packages for amd64 and arm64.
+Clang ASan/UBSan passed the CPU-only async-model suite natively on the
+workstation and cross-built on Spark. This completes the extracted sanitizer
+dependencies without changing the compiler pin; clean M1 provisioning is
+still owed.
+
 **Decision.** Start M1 with Clang/LLD 22.1.8 from apt.llvm.org
 Noble packages `1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80`
 (exact hashes for both architectures in the smoke manifest), GCC 13
@@ -1611,7 +1705,7 @@ an isolated benchmark winner. No rewrite-to-own without a measured need.
 profile, or a native rewrite is justified by measurement rather than
 ownership.
 
-## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted)
+## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted; provisioning split refined by D-049)
 
 **Decision.** Tool setup, environment selection, and tasks are declared in a
 checked-in `mise.toml` and `mise.lock`. The full LLVM / CUDA / AArch64 SDK is
