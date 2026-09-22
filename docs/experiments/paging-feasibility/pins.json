@@ -1,0 +1,90 @@
+{
+  "source_archive_sha256": "03fb04316eb32a7b7347004a79a8dd60531c02f5a064d853fed3b53828951723",
+  "headers": {
+    "include/llama-cpp.h": "c48fd31095d2403a3bf7cbe98333ba0e61a398ee6e83b56f9d8b7237143b9877",
+    "include/llama.h": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda",
+    "ggml/include/ggml-alloc.h": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23",
+    "ggml/include/ggml-backend.h": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2",
+    "ggml/include/ggml-blas.h": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+    "ggml/include/ggml-cann.h": "2cdb134f27fe5c4ec19d52f1eb58f5355aa42b8f54bf385f0e487501c5df7362",
+    "ggml/include/ggml-cpp.h": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+    "ggml/include/ggml-cpu.h": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+    "ggml/include/ggml-cuda.h": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042",
+    "ggml/include/ggml-et.h": "33118c0642b8059a99ea930fd4e4a045e78ccb41760b173ede221f1297c35977",
+    "ggml/include/ggml-hexagon.h": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+    "ggml/include/ggml-metal.h": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+    "ggml/include/ggml-opencl.h": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+    "ggml/include/ggml-openvino.h": "c2e3f301e28ad815b4285888aad6130808a77e6acb4e8b558de63a648cf9743e",
+    "ggml/include/ggml-opt.h": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+    "ggml/include/ggml-rpc.h": "505c01e4575c06a3b01cdbbb5688368baaabf6223a36eeafd918057251da6e43",
+    "ggml/include/ggml-sycl.h": "58429f8045b335f5e740faa2198caf72ba3beb04df0eb970103b932340daca8b",
+    "ggml/include/ggml-virtgpu.h": "ed231e7db3f0f58b84073f5ee67f9ec9d63046d1a7ed091c36a6cfe9f685a463",
+    "ggml/include/ggml-vulkan.h": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+    "ggml/include/ggml-webgpu.h": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+    "ggml/include/ggml-zdnn.h": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+    "ggml/include/ggml-zendnn.h": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+    "ggml/include/ggml.h": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6",
+    "ggml/include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+  },
+  "capture": {
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "engine_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "model_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+    "trace_sha256": "7625929fd143bafa31f5d3ebfe03e4dcf96452129b0d080a67434940c85e2383",
+    "prompt_tokens": 18339,
+    "decode_tokens": 117,
+    "source_sha256": "457ea97dc2ded230d0ab65b478d04ffa0d8d39c54cd38959f6beca9b41ef93da",
+    "executable_sha256": "13a99673eb6d4eb2ddd2df83bf8c420d155365a20790638f4820f04769faf32d",
+    "host": "spark-c4e2",
+    "kernel": "7.0.0-1019-nvidia",
+    "build_command": [
+      "g++",
+      "-std=c++23",
+      "-O2",
+      "-march=armv8-a",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I/source/include",
+      "-I/source/ggml/include",
+      "/harness/capture.cc",
+      "-L/app",
+      "-Wl,-rpath,/app",
+      "-lllama",
+      "-lggml",
+      "-lggml-base",
+      "-o",
+      "/output/capture"
+    ],
+    "tokens_sha256": "587e48a81701987443fa10efe82d92045d98aba27f344178151f352875bf016f",
+    "runs": [
+      {
+        "name": "b512-control",
+        "batch": 512,
+        "tracing": false,
+        "predictions_sha256": "2e6a429c26936da6c2beb693d7b5c5ebbb479a64b6bd5f6d6ab7de225302c649"
+      },
+      {
+        "name": "b512-routes",
+        "batch": 512,
+        "tracing": true,
+        "predictions_sha256": "2e6a429c26936da6c2beb693d7b5c5ebbb479a64b6bd5f6d6ab7de225302c649",
+        "routes_sha256": "c4b58cd7a55215d1c9e204ab1dd61286f91a70090a740a332644d7a0cdd3f6d6"
+      },
+      {
+        "name": "b64-control",
+        "batch": 64,
+        "tracing": false,
+        "predictions_sha256": "2e6a429c26936da6c2beb693d7b5c5ebbb479a64b6bd5f6d6ab7de225302c649"
+      },
+      {
+        "name": "b64-routes",
+        "batch": 64,
+        "tracing": true,
+        "predictions_sha256": "2e6a429c26936da6c2beb693d7b5c5ebbb479a64b6bd5f6d6ab7de225302c649",
+        "routes_sha256": "7f9c4bd73fb6142b09a45d72f5107505d32e83965d0436598100c058667a6ad5"
+      }
+    ],
+    "gpu": "NVIDIA GB10, 580.178.04"
+  }
+}

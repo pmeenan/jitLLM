@@ -192,7 +192,9 @@ spike selects initial 2 MiB extents (D-033); the I/O spike selects direct
 files into GPU-accessible host VMM without a staging copy (D-034). Both Sparks
 are reachable over SSH; the `sparky` DAC baseline passed, with 184.76 Gb/s
 combined host writes and validated NCCL over host buffers (architecture.md).
-The Gemma→Ornith→Gemma reference cycle passed 27 trials with retained-state
-checks and physical pressure; paging feasibility is next (plan.md).
+The 27-trial reference cycle and bounded full paging-feasibility study are
+recorded (plan.md). Qwen route estimates are conditional on numerical drift;
+unvalidated spill continuations use conservative recomputation. Agreeing
+switching/stall acceptance criteria with the owner is next, before M2.
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

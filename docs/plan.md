@@ -145,9 +145,12 @@ needs evidence from the real hardware.
       Exact pins, external trace identity, measured ranges, tooling and
       limitations are in the [aggregate report](experiments/reference-aba/README.md).
       Normal optimization probes use the same forced one-model policy;
-      normal concurrent placement and the large-model pair remain unvalidated.
-      This completes the first reference switching baseline, not jitLLM
-      execution or paging feasibility. M4 can replay this exact trace.
+      normal concurrent placement remains unvalidated. The later full feasibility
+      study includes a separate large-model observation and finds that Gemma
+      sequence snapshots can lack SWA coverage after prompt rollback (RE-007).
+      The short matching restored output above is historical evidence, not a
+      general continuation-correctness proof; the validated recompute arm is
+      the usable correctness floor. M4 can replay this exact input trace.
       Comparator datapoint: Athena's Engine reports a 46 s measured switch
       between DeepSeek V4 Flash and Qwen3.8 Flash Next on one GB10 and a
       2.1 s restore of a 141k-token conversation from disk (creator-reported;
@@ -160,33 +163,27 @@ needs evidence from the real hardware.
       depths, which makes DeepSeek V4 Flash plus Qwen3.8 Flash Next the
       canonical two-large-model switching workload for the feasibility spike
       if a DeepSeek V4 Flash GGUF is available at pick time.
-- [ ] Spike — **paging feasibility**: use a pinned reference engine and a
-      representative quantized MoE to capture prefill and decode expert routes
-      across representative requests and batch sizes. Shape the trace as the
-      primary workload (D-019): a main model alternating with a subagent on a
-      smaller or different model, long contexts, sessions lasting minutes to
-      hours. Replay partial retention and whole-model switching against the
-      same request trace and total memory budgets, accounting for non-expert
-      weights, live state, scratch, staging, and headroom, with and without
-      KV spill and restore across switches. Combine miss bytes and read sizes
-      with the staged-I/O measurements to estimate exposed stalls and switch
-      latencies; keep estimates distinct from measurements and state overlap
-      assumptions. From the same traces report per-layer reuse distance and
-      next-layer predictability, which decide whether prefetch can hide the
-      remaining misses. Output: miss-byte curves versus memory budget, switch
-      and switch-back cost estimates against the full-swap floor (D-021,
-      D-025: artifact-size/bandwidth estimates for the first cut, then the
-      measured reference cycle once setup runs), model-switch
-      recovery costs, and workload/configuration provenance. Follow the
-      comparison protocol in
-      [architecture.md](architecture.md#performance-evidence). The result
-      sizes how much partial retention and expert paging gain over a full
-      swap and where expert paging earns its complexity; it adjusts M4/M5
-      scope rather than gating viability. Time-box a first cut (one MoE, one
-      budget sweep) before the full protocol. This may finish in early M1
-      if reference setup requires it;
-      reference runs do not require jitLLM's model implementation or trace
-      recorder.
+- [x] Spike — **paging feasibility** (bounded study complete, 2026-09-22):
+      the [full study](experiments/paging-feasibility/full-study.md) extends the
+      [first cut](experiments/paging-feasibility/README.md) with varied longer
+      Gemma/Ornith conversations, the exact reference A→B→A trace, concurrent
+      four-sequence decode, and the larger-than-memory DeepSeek/Qwen library.
+      Arrival schedules model minutes-to-hours sessions; they are not hardware
+      soaks and do not test expiry. Matched budget sweeps compare demand paging,
+      eager active-model loading with partial inactive retention, and whole-model
+      switching, including non-expert extents, live state, workspace, headroom,
+      bounded spill, restore/recompute, and isolated/packed 2 MiB layouts.
+      Per-layer reuse, held-out prediction, switch-back dependencies, measured
+      reference waits, and explicit storage/overlap sensitivities are recorded.
+      Results are offline byte/service estimates, **not measured jitLLM speedups**.
+      Qwen comparisons remain conditional on captured trajectories because
+      exact prediction equivalence failed; no numerical tolerance is invented.
+      Gemma rollback can require state recomputation despite byte-identical
+      snapshots (RE-007), and unvalidated large-model spill continuations use
+      conservative recompute scenarios. The evidence supports M4 retention
+      before M5 expert paging and makes restore coverage an explicit validation
+      requirement; it neither proves runtime admission nor enables prefetch.
+      The following owner agreement on performance criteria remains open.
 - [ ] Agree switching-benefit and generation-stall criteria before M2 from
       the measured reference experiment and feasibility evidence. These
       govern M4/M5/M7 acceptance for named workloads; no numeric thresholds
@@ -314,11 +311,10 @@ performance criteria, and question 9's policy are required before M2, even if
 deferred out of M0; feasibility sizes M4/M5 rather than gating viability
 (D-021, D-025). Question 8 is resolved by
 D-022; endpoint verification is an M0/M1 task. M0 exits on the owner's call,
-not on a checklist reaching zero. Both Sparks are reachable now
-(`spark`, `spark-b`), so the three hardware
-spikes can start. Paging feasibility also needs a pinned reference; a
-sharded two-node reference run waits on the direct link, as does M6's sharded
-execution work.
+not on a checklist reaching zero. Both Sparks are reachable (`spark`, `spark-b`); the toolchain, VMM, I/O,
+interconnect, reference switching, and bounded paging-feasibility evidence
+is recorded above. Sharded two-node reference execution remains separate
+from these single-node model captures and is still future work.
 
 ## Provisional milestone ladder  `pending — to be rewritten in M0`
 

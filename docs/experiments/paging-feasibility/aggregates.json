@@ -1,0 +1,1479 @@
+{
+  "fixed_bytes": 13191086080,
+  "budget_components": {
+    "non_expert": 2579496960,
+    "kv": 7381975040,
+    "scratch_allowance": 1073741824,
+    "staging": 8388608,
+    "headroom_allowance": 2147483648
+  },
+  "layout": {
+    "expert_payload_bytes": 14353054720,
+    "expert_padded_bytes": 16374562816,
+    "extent_bytes": 2097152
+  },
+  "runs": [
+    {
+      "name": "b512-routes",
+      "routes_sha256": "c4b58cd7a55215d1c9e204ab1dd61286f91a70090a740a332644d7a0cdd3f6d6",
+      "locality": {
+        "per_layer_reuse": [
+          {
+            "layer": 0,
+            "prefill": {
+              "cold": 101,
+              "reused": 146611,
+              "distinct_distance_p50": 26,
+              "distinct_distance_p95": 69
+            },
+            "decode": {
+              "cold": 1,
+              "reused": 935,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 1,
+            "prefill": {
+              "cold": 117,
+              "reused": 146595,
+              "distinct_distance_p50": 27,
+              "distinct_distance_p95": 77
+            },
+            "decode": {
+              "cold": 2,
+              "reused": 934,
+              "distinct_distance_p50": 20,
+              "distinct_distance_p95": 48
+            }
+          },
+          {
+            "layer": 2,
+            "prefill": {
+              "cold": 110,
+              "reused": 146602,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 57
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 25
+            }
+          },
+          {
+            "layer": 3,
+            "prefill": {
+              "cold": 103,
+              "reused": 146609,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 51
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 20
+            }
+          },
+          {
+            "layer": 4,
+            "prefill": {
+              "cold": 107,
+              "reused": 146605,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 55
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 23
+            }
+          },
+          {
+            "layer": 5,
+            "prefill": {
+              "cold": 106,
+              "reused": 146606,
+              "distinct_distance_p50": 17,
+              "distinct_distance_p95": 54
+            },
+            "decode": {
+              "cold": 3,
+              "reused": 933,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 47
+            }
+          },
+          {
+            "layer": 6,
+            "prefill": {
+              "cold": 110,
+              "reused": 146602,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 57
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 28
+            }
+          },
+          {
+            "layer": 7,
+            "prefill": {
+              "cold": 113,
+              "reused": 146599,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 54
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 36
+            }
+          },
+          {
+            "layer": 8,
+            "prefill": {
+              "cold": 118,
+              "reused": 146594,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 59
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 36
+            }
+          },
+          {
+            "layer": 9,
+            "prefill": {
+              "cold": 116,
+              "reused": 146596,
+              "distinct_distance_p50": 13,
+              "distinct_distance_p95": 56
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 30
+            }
+          },
+          {
+            "layer": 10,
+            "prefill": {
+              "cold": 107,
+              "reused": 146605,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 45
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 22
+            }
+          },
+          {
+            "layer": 11,
+            "prefill": {
+              "cold": 105,
+              "reused": 146607,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 42
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 21
+            }
+          },
+          {
+            "layer": 12,
+            "prefill": {
+              "cold": 106,
+              "reused": 146606,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 48
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 29
+            }
+          },
+          {
+            "layer": 13,
+            "prefill": {
+              "cold": 108,
+              "reused": 146604,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 38
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 14,
+            "prefill": {
+              "cold": 107,
+              "reused": 146605,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 43
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 27
+            }
+          },
+          {
+            "layer": 15,
+            "prefill": {
+              "cold": 116,
+              "reused": 146596,
+              "distinct_distance_p50": 10,
+              "distinct_distance_p95": 48
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 40
+            }
+          },
+          {
+            "layer": 16,
+            "prefill": {
+              "cold": 103,
+              "reused": 146609,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 29
+            }
+          },
+          {
+            "layer": 17,
+            "prefill": {
+              "cold": 100,
+              "reused": 146612,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 18,
+            "prefill": {
+              "cold": 102,
+              "reused": 146610,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 28
+            }
+          },
+          {
+            "layer": 19,
+            "prefill": {
+              "cold": 105,
+              "reused": 146607,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 30
+            }
+          },
+          {
+            "layer": 20,
+            "prefill": {
+              "cold": 95,
+              "reused": 146617,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 42
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 29
+            }
+          },
+          {
+            "layer": 21,
+            "prefill": {
+              "cold": 100,
+              "reused": 146612,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 22,
+            "prefill": {
+              "cold": 97,
+              "reused": 146615,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 1,
+              "reused": 935,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 23,
+            "prefill": {
+              "cold": 122,
+              "reused": 146590,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 49
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 32
+            }
+          },
+          {
+            "layer": 24,
+            "prefill": {
+              "cold": 120,
+              "reused": 146592,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 51
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 33
+            }
+          },
+          {
+            "layer": 25,
+            "prefill": {
+              "cold": 126,
+              "reused": 146586,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 57
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 35
+            }
+          },
+          {
+            "layer": 26,
+            "prefill": {
+              "cold": 115,
+              "reused": 146597,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 46
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 34
+            }
+          },
+          {
+            "layer": 27,
+            "prefill": {
+              "cold": 120,
+              "reused": 146592,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 58
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 34
+            }
+          },
+          {
+            "layer": 28,
+            "prefill": {
+              "cold": 113,
+              "reused": 146599,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 40
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 23
+            }
+          },
+          {
+            "layer": 29,
+            "prefill": {
+              "cold": 98,
+              "reused": 146614,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 36
+            },
+            "decode": {
+              "cold": 3,
+              "reused": 933,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 35
+            }
+          }
+        ],
+        "selected_union": {
+          "prefill": {
+            "mean": 77.73611111111111,
+            "p50": 76,
+            "p95": 97,
+            "max": 112
+          },
+          "decode": {
+            "mean": 8.0,
+            "p50": 8,
+            "p95": 8,
+            "max": 8
+          }
+        },
+        "predictability": {
+          "training_tokens": 58,
+          "test_tokens": 59,
+          "selected_contributions": 13688,
+          "next_layer_recall": 0.6478667445938048,
+          "static_layer_recall": 0.5250584453535944,
+          "previous_token_same_layer_recall": 0.37726475745178256
+        }
+      },
+      "budgets": [
+        {
+          "feasible": false,
+          "reason": "Fixed envelope exceeds budget"
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 15032385536,
+          "expert_capacity_bytes": 1841299456,
+          "peak_expert_bytes": 1841299456,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 356650057728,
+              "logical_miss_bytes": 313405591500,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 83955,
+              "bulk_no_overlap_seconds": 23.836849024246614,
+              "serial_extent_service_seconds": 30.101328,
+              "extent_reads": 170064
+            },
+            "decode": {
+              "miss_bytes": 59108229120,
+              "logical_miss_bytes": 51584387880,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 13770,
+              "bulk_no_overlap_seconds": 3.9505220960837732,
+              "serial_extent_service_seconds": 4.988745,
+              "extent_reads": 28185
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 505198539.48717946,
+            "p50": 478150656,
+            "p95": 738197504,
+            "max": 937426944
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 17179869184,
+          "expert_capacity_bytes": 3988783104,
+          "peak_expert_bytes": 3988783104,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 356650057728,
+              "logical_miss_bytes": 313405591500,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 83955,
+              "bulk_no_overlap_seconds": 23.836849024246614,
+              "serial_extent_service_seconds": 30.101328,
+              "extent_reads": 170064
+            },
+            "decode": {
+              "miss_bytes": 7589593088,
+              "logical_miss_bytes": 6672857072,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 1788,
+              "bulk_no_overlap_seconds": 0.5072534846807584,
+              "serial_extent_service_seconds": 0.640563,
+              "extent_reads": 3619
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 64868316.99145299,
+            "p50": 37748736,
+            "p95": 188743680,
+            "max": 719323136
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 19327352832,
+          "expert_capacity_bytes": 6136266752,
+          "peak_expert_bytes": 6136266752,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 356650057728,
+              "logical_miss_bytes": 313405591500,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 83955,
+              "bulk_no_overlap_seconds": 23.836849024246614,
+              "serial_extent_service_seconds": 30.101328,
+              "extent_reads": 170064
+            },
+            "decode": {
+              "miss_bytes": 3653238784,
+              "logical_miss_bytes": 3227702668,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 867,
+              "bulk_no_overlap_seconds": 0.24416567292453195,
+              "serial_extent_service_seconds": 0.308334,
+              "extent_reads": 1742
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 31224263.111111112,
+            "p50": 12582912,
+            "p95": 109051904,
+            "max": 459276288
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 21474836480,
+          "expert_capacity_bytes": 8283750400,
+          "peak_expert_bytes": 8283750400,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 356650057728,
+              "logical_miss_bytes": 313405591500,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 83955,
+              "bulk_no_overlap_seconds": 23.836849024246614,
+              "serial_extent_service_seconds": 30.101328,
+              "extent_reads": 170064
+            },
+            "decode": {
+              "miss_bytes": 1828716544,
+              "logical_miss_bytes": 1610753728,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 432,
+              "bulk_no_overlap_seconds": 0.12222300045361185,
+              "serial_extent_service_seconds": 0.154344,
+              "extent_reads": 872
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 15630055.931623932,
+            "p50": 4194304,
+            "p95": 52428800,
+            "max": 224395264
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 23622320128,
+          "expert_capacity_bytes": 10431234048,
+          "peak_expert_bytes": 10431234048,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 40403730432,
+              "logical_miss_bytes": 35474992236,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 9499,
+              "bulk_no_overlap_seconds": 2.7003994572698233,
+              "serial_extent_service_seconds": 3.410082,
+              "extent_reads": 19266
+            },
+            "decode": {
+              "miss_bytes": 360710144,
+              "logical_miss_bytes": 309760328,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 82,
+              "bulk_no_overlap_seconds": 0.024108206511492248,
+              "serial_extent_service_seconds": 0.030444,
+              "extent_reads": 172
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 3082992.683760684,
+            "p50": 0,
+            "p95": 12582912,
+            "max": 27262976
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 25769803776,
+          "expert_capacity_bytes": 12578717696,
+          "peak_expert_bytes": 12578717696,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 14745075712,
+              "logical_miss_bytes": 12930015760,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 3460,
+              "bulk_no_overlap_seconds": 0.9854930231529185,
+              "serial_extent_service_seconds": 1.244487,
+              "extent_reads": 7031
+            },
+            "decode": {
+              "miss_bytes": 90177536,
+              "logical_miss_bytes": 76201040,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 20,
+              "bulk_no_overlap_seconds": 0.006027051627873062,
+              "serial_extent_service_seconds": 0.007611,
+              "extent_reads": 43
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 770748.170940171,
+            "p50": 0,
+            "p95": 4194304,
+            "max": 14680064
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 30064771072,
+          "expert_capacity_bytes": 16873684992,
+          "peak_expert_bytes": 13952352256,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 13904117760,
+              "logical_miss_bytes": 12200839944,
+              "groups": 1080,
+              "selected_expert_uses": 83955,
+              "expert_misses": 3266,
+              "bulk_no_overlap_seconds": 0.9292872626232186,
+              "serial_extent_service_seconds": 1.17351,
+              "extent_reads": 6630
+            },
+            "decode": {
+              "miss_bytes": 48234496,
+              "logical_miss_bytes": 39029800,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 10,
+              "bulk_no_overlap_seconds": 0.0032237718009553587,
+              "serial_extent_service_seconds": 0.004071,
+              "extent_reads": 23
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 412260.64957264956,
+            "p50": 0,
+            "p95": 4194304,
+            "max": 10485760
+          },
+          "whole_model_resident_feasible": true
+        }
+      ]
+    },
+    {
+      "name": "b64-routes",
+      "routes_sha256": "7f9c4bd73fb6142b09a45d72f5107505d32e83965d0436598100c058667a6ad5",
+      "locality": {
+        "per_layer_reuse": [
+          {
+            "layer": 0,
+            "prefill": {
+              "cold": 101,
+              "reused": 146611,
+              "distinct_distance_p50": 26,
+              "distinct_distance_p95": 69
+            },
+            "decode": {
+              "cold": 1,
+              "reused": 935,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 1,
+            "prefill": {
+              "cold": 117,
+              "reused": 146595,
+              "distinct_distance_p50": 27,
+              "distinct_distance_p95": 77
+            },
+            "decode": {
+              "cold": 2,
+              "reused": 934,
+              "distinct_distance_p50": 20,
+              "distinct_distance_p95": 48
+            }
+          },
+          {
+            "layer": 2,
+            "prefill": {
+              "cold": 111,
+              "reused": 146601,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 57
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 25
+            }
+          },
+          {
+            "layer": 3,
+            "prefill": {
+              "cold": 103,
+              "reused": 146609,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 51
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 20
+            }
+          },
+          {
+            "layer": 4,
+            "prefill": {
+              "cold": 109,
+              "reused": 146603,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 55
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 23
+            }
+          },
+          {
+            "layer": 5,
+            "prefill": {
+              "cold": 107,
+              "reused": 146605,
+              "distinct_distance_p50": 17,
+              "distinct_distance_p95": 54
+            },
+            "decode": {
+              "cold": 3,
+              "reused": 933,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 48
+            }
+          },
+          {
+            "layer": 6,
+            "prefill": {
+              "cold": 110,
+              "reused": 146602,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 57
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 29
+            }
+          },
+          {
+            "layer": 7,
+            "prefill": {
+              "cold": 113,
+              "reused": 146599,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 54
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 36
+            }
+          },
+          {
+            "layer": 8,
+            "prefill": {
+              "cold": 118,
+              "reused": 146594,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 59
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 36
+            }
+          },
+          {
+            "layer": 9,
+            "prefill": {
+              "cold": 116,
+              "reused": 146596,
+              "distinct_distance_p50": 13,
+              "distinct_distance_p95": 55
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 30
+            }
+          },
+          {
+            "layer": 10,
+            "prefill": {
+              "cold": 107,
+              "reused": 146605,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 45
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 25
+            }
+          },
+          {
+            "layer": 11,
+            "prefill": {
+              "cold": 108,
+              "reused": 146604,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 42
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 22
+            }
+          },
+          {
+            "layer": 12,
+            "prefill": {
+              "cold": 108,
+              "reused": 146604,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 48
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 27
+            }
+          },
+          {
+            "layer": 13,
+            "prefill": {
+              "cold": 105,
+              "reused": 146607,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 38
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 26
+            }
+          },
+          {
+            "layer": 14,
+            "prefill": {
+              "cold": 109,
+              "reused": 146603,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 43
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 28
+            }
+          },
+          {
+            "layer": 15,
+            "prefill": {
+              "cold": 116,
+              "reused": 146596,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 48
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 14,
+              "distinct_distance_p95": 37
+            }
+          },
+          {
+            "layer": 16,
+            "prefill": {
+              "cold": 102,
+              "reused": 146610,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 28
+            }
+          },
+          {
+            "layer": 17,
+            "prefill": {
+              "cold": 106,
+              "reused": 146606,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 38
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 27
+            }
+          },
+          {
+            "layer": 18,
+            "prefill": {
+              "cold": 104,
+              "reused": 146608,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 27
+            }
+          },
+          {
+            "layer": 19,
+            "prefill": {
+              "cold": 102,
+              "reused": 146610,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 30
+            }
+          },
+          {
+            "layer": 20,
+            "prefill": {
+              "cold": 97,
+              "reused": 146615,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 41
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 30
+            }
+          },
+          {
+            "layer": 21,
+            "prefill": {
+              "cold": 97,
+              "reused": 146615,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 25
+            }
+          },
+          {
+            "layer": 22,
+            "prefill": {
+              "cold": 97,
+              "reused": 146615,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 33
+            },
+            "decode": {
+              "cold": 1,
+              "reused": 935,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 27
+            }
+          },
+          {
+            "layer": 23,
+            "prefill": {
+              "cold": 119,
+              "reused": 146593,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 48
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 28
+            }
+          },
+          {
+            "layer": 24,
+            "prefill": {
+              "cold": 120,
+              "reused": 146592,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 51
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 34
+            }
+          },
+          {
+            "layer": 25,
+            "prefill": {
+              "cold": 125,
+              "reused": 146587,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 56
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 34
+            }
+          },
+          {
+            "layer": 26,
+            "prefill": {
+              "cold": 112,
+              "reused": 146600,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 46
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 12,
+              "distinct_distance_p95": 36
+            }
+          },
+          {
+            "layer": 27,
+            "prefill": {
+              "cold": 120,
+              "reused": 146592,
+              "distinct_distance_p50": 15,
+              "distinct_distance_p95": 58
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 29
+            }
+          },
+          {
+            "layer": 28,
+            "prefill": {
+              "cold": 111,
+              "reused": 146601,
+              "distinct_distance_p50": 0,
+              "distinct_distance_p95": 39
+            },
+            "decode": {
+              "cold": 0,
+              "reused": 936,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 24
+            }
+          },
+          {
+            "layer": 29,
+            "prefill": {
+              "cold": 92,
+              "reused": 146620,
+              "distinct_distance_p50": 8,
+              "distinct_distance_p95": 37
+            },
+            "decode": {
+              "cold": 2,
+              "reused": 934,
+              "distinct_distance_p50": 16,
+              "distinct_distance_p95": 36
+            }
+          }
+        ],
+        "selected_union": {
+          "prefill": {
+            "mean": 56.473054587688736,
+            "p50": 56,
+            "p95": 73,
+            "max": 95
+          },
+          "decode": {
+            "mean": 8.0,
+            "p50": 8,
+            "p95": 8,
+            "max": 8
+          }
+        },
+        "predictability": {
+          "training_tokens": 58,
+          "test_tokens": 59,
+          "selected_contributions": 13688,
+          "next_layer_recall": 0.6500584453535944,
+          "static_layer_recall": 0.5331677381648159,
+          "previous_token_same_layer_recall": 0.38566627703097606
+        }
+      },
+      "budgets": [
+        {
+          "feasible": false,
+          "reason": "Fixed envelope exceeds budget"
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 15032385536,
+          "expert_capacity_bytes": 1841299456,
+          "peak_expert_bytes": 1841299456,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 2066887999488,
+              "logical_miss_bytes": 1815505924452,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 486233,
+              "bulk_no_overlap_seconds": 138.14128478677267,
+              "serial_extent_service_seconds": 174.445713,
+              "extent_reads": 985569
+            },
+            "decode": {
+              "miss_bytes": 58795753472,
+              "logical_miss_bytes": 51306223100,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 13695,
+              "bulk_no_overlap_seconds": 3.9296376613732362,
+              "serial_extent_service_seconds": 4.962372,
+              "extent_reads": 28036
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 502527807.4529914,
+            "p50": 467664896,
+            "p95": 721420288,
+            "max": 895483904
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 17179869184,
+          "expert_capacity_bytes": 3988783104,
+          "peak_expert_bytes": 3988783104,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 2066887999488,
+              "logical_miss_bytes": 1815505924452,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 486233,
+              "bulk_no_overlap_seconds": 138.14128478677267,
+              "serial_extent_service_seconds": 174.445713,
+              "extent_reads": 985569
+            },
+            "decode": {
+              "miss_bytes": 6952058880,
+              "logical_miss_bytes": 6102898056,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 1634,
+              "bulk_no_overlap_seconds": 0.4646436313116093,
+              "serial_extent_service_seconds": 0.586755,
+              "extent_reads": 3315
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 59419306.666666664,
+            "p50": 37748736,
+            "p95": 180355072,
+            "max": 509607936
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 19327352832,
+          "expert_capacity_bytes": 6136266752,
+          "peak_expert_bytes": 6136266752,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 2066887999488,
+              "logical_miss_bytes": 1815505924452,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 486233,
+              "bulk_no_overlap_seconds": 138.14128478677267,
+              "serial_extent_service_seconds": 174.445713,
+              "extent_reads": 985569
+            },
+            "decode": {
+              "miss_bytes": 2420113408,
+              "logical_miss_bytes": 2124955876,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 569,
+              "bulk_no_overlap_seconds": 0.16174924601315147,
+              "serial_extent_service_seconds": 0.204258,
+              "extent_reads": 1154
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 20684729.982905984,
+            "p50": 12582912,
+            "p95": 62914560,
+            "max": 132120576
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 21474836480,
+          "expert_capacity_bytes": 8283750400,
+          "peak_expert_bytes": 8283750400,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 195714613248,
+              "logical_miss_bytes": 172127621316,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 46129,
+              "bulk_no_overlap_seconds": 13.080664328363387,
+              "serial_extent_service_seconds": 16.518348,
+              "extent_reads": 93324
+            },
+            "decode": {
+              "miss_bytes": 916455424,
+              "logical_miss_bytes": 803518300,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 215,
+              "bulk_no_overlap_seconds": 0.06125166421815181,
+              "serial_extent_service_seconds": 0.077349,
+              "extent_reads": 437
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 7832952.341880342,
+            "p50": 4194304,
+            "p95": 25165824,
+            "max": 41943040
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 23622320128,
+          "expert_capacity_bytes": 10431234048,
+          "peak_expert_bytes": 10431234048,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 29070721024,
+              "logical_miss_bytes": 25537880800,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 6840,
+              "bulk_no_overlap_seconds": 1.94295324803666,
+              "serial_extent_service_seconds": 2.453574,
+              "extent_reads": 13862
+            },
+            "decode": {
+              "miss_bytes": 222298112,
+              "logical_miss_bytes": 189573320,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 50,
+              "bulk_no_overlap_seconds": 0.014857383082663827,
+              "serial_extent_service_seconds": 0.018762,
+              "extent_reads": 106
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 1899983.8632478632,
+            "p50": 0,
+            "p95": 8388608,
+            "max": 18874368
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 25769803776,
+          "expert_capacity_bytes": 12578717696,
+          "peak_expert_bytes": 12578717696,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 14677966848,
+              "logical_miss_bytes": 12880454112,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 3448,
+              "bulk_no_overlap_seconds": 0.9810077754298502,
+              "serial_extent_service_seconds": 1.238823,
+              "extent_reads": 6999
+            },
+            "decode": {
+              "miss_bytes": 73400320,
+              "logical_miss_bytes": 61332544,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 16,
+              "bulk_no_overlap_seconds": 0.004905739697105981,
+              "serial_extent_service_seconds": 0.006195,
+              "extent_reads": 35
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 627353.1623931624,
+            "p50": 0,
+            "p95": 4194304,
+            "max": 14680064
+          },
+          "whole_model_resident_feasible": false
+        },
+        {
+          "feasible": true,
+          "total_budget_bytes": 30064771072,
+          "expert_capacity_bytes": 16873684992,
+          "peak_expert_bytes": 13916700672,
+          "phases": {
+            "prefill": {
+              "miss_bytes": 13874757632,
+              "logical_miss_bytes": 12182254328,
+              "groups": 8610,
+              "selected_expert_uses": 486233,
+              "expert_misses": 3262,
+              "bulk_no_overlap_seconds": 0.9273249667443761,
+              "serial_extent_service_seconds": 1.171032,
+              "extent_reads": 6616
+            },
+            "decode": {
+              "miss_bytes": 41943040,
+              "logical_miss_bytes": 34693156,
+              "groups": 3510,
+              "selected_expert_uses": 28080,
+              "expert_misses": 9,
+              "bulk_no_overlap_seconds": 0.0028032798269177032,
+              "serial_extent_service_seconds": 0.00354,
+              "extent_reads": 20
+            }
+          },
+          "decode_token_miss_bytes": {
+            "mean": 358487.5213675214,
+            "p50": 0,
+            "p95": 4194304,
+            "max": 10485760
+          },
+          "whole_model_resident_feasible": true
+        }
+      ]
+    }
+  ]
+}

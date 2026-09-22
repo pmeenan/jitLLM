@@ -1,0 +1,62 @@
+{
+  "large_models": [
+    {
+      "id": "D",
+      "repository": "unsloth/DeepSeek-V4-Flash-GGUF",
+      "revision": "e3aa0d6a5fa4f820d9e132ac1fd1d01e1b2b49e0",
+      "quant": "UD-Q2_K_XL",
+      "base_repository": "deepseek-ai/DeepSeek-V4-Flash",
+      "base_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+      "license_sha256": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040",
+      "files": [
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-UD-Q2_K_XL-00001-of-00003.gguf",
+          "bytes": 5256864,
+          "sha256": "5475dce5d7189b4304d490bf559d438c967bbc924ce5384ba8e9ecc0385cb003"
+        },
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-UD-Q2_K_XL-00002-of-00003.gguf",
+          "bytes": 49437013568,
+          "sha256": "3faf8797868960141239b69bdd8105b0459fbc0f1927652889ae936a967fc4ca"
+        },
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-UD-Q2_K_XL-00003-of-00003.gguf",
+          "bytes": 47390237120,
+          "sha256": "4083f1f78e2730006acf78a458ac6b190faf1f515c30cce479a6f8d5066dda80"
+        }
+      ],
+      "license_name": "MIT",
+      "category": "external reference model artifact; not incorporated implementation",
+      "license_url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/60d8d70770c6776ff598c94bb586a859a38244f1/LICENSE"
+    },
+    {
+      "id": "Q",
+      "repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+      "quant": "UD-IQ3_XXS",
+      "base_repository": "Qwen/Qwen3.8-Flash-Next",
+      "base_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+      "license_sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
+      "files": [
+        {
+          "path": "UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+          "bytes": 10946624,
+          "sha256": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8"
+        },
+        {
+          "path": "UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+          "bytes": 49567921344,
+          "sha256": "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f"
+        },
+        {
+          "path": "UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+          "bytes": 32382955968,
+          "sha256": "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250"
+        }
+      ],
+      "license_name": "Qwen Community License 1.0",
+      "category": "external reference model artifact; not incorporated implementation",
+      "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE"
+    }
+  ]
+}

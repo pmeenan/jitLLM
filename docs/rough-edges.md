@@ -27,6 +27,97 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-008: Extended reference runs do not always preserve exact top-1 predictions  (2026-09-21, status: open)
+
+Pinned llama.cpp `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, GB10,
+driver 580.178.04, CUDA fusion and graphs disabled. Two distinct limits surfaced
+in the [full paging study](experiments/paging-feasibility/full-study.md):
+
+- DeepSeek V4 Flash sequence snapshots reserialize identically after restore,
+  but append-only continuation differs from live state on 16/1,536 top-1
+  predictions (0/6/10 by turn). A same-host repeat reproduces those differences;
+  restored predictions also match across the two Sparks. Raw/compressed KV and
+  compressor state are present in the serializer. Cache compaction changes
+  attention shapes, but neither a numerical explanation nor missing semantic
+  state has been established. This is not the Gemma rollback failure in RE-007.
+- Qwen3.8 Flash Next's identical untraced binary repeated on one host differs
+  on 6/1,536 predictions (3/2/1). A restore probe differs on 10, including five
+  before any restore, so restoration is not an isolated cause. Qwen also prunes
+  the last prefill layer to output rows (`models/qwen4exp.cpp:400`); assuming
+  every layer routes the whole input batch aborts capture. Record the actual
+  final-layer output-only dependency, without reducing consumed input tokens.
+
+No numerical tolerance is inferred from these counts. Capture defaults remain
+strict; Qwen's explicit drift-recording mode labels failed equivalence, and
+replay/locality analysis require a separate opt-in. Both large-model spill
+returns use conservative recomputation in the study. Raw evidence remains in
+external `paging/large-capture-2`, `deepseek-restore-probe-2`, `qwen-capture-1`,
+`qwen-capture-3`, and `large-restore-probe-1`; their identities and comparisons
+are retained in the study's aggregate evidence. Do not promote these reference
+observations into a jitLLM numerical or restore-compatibility guarantee.
+
+## RE-007: Gemma sequence snapshots lose SWA history needed after prompt rollback  (2026-09-21, status: worked-around)
+
+On Spark GB10/driver 580.178.04 and pinned llama.cpp
+`b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, the extended four-turn
+Gemma restore probe changed **58/3,072** teacher-forced next-token argmax
+predictions versus live full-SWA state (per turn: 0, 12, 19, 27). Ornith
+changed **0/3,072**. CUDA fusion and graphs were disabled in both arms.
+Each snapshot reserialized byte-for-byte identically after restoration into
+a fresh context; that checks the stored bytes, not sufficient context coverage.
+Raw negative evidence is `paging/restore-probe-1` on Spark, with the matched
+live controls in `paging/small-capture-2`.
+
+Pinned `src/llama-kv-cache.cpp:2080` drops cells outside the final SWA window
+when serializing an individual sequence, even with full-SWA allocation.
+Gemma uses standard SWA of 1,024 tokens. Its first snapshot ends at position
+8,105 and retains SWA positions 7,082–8,105. The canonical next prompt shares
+only 7,335 tokens: its first resumed query needs positions 6,312–7,335,
+including **770 positions absent from the snapshot**. The next two returns
+have the same missing-window count. Successful tail removal does not detect
+this gap. Physical cache compaction also changes attention shapes
+(`llama-kv-cache.cpp:1250`), but the missing dependencies alone invalidate
+assuming equivalent restored execution; the prediction changes are not
+classified as harmless numerical noise.
+
+The native session and restore harnesses now check the earliest retained
+position against the model's actual SWA window before reuse, including after
+full-SWA restoration. They reset and recompute when coverage is insufficient,
+following the conservative checkpoint-coverage principle in pinned
+`tools/server/server-context.cpp:3297` and `:3349`. They have no older
+checkpoint to restore. Replay uses captured recompute routes for Gemma
+sequence-spill returns with prefix rollback, and rejects apparent reuse from
+legacy normal-SWA captures by selecting the conservative recompute scenario.
+Serialized byte identity and a successful short response do not establish
+that a checkpoint supports arbitrary template rewrites. The earlier A→B→A
+six-token rollback's matching output remains a narrow observation, not a
+proof of complete retained-window coverage. Full-history snapshots would be
+a different, larger spill contract and are not established by this probe.
+
+## RE-006: Reading MoE routes through the llama.cpp callback changes the CUDA path  (2026-09-21, status: worked-around)
+
+On the pinned reference `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`,
+GB10/driver 580.178.04, a callback at `ffn_moe_topk-N` changed 51 of
+3,072 teacher-forced next-token argmax predictions over four Gemma turns.
+A repeated untraced control matched all 3,072 original control predictions;
+the first traced difference occurred before any conversation reuse. The
+short first-cut 118-prediction probe had matched, so it did not expose this.
+
+The scheduler splits and synchronizes the graph at requested callback nodes.
+The pinned CUDA implementation has a fused routing operation spanning the
+selected top-k view, so this observation point changes the execution path.
+Disabling both CUDA fusion and CUDA graphs in **both** traced and control
+runs (`GGML_CUDA_DISABLE_FUSION=1`, `GGML_CUDA_DISABLE_GRAPHS=1`) restored
+exact prediction equality in the extended retained and recomputed Gemma
+captures. Those two settings were changed together; this does not isolate
+their individual effects or prove bitwise-logit equivalence.
+
+Keep instrumented-route experiments explicitly matched to their control
+configuration, and keep their timing separate from the reference's normal
+optimized path. A later observation point might preserve normal fusion but
+needs its own alias/lifetime and numerical checks. See the
+[paging-feasibility experiment](experiments/paging-feasibility/README.md).
+
 ## RE-005: Spark perftest warmup option stalled an RDMA-CM sweep  (2026-09-21, status: worked-around)
 
 Environment: both Sparks, kernel `7.0.0-1019-nvidia`, ConnectX firmware

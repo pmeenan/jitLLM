@@ -339,6 +339,12 @@ alone never authorizes a hit. Tokenizer and template changes must not produce
 an incompatible hit. Architecture-specific adapters define which boundaries
 can be restored; do not assume a recurrent snapshot can be truncated like
 full-attention KV.
+Coverage includes the attention window required at the first resumed token,
+not merely the snapshot's final token or byte identity. Template rewrites can
+rewind a common prefix behind the window preserved by a sequence snapshot,
+even when the source context used full-SWA allocation (RE-007). In that case
+restore an earlier compatible checkpoint or recompute; successful deserialization
+and tail removal do not authorize reuse.
 Independent branches may share compatible immutable prefixes, with their
 mutable continuation state isolated.
 
@@ -723,8 +729,30 @@ Default-SWA restore still re-prefilled all 18,339 tokens (RE-004). Those
 normal-optimization probes enforce the same one-model policy; simultaneous
 normal placement under pressure was not validated. A decode speed also
 differs across live full-SWA, restored and default-SWA paths, so the slower
-path cannot alone define the generation comparison. Router expert traces,
-large-model switching, tail-stall targets and paging feasibility remain open.
+path cannot alone define the generation comparison. The later
+[bounded full paging-feasibility study](experiments/paging-feasibility/full-study.md)
+is complete: it covers the exact reference trace, longer alternating
+Gemma/Ornith requests, four-sequence decode, and a DeepSeek/Qwen library whose
+combined storage exceeds one node's memory. Offline replay compares partial
+extent retention, eager active-model loading, and whole-model replacement at
+matched budgets, with resident state, bounded spill, and recomputation. It
+includes actual allocation accounting and explicit storage/overlap scenarios;
+these are not measured jitLLM paging or switching speedups.
+
+Qwen's captured-route estimates are conditional: exact prediction equivalence
+failed, including between untraced controls. Byte-identical sequence snapshots
+also failed to establish continuation correctness. Gemma snapshots omit SWA
+history needed after prefix rollback (RE-007); safe coverage checks select
+recomputation, and unvalidated large-model spill reuse is modeled conservatively
+with recomputation. The earlier matching Gemma continuation above remains a
+narrow historical observation; the validated recompute arm supplies the usable
+correctness floor. Restore metadata must describe valid context coverage.
+
+The study supports keeping M4 partial retention ahead of M5 expert paging,
+without promising one-layer prefetch can hide misses. Actual pager execution,
+physical admission safety, and end-to-end latency validation remain runtime
+work. Switching-benefit and generation-stall acceptance criteria still require
+owner agreement before M2; no numerical targets are inferred from the study.
 
 ## Open architecture questions
 
