@@ -145,11 +145,21 @@ Every backend/paging performance comparison has two views:
 
 For speculative runs, record drafter identity, settings, acceptance, and
 memory use; report throughput per accepted output token. If a matched run
-cannot be made, record why and leave its comparison unvalidated. Before M2,
-agree switching-benefit and generation-stall criteria for the selected
-workloads using the measured whole-model-switching baseline. Record latency
-distributions, bytes read and written, peak memory/spill occupancy, and prompt
-tokens reused versus recomputed. Never invent thresholds or measured results.
+cannot be made, record why and leave its comparison unvalidated. D-036 records
+owner-accepted targets for named supported workloads: M4's median/p95 floor
+against the fastest correct full-swap reference arm in both directions; M5's
+at most 10% added generation time, continuation time to first token included,
+and 20 ms p95 / 100 ms p99 added token gaps; and M7's at least 25% median
+return-switch benefit over jitLLM's own whole-model control on an agreed
+partial-retention workload, with at least one named library exceeding
+physical memory. Pin workloads, trial counts, and measurement methods before
+acceptance runs, repeat the correct reference and the whole-model control
+alongside them, and report uncertainty; inconclusive comparisons do not pass.
+The resident generation control with matched state provenance, the
+same-budget whole-model control, and the full-swap switching reference are
+three distinct controls (D-036). Record latency distributions, bytes read and
+written, peak memory/spill occupancy, and prompt tokens reused versus
+recomputed. Never invent thresholds or measured results.
 M4 validates switching, M5 validates MoE paging, and M7 validates subsequent
 optimizations against these criteria; scope changes when evidence warrants it.
 
@@ -751,8 +761,8 @@ correctness floor. Restore metadata must describe valid context coverage.
 The study supports keeping M4 partial retention ahead of M5 expert paging,
 without promising one-layer prefetch can hide misses. Actual pager execution,
 physical admission safety, and end-to-end latency validation remain runtime
-work. Switching-benefit and generation-stall acceptance criteria still require
-owner agreement before M2; no numerical targets are inferred from the study.
+work. The owner accepted switching-benefit and generation-stall targets in
+D-036 after this study; those targets are not measured achievements.
 
 ## Open architecture questions
 

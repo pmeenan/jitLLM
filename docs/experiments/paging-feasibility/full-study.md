@@ -432,9 +432,10 @@ prefill admission and loading policy with the existing full-swap floor.
 Measure useful prefetch lead time and cache-aware extra traffic before adding
 prediction complexity. No selected contribution may be replaced or skipped.
 
-Before M2, agree workload-specific switching-benefit and generation-stall
-criteria with the owner, using these curves and the measured reference arms.
-This study supplies evidence; it does not invent those acceptance thresholds.
+Following this study, the owner accepted workload-specific switching-benefit
+and generation-stall targets in D-036 (2026-09-22). This study supplies the
+supporting evidence; it does not demonstrate that an implementation meets
+those targets.
 
 ## Build and verification handoff
 

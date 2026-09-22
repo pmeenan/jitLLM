@@ -183,7 +183,7 @@ the human commit gate.
 ## Current status
 
 Milestone **M0 (plan the plan)** — direction and retention/measurement
-contracts are recorded through D-035; the feature matrix was triaged with
+contracts are recorded through D-036; the feature matrix was triaged with
 the owner on 2026-09-21. M4 targets A→B→A with retained state;
 M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
@@ -194,7 +194,8 @@ are reachable over SSH; the `sparky` DAC baseline passed, with 184.76 Gb/s
 combined host writes and validated NCCL over host buffers (architecture.md).
 The 27-trial reference cycle and bounded full paging-feasibility study are
 recorded (plan.md). Qwen route estimates are conditional on numerical drift;
-unvalidated spill continuations use conservative recomputation. Agreeing
-switching/stall acceptance criteria with the owner is next, before M2.
+unvalidated spill continuations use conservative recomputation. The owner
+accepted workload-scoped switching/stall targets in D-036; implementation
+validation remains ahead.
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

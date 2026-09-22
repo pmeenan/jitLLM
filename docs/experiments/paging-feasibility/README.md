@@ -250,8 +250,9 @@ equivalence, and conservative recomputation for unvalidated spill continuations.
 It also supersedes any assumption that a successful short Gemma continuation
 proves complete saved SWA-window coverage (RE-007). These are still offline
 feasibility results, not implemented paging or measured jitLLM speedups.
-Owner agreement on switching/stall criteria remains the next plan item before
-M2. The original first-cut verification and review below are historical records.
+The owner subsequently accepted switching/stall criteria in D-036
+(2026-09-22); implementation validation remains ahead. The original first-cut
+verification and review below are historical records.
 
 ## Independent review
 

@@ -30,6 +30,118 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025)
+
+*Refined the same day at the owner's direction after review: the benefit
+comparator, the switch/continuation distinction, which reference arm sets
+the floor, a required over-memory configuration, and control matching.*
+
+**Decision.** The owner accepted the following performance targets. These are
+acceptance requirements for future measured implementations, not results of
+the offline feasibility study.
+
+| Area | Acceptance criterion |
+| --- | --- |
+| Switching floor, M4 onward | Outward and return switches each take no longer than the fastest correct full-swap reference arm at both median and p95, under the same workload and memory pressure. Include state handling and time to the first returned token. |
+| Meaningful benefit, M7 | At least 25% lower median return-switch latency than jitLLM's own whole-model control with identical state handling at the same budget, on an agreed workload where partial retention is possible, while preserving the outward-switch floor. |
+| Generation, M5 onward | Paging adds at most 10% to total generation time over the pinned workload, counting added time to first token on continuation requests; added inter-token gaps are at most 20 ms at p95 and 100 ms at p99, relative to the same execution configuration fully resident. |
+| Correctness, every milestone | No skipped selected experts, invalid state reuse, or relaxed numerical checks to meet performance targets. Recompute when restoration is unsafe and include its cost. |
+
+Definitions. A **switch** is a request for a model other than the one that
+last executed on the node (D-019); every other request is a **continuation**,
+including a new turn on a model whose extents were partially reclaimed. The
+**correct full-swap reference** is the fastest reference arm, across the
+matched and normal-configuration views (D-025), whose state path is valid for
+the workload; a fast but invalid restore cannot set the floor. Cold-storage
+and warm-page-cache arms are reported separately; where the pinned budget
+lets the reference keep the incoming model's files warm, the warm arm is also
+a required floor condition, because D-034's direct I/O gets no page-cache
+benefit and that is the condition jitLLM can lose. The **whole-model control**
+is jitLLM itself evicting complete inactive models under the same budget,
+state policy, and workload; it isolates the benefit of extent-level retention
+(D-008) from the benefit of state retention.
+
+The targets apply to named supported model/workload/budget combinations, not
+arbitrary models or all possible budgets. The named set for each milestone
+is fixed before acceptance runs; from M7 it includes at least one
+configuration whose library of prepared weights exceeds the node's physical
+memory. Smaller budgets may be offered as explicitly slower modes without
+claiming target compliance. Favor smooth generation over marginal switching
+savings. Retained-state reuse and safe recomputation are reported separately;
+a fast but invalid restore cannot set the reference floor or satisfy a gate.
+
+**Context.** The owner accepted the proposed targets after the
+[full paging-feasibility study](experiments/paging-feasibility/full-study.md).
+Its retention savings and demand-paging stall estimates motivate these
+priorities, but do not demonstrate achievement. The measured 25.236-second
+Gemma recomputation return is baseline evidence, not a universal fixed deadline.
+Qwen's conditional route traces cannot establish a passing result.
+
+The refinements follow from the
+[reference cycle](experiments/reference-aba/README.md) and the study. The
+reference's restore arm, invalid only for SWA coverage (RE-007), returned in
+18.304 s, about 27% below the 25.236 s recompute arm, so a benefit measured
+against the reference would credit state retention alone. The
+normal-configuration recompute arm returned in 23.377 s, faster than the
+matched arm, and warm-cache recompute in 11.215 s, so which arm is "the"
+reference must be stated. Reference decode ran at about 27–28 tokens/s on
+live full-SWA state and about 46–47 on restored state, cause unisolated, a
+difference the size of the gap target. The study's batch-512 prefill touched
+83.63 of 128 Gemma experts per layer on average, placing the worst paging
+exposure at time to first token rather than after it. Its DeepSeek/Qwen
+demand-paging estimate at the single-Spark budget is an 18.221 ms/token
+largest-request p95 storage service with no overlap and no kernel or driver
+cost, at the gap limit, while eager loading has no modeled misses.
+
+**Consequences.** Before acceptance runs, pin the supported models, numerical
+configuration, exact request histories, output lengths, budgets, state policy,
+cache conditions, and the minimum trial count per arm for any claimed
+percentile. Use the existing reference A→B→A and varied-conversation
+workloads where supported; M4's first dense-model implementation needs its own
+named, pinned workload and fresh reference measurement. Do not require MoE
+support merely to evaluate M4. Name the partial-retention benefit workload in
+advance rather than selecting the best result afterward. The Gemma/Ornith pair
+is M5's named demand-paging configuration; the canonical two-large-model pair
+(DeepSeek V4 Flash and Qwen3.8 Flash Next) is an M7 configuration, where the
+estimates say demand paging needs prefetch overlap to meet the generation
+limits and eager active-model loading is the expected M5 policy. Both large
+models currently show unresolved prediction drift; if neither validates, name
+another pair whose prepared weights exceed physical memory rather than passing
+M7 on the small pair alone.
+
+The runtime must offer the whole-model control as a selectable policy. Run it
+from M4 onward alongside the retained policies so the M7 benefit has a
+baseline measured the same way.
+
+Repeat the correct full-swap reference and the whole-model control alongside
+implementation tests, interleaving arms within each repetition as the
+reference cycle did, and report uncertainty with enough repetitions and token
+observations for the claimed percentiles. A percentile from fewer trials than
+the pinned minimum is reported without a pass/fail. An inconclusive comparison
+does not pass. Choose and record sampling and uncertainty methods before
+acceptance runs. Preserve both matched-configuration and normal-reference
+views (D-025). The fully resident generation control may require a larger
+memory budget; identify that control explicitly, hold execution settings,
+token workload, context history, and state provenance (live versus restored)
+constant, and do not use it as the same-budget switching comparator. Measure
+generation after the first token on switches, counting paging waits during
+generation; on continuations, also count added time to first token. The 10%
+bound aggregates over the pinned workload's generation phases, not per
+request. Measure added token gaps against corresponding gaps in the matched
+resident control, not by subtracting two unrelated percentile summaries.
+Report bytes moved, peak memory/spill, and prompt tokens reused versus
+recomputed alongside timings.
+
+M4 validates the switching floor, M5 adds the generation limits, and M7 must
+also demonstrate the 25% return-switch benefit. Correctness remains a separate
+required gate throughout. No change is made to the partial-extent eviction,
+state-lifetime, or authoritative-routing contracts.
+
+**Reopen if.** Measured supported workloads show these targets require a
+product tradeoff the owner wants to change, or a new correct reference changes
+the practical comparison. Amend explicitly; never silently loosen a target or
+exclude a failing named configuration.
+
 ## D-035: Import models into paging artifacts aligned with managed backing  (2026-09-21, status: accepted; specializes D-009 and D-034)
 
 **Decision.** Making a model available includes preparing and atomically
@@ -503,7 +615,7 @@ considered, not now.
 **Reopen if.** An abstraction is measured to cost performance or clarity on
 NVIDIA (NVIDIA wins), or a port is undertaken (which gets its own decisions).
 
-## D-025: Measure the switching baseline once the reference runs  (2026-09-20, status: accepted; amends D-021)
+## D-025: Measure the switching baseline once the reference runs  (2026-09-20, status: accepted; amends D-021; acceptance targets specialized by D-036)
 
 **Decision.** Artifact size divided by measured read bandwidth remains a
 first-cut M0 estimate. Once the pinned reference setup runs, measure an
@@ -630,7 +742,7 @@ Clients talk to the conductor's endpoint (D-020, D-023).
 **Reopen if.** The named clients move to a protocol the baseline does not
 cover.
 
-## D-021: The switching bar is "never worse than a full swap"; seamless is the goal  (2026-09-20, status: accepted; baseline measurement amended by D-025)
+## D-021: The switching bar is "never worse than a full swap"; seamless is the goal  (2026-09-20, status: accepted; baseline measurement amended by D-025; acceptance targets specialized by D-036)
 
 *Comparator datapoint (2026-09-21): Athena's Engine, a closed-source engine
 for GB10, reports a 46 s measured full swap, including a session checkpoint, between DeepSeek V4 Flash and

@@ -183,11 +183,20 @@ needs evidence from the real hardware.
       conservative recompute scenarios. The evidence supports M4 retention
       before M5 expert paging and makes restore coverage an explicit validation
       requirement; it neither proves runtime admission nor enables prefetch.
-      The following owner agreement on performance criteria remains open.
-- [ ] Agree switching-benefit and generation-stall criteria before M2 from
-      the measured reference experiment and feasibility evidence. These
-      govern M4/M5/M7 acceptance for named workloads; no numeric thresholds
-      are assumed in this plan.
+      Performance acceptance targets are recorded in D-036 below.
+- [x] Agree switching-benefit and generation-stall criteria (2026-09-22,
+      D-036): M4 onward must meet the fastest correct full-swap reference
+      arm at median/p95 in both directions; M5 onward permits at most 10%
+      added generation time, continuation time to first token included, and
+      20 ms p95 / 100 ms p99 added token gaps against a resident control
+      with matched state provenance; M7 requires at least 25% lower median
+      return-switch latency than jitLLM's own whole-model control on an
+      agreed partial-retention workload, with at least one named library
+      that exceeds physical memory. Targets apply to named supported
+      configurations; correctness is mandatory and inconclusive comparisons
+      do not pass. Pin workloads, trial counts, and measurement methods
+      before acceptance runs; these are targets, not measured implementation
+      results.
 - [x] Complete the Spark-to-Spark direct-link baseline. The owner configured
       the `sparky` DAC cluster on 2026-09-21; the
       [baseline](experiments/interconnect/README.md) passed 78 host-buffer
@@ -371,8 +380,10 @@ has a promised date; each should leave a usable, testable result.
   re-prefill; process only new input and any declared cache-block tail.
   Report switch/switch-back latency distributions, bytes read/written,
   peak memory/spill use, and prompt tokens reused versus recomputed against
-  D-025's measured reference cycle and the agreed criteria. Teacher-forced
-  numerics stay correct after weight/state restoration. Branching histories,
+  D-025's measured reference cycle, D-036's median/p95 switching floor, and
+  jitLLM's own whole-model control at the same budget, which M7's benefit
+  target uses as its comparator. Teacher-forced numerics stay correct after
+  weight/state restoration. Branching histories,
   edits, incompatible identity, expiry, and spill exhaustion yield correct
   reuse, recomputation from supplied history, or explicit errors as appropriate;
   cache expiry never destroys admitted suspended work. Independent
@@ -399,7 +410,13 @@ has a promised date; each should leave a usable, testable result.
   checked against the early reference experiment.
   *Gate:* no unselected expert loads beyond declared metadata/read-ahead; no
   substitution; resident-hit and miss overhead measured using the comparison
-  protocol; small-MoE numerics remain correct after eviction and restoration.
+  protocol and D-036's generation limits (at most 10% added generation time,
+  continuation time to first token included, and 20 ms p95 / 100 ms p99
+  added token gaps) on the named Gemma/Ornith pair; the canonical
+  two-large-model pair is an M7 configuration because the study's estimates
+  place its demand-paging stalls at the gap limit without overlap. Small-MoE
+  numerics remain correct after eviction and restoration. The M4 switching
+  floor continues to apply.
   With M4's dense evidence, assess artifact compatibility guarantees in a
   separate decision (D-018).
 - **M6 — Sharded model execution (two Sparks here).** Build on M4a's
@@ -413,7 +430,10 @@ has a promised date; each should leave a usable, testable result.
   prefetch, selective CUDA graphs, dashboard, optional API extensions
   (sessions, hints; D-022),
   packaging as signed apt packages for Spark with notices (D-027). *Gate:* measured results meet the agreed workload
-  benefit and generation-stall criteria; matched-configuration and normal
+  targets in D-036, including at least 25% lower median return-switch latency
+  than jitLLM's own whole-model control on the agreed partial-retention
+  workload, at least one named library exceeding physical memory, the
+  switching floor, and generation limits; matched-configuration and normal
   reference-configuration comparisons are reported; no numerical or lifetime
   regression; compliant optional-backend builds.
 
