@@ -209,9 +209,13 @@ needs evidence from the real hardware.
       buffers, not GPUDirect RDMA. Message-size sweeps, ranges, pins and
       limitations are recorded with the report and in architecture.md.
       Sharded-model, asymmetric-pressure and failure tests remain M6 work.
-- [ ] Inventory which MiaAI-Lab reference files are actually AGPL versus MIT
-      ExLlamaV3 upstream before designing the optional-module boundary, and
-      note AGPL's network clause for a served process in the licensing docs.
+- [x] Inventory MiaAI-Lab reference licensing versus MIT ExLlamaV3 upstream
+      (2026-09-22): [pinned file/group inventory](licensing.md) separates
+      AGPL defaults, explicit MIT/Apache notices, historical MIT grants and
+      unresolved downstream modifications. Nine vendored ExLlamaV3 headers
+      matched pinned upstream bytes and hashes. AGPL network-source duties
+      and adoption blockers are recorded; no code or module boundary is
+      approved by this inventory.
 - [ ] Decide where the conductor lives (inside its node's runtime process or
       a sidecar) and how cluster-wide admission and placement are represented
       (D-020). Record in decisions.md.

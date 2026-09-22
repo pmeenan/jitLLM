@@ -920,6 +920,11 @@ Optional modules remain removable without losing the scheduler or allocator;
 their enabled builds ship matching notices and source obligations. Every new
 dependency's handoff records its category and, for implementation code, tier.
 
+**Evidence.** The [MiaAI-Lab/ExLlamaV3 inventory](licensing.md) (2026-09-22)
+records pinned file-level declarations, unresolved modification provenance,
+verified upstream MIT headers, and AGPL network-source obligations. It does
+not approve incorporation or change this policy.
+
 **Reopen if.** A selected component's actual terms cannot be met, or the core
 allowlist or declared platform dependency families need to change.
 
