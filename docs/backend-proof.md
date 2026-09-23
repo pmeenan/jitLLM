@@ -13,7 +13,8 @@ fixes stages, numerical oracles, cases and evidence, and records what the
 pinned sources imply for them. It is not an implementation, a measurement or
 a support claim. The artifact encoding is D-056's [v0 format](artifact-format.md);
 sources are acquired under D-057's [source-dependency mechanism](source-dependencies.md),
-and the retained-backing comparison stays a separate plan item; the proof
+and the [retained-backing comparison](#retained-backing-comparison) stays a
+separate plan item; the proof
 consumes or hosts them.
 
 ## What the proof settles
@@ -380,8 +381,8 @@ First-slice context and envelope limits apply.
 | **P5** Lifetime and failure | D-048 completion services | BP-L and BP-V cases on real providers |
 | **P6** Envelopes and contract | P2–P5 | Complete accounting; phase envelopes and `F` per profile; contract draft; per-operation K-C/K-L choices, registry and D-034/D-052/D-053 status recorded |
 
-The [retained-backing comparison](plan.md) runs on the P4 harness, but its
-acceptance stays a separate plan item.
+The [retained-backing comparison](#retained-backing-comparison) runs on the
+P4 harness, but its acceptance stays a separate plan item.
 
 ## Case matrix
 
@@ -508,6 +509,75 @@ beside the candidate)
 D-050's M2 adversarial rows that need real allocation or retirement map to
 BP-A1–A2, BP-P2–P3, BP-L1–L6, BP-V2 and BP-V3. The rest stay fake-backend
 tests.
+
+## Retained-backing comparison
+
+This is the owner's D-035 follow-up. M0 deferred it to M2 because it needs
+the M2 resource core and the P4 harness. It is not a BP case: the proof can
+pass while it is still open. The internal contract is not settled, and M2
+does not close, until D-033 is explicitly retained or amended. D-033 stays
+the baseline unless the predeclared criteria below are met. The comparison
+has two independent parts.
+
+**(a) Physical backing.** Compare D-033's independent 2 MiB handles with
+larger persistently mapped slabs, including 1 GiB, using software
+suballocation and real executable tensor views. Both designs must keep
+ordinary paging free of avoidable create/release cycles. Measure:
+
+- warm reuse, plus remapping and registration costs where a design needs
+  them;
+- fragmentation;
+- growing and shrinking the shared pool;
+- concurrent compute;
+- end-to-end restore latency.
+
+Any design that changes addresses must pass BP-P5, BP-L2 and BP-L6, plus
+checks for aliases and captured pointers. Both designs keep useful contents
+within budget. Disk transfer size is independent of either design, and
+D-056's layout serves both.
+
+Evaluate these slab-hole policies:
+
+- contiguous-run eviction;
+- size classes;
+- a hybrid;
+- the owner's activity-sorted compaction. This is a completion-safe
+  relocation that competes with decode for memory bandwidth
+  ([artifact-format.md](artifact-format.md)).
+
+**(b) Checkpoint-batch submission.** For batches that mix small and bulk
+transfers, compare serial with bounded asynchronous submission. Measure the
+effect of scheduling order and depth, the time to the last required
+completion, and consumer stalls. The M0 I/O spike did not measure these
+mixes. M4 extends this to simultaneous demand reads and state write-back,
+with dependency safety and bounded queues.
+
+**Inputs and open prerequisites.**
+
+- The measured expert-closure sizes (about 1.8–10.9 MB) and the per-model
+  memory padding of per-chunk handles (3.49–10.87%) come from D-056's
+  [worked examples](artifact-format.md#worked-examples-measured-plans-of-real-files).
+- **A cross-model swap trace that leaves holes in slabs does not exist
+  yet.** Build it before (a) runs, as an eviction/restore sequence across
+  several library models. Its extents are synthetic, drawn from D-056's
+  measured group and closure sizes. The reference A→B→A frozen trace and
+  the paging-feasibility routing captures are raw material for it. Like
+  other replay inputs, the trace stays outside Git; its generator and
+  verified identity are recorded.
+- **The proof fixtures cannot exercise realistic fragmentation.** The FP16
+  artifact's groups total 988,208,640 bytes, under one 1 GiB slab, the EXL3
+  fixtures are smaller, and none has experts. Compare hole policies by
+  replaying the trace on the fake backend. Measure costs on `spark` with the
+  M2 memory manager and synthetic extents. Report end-to-end restore on the
+  real fixtures. This uses synthetic extents only,
+  not MoE execution, which stays in M5.
+- **Criteria before measurement.** As in P0, the owner approves the metrics,
+  budgets, trace identity and the margins at which a slab or hybrid design
+  would amend D-033. This happens before any candidate result is seen.
+- **Expert compaction is partial at M2.** Relocation without VA remapping
+  assumes pointer-table dispatch. For experts, the M5 GGML proof decides
+  that. M2 evaluates compaction for dense groups, and the expert
+  case is completed in M5.
 
 ## Evidence and limits
 

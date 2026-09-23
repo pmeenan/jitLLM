@@ -1,0 +1,84 @@
+{
+  "checked_at": "2026-09-23",
+  "gcc": {
+    "version": "16.2.0",
+    "released": "2026-08-07",
+    "source": {
+      "url": "https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz",
+      "sha256": "e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e",
+      "size_bytes": 107200820,
+      "signature": "https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz.sig",
+      "signing_key_fingerprint": "7F74F97C103468EE5D750B583AB00996FC26A641",
+      "signing_subkey_of": "13975A70E63C361C73AE69EF6EEB81F8981C74C7",
+      "signer": "Richard Biener (GCC release manager), listed in the GNU keyring under his former name Richard Guenther",
+      "keyring": {
+        "url": "https://ftp.gnu.org/gnu/gnu-keyring.gpg",
+        "sha256": "b136fbe57ade4ee5270ca66c402cae7b50349fd07646b5b3de7962d58d4df608"
+      },
+      "verification": "gpgv against the GNU keyring: good signature"
+    },
+    "prerequisites": {
+      "role": "build-time only: linked into the GCC compiler binaries, not into jitLLM",
+      "fetched_by": "contrib/download_prerequisites (SHA-512 checked against contrib/prerequisites.sha512)",
+      "files": [
+        {
+          "file": "gmp-6.3.0.tar.bz2",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2",
+          "sha256": "ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb",
+          "sha512": "3b684c9bcb9ede2b7e54d0ba4c9764bfa17c20d4f3000017c553b6f1e135b536949580ff37341680c25dc236cfe0ba1db8cfdfe619ce013656189ef0871b89f8",
+          "size_bytes": 2643888
+        },
+        {
+          "file": "mpfr-4.2.2.tar.bz2",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2",
+          "sha256": "9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b",
+          "sha512": "0176e50808dcc07afbf5bc3e38bf9b7b21918e5f194aa0bfd860d99b00c470630aef149776c4be814a61c44269c3a5b9a4b0b1c0fcd4c9feb1459d8466452da8",
+          "size_bytes": 1753999
+        },
+        {
+          "file": "mpc-1.3.1.tar.gz",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz",
+          "sha256": "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8",
+          "sha512": "4bab4ef6076f8c5dfdc99d810b51108ced61ea2942ba0c1c932d624360a5473df20d32b300fc76f2ba4aa2a97e1f275c9fd494a1ba9f07c4cb2ad7ceaeb1ae97",
+          "size_bytes": 773573
+        },
+        {
+          "file": "isl-0.24.tar.bz2",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2",
+          "sha256": "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0",
+          "sha512": "aab3bddbda96b801d0f56d2869f943157aad52a6f6e6a61745edd740234c635c38231af20bc3f1a08d416a5e973a90e18249078ed8e4ae2f1d5de57658738e95",
+          "size_bytes": 2261594
+        },
+        {
+          "file": "gettext-0.22.tar.gz",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/gettext-0.22.tar.gz",
+          "sha256": "49f089be11b490170bbf09ed2f51e5f5177f55be4cc66504a5861820e0fb06ab",
+          "sha512": "e2a58dde1cae3e6b79c03e7ef3d888f7577c1f4cba283b3b0f31123ceea8c33d7c9700e83de57104644de23e5f5c374868caa0e091f9c45edbbe87b98ee51c04",
+          "size_bytes": 26105696
+        }
+      ],
+      "note": "The builds use --disable-nls; all five archives are build-time inputs of the compiler only"
+    },
+    "configure": "see build-gcc.sh (languages c,c++; no multilib/bootstrap; default PIE; libsanitizer/libgomp/libitm/libssp/libvtv/libquadmath disabled)",
+    "used_outputs": [
+      "include/c++/16 headers",
+      "lib64/libstdc++.a, libsupc++.a",
+      "lib64/libatomic.a",
+      "lib/gcc/<triple>/16: crt*.o, libgcc.a, libgcc_eh.a"
+    ],
+    "category": "D-017 declared platform dependency family (libstdc++ and compiler support runtimes), built from source; GCC's compiler binaries are unused build tools",
+    "license": "Primary terms: GPL-3.0-or-later WITH GCC-exception-3.1 for libstdc++, libgcc and libatomic; embedded components and header notices are recorded below",
+    "embedded_components": [
+      "libstdc++.a: Ryu (Apache-2.0 OR BSL-1.0; take BSL-1.0, no object-code notice), linked by floating-point formatting",
+      "libstdc++.a: fast_float (MIT in src/c++17/fast_float/fast_float.h; ship MIT notice if linked), linked only by floating-point std::from_chars",
+      "libstdc++exp.a: libbacktrace (BSD-3-Clause); only if libstdc++exp.a is linked, which release builds do not",
+      "include/c++/16/pstl headers: Apache-2.0 WITH LLVM-exception",
+      "include/c++/16/bits headers, including stl_vector.h and stl_algobase.h: Hewlett-Packard and Silicon Graphics permission notices; retain their copyright and permission text in supporting documentation",
+      "include/c++/16/bits/shared_ptr*.h and tr1/shared_ptr.h: Boost-derived code under BSL-1.0; no object-code notice, but redistributed headers retain it",
+      "Other installed headers: Jeremy Siek permission notice in bits/boost_concept_check.h; IBM-HRL permission notices in ext/pb_ds/*, ext/typelist.h and ext/throw_allocator.h; retain applicable texts when used or shipped",
+      "libgcc.a: glibc soft-fp objects, including addtf3.o on both architectures; LGPL-2.1-or-later with the file-level executable-linking permission in libgcc/soft-fp/*; separate archive distribution retains LGPL obligations"
+    ],
+    "header_audit": "M1 audits the exact used or shipped header set; the embedded-component examples are not an exhaustive header-license inventory",
+    "not_linked_in_release": "lib64/libstdc++exp.a (std::stacktrace; contains libbacktrace)"
+  }
+}

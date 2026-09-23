@@ -1,0 +1,201 @@
+{
+  "checked_at": "2026-09-23",
+  "ninja": {
+    "version": "1.13.2",
+    "category": "build-tool",
+    "license": "Apache-2.0 (upstream repository; the release zip contains only the binary)",
+    "release": "https://github.com/ninja-build/ninja/releases/tag/v1.13.2",
+    "digest_source": "GitHub release asset digest, recomputed after download",
+    "archives": [
+      {
+        "host_arch": "x86_64",
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip",
+        "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6",
+        "size_bytes": 134040,
+        "max_glibc": "2.15",
+        "max_glibcxx": "3.4.21"
+      },
+      {
+        "host_arch": "aarch64",
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux-aarch64.zip",
+        "sha256": "fd2cacc8050a7f12a16a2e48f9e06fca5c14fc4c2bee2babb67b58be17a607fc",
+        "size_bytes": 126256,
+        "max_glibc": "2.17",
+        "max_glibcxx": "3.4.21"
+      }
+    ]
+  },
+  "googletest": {
+    "version": "1.18.0",
+    "category": "incorporated implementation, linked into test executables only (not shipped)",
+    "license": "BSD-3-Clause",
+    "license_file": "LICENSE",
+    "release": "https://github.com/google/googletest/releases/tag/v1.18.0",
+    "archive": {
+      "url": "https://github.com/google/googletest/releases/download/v1.18.0/googletest-1.18.0.tar.gz",
+      "sha256": "6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5",
+      "size_bytes": 894741
+    },
+    "compiled_scope": "googletest/src and googlemock/src via gtest-all.cc, gmock-all.cc, gtest_main.cc, gmock_main.cc, plus their include trees",
+    "audit_note": "All compiled/included files carry Google BSD-3-Clause headers except gmock-pp.h and gmock-generated-actions.h (no per-file header; covered by the root LICENSE)",
+    "options": {
+      "INSTALL_GTEST": "OFF",
+      "BUILD_GMOCK": "ON",
+      "GTEST_HAS_ABSL": "OFF"
+    }
+  },
+  "llvm_tools": {
+    "category": "development tools (formatter, linter, language server, symbolizer); not shipped",
+    "repository_verification": "Same gpgv-verified apt.llvm.org InRelease and Packages.gz identities as D-032 (toolchain-smoke/artifacts.json)",
+    "license": "APACHE-2-LLVM-EXCEPTIONS (Apache-2.0 WITH LLVM-exception); the package copyright file also lists file-specific MIT, BSD-3-Clause and public-domain declarations",
+    "copyright_sha256": "b2ed2fd344e8ddbf2e0c83113bd40fa1853438be61a0ff20af5acd187c07cbf6",
+    "packages": [
+      {
+        "package": "clang-format-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "clang-format-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 107076,
+        "sha256": "db5bbb134276fdfe42188df4502a33d51e2889282134c8e76cdb4f19f4f628ad",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-format-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "clang-tidy-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "clang-tidy-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 2195452,
+        "sha256": "cebba8e3d25f9dc23eb679ee53914802937910257fe54c072795f2ad4f6ecf38",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-tidy-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "clang-tools-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "clang-tools-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 9952128,
+        "sha256": "6cb9e5936265ca8a25b8b174d7d1adbb647e48ad4e0a1fbbf164169ac20ccac9",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-tools-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "clangd-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "clangd-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 3722216,
+        "sha256": "1c53b7d522f2d607ec4b68d50bbd454905717001897f1df46fab8490eda39484",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clangd-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "llvm-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "llvm-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 20799896,
+        "sha256": "402a671415ac47810b4e581c06fa6e29110e51efae697647f7072e0528a1718e",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "llvm-22-runtime",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "amd64",
+        "filename": "llvm-22-runtime_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb",
+        "size_bytes": 650334,
+        "sha256": "ad7496a6588074f8e81123387962f3da07107a87243038c9ea577f11306ef2dc",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22-runtime_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_amd64.deb"
+      },
+      {
+        "package": "clang-format-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "clang-format-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 106196,
+        "sha256": "c1c420e01e5c51c26394cba3b5fd449fe3f5aedee7d3ea1a89cd16c727155bb0",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-format-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      },
+      {
+        "package": "clang-tidy-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "clang-tidy-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 2339164,
+        "sha256": "45ad02c391af809f420bdc070b01ead0aa2ce274438c6b95ac9729f9ab407cc1",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-tidy-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      },
+      {
+        "package": "clang-tools-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "clang-tools-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 9685964,
+        "sha256": "8850d89402986392ea520ade5314cba1ee4462e80cec1a16bfd198c00a1c81e1",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clang-tools-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      },
+      {
+        "package": "clangd-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "clangd-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 3855620,
+        "sha256": "2c4339e9b20d3372f4d823fb2640f6a74ff3697dd54c1774fd8ca57bc830cbe9",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/clangd-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      },
+      {
+        "package": "llvm-22",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "llvm-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 20030380,
+        "sha256": "f3191c010b8a3e19c0246335ab2cc07a2470cce866f9c856385eb50d8a0e0ffb",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      },
+      {
+        "package": "llvm-22-runtime",
+        "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",
+        "architecture": "arm64",
+        "filename": "llvm-22-runtime_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb",
+        "size_bytes": 627886,
+        "sha256": "aae81de85c732f9bb044c1e06d6642ff3611bfb4852c86b7715e06838363ad7f",
+        "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-22/llvm-22-runtime_22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80_arm64.deb"
+      }
+    ]
+  },
+  "libstdcxx": {
+    "version": "14.2.0-4ubuntu2~24.04.1",
+    "category": "declared platform dependency (D-017): libstdc++ development files and GCC support objects",
+    "license": "GPL-3.0-or-later WITH GCC-exception-3.1 for the libstdc++ headers/libraries, libgcc and crt objects the builds use; libgcc-14-dev also ships other GCC runtime objects, including libquadmath (LGPL-2.1-or-later), libsanitizer and libbacktrace, which these builds did not link",
+    "runtime_match": "Both hosts already run libstdc++6 and libgcc-s1 14.2.0-4ubuntu2~24.04.1",
+    "verification": "apt downloads checked against each host's signed noble-updates index; SHA-256 recorded below",
+    "packages": [
+      {
+        "package": "libstdc++-14-dev",
+        "architecture": "amd64",
+        "url": "http://us.archive.ubuntu.com/ubuntu/pool/universe/g/gcc-14/libstdc%2b%2b-14-dev_14.2.0-4ubuntu2%7e24.04.1_amd64.deb",
+        "sha256": "6d223262b8cbe6d5150435056d58dffa8159d8582fc0df47fb45ea550cd37424",
+        "size_bytes": 2506670
+      },
+      {
+        "package": "libgcc-14-dev",
+        "architecture": "amd64",
+        "url": "http://us.archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgcc-14-dev_14.2.0-4ubuntu2%7e24.04.1_amd64.deb",
+        "sha256": "055dfa5fa7448fe20ad2f3832df2edd2b0ffca7f8a6c5fbbc5576dc61b2eb8b7",
+        "size_bytes": 2820054
+      },
+      {
+        "package": "libstdc++-14-dev",
+        "architecture": "arm64",
+        "url": "http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-14/libstdc%2b%2b-14-dev_14.2.0-4ubuntu2%7e24.04.1_arm64.deb",
+        "sha256": "af958f5d7eb262f6b3b90f3d595f07023648cb38e1be46389b916714180a1ab2",
+        "size_bytes": 2475628
+      },
+      {
+        "package": "libgcc-14-dev",
+        "architecture": "arm64",
+        "url": "http://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgcc-14-dev_14.2.0-4ubuntu2%7e24.04.1_arm64.deb",
+        "sha256": "a69660eae5a6fd0788e84cb7f81e0f4594727287583bd50bb1650b7ee309f628",
+        "size_bytes": 2612036
+      }
+    ],
+    "superseded_by": "D-060 (GCC 16.2 built from source, linked statically)"
+  }
+}

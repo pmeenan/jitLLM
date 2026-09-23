@@ -188,7 +188,8 @@ it need not import the M2 kernels to prove source acquisition:
   discovery does not find host implementation libraries. Match the actual
   compile/link/package inventory to the receipt, notices and SBOM.
 
-The remaining M0 toolchain task still selects the test framework, Ninja and
-other tool pins, CI shape and installed layout; D-058 has settled CMake.
+The remaining M0 toolchain task still selects the CI shape and installed
+layout; D-058 settled CMake, and D-059 settled Ninja, the developer tools and
+GoogleTest, M1's test dependency for these gates.
 This decision
 settles their source-dependency mechanism without claiming those tasks done.

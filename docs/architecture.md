@@ -780,7 +780,8 @@ only measurable on a Spark. The Spark-side inventory follows.
 
 The [M0 smoke](experiments/toolchain-smoke/README.md) passed native C++23,
 AArch64 cross CPU/CUDA execution on `spark`, and a native Spark fallback.
-D-032 pins LLVM/LLD 22.1.8, the measured GCC/libstdc++/glibc components,
+D-032 pins LLVM/LLD 22.1.8, the measured GCC/libstdc++/glibc components
+(the C++ runtime is now D-060's statically linked GCC 16.2),
 NVCC/cudart 13.4.92 (Toolkit 13.4.2), and the hashed target snapshot.
 Host and CUDA translation units both use C++23, including an `if consteval`
 host/device probe; the installed 13.0 comparison has a dialect limit (RE-001).

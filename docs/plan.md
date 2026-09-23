@@ -398,27 +398,20 @@ needs evidence from the real hardware.
       provenance gate ([licensing](licensing.md#early-exl3-companion-d-052));
       until resolved the native plan runs the GEMM kernel where upstream
       selects GEMV. Execution, thresholds and the contract remain M2 work.
-- [ ] Compare retained backing strategies in the M2 backend/paging proof
-      (owner follow-up 2026-09-21, D-035): D-033's small independent handles
-      versus larger persistently mapped slabs, including 1 GiB, with software
-      suballocation and actual executable tensor views. Keep ordinary paging
-      free of avoidable create/release cycles. Measure warm reuse, remapping
-      and registration costs where required, fragmentation, growing/shrinking
-      the shared pool, concurrent compute, and end-to-end restore latency.
-      Prove alias/captured-pointer/late-I/O safety for any address changes.
-      Both designs retain useful contents within budget; disk transfer size
-      remains independent. D-056's layout serves both. Inputs: the measured
-      expert-closure sizes (about 1.8–10.9 MB), the per-model memory padding
-      of per-chunk handles (3.49–10.87%), and a cross-model swap trace that
-      exercises slab holes. Evaluate contiguous-run eviction, size classes,
-      a hybrid, and the owner's activity-sorted compaction (a completion-safe
-      relocation that competes with decode for memory bandwidth). Use the
-      result to retain or amend D-033 explicitly.
-      Include checkpoint batches mixing small and bulk transfers: compare
-      serial and bounded asynchronous submission, scheduling order/depth,
-      time to the last required completion, and consumer stalls. M4 extends
-      this to simultaneous demand reads and state write-back with dependency
-      safety and bounded queues. The M0 I/O spike did not measure these mixes.
+- [x] Defer the retained backing comparison to M2 (owner follow-up
+      2026-09-21, D-035; deferred 2026-09-23). It compares D-033's small
+      independent handles with larger persistently mapped slabs, including
+      1 GiB, and serial with bounded asynchronous submission for mixed
+      checkpoint batches. It needs the M2 catalog, leases, storage and completion
+      services on the backend proof's P4 harness, so it cannot run in M0.
+      Deadline: D-033 is explicitly retained or amended before the internal
+      contract is settled and M2 closes.
+      The [scope](backend-proof.md#retained-backing-comparison) records the
+      open prerequisites: a cross-model swap trace (none exists yet),
+      synthetic extents because the dense ~0.5B fixtures are too small to
+      fragment slabs realistically, and retain/amend criteria set before
+      measurement. It also records that expert compaction waits for M5's
+      dispatch choice.
 - [x] Define the M4 A→B→A acceptance trace and the bounded retention policy
       (2026-09-22, D-055): the [retention policy](retention-policy.md)
       settles entry identity, adapter restore boundaries, immutable shared
@@ -487,11 +480,32 @@ needs evidence from the real hardware.
       (D-058), with both Linux archive hashes and seven FetchContent semantic
       checks passing on workstation and Spark; CMake-driven native CPU,
       AArch64 cross CPU/CUDA and native Spark CPU/CUDA smoke also passed
-      ([report](experiments/cmake-fetchcontent/README.md)). Implementation,
-      application build validation and remaining tool pins are still owed.
+      ([report](experiments/cmake-fetchcontent/README.md)). D-059 (2026-09-23)
+      pins Ninja 1.13.2, GoogleTest 1.18.0 (owner's choice), the LLVM 22.1.8
+      formatter/linter/language server/symbolizer and GCC 14.2 libstdc++
+      headers (amending D-032; the headers were replaced by D-060's static GCC
+      16.2 runtime), with candidate style, check and warning sets.
+      Native, sanitizer, cross-to-Spark CTest and native Spark runs passed
+      ([report](experiments/dev-tools/README.md)). The CI shape,
+      versioning/changelog conventions, installed layout, implementation and
+      application build validation are still owed.
+- [x] Evaluate static runtime linking with GCC 16.2 (owner follow-up
+      2026-09-23, D-060): GCC 16.2 built from GPG-verified source on both
+      hosts. libstdc++, libgcc and cudart are linked statically, and Clang
+      stays 22.1.8 (NVCC's host limit; owner declined a compiler split).
+      Binaries need only glibc (`GLIBC_2.38` at most) plus the driver's
+      `libcuda`, which is loaded at run time. The C++23 probe (`<flat_map>`,
+      `<mdspan>`, `<print>`), NVCC, the CUDA smoke on the GB10, GoogleTest
+      (native, cross over SSH, Spark) and sanitizers all passed
+      ([report](experiments/gcc16-static/README.md)). NCCL must be static or
+      built with `-static-libstdc++`; cuBLAS static pending its review. The
+      owner confirmed that GCC's runtime exception permits the static
+      linking. Release builds do not link `libstdc++exp.a`, so libbacktrace and
+      its notice stay out.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
-      criteria, including unassigned D-041–D-044 API delivery (Ollama subset,
+      criteria, carrying the deferred retained-backing comparison into M2
+      and including unassigned D-041–D-044 API delivery (Ollama subset,
       warm/install jobs with D-054's archive and peer replication, file
       modalities, MCP, sharing controls, embeddings,
       compatible tokenization/rendering, constrained output, reasoning,
@@ -557,7 +571,10 @@ has a promised date; each should leave a usable, testable result.
   repeated map/load/evict/restore checks succeed on a Spark.
   Run the early backend integration proof ([scope](backend-proof.md))
   alongside this work; it must pass
-  before settling the internal contract and closing M2. The proof covers the
+  before settling the internal contract and closing M2. The deferred
+  [retained-backing comparison](backend-proof.md#retained-backing-comparison)
+  must explicitly retain or amend D-033 by the same point, under criteria
+  approved before measurement. The proof covers the
   small dense FP16 control **and both real EXL3 fixtures** (D-052), their
   native prefill/decode and state, with correctness before and after
   restoration. EXL3 kernel time/workspace gates against the pinned Spark

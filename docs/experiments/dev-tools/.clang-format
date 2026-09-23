@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+# Candidate project style; M1 moves it to the repository root.
+---
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+...

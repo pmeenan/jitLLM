@@ -190,7 +190,7 @@ client-supplied history when an idle cache entry is unavailable.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| C++23 host runtime, Clang-first; NVCC with Clang host compiler where validated; pinned libstdc++ initially | confirmed | D-010 |
+| C++23 host runtime, Clang-first; NVCC with Clang host compiler where validated; pinned libstdc++ initially | confirmed | D-010; D-060 links a source-built GCC 16.2 libstdc++/libgcc and cudart statically; only glibc, the NVIDIA driver libraries and rdma-core stay dynamic |
 | Cross-compile from x86-64 to Spark; deploy and test over SSH; explicit targets only | confirmed | D-011 |
 | `mise.toml` + `mise.lock` for tool setup, environment, and tasks | confirmed | D-012 |
 | Project-owned SDK provisioning; native Ubuntu and a reference dev container from the same logic | confirmed | D-012 |
@@ -199,7 +199,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Optional implementation modules/plugins selectable at build time; incorporated core implementation uses Apache-2.0 / BSD / MIT / MPL-2.0 | confirmed | D-017; default build may use declared platform dependencies under their actual terms; classification never waives license obligations |
 | Reference container pinned by digest; target driver recorded separately from toolkit and library versions | confirmed | ideation §16 |
 | Core builds and its tests pass in a CPU-only configuration with no vendor SDK present | confirmed | ideation §16, D-026; the portability guardrail and the fake backend's home |
-| CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | confirmed | 2026-09-21; D-032 pins validated compilers/LLD; D-058 pins CMake 4.4.3 with both-host FetchContent checks and native/cross/CUDA smoke. Remaining tool pins and application build validation are still owed (ideation §14) |
+| CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | confirmed | 2026-09-21; D-032 pins validated compilers/LLD; D-058 pins CMake 4.4.3 with both-host FetchContent checks and native/cross/CUDA smoke. D-059 pins Ninja 1.13.2, GoogleTest 1.18.0, clang-format/clang-tidy/clangd/llvm-symbolizer 22.1.8 and the candidate style, check and warning sets. Application build validation is still owed (ideation §14) |
 | File set: `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`, `tools/setup-toolchain`, `tools/check-toolchain`, `cmake/toolchains/`, `CMakePresets.json`, `.devcontainer/` | confirmed | 2026-09-21 as M1 scope, minus the `dev` script (next row); ideation §16 |
 | `setup / doctor / build / test / deploy` contributor entry point as mise tasks | confirmed | 2026-09-21: D-012 already makes mise the task runner, so these are mise tasks rather than a separate `./dev` script (ideation §16) |
 | REUSE-style file-level SPDX identifiers; NOTICE file; SBOM | confirmed | 2026-09-21 (D-029): copyright/license metadata with REUSE lint plus a separate embedded-header check for commentable source and docs, and a NOTICE file from M1; uncommentable files use sidecars or REUSE.toml. The SBOM lands with `.deb` packaging and is tied to the license profile (ideation §17) |

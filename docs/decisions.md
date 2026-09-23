@@ -30,6 +30,208 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family)
+
+**Decision.** The owner asked on 2026-09-23 for GCC 16.2, static linking
+wherever possible, and the newest version of every component that is still
+compatible with the runtime.
+
+- **Runtime library.** Build GCC **16.2.0** natively for x86-64 and AArch64
+  from the GPG-verified release tarball and its SHA-512-checked
+  prerequisites, using the recorded configure flags
+  ([pins](experiments/gcc16-static/pins.json),
+  [script](experiments/gcc16-static/build-gcc.sh)). Use only its C++
+  headers, `libstdc++.a`, `libsupc++.a`, `libatomic.a`, `crt*.o`,
+  `libgcc.a` and `libgcc_eh.a`, selected with an explicit
+  `--gcc-install-dir`. Release builds do not use `std::stacktrace` or link
+  `libstdc++exp.a`, the only archive that contains libbacktrace. Crash
+  traces are symbolized offline, and sanitizer builds use the LLVM
+  symbolizer. Clang 22.1.8 still compiles all host code, including
+  NVCC's host passes (D-010); GCC's compiler binaries are build tools only.
+- **Cross builds.** The ARM runtime lives inside the target sysroot. Clang
+  only searches a GCC install's library directory when it is under
+  `--sysroot`.
+- **Linking.** jitLLM executables, tests included, link libstdc++ and libgcc
+  statically (`-static-libstdc++ -static-libgcc`) and link the CUDA runtime
+  statically (`libcudart_static.a`). The following stay dynamic:
+  - glibc (`libc`, `libm`, the dynamic loader);
+  - the NVIDIA driver's user-space libraries (`libcuda`, NVML), which the
+    static CUDA runtime loads at run time;
+  - rdma-core (`libibverbs` and its provider plugins).
+
+  None of these links the C++ runtime. No library loaded into a jitLLM
+  process may bring its own dynamic libstdc++. NCCL must therefore be linked
+  statically or built with `-static-libstdc++`, and cuBLAS linked statically
+  subject to its license and size review. Both keep their own pin decisions.
+  A shared library built with `-static-libstdc++` must also hide its runtime
+  symbols (for example `-Wl,--exclude-libs,ALL`) to prevent binding to the
+  executable's copies, or use these same runtime artifacts so any such
+  binding uses the same implementation.
+- **Other versions.** Every other pin is the newest compatible release,
+  checked 2026-09-23:
+  - CUDA 13.4.92 components (CCCL 13.3.4.3.1);
+  - CMake 4.4.3, Ninja 1.13.2 and GoogleTest 1.18.0.
+
+  **LLVM stays 22.1.8.** NVCC 13.4 accepts host Clang only up to 22. The
+  owner declined splitting host compilers to reach LLVM 23.1.2.
+
+**Context.** Static linking removes GCC 14.2's advantage of matching the
+system `libstdc++6`, and none of the unavoidable dynamic libraries uses the
+C++ runtime (checked on `spark`). NVIDIA's CUDA 13.4 Update 1 guide supports
+GCC 6–16, with libstdc++ as the only standard library. Ubuntu 24.04's
+official archive has no GCC 16. The unofficial toolchain PPA offers only a
+pre-release GCC 16 snapshot, and installing it replaces the system runtime.
+Building
+from signed source avoids both problems. GCC 16.2 adds `<flat_map>` and
+`<mdspan>`, which 14.2 lacks. The interconnect experiment's source-built
+NCCL 2.30.7 links `libstdc++.so.6` dynamically, which is why the NCCL rule
+above is needed.
+
+**Evidence.** Recorded in the [GCC 16.2 report](experiments/gcc16-static/README.md):
+
+- Static binaries on both architectures need only `libc`, `libm` and the
+  loader. The highest symbol version required is `GLIBC_2.38`; the hosts
+  have 2.39.
+- The C++23 probe passed natively on both hosts and cross-built on `spark`:
+  `<flat_map>`, `<mdspan>`, `<print>`, `<generator>`, `ranges::to` and
+  exception unwinding.
+- With GCC 16 headers and static cudart, NVCC 13.4 compiled on both
+  architectures. The CUDA probe (native and cross) and D-032's smoke
+  (257 values) ran on the GB10.
+- GoogleTest passed 10/10 in each profile: native, cross via CTest over SSH,
+  native Spark, and ASan+UBSan on both. The failing controls failed as
+  expected.
+- clang-tidy, clangd and clang-format behaved as they did under D-059.
+
+**Consequences.**
+- M1's SDK builds or supplies these runtime artifacts per architecture from
+  the recorded source identity, and places the ARM copy inside the target
+  sysroot.
+- The D-059 libstdc++ 14 packages are no longer selected. D-059's other
+  pins stand.
+- **Licensing.** This decision makes the source-built GCC 16.2 runtime the
+  selected libstdc++ and compiler support runtime of D-017's platform
+  family. The primary terms of libstdc++, libgcc and libatomic are
+  GPL-3.0-or-later WITH GCC-exception-3.1, with embedded components under
+  additional terms recorded in the report. Static linking under the GCC
+  exception relies on all Target Code in the executable coming from an Eligible Compilation
+  Process. jitLLM's code qualifies because neither Clang nor NVCC is a work
+  based on GCC; GPL compatibility is not the test, and NVCC's proprietary
+  passes would not meet it. Statically linked third-party archives (cudart,
+  and later NCCL or cuBLAS) need the same check. The owner confirmed on
+  2026-09-23 that the exception permits this static linking. `libstdc++.a` also embeds Ryu
+  (Apache-2.0 OR BSL-1.0), linked by floating-point formatting, and
+  fast_float (MIT in this GCC source), linked only by floating-point
+  `std::from_chars`. Take Ryu under BSL-1.0, which needs no notice for
+  object code. If fast_float is linked, its MIT notice ships in the
+  third-party notices. libbacktrace
+  (BSD-3-Clause) enters a binary only if `libstdc++exp.a` is linked, which
+  would then require shipping its notice. The libstdc++ headers also retain
+  Hewlett-Packard and Silicon Graphics copyright/permission notices, which
+  ship in supporting documentation. `libgcc.a` contains glibc soft-fp code
+  under LGPL-2.1-or-later with its own executable-linking permission;
+  distributing those objects separately still carries LGPL obligations.
+  Notices and the SBOM
+  record the static runtimes, their embedded components and the GCC source
+  identity.
+- Static test binaries are larger: 7.5 MB against 5.9 MB, with debug info.
+- The installed-layout decision can assume the runtime dependencies are
+  glibc, the NVIDIA driver and, for RDMA, rdma-core.
+
+**Reopen if.**
+- A CUDA release supports Clang 23 or GCC 17.
+- GCC 16.x issues a fix release.
+- A required library cannot be linked statically without loading a second
+  C++ runtime.
+- Static runtimes break a sanitizer or profiler that M1 needs.
+
+## D-059: Pin Ninja, GoogleTest, LLVM developer tools and GCC 14.2 libstdc++  (2026-09-23, status: accepted; libstdc++ 14.2 pin superseded by D-060; amends D-032's libstdc++ development files; implements D-049's tool set; GoogleTest is D-057's M1 test dependency)
+
+**Decision.** The owner chose GoogleTest and GCC 14.2 headers on 2026-09-23.
+Exact URLs, hashes and sizes are in the
+[dev-tools pins](experiments/dev-tools/pins.json).
+
+- **Ninja 1.13.2** (official x86-64 and AArch64 release binaries) is the
+  CMake generator.
+- **GoogleTest 1.18.0**, including gMock, is the C++ test framework. It is
+  built from the hash-pinned release archive under D-057, with
+  `INSTALL_GTEST=OFF` and `GTEST_HAS_ABSL=OFF`, and added as a `SYSTEM`,
+  `EXCLUDE_FROM_ALL` subproject. Tests register through
+  `gtest_discover_tests(... DISCOVERY_MODE PRE_TEST)`, so cross builds never
+  execute target binaries at build time. On the workstation, cross-built
+  tests run on a Spark through `CMAKE_CROSSCOMPILING_EMULATOR`.
+- **clang-format, clang-tidy, clangd and llvm-symbolizer** come from the same
+  apt.llvm.org 22.1.8 build and verified index as D-032.
+- **libstdc++ development files** change from D-032's GCC 13.3 to Ubuntu
+  24.04's `libstdc++-14-dev`/`libgcc-14-dev` **14.2.0-4ubuntu2~24.04.1**.
+  Every compile selects them with an explicit `--gcc-install-dir`. This
+  matches the `libstdc++6`/`libgcc-s1` 14.2 runtime already on both hosts,
+  so the runtime is unchanged. The Clang, LLD and CUDA pins are unchanged.
+- **Project conventions** start from the validated candidates in the
+  experiment directory:
+  - `.clang-format`: Google style, 100 columns;
+  - `.clang-tidy`: findings are errors;
+  - warnings for jitLLM targets only: `-Wall -Wextra -Wpedantic -Wshadow
+    -Wconversion -Wsign-conversion -Wnon-virtual-dtor -Wold-style-cast
+    -Wimplicit-fallthrough -Werror`;
+  - `CMAKE_CXX_SCAN_FOR_MODULES OFF`, because jitLLM uses no C++ modules.
+
+  M1 moves these to the repository root. Tuning individual checks or
+  warnings later is routine and needs no new entry.
+
+**Context.** Ninja and GoogleTest were the latest upstream releases on
+2026-09-23; LLVM 22.1.8 is the latest 22.x. LLVM 23.1.2 exists, but
+NVIDIA's CUDA 13.4 Update 1 guide lists host Clang 7–22, and D-032
+selected 22.1.8. The same guide supports GCC
+6–16, with libstdc++ as the only standard library. Ubuntu 24.04's official
+archive stops at GCC 14.2. GCC 15.2 and 16 are only in the unofficial
+toolchain PPA; its GCC 16 is a pre-release snapshot, and installing either
+replaces the system runtime. GCC 13 lacks `<print>`. GCC 14.2 adds `<print>`
+and `<generator>`, but still lacks `<flat_map>` and `<mdspan>`. Catch2 was
+not considered because BSL-1.0 is outside D-017's allowlist for linked code.
+GoogleTest is BSD-3-Clause.
+
+**Evidence.** Recorded in the [dev-tools report](experiments/dev-tools/README.md):
+
+- All archives and packages matched upstream or signed-index hashes. A
+  tampered GoogleTest archive failed verification with no bytes extracted.
+- GoogleTest passed 10/10 in each profile: native, ASan+UBSan, cross-built
+  and run on `spark` through CTest over SSH, native Spark, and Spark
+  ASan+UBSan. A failing control made CTest fail on both hosts.
+- With GCC 14.2 headers, D-032's CPU/CUDA smoke passed cross-built and built
+  natively on `spark` (257 values checked). An NVCC `.cu` using `<print>`,
+  `<format>`, `<expected>` and `<ranges>` compiled with
+  `-Werror all-warnings` and ran on the GB10.
+- The symbolizer resolved ASan frames to file:line on both architectures.
+- Formatting gave byte-identical output on both architectures. clang-tidy
+  was clean on the harness and caught a seeded negative control.
+- clangd loaded the compile database and parsed the test file with no
+  compile diagnostics.
+
+**Consequences.**
+- M1's SDK provisions these components and the libstdc++ 14 files for both
+  architectures. D-032's Spark sysroot snapshot needs the arm64 GCC 14
+  files added.
+- Existing experiment reproduction instructions remain valid as history.
+- The CI shape, versioning/changelog conventions and installed layout
+  remain open in the M0 toolchain task.
+- **Next toolchain item.** Evaluate statically linking the C++ runtime (and
+  cudart, NCCL and cuBLAS where license and size allow) together with GCC
+  16.2 built from pinned source. The owner raised static linking
+  2026-09-23. glibc, the NVIDIA driver's user-space libraries (`libcuda`,
+  NVML) and rdma-core (`libibverbs` and providers) stay dynamic. On `spark`,
+  each of those depends only on C libraries (plus libnl for verbs). Static
+  linking would therefore remove GCC 14's runtime-matching advantage without
+  loading two C++ runtimes into one process, provided no other dynamic
+  library needs `libstdc++.so.6`: the interconnect experiment's source-built
+  NCCL 2.30.7 does, so NCCL must be linked statically or built with
+  `-static-libstdc++`.
+
+**Reopen if.** The static-runtime/GCC 16.2 evaluation succeeds, DGX OS moves
+to a newer Ubuntu release, or a newer LLVM enters CUDA's supported
+host-compiler range. The same applies if clang-tidy or clangd cannot handle
+the real code base. Repeat both-host checks before changing pins.
+
 ## D-058: Pin CMake 4.4.3 and its current FetchContent policies  (2026-09-23, status: accepted; implements D-012 validation; specializes D-049 and D-057)
 
 **Decision.** Use the official CMake **4.4.3** Linux binary distributions:
@@ -1730,7 +1932,7 @@ batched driver operations, or a bounded unused-handle cache improve measured
 end-to-end latency enough to justify their occupancy/reclamation cost. Reprobe
 when device, driver, allocation properties, or sharing requirements change.
 
-## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins)
+## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins; libstdc++ development files amended by D-059, then replaced by D-060's statically linked GCC 16.2 runtime)
 
 *2026-09-22 follow-up:* the [smoke manifest](experiments/toolchain-smoke/artifacts.json)
 now includes matching `libclang-rt-22-dev` packages for amd64 and arm64.

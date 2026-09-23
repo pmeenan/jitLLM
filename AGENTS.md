@@ -181,7 +181,7 @@ the human commit gate.
    explicit error results, bounded queues, move-only ownership wrappers. No
    exceptions across a C ABI. GPU/I/O lifetime is completion-aware: a
    destructor is not proof that submitted work finished. Warning, format, and
-   lint tool pins land in M1 and are recorded in decisions.md.
+   lint pins are recorded in D-059; M1 applies them at the repository root.
 7. **Keep the always-loaded context lean.** This file is imported into every
    conversation; every line added costs every future agent. Detail belongs in
    `docs/` behind the doc map, not here.
@@ -221,8 +221,10 @@ is mounted at `/mnt/llm`. D-055 sets capacity-driven state retention with a
 capacity values are pinned at M3 exit. D-056 settles the experimental v0
 artifact format: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB
 paging chunks, verified on real fixtures and Gemma 4. D-057 selects locked
-CMake source acquisition with curated vendoring; D-058 pins CMake 4.4.3,
-checked on workstation and Spark. Provisioning remains M1.
-The remaining M0 toolchain decisions are next (plan.md).
+CMake source acquisition with curated vendoring; D-058 pins CMake 4.4.3;
+D-059 pins Ninja, GoogleTest and the LLVM developer tools; D-060 links a
+source-built GCC 16.2 C++ runtime and cudart statically (LLVM stays 22.1.8),
+all checked on workstation and Spark. Provisioning remains M1. Next: the CI,
+versioning and installed-layout decisions (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).
