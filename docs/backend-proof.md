@@ -38,9 +38,10 @@ for the proof.
 ## Entry conditions and ordering
 
 - **M1 delivered:** SDK and toolchain (D-032/D-049), CMake presets, the
-  CPU-only guardrail build, and the question-7 mechanism supplying the pinned
-  GGML subset and the selected ExLlamaV3 files. That mechanism also supplies
-  any patch as a reviewed file, with hashes and notices.
+  CPU-only guardrail build, and the question-7 mechanism, proven on
+  GoogleTest. P0 uses it to admit the pinned GGML subset and the selected
+  ExLlamaV3 files, supplying any patch as a reviewed file with hashes and
+  notices (plan.md).
 - **P0/P1 need no artifacts.** They start once M1 builds. P2 onward runs from
   prepared artifacts in D-056's experimental v0 encoding. The M0 layout
   study built and verified all three fixtures in it. A proof-only file format does

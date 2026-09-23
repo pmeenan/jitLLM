@@ -642,7 +642,7 @@ file or a Unix socket with group permissions), a browser-hosted dashboard
 must call the API directly, or an embedding customer needs a supported
 library.
 
-## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface)
+## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md)
 
 **Decision.** Owner's answers on 2026-09-23 chose TOML configuration and
 `/var/lib/jitllm` as the default data directory. The packaged layout is
@@ -2154,7 +2154,7 @@ versioning names any jitLLM `format` value. No implementation is claimed.
 the schema under a pinned client version, or fallback is accepted under
 D-042 and needs the reserved spelling made concrete.
 
-## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064)
+## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064; the context-compacted release check moved from M3 to M4 in the 2026-09-23 milestone ladder, plan.md)
 
 **Decision.** At the owner's direction after review of the D-040–D-044
 documents, the inference front door adopts these public-interface rules:
@@ -3148,7 +3148,7 @@ without a fork; the flagship recipes need kernels GGML cannot host; or an
 out-of-tree, differently licensed backend must load without rebuilding the
 core.
 
-## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063)
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md)
 
 **Decision.** The user-facing installation path is the platform's package
 manager. For DGX Spark that is apt with a project-hosted, signed repository

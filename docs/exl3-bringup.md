@@ -213,5 +213,5 @@ AGPL module or clear third-party patches and calibration data. Preserve
 per-file provenance and notices. The reference includes an attributed MIT-source
 patch for external ARM host helpers; no upstream implementation has entered
 the native application. Native builds retain the CPU-only/fake-backend guardrail and no
-runtime plugin ABI. The experimental artifact schema remains its own M0
-decision, now informed by both real representations.
+runtime plugin ABI. The experimental artifact schema is settled separately
+(D-056), informed by both real representations.

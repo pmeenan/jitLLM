@@ -12,9 +12,10 @@ inference are deferred behind concrete triggers (plan.md). D-045 settles the
 front-door listener, auth and CORS defaults, the `keep_alive` mapping and the
 Ollama liveness/version routes. The [vLLM assessment](vllm-api-assessment.md)
 and the [OpenRouter assessment](openrouter-api-assessment.md) are separate.
-Detailed mechanisms below are design guidance: exact paths, schemas, numeric
-limits and delivery milestones outside M3/M4/M4a are still to specify, and
-nothing here claims implementation or client compatibility.
+Detailed mechanisms below are design guidance: exact paths, schemas and
+numeric limits are still to specify, and nothing here claims implementation
+or client compatibility. Delivery milestones are in
+[plan.md's milestone ladder](plan.md#milestone-ladder).
 
 ## Recommendation
 
@@ -220,9 +221,11 @@ hosting. Such hosting remains a non-goal (vision.md).
 ## Staging and validation
 
 D-041 adds discovery to M3, targeted continuation close to M4, and cluster
-availability to M4a. Assign delivery milestones for the accepted Ollama subset
-and job surface when rewriting the ladder, along with D-042's file modalities,
-MCP, sharing controls and embeddings. MCP follows the native management API.
+availability to M4a. The 2026-09-23 milestone ladder (plan.md) places import
+and download jobs in M3; warm jobs, priorities, queue waits, cancellation and
+progress events in M4; archive and peer replication in M4a; and the Ollama
+subset, file inputs, MCP, application permissions and embeddings in M8. MCP
+follows the native management API.
 Live audio/video and batch/background jobs remain deferred until concrete
 workloads establish their requirements; earliest M7 planning, not automatic M7
 obligations. All accepted scope still needs execution evidence.

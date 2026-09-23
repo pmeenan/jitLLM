@@ -18,8 +18,8 @@ compatibility, tokenization/rendering, constrained output, reasoning,
 reranking, metrics, raw Completions) and the
 [OpenRouter assessment](openrouter-api-assessment.md) (D-046: model-metadata,
 reasoning and hint spellings adopted on the OpenAI-shaped routes; hosted-routing
-features excluded). Delivery milestones for scope outside M3 are
-assigned when the ladder is rewritten (plan.md). D-040's JSON response
+features excluded). Delivery milestones for scope outside M3 are in
+[plan.md's milestone ladder](plan.md#milestone-ladder). D-040's JSON response
 envelopes do not imply schema-constrained generation; that comes from D-043.
 Advertise only the implemented feature profile; jitLLM extensions stay separate.
 
@@ -338,22 +338,24 @@ Do not silently replay an uncertain execution when a client or node disconnects
    Add M4's A→B→A trace through a validated client, without session extensions.
 6. Verify the D-045/D-047 contract: discovery answers inside the client bound with no
    I/O; an induced switch longer than the keepalive interval completes through
-   each streaming protocol with a defined keepalive (test Ollama's separate
-   load-time bound). Non-streaming calls through each route return one valid
+   each streaming protocol with a defined keepalive. Non-streaming calls
+   through each route return one valid
    JSON result after a switch, or a JSON 504 on server deadline expiry, without
    SSE bytes or premature success headers. Verify safe cancellation on deadline
    and disconnect. Each status-table row produces the documented client
    behavior, including Claude Code's thinking, signature and prompt-too-long
-   recovery paths; `x-claude-code-context-compacted` (with hint headers enabled in the
-   pinned profile) releases the prior continuation while a shared prefix
-   stays reusable; side requests cause no
-   extra switches under the default alias; an Ollama-native client works on
-   loopback without a credential; cross-origin requests from a non-listed
-   origin are refused.
+   recovery paths; side requests cause no extra switches under the default
+   alias; a named client works on loopback without a credential, ignoring a
+   placeholder one; cross-origin requests from a non-listed origin are
+   refused. Two checks wait for their scope: in M4, with D-041's close,
+   `x-claude-code-context-compacted` (hint headers enabled in the pinned
+   profile) releases the prior continuation while a shared prefix stays
+   reusable; in M8, with the Ollama profile, an Ollama-native client works
+   on loopback without a credential and its separate load-time bound holds.
 
 7. Verify D-047 storage validation: omitted/false `store` succeeds with full
    history, while true, non-boolean values and non-null continuation references
-   fail before admission. When reasoning support lands, test current vLLM's
+   fail before admission. When reasoning support lands (M5), test current vLLM's
    `reasoning` and any separately advertised legacy spelling, plus the pinned
    OpenRouter SDK's preservation of `format: "unknown"` signed blocks through
    streamed tool calls and subsequent tool-result requests. Check text,

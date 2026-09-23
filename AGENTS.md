@@ -141,6 +141,7 @@ the human commit gate.
 | Doc | Read when the task needs |
 | --- | --- |
 | [docs/plan.md](docs/plan.md) | What to work on, milestone scope, exit criteria — what "done" means |
+| [docs/m0-record.md](docs/m0-record.md) | Where an M0 result came from: each planning task, spike and reference run with its evidence links and caveats. Frozen history |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
 | [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
@@ -195,51 +196,12 @@ the human commit gate.
 
 ## Current status
 
-Milestone **M0 (plan the plan)** — direction, retention/measurement,
-cluster/API, task/completion, reservation, SDK, kernel-dispatch and model-storage
-choices are recorded through D-069; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
-retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
-hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
-Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
-spike selects initial 2 MiB extents (D-033); the I/O spike selects direct
-files into GPU-accessible host VMM without a staging copy (D-034). Both Sparks
-are reachable over SSH; the `sparky` DAC baseline passed, with 184.76 Gb/s
-combined host writes and validated NCCL over host buffers (environment.md).
-The 27-trial reference cycle and bounded full paging-feasibility study are
-recorded (plan.md). Qwen route estimates are conditional on numerical drift;
-unvalidated spill continuations use conservative recomputation. The owner
-accepted workload-scoped switching/stall targets in D-036; implementation
-validation remains ahead. The D-048 CPU-only task/completion prototype passed
-on the workstation and Spark; D-050 settles reservation/progress policy, with
-runtime proof still owed in M2. D-051 selects Qwen2.5-0.5B-Instruct FP16 and
-the pinned llama.cpp reference; D-052 adds a mandatory early EXL3 companion.
-Both EXL3 quants passed the bounded Spark reference. The owner-added
-Qwen-Image GGUF (GGML runner) and two-Spark MiMo references also ran. The M2
-backend-proof scope is recorded (docs/backend-proof.md), with an open EXL3
-GEMV provenance gate; D-053 moves kernel dispatch into jitLLM with swappable
-per-operation kernels. D-054 keeps installed models node-local, with an
-optional long-term store (NAS/USB) and one import per cluster; the owner's NAS
-is mounted at `/mnt/llm`. D-055 sets capacity-driven state retention with a
-24-hour idle cap and names M4's Qwen2.5-0.5B FP16/EXL3 acceptance workload;
-capacity values are pinned at M3 exit. D-056 settles the experimental v0
-artifact format: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB
-paging chunks, verified on real fixtures and Gemma 4. D-057 selects locked
-CMake source acquisition with curated vendoring; D-058 pins CMake 4.4.3;
-D-059 pins Ninja, GoogleTest and the LLVM developer tools; D-060 links a
-source-built GCC 16.2 C++ runtime and cudart statically (LLVM stays 22.1.8),
-all checked on workstation and Spark. D-061 replaces hosted CI with a local
-tiered check gate until there are external contributors (the Sparks are never
-runners); D-062 sets SemVer 0.x and surface versions; D-063 the installed
-layout (`jitllm` user, TOML with drop-ins in `/etc/jitllm`, `/var/lib/jitllm`,
-loopback ports 8114/8115); D-064 keeps local management anonymous behind
-browser guards and jitLLM a service, not a library; D-065 serves front-door
-TLS from certificate files kept current by certbot or `tailscale cert`, with a
-local CA fallback. Provisioning remains M1. The owner approved the first full
-architecture draft on 2026-09-23; drafting added D-066 (no exceptions, `std::expected`
-errors) and D-067 (native per-template chat renderers); D-068 designs for
-speculative (MTP) and block-diffusion decoding and uncovered model shapes
-now, executing them in M7; D-069 makes switching a configurable policy that
-pauses only at completed phase boundaries (priority-aware by default). Next:
-the milestone rewrite (plan.md).
-No application code exists yet; scaffolding is M1. Keep this paragraph short
-and current when plan.md milestone status changes (rule 4).
+**M0 (plan the plan) is done** (2026-09-20 to 2026-09-23; exited on the
+owner's approval). The vision, the triaged feature matrix, the approved
+architecture, decisions D-001–D-069 and the M1–M8 milestone ladder with exit
+criteria are in place; M0's spikes and reference runs are summarized in
+[docs/m0-record.md](docs/m0-record.md) with their reports under
+`docs/experiments/`. **Next: M1 (Bootstrap)**: SDK provisioning, builds, the
+local check gate, the package skeleton and the confined-job proof
+([docs/plan.md](docs/plan.md)). No application code exists yet. Keep this
+paragraph short and current when plan.md milestone status changes (rule 4).

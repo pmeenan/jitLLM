@@ -4,7 +4,7 @@
 # Architecture
 
 > **Status: first full draft, approved by the owner on 2026-09-23.** No application
-> code exists yet; this describes the system that M1–M7 build. It is the map:
+> code exists yet; this describes the system that M1–M8 build. It is the map:
 > processes, components, layers, the main flows and the boundaries between
 > them, with links to the designs that govern each area. Settled choices live
 > in [decisions.md](decisions.md). Where this document disagrees with a
@@ -245,7 +245,7 @@ topology: detected paths, enrolled membership; no fixed names or counts (D-038)
 | Import, install and archive jobs | `jitllm` | Download, stage and import sources; verify and publish artifacts; archive; replicate to peers (D-054) | Touches scheduler state or the hot path; runs beside a conflicting job for the same model or artifact |
 | `jitllm` CLI | The invoking user | A management client over loopback HTTP (D-064) | Reads runtime state files or links runtime code |
 | Setup tooling | An administrator | Enrollment, cluster documents, credentials, node identity (D-038, D-063) | Changes membership or trust while nodes serve ([cluster-design.md](cluster-design.md)) |
-| Dashboard (M7) | Its own service | Browser UI that calls the management API from its server side (D-064) | Takes runtime locks or exposes the management API to the browser |
+| Dashboard (M8) | Its own service | Browser UI that calls the management API from its server side (D-064) | Takes runtime locks or exposes the management API to the browser |
 | Certificate helpers | root | Keep front-door certificate files current: the certbot deploy hook and the Tailscale timer (D-065) | Hold any jitLLM authority |
 
 ### Runtime components
@@ -708,8 +708,8 @@ lifetimes are part of the M2 integration proof.
 
 Victims are chosen only when an admitted phase needs capacity or a retention
 cap is exceeded. Allowances and grants never trigger eviction (D-007). The
-baseline is deliberately simple, so that M4 can measure alternatives against
-it:
+baseline is deliberately simple, so that alternatives can be measured against
+it on recorded traces (M7 in [plan.md](plan.md#milestone-ladder)):
 
 - **Eligible:** resident and unleased, with no outstanding consumer or
   registration, and not quarantined. It must also be either clean
@@ -1117,22 +1117,22 @@ own decision.
 | Shape | Examples | Evidence so far | Design hooks | Execution |
 | --- | --- | --- | --- | --- |
 | Dense decoder, full-attention GQA KV | Qwen2.5-0.5B | D-051/D-052 fixtures and external references | The baseline adapters | M2–M4 |
-| Hybrid sliding-window and global attention | Gemma 4 | Gemma 26B-A4B reference; RE-004, RE-007 | Per-layer state representations; coverage checks (D-055) | With its model |
-| Linear-attention or recurrent layers mixed with attention | Ornith 1.5 (`qwen35moe`), Qwen3.8 | Ornith's recurrent state saved and restored in the A→B→A reference | Snapshot-only restore; truncation through snapshots | With its model |
-| Compressed attention with an indexer | DeepSeek V4 Flash | Its compressed-attention and indexer state charged in the paging study | State adapter and operations | With its model |
+| Hybrid sliding-window and global attention | Gemma 4 | Gemma 26B-A4B reference; RE-004, RE-007 | Per-layer state representations; coverage checks (D-055) | M5 |
+| Linear-attention or recurrent layers mixed with attention | Ornith 1.5 (`qwen35moe`), Qwen3.8 | Ornith's recurrent state saved and restored in the A→B→A reference | Snapshot-only restore; truncation through snapshots | M5 (Ornith); M7 (Qwen3.8) |
+| Compressed attention with an indexer | DeepSeek V4 Flash | Its compressed-attention and indexer state charged in the paging study | State adapter and operations | M7 |
 | Routed experts, with or without shared experts | Gemma 4 26B-A4B, Ornith, Qwen3.8, DeepSeek V4, MiMo | References and route traces | Routing boundary; worst-case unions | M5 |
-| Sparse row tables | Qwen3.8's n-gram table | Layout study | Data-dependent closures | With its model |
+| Sparse row tables | Qwen3.8's n-gram table | Layout study | Data-dependent closures | M7 |
 | Stored MTP layers | Ornith (one layer), Qwen3.8 (MTP head), MiMo | Stored and accounted in references, never executed | Draft, verify and rollback phase kinds; truncation | M7 (D-068) |
 | Companion MTP drafter | Gemma 4 assistant drafters | None | Composed contexts; resources shared across artifacts | M7 (D-068) |
 | Block diffusion over a causal prefix | DiffusionGemma-26B-A4B | None | Canvas phase kinds and sampler; transient canvas; bidirectional attention over cached KV; restore points only where the adapter validates them (vLLM describes the commit as a causal encoder pass) | M7 (D-068) |
-| Modality encoders | Gemma 4 and MiMo image input | None | Encoder components and phase kinds (D-042's staged modalities) | Ladder rewrite |
+| Modality encoders | Gemma 4 and MiMo image input | None | Encoder components and phase kinds (D-042's staged modalities) | M8 (Gemma 4 first) |
 | Image-generation pipelines | Qwen-Image-2.1 | BF16 and GGUF references | Multi-component contexts; per-phase release | Unscheduled |
-| Pooled outputs | Embeddings (D-042), reranking (D-044) | None | Pooled-output phase kind; bidirectional attention | Ladder rewrite |
+| Pooled outputs | Embeddings (D-042), reranking (D-044) | None | Pooled-output phase kind; bidirectional attention | M8 |
 | Model-parallel sharding | MiMo TP=2/EP=2 | Two-Spark reference | Per-rank plans | M6 |
 
-"With its model" means when a model with that shape is scheduled for
-support; the milestone rewrite assigns those. Three consequences matter
-already:
+Shapes arrive with the first model that needs them: Gemma 4 and Ornith as
+M5's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M7's large pair
+([plan.md](plan.md#milestone-ladder)). Three consequences matter already:
 
 - **Wide phases on routed experts.** A k+1-token verify or a 256-token
   canvas multiplies the positions in one phase. With 128 experts and top-8
@@ -1530,7 +1530,7 @@ read only at startup; certificate files are the exception and reload on
 change (D-065). Runtime policy changes, such as a budget reduction, go
 through the management API as scheduler requests. Membership and trust
 changes need cluster-design.md's coordinated restart. D-063 records the
-`[storage]` keys, and the remaining spellings are fixed in M1 and M3.
+`[storage]` keys, and the remaining spellings are fixed in M1, M3 and M4.
 
 ## Observability and privacy
 
@@ -1645,8 +1645,9 @@ normal-reference view, never the matched one.
 
 What it tells us. The 46 s switch includes checkpointing the active session,
 so it is a real-world floor for A→B→A with state preserved on this exact
-model pair on one GB10 (D-021, D-025); M4's target is to beat it clearly at
-comparable bit depths, and our own measured baseline still governs. Because
+model pair on one GB10 (D-021, D-025). The pair is M7's named large-model
+configuration (D-036), where the target is to beat it clearly at comparable
+bit depths; our own measured baseline still governs. Because
 the pair does not both fit in 128 GB, it is the canonical two-large-model
 switching workload for the feasibility spike. The restore figure implies roughly 4.4 KB of restorable state per
 token for Qwen3.8's hybrid attention, a concrete datapoint for D-024's
@@ -1708,7 +1709,7 @@ third_party/  curated vendored sources and patches with provenance (D-057)
 packaging/    Debian package, systemd units, sysusers and tmpfiles (D-063)
 tools/        setup, check, doctor and build-time tooling
 tests/{unit,simulation,cuda,model,distributed,packaging}/   benchmarks/
-dashboard/ (M7)   docs/
+dashboard/ (M8)   docs/
 ```
 
 The toolchain file set was confirmed on 2026-09-21. The source directories
@@ -1735,7 +1736,7 @@ finalized after the M2 GGML and EXL3 proofs (D-052).
 ### Installed layout
 
 D-063 records the packaged layout; D-062 versions the configuration schema.
-Nothing below is implemented yet; M1 builds the package and M7 the
+Nothing below is implemented yet; M1 builds the package and M8 the
 repository.
 
 | Path | Owner / mode | Holds |

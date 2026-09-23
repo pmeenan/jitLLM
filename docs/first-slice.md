@@ -145,7 +145,7 @@ do not adopt libllama's scheduler, weight loader, KV allocator or residency
 ownership. Backend workspace, hidden allocations, registration and captured
 pointers remain the M2 proof's responsibility. Sources follow D-057's
 [source-dependency mechanism](source-dependencies.md); the exact selected
-compiled closure is still M1/M2 work.
+compiled closure is still M2 work (the backend proof's P0).
 
 Native tokenizer incorporation has an explicit blocker: llama.cpp's Unicode
 tables are generated from inputs whose exact revisions are not recorded in

@@ -509,7 +509,8 @@ the seven successful feature-change readbacks ending at original `0x107`.
 The sole SSD remains mounted as root, the dedicated trace instance is gone,
 and no drivers, security settings, or saved NVMe configuration were changed.
 NCCL transport and performance testing after the direct cable arrives is
-recorded as the separate interconnect task in `plan.md`.
+recorded as the separate interconnect task in the
+[M0 record](../../m0-record.md).
 
 Final independent review and adversarial challenge: **clean after fixes**.
 The reviewer recomputed the reported ranges and counters from the retained

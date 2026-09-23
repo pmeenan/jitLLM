@@ -15,8 +15,9 @@ JSON/schema support. D-044 completes triage: compatible reranking, monitoring
 and raw Completions/token diagnostics are confirmed. LoRA and classification/
 reward/pooling are deferred behind concrete workloads; generic worker RPC,
 training and split-serving deployment controls are excluded from the client
-baseline. Delivery milestones remain to assign. No vLLM runtime dependency,
-process architecture or blanket extension compatibility is approved.
+baseline. Delivery milestones are in [plan.md](plan.md#milestone-ladder). No
+vLLM runtime dependency, process architecture or blanket extension
+compatibility is approved.
 
 ## Surface inventory
 

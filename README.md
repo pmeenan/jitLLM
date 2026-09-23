@@ -46,10 +46,11 @@ the work, reviews it, and is the sole committer.
 
 ## Status
 
-**Pre-code. Milestone M0 (plan the plan).** The design brief is in
-[docs/ideation.md](docs/ideation.md); the living plan, feature matrix,
-architecture skeleton, and decision log are in `docs/`. No application code
-exists yet. Planned distribution is a signed apt repository for DGX Spark.
+**Pre-code. M0 (plan the plan) is done; M1 (bootstrap) is next.** The
+design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
+feature matrix, architecture, and decision log are in `docs/`. No application
+code exists yet. Planned distribution is a signed apt repository for DGX
+Spark.
 
 The first useful product target is M4: chat with A, switch to B under memory
 pressure, then resume A with retained state, through an unmodified client.
@@ -72,6 +73,7 @@ license, notice, and source obligations. See D-003 and D-017 in
 - [AGENTS.md](AGENTS.md) — constraints, doc map, agent rules
 - [docs/vision.md](docs/vision.md) — why, who for, success criteria, non-goals
 - [docs/features.md](docs/features.md) — confirmed / proposed / open questions
-- [docs/plan.md](docs/plan.md) — M0 tasks and the provisional milestone ladder
+- [docs/plan.md](docs/plan.md) — the M1–M8 milestone ladder with exit criteria
+- [docs/m0-record.md](docs/m0-record.md) — what M0's planning, spikes and reference runs did, with evidence links
 - [docs/workflow.md](docs/workflow.md) — how agents and the human collaborate
 - [docs/rough-edges.md](docs/rough-edges.md) — findings log
