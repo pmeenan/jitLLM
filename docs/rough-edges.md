@@ -12,8 +12,8 @@ A good entry says what environment it happened in (workstation or Spark,
 driver, toolkit, compiler versions) and what was observed vs. expected;
 include a reproduction when it's cheap to capture. Platform constraints that
 were known from documentation before any code existed (Spark's
-compatibility-mode-only GDS, no GPUDirect RDMA) are recorded as fixed points
-in [architecture.md](architecture.md) and D-004, not here; this log is for
+compatibility-mode-only GDS, no GPUDirect RDMA) are recorded in
+[environment.md](environment.md) and D-004/D-034, not here; this log is for
 what the documentation did not tell us.
 
 Format:

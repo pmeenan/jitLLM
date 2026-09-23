@@ -169,8 +169,10 @@ completion or explicit fault handling. It does not prove a suspended model
 phase can obtain more memory. D-050 bounds retained state/growth and keeps
 the complete phase allowance through waits to prevent circular capacity
 waits; M2 must validate that policy. Time-slicing between requests occurs
-only at client-facing request boundaries, after a scheduler-established
-completed handoff; no task API authorizes mid-operation eviction. Another
+only at client-facing request boundaries, or when D-069's switching policy
+pauses a request at a completed phase boundary; either way it follows a
+scheduler-established completed handoff, and no task API authorizes
+mid-operation eviction. Another
 request's phases can run during an I/O wait only when their full concurrent
 envelopes pass D-050's admission check.
 

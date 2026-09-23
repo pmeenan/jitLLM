@@ -81,7 +81,15 @@ groups start at 4 KiB, so no file space pays for 2 MiB padding (D-056).
   A published name is exactly 64 lowercase hex characters. Staging
   directories are never listed, loaded or archived, so an interrupted
   multi-shard import never appears installed. The unit tests simulate a
-  crash after the first shard.
+  crash after the first shard. In the runtime, a job renames only after
+  the runtime grants it, and conflicting publication and removal of one ID
+  never overlap
+  ([job rules](architecture.md#import-install-and-archive-jobs)).
+- Removal renames `<id>` to `.staging/remove-<id>-<generation>` while
+  holding `remove-<id>-<generation>.lock`, flushes `.staging` and the
+  store, then deletes that directory. A crash therefore leaves either the
+  published artifact or a leftover that the startup sweep removes once its
+  lock is free.
 - The artifact ID is the digest of the exact manifest bytes. Import is
   deterministic: canonical JSON (sorted keys, no insignificant whitespace,
   one trailing newline, lists in a defined order), no timestamps and no host
@@ -505,6 +513,12 @@ one and removes it. The source must remain available (D-018).
   cross-model swap trace.
 - **Expert dispatch:** pointer-table patch versus uniform-stride remapping,
   decided with the M5 GGML proof. The dense EXL3 proof is M2.
+- **Companion and multi-component artifacts** (D-068). A speculative
+  drafter that uses its target's embedding table, and a pipeline of text
+  encoder, denoiser and decoder, need manifest references to another
+  artifact by ID, with shared resources counted once. Stored MTP layers are
+  ordinary tensors in their checkpoints and group like any layer. Settled
+  before M7 execution.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M6 entry. It depends on
   M6's sharding design, and v0 artifacts are whole-model. File shards are

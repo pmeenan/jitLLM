@@ -24,8 +24,12 @@ D-050 handoff, a retiring request's state moves atomically from its
 allowance into the idle cache as:
 
 - a **continuation entry:** immutable state for the tokens the request
-  actually processed into state (its prompt and all but the final generated
-  token), valued by reuse of that conversation branch; and
+  actually processed into state, valued by reuse of that conversation
+  branch. For autoregressive decoding that is the prompt and all but the
+  final generated token; with speculative decoding (D-068), the same after
+  rejected drafts are truncated; with block diffusion, the prompt and every
+  committed block. Working state never published, such as a canvas or a
+  drafter's state, is not part of it; and
 - **shared-prefix entries:** immutable state at declared prefix boundaries
   the request covered, valued by reuse across conversations. Only a request
   that starts a new branch creates or refreshes them (below).
@@ -47,7 +51,7 @@ An entry is usable only when every component matches exactly:
 
 | Component | Content |
 | --- | --- |
-| Artifact | The prepared artifact's content identity (D-035, D-054), never an alias, model name or source checkpoint name |
+| Artifact | The prepared artifact's content identity (D-035, D-054), never an alias, model name or source checkpoint name. For a context composed of several artifacts, such as a target and its drafter (D-068), every component artifact the state depends on |
 | Execution | The state-producing numerical plan: selected kernel implementations (D-053), data types, state representation and layout version, position/attention configuration and context profile. FP16 and EXL3 contexts of one base model never share entries (D-052) |
 | Tokens | The exact rendered token sequence from the context origin, after documented client stripping such as Claude Code's attribution block (D-045). Entries keep token IDs and chained block digests for longest-prefix lookup |
 | Other inputs | Non-text input identity once a modality is supported. Until then, a request with non-text input neither creates nor uses entries |
@@ -561,6 +565,7 @@ without a vendor SDK, as M2's did.
 | Entry chosen for a queued request is evicted before admission | Lookup repeats at admission; a miss recomputes; nothing was pinned while queued |
 | Fake backend: sliding-window coverage (RE-007's rollback), recurrent snapshot positions, unvalidated adapter | Resume only at valid boundaries, otherwise an earlier checkpoint or recomputation |
 | Concurrent A and B requests at `B_all` | Admitted as one cohort; both progress; outputs match serial controls |
+| A request for B arrives while A is still generating, at a budget where they cannot run as a cohort; repeated under each D-069 policy with B interactive and A background, and with both interactive | Queue delay, paging/switch time and first-token compute are reported separately, with pause counts and reloaded bytes; a paused A keeps its admitted state and resumes correctly; outputs match serial controls. These results decide D-069's default |
 | An unmodified named client builds a conversation on A, switches to B and resumes A, returning its own generated replies | Completes without session extensions; diagnostics show continuation reuse including the returned tail, less any template rewrite |
 
 ### What M4 entry pins

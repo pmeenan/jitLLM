@@ -40,7 +40,7 @@ needs evidence from the real hardware.
 - [x] Inventory the environments without changing drivers or security
       settings (2026-09-20, read-only, no sudo): workstation baseline and both
       Sparks recorded in
-      [architecture.md](architecture.md#target-nodes-dgx-sparks). The
+      [environment.md](environment.md#target-nodes-dgx-sparks). The
       interconnect half is the separate cabling task below.
 - [x] Spike — **toolchain smoke** (2026-09-21; open question 6,
       D-032): Clang C++23 native and AArch64 cross builds passed;
@@ -64,7 +64,7 @@ needs evidence from the real hardware.
       handles returned capacity. Initial policy: 2 MiB independent extents,
       completion-safe backing handoff, no standing unused-handle cache.
       [Aggregate report and harness](experiments/vmm-microbench/README.md);
-      numbers in architecture.md. I/O and model-load optimization remain
+      numbers in environment.md. I/O and model-load optimization remain
       separate measurements, not conclusions of this allocation experiment.
 - [x] Spike — **I/O path comparison** (2026-09-21; open question 2, D-034):
       compared buffered/direct files, pinned staging, cuFile compatibility,
@@ -84,7 +84,7 @@ needs evidence from the real hardware.
       MoE GGUFs and a small router-logging patch (decided 2026-09-20; the
       lightest install and the owner's preference).
 - [x] Install llama.cpp on a Spark in a container so the host baseline in
-      architecture.md stays clean (2026-09-21): digest-pinned ARM64 CUDA
+      environment.md stays clean (2026-09-21): digest-pinned ARM64 CUDA
       image, source `b29c606e2`, and hash-verified Gemma 4 UD-Q4_K_M execute
       on `spark`. GPU inference and cross-process slot restore passed;
       Gemma requires `--swa-full` for the tested reuse path (RE-004), with
@@ -262,7 +262,7 @@ needs evidence from the real hardware.
       passed. Channel logs and counters verify actual HCA use; source and
       allocation logs establish GPU access to mapped host communication
       buffers, not GPUDirect RDMA. Message-size sweeps, ranges, pins and
-      limitations are recorded with the report and in architecture.md.
+      limitations are recorded with the report and in environment.md.
       Sharded-model, asymmetric-pressure and failure tests remain M6 work.
 - [x] Inventory MiaAI-Lab reference licensing versus MIT ExLlamaV3 upstream
       (2026-09-22): [pinned file/group inventory](licensing.md) separates
@@ -347,7 +347,8 @@ needs evidence from the real hardware.
       settle guaranteed bounded requests, maximum retained-state/growth
       allowances, complete phase envelopes held through waits and unwind,
       request/response-granularity switching (never mid-request; owner
-      2026-09-22) and full-envelope checks for supported concurrency. Grants remain lazy;
+      2026-09-22; D-069 later made switching a configurable policy that
+      pauses only at completed phase boundaries) and full-envelope checks for supported concurrency. Grants remain lazy;
       opportunistic work cannot invalidate them, and spilled admitted state
       keeps its in-memory allowance. Impossible phases fail or use an already
       validated alternative. Numeric envelopes and executed progress/lifetime
@@ -522,7 +523,23 @@ needs evidence from the real hardware.
       owner confirmed that GCC's runtime exception permits the static
       linking. Release builds do not link `libstdc++exp.a`, so libbacktrace and
       its notice stay out.
-- [ ] First full draft of [architecture.md](architecture.md).
+- [x] First full draft of [architecture.md](architecture.md) (2026-09-23):
+      a system map of processes, components, layers and lanes; the request
+      path and model lifecycle; identities, ledgers, backing and addresses;
+      storage and jobs; execution (operations, plans, adapters, rendering,
+      sampling); providers; errors, startup and shutdown; front door,
+      configuration, observability and trust boundaries; testing and build.
+      It sets initial designs for the minimal provider interfaces, a
+      deterministic LRU victim-selection baseline and a sourced memory
+      breakdown, and lists the remaining questions with the milestone that
+      settles each. The owner answered two drafting questions: D-066 (no
+      exceptions; `std::expected` errors) and D-067 (native per-template
+      chat renderers; checkpoint template code never runs in jitLLM). Environment
+      inventories moved to [environment.md](environment.md). Follow-up owner
+      decisions added D-068 (speculative and block-diffusion shapes designed
+      now, executed in M7) and D-069 (configurable switching at completed
+      phase boundaries). The owner reviewed and approved the draft on
+      2026-09-23.
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria, carrying the deferred retained-backing comparison into M2
       and including unassigned D-041–D-044 API delivery (Ollama subset,
@@ -535,7 +552,21 @@ needs evidence from the real hardware.
       so M3/M4 stay on the small D-051/D-052 fixtures and minimal
       quantization and kernel coverage. Also place D-065's Tailscale
       certificate timer (M3 ships certificate files, the local CA, reload
-      and the certbot deploy hook).
+      and the certbot deploy hook). Owner input 2026-09-23 (D-068):
+      speculative decoding with MTP and block-diffusion text generation are
+      confirmed and designed now, executed in M7; assign "with its model"
+      shapes from architecture.md's shape inventory, and schedule the
+      bounded DiffusionGemma reference study before M7 planning. From an
+      external architecture review the same day, the owner asked for these
+      gates: M4's B-arrives-while-A-generates scenario, with queue delay
+      reported apart from paging and first-token compute, and D-069's
+      policy comparison (the review's top priority); M2 kept small, with
+      future shapes proven only in fake-provider scenarios and concrete
+      interfaces taken from the GGML/EXL3 proof (second priority);
+      validated phase widths with visible rejection reasons and
+      bound-versus-peak measurements; M3 measurements of startup time and
+      metadata memory against library size; and an M1 proof of a minimal
+      confined job.
 
 **Exit criteria:** the owner has walked features.md and says the plan is good
 enough to build from; open questions 1–7 and 9 are answered or explicitly
@@ -572,8 +603,12 @@ has a promised date; each should leave a usable, testable result.
   copyleft-disabled profile (D-061; no hosted CI yet), initial
   license and provenance tooling (REUSE lint, embedded-header check, NOTICE),
   a first-cut capability probe (the future `doctor` task), version derivation
-  and `CHANGELOG.md` (D-062), and an installable arm64 `.deb` in D-063's
-  layout. *Gate:* clean host and container setup with declared OS
+  and `CHANGELOG.md` (D-062), an installable arm64 `.deb` in D-063's
+  layout, and D-066's `-fno-exceptions` applied with D-059's warnings.
+  It also proves a minimal confined job under the `jitllm` account: a
+  child that outlives its job, the job lock inherited across exec, and a
+  runtime restart, on the chosen sandboxing mechanism (architecture.md's
+  job rules). *Gate:* clean host and container setup with declared OS
   prerequisites and the complete tool/runtime set for each profile, including
   formatter, linter, language server, symbolizer and sanitizer runtimes;
   project tool selection works without global compiler/environment changes
@@ -606,11 +641,21 @@ has a promised date; each should leave a usable, testable result.
   native prefill/decode and state, with correctness before and after
   restoration. EXL3 kernel time/workspace gates against the pinned Spark
   reference must pass; a loader or FP16 conversion is insufficient.
-  Full serving integration follows in M3.
+  The operation contract and phase/state interfaces settled at M2 close
+  must also be able to express D-068's shapes (composed contexts,
+  speculative and diffusion phase kinds, state truncation) without
+  executing them. Those shapes are shown only through small fake-provider
+  scenarios (draft rejection and rollback, a canvas across boundaries,
+  block output, a two-artifact context); concrete interfaces come from the
+  real GGML/EXL3 proof. The fake-backend matrix adds D-069's pause cases.
+  Plans expose their validated phase widths, envelopes and rejection
+  reasons, and the proof records each phase kind's guaranteed bound
+  against its observed peak. Full serving integration follows in M3.
 - **M3 — One resident model, end to end.** Import a manageable model (small
   dense first) with the standalone artifact verifier, GGML-backed native
   execution plus the D-052 native EXL3 companion, tokenizer/state/sampling
-  baseline, and the
+  baseline with D-067's native chat renderers for both fixture templates,
+  and the
   Chat Completions, Responses and Anthropic Messages surfaces, model listing
   and Messages token counting, plus machine-readable API/model capability
   discovery, with `/v1/models` entries in D-046's OpenRouter metadata shape,
@@ -627,6 +672,9 @@ has a promised date; each should leave a usable, testable result.
   M2/M3 implementation may overlap while their gates remain explicit.
   At exit, measure both supported contexts' state bytes and pin D-055's
   retention capacity values in [the policy](retention-policy.md#bounds-and-defaults).
+  Also measure startup time and metadata memory as the installed library
+  grows, with the compact index and on-demand detail, and the cold-switch
+  cost that on-demand detail adds (architecture.md's model lifecycle).
 - **M4 — First useful product: A→B→A with partial retention.** Two small
   supported model contexts, one shared local budget, partial eviction of a
   quiescent model, bounded prefix/continuation retention (D-024, D-031), and
@@ -660,8 +708,11 @@ has a promised date; each should leave a usable, testable result.
   shorter-prefix fallback after continuation eviction, independent prefix
   expiry, and shared-byte accounting, with numerical reference checks (D-031).
   An all-resident control demonstrates concurrent progress without paging
-  when both complete execution envelopes fit. This milestone is useful
-  without MoE or sharding.
+  when both complete execution envelopes fit. A request for B that arrives
+  while A is still generating reports queue delay separately from paging
+  and switch time and first-token compute, under each of D-069's switching
+  policies; the results keep or change the priority-aware default. This
+  milestone is useful without MoE or sharding.
 - **M4a — Configured placement across nodes.** After M4, independently of M5:
   one configured conductor and enrolled nodes, interface/QSFP bootstrap
   discovery and automatic path detection under D-038, capability/health probes,
@@ -678,7 +729,8 @@ has a promised date; each should leave a usable, testable result.
   Discovery, election, and automatic replicas follow the separate triggers below.
 - **M5 — Demand-paged MoE.** Routing boundary, selected-expert leases,
   asynchronous misses, resumable tasks, native trace capture and policy replay
-  checked against the early reference experiment.
+  checked against the early reference experiment. Envelopes and paging
+  assume no fixed number of positions per phase (D-068).
   *Gate:* no unselected expert loads beyond declared metadata/read-ahead; no
   substitution; resident-hit and miss overhead measured using the comparison
   protocol and D-036's generation limits (at most 10% added generation time,
@@ -701,7 +753,9 @@ has a promised date; each should leave a usable, testable result.
   treated as proof of reclaimed memory. Placement-only use already works at M4a.
 - **M7 — Performance and product.** Further compatible kernels and plans
   beyond the required M2/M3 EXL3 baseline (D-052),
-  prefetch, selective CUDA graphs, dashboard, optional API extensions
+  prefetch, selective CUDA graphs, speculative decoding with stored MTP
+  layers and Gemma 4 companion drafters, block-diffusion text generation
+  (DiffusionGemma; D-068), dashboard, optional API extensions
   (sessions, hints; D-022),
   packaging as signed apt packages for Spark with notices (D-027). *Gate:* measured results meet the agreed workload
   targets in D-036, including at least 25% lower median return-switch latency

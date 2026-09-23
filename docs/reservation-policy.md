@@ -51,15 +51,21 @@ wait alone is not a yield boundary. M5 may use validated routing/expert
 subphases. Its bound covers every allowed selected closure for the admitted
 batch, including shared experts, containing extents and routing activations;
 average expert locality and predicted routes cannot establish a guarantee.
-No selected expert is substituted or dropped.
+No selected expert is substituted or dropped. D-068's speculative and
+diffusion phase kinds (draft, verify and rollback; canvas denoise and
+commit) follow the same rules: their bounds, such as draft depth, verify
+width, denoising steps and block count, are fixed at admission, their
+closures use the worst-case union over every position in the phase, and
+run-time outcomes only shorten the admitted program.
 
 Phases are accounting, lease and cancellation boundaries, **not scheduling
 quanta**. The scheduling quantum is one client-facing request/response: a
 prompt and the complete response it produces (one API call, including a
 streamed one; each tool-call round trip is a separate request). Once a
 request starts, the node does not switch to another request or model until
-it retires or is explicitly terminated. Other requests run beside it only as
-a concurrent cohort whose full envelopes fit (below).
+it retires or is explicitly terminated, unless D-069's switching policy
+pauses it at a completed phase boundary (below). Other requests run beside
+it only as a concurrent cohort whose full envelopes fit (below).
 
 The envelope includes:
 
@@ -103,7 +109,8 @@ not a public interface or final C++ type:
   cancellation acknowledgement.
 
 Initially one request holds the node's execution slot, from its first phase
-until the request retires or is explicitly terminated. For a proposed
+until the request retires or is explicitly terminated, or until D-069's
+policy pauses it at a completed boundary. For a proposed
 admitted set `G`, require, with checked arithmetic:
 
 ```text
@@ -142,7 +149,12 @@ envelopes fit, as D-020 requires. Placement on independent nodes applies the
 rule independently; aggregate cluster bytes never satisfy a local deficit.
 M6 still owes coordinated per-rank admission and collective-order proof.
 Recheck the serial and any active-cohort inequalities on every grant,
-envelope replacement, cohort change and increase to `F` or `J`. Categories
+envelope replacement, cohort change and increase to `F` or `J`, and on any
+budget reduction. While requests are paused (D-069), the same transactions
+also recheck the promised resumption set: the set that will run when the
+substitute ends, with every request paused for it back in its place. A
+transaction that would break it is deferred or refused, except as the
+Pausing paragraph limits deferral. Categories
 are disjoint charges for protected requirements; an operation owned by a
 phase is within its `E_i`, not also in `J`. Demand-driven reclamation belongs
 to that phase's peak, including any simultaneous victim/destination backing.
@@ -164,12 +176,15 @@ necessarily memory that the provider can release to the OS.
 Acquire the execution slot before the request's first phase-specific
 allocation, lease, page-in or launch. Keep it and `E_i` through every phase
 of that request: dependency discovery, loading, compute, output transfer,
-the completed boundaries between phases and completion-aware unwind. The
+the completed boundaries between phases and completion-aware unwind, unless
+D-069's policy pauses the request at one of those boundaries; a paused
+request reacquires the slot before its next phase. The
 scheduler may service completions and unrelated host/control work while the
 request waits. It cannot start another request's phase unless the
-concurrent-cohort check passes; a completed phase boundary is not an
-opportunity to run a different request or model. In particular, suspension
-with live routing activations does not release the slot. Cancelling A
+concurrent-cohort check passes, or unless D-069's switching policy pauses
+this request at a completed phase boundary and gives the slot to another.
+A pause never happens mid-phase. In particular, suspension with live routing
+activations does not release the slot. Cancelling A
 cannot start B against the same allowance while A still has accepted I/O or
 GPU consumers.
 
@@ -184,7 +199,51 @@ registrations may remain only with their backing charged as non-revocable
 retained/fixed storage. Anything still held outside those bounds prevents
 the handoff. Idle weight cache remains resident and eligible after leases
 end. A request for another model alone proves none of these conditions and
-does not interrupt the running request.
+does not interrupt the running request mid-phase; D-069's policy may pause
+it at its next completed boundary.
+
+**Pausing (D-069).** At a completed phase boundary the switching policy may
+pause the running request and give the slot to another admitted request.
+The paused request keeps its retained state resident in `R(G)`. Its phase
+allowance is not needed while paused, because the serial rule reserves only
+`max(E_i)`: the next phase of whichever request holds the slot fits above all
+retained state. That holds only if nothing a request keeps across a
+completed boundary is charged to `E_i`: its output buffer, task and result
+records, stream and library-handle allocations and any non-reclaimable
+backend allocation are charged to `R(G)` or `F`. A plan that cannot place
+such an allocation there is not pausable, and its requests run to
+completion. Only idle cache, such as the paused request's unleased weights,
+may be reclaimed while it waits.
+
+A pause gives the slot to a substitute only if the resulting set of running
+requests passes the cohort inequality; otherwise the policy first pauses the
+remaining cohort members at their own completed boundaries, or does not
+pause. One substitute runs per pause, a substitute is not itself paused
+while any request paused for it is paused, and when the substitute ends,
+every request paused for it resumes next, ahead of every waiting request.
+While a request is paused, every capacity-changing transaction (a new
+member joining the running set, a grant, an envelope replacement by a
+running member, an increase to `F` or `J`, a budget reduction) proceeds only
+if the set that will run after the substitute ends, with every request
+paused for that substitute back in its place, still passes the cohort
+inequality. Otherwise the transaction waits until the paused requests have
+resumed, or is refused. A transaction by the substitute itself is checked
+without the substitute's own allowance, which ends before the resumption,
+and if it still fails it is refused, never deferred: the resumption waits
+on the substitute, so deferring it would be a circular wait. Only a
+transaction whose requester the resumption does not wait on may wait. At
+most one pause, with the cohort peers paused for it, is open at a time, so
+exactly one resumption set is promised. Capacity for the promised
+resumption is thus preserved, and paused time is
+bounded by the substitute's finite program plus the switching costs. The
+policy's minimum run and pause cap still apply. A request with a known
+deadline is paused only if its own remaining work, the substitute's program
+bound and both switching costs fit within that deadline (D-069). The
+default is priority-aware: requests of the same class run to completion,
+and an interactive request pauses a background one after that one's
+minimum run. The deadlines that affect pausing and early refusal come
+from server configuration (D-047) or per-alias settings; a client hint
+cannot make a request unpausable. The alternative policies are in D-069.
 
 An admitted request's state cannot expire while it waits for the slot or is
 paused at a completed boundary, for example during an output stall. Its
@@ -254,10 +313,12 @@ make admission succeed. Temporary conflicts get bounded queueing or a
 capacity refusal. D-045's existing external status/error mapping remains
 unchanged; this decision does not add wire codes or retry promises.
 
-Choose the next request only at request boundaries: when the slot frees,
-service eligible admitted requests round-robin by request, with finite
-priority preference/aging so background work cannot starve. A running
-request is never preempted to serve another; it releases the slot when it
+Choose the next request when the slot frees, at a request boundary or at a
+D-069 pause: service eligible admitted requests round-robin by request
+within their class, with finite priority preference/aging so background
+work cannot starve, except that a paused request resumes next when its
+substitute ends (D-069). A running request is never paused except at a completed
+phase boundary under D-069's policy. Otherwise it releases the slot when it
 retires or is explicitly terminated by cancellation, contract excess,
 failure or a stall/queue limit. Bound bypasses of older feasible queued
 requests; when necessary stop admitting newer work until existing requests
@@ -285,8 +346,11 @@ These are synthetic accounting examples, not Spark measurements or defaults.
 With `B=100`, `F=10`, `J=0`, requests A and B each with retained bound `20`
 and phase peak `50` fit serially: `10 + 40 + 50 = 100`. If A pauses after
 producing activations, B cannot start: both full envelopes would require
-`10 + 40 + 100 = 150`. B also does not start at A's later phase boundaries;
-it waits until A's request retires or is terminated. Reserving only their
+`10 + 40 + 100 = 150`. Under the default policy, a B of A's class also does
+not start at A's later phase boundaries; it waits until A's request retires
+or is terminated. If the policy pauses A at a completed boundary (D-069),
+A's surviving state is already inside its `20`, and B's phase fits:
+`10 + 40 + 50 = 100`. Reserving only their
 current state of `4` each would miss the later growth to `20`.
 
 A third request with retained bound `1` and peak `1` is feasible alone but
@@ -301,15 +365,18 @@ boundary state and its growth can coexist, and at least one complete phase
 fits above it. No inactive request may occupy another request's phase
 allowance. A running phase needs no new capacity commitment to finish or
 unwind. Each admitted request has finitely many bounded phases, so it
-retires or is explicitly terminated; fair selection at request boundaries
-then serves every admitted request. Provider
+retires or is explicitly terminated. Fair selection, with each request's
+pauses capped (D-069), then serves every admitted request. Provider
 uncertainty stops this argument and retains resources instead of pretending
 to make progress. M2 must test these premises, not merely absence of OOM.
 
 | Adversarial case | Required result / earliest execution gate |
 | --- | --- |
 | Two phases each retain activations and await missing weights | M2: serialize before the second phase starts, or admit their full concurrent envelopes; no circular capacity wait |
-| Agent and subagent requests on two models whose envelopes do not fit together | M2 fake / M4 real: the running request keeps the slot through all its phases; the other starts after its retirement or explicit termination; no per-step alternation or mid-request model switch |
+| Agent and subagent requests on two models whose envelopes do not fit together | M2 fake / M4 real: under the default policy (same class) the running request keeps the slot through all its phases; the other starts after its retirement or explicit termination; no per-step alternation or mid-request model switch |
+| Interactive B arrives while background A generates; time-slicing configured; a cohort member is the pause candidate; B has a known deadline A's remaining bound would miss | M2 fake / M4 real: pauses only at completed boundaries; paused state stays protected and charged, with nothing it keeps charged to its phase envelope; a substitute runs only if the running set passes the cohort inequality; minimum run, pause caps and resume-next bound alternation and paused time; a newcomer, an envelope increase by a running member, a new grant or an `F`/`J` increase that would block a promised resumption waits or is refused; a pause that would make the paused request miss its known deadline, counting its remaining work and both switching costs, is not taken; every admitted request completes or ends explicitly; an unservable known deadline is refused before admission with 429, never after. M4 reports queue delay separately from paging/switch time and first-token compute (D-069) |
+| Running member's envelope increase during a pause: `B=100`, `F+R(G)=10`, cohort A (`80`) and C (`10`); A is paused for substitute B (`30`); C requests an envelope replacement to `50` | M2 fake: the serial and active-cohort checks alone would pass (`10 + 30 + 50 = 90`), but the promised resumption set would need `10 + 80 + 50 = 140`, so C's replacement waits until A has resumed or is refused; the same applies to a new grant, an `F`/`J` increase or a budget reduction during the pause (D-069) |
+| Substitute B requests an envelope replacement during A's pause; a second request tries to pause a still-running cohort member while A's pause is open | M2 fake: B's replacement is checked without B's own allowance and, if it still fails, refused rather than deferred, so no B-waits-for-A-waits-for-B cycle; the second pause is not taken while A's is open (D-069) |
 | State grows from a small prefix to the admitted context/output limit | M2: grow without a grant upgrade; include branch/copy-on-write and old/new transition peaks |
 | One selected closure or rounded allocation exceeds its bound | M2 synthetic / M5 routes: detect before submission, drain accepted work and fail; no expert substitution or indefinite upgrade wait |
 | Feasible queued request versus permanently impossible minimum phase | M2: bounded deferral for the former; immediate impossible result or validated alternative for the latter |

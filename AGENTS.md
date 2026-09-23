@@ -102,7 +102,7 @@ affected docs. Until then, these govern.
   builds and CPU tests, including AArch64 CPU tests under qemu-user, run on
   the workstation; ARM concurrency, VMM, kernel, GPU, RDMA/NCCL, and
   distributed tests run on the Sparks, which in the owner's environment
-  are `spark` and `spark-b` (inventory in architecture.md; those names are
+  are `spark` and `spark-b` (inventory in environment.md; those names are
   not application configuration). Explicit CPU/GPU targets only, never
   `-march=native` or autodetection. Toolchain provisioning is declarative and
   pinned. Agents never invent compiler pins, measured numbers, supported
@@ -143,7 +143,8 @@ the human commit gate.
 | [docs/plan.md](docs/plan.md) | What to work on, milestone scope, exit criteria — what "done" means |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
-| [docs/architecture.md](docs/architecture.md) | System structure, data model, lifecycles, pager invariants, environment baseline |
+| [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
+| [docs/environment.md](docs/environment.md) | Workstation and Spark inventories, links, NAS and certificates, and the M0 platform measurements behind D-032–D-034 |
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
@@ -179,8 +180,9 @@ the human commit gate.
 6. **C++23 conventions.** Clang-first. Ordinary `.cc` files use the host
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
-   explicit error results, bounded queues, move-only ownership wrappers. No
-   exceptions across a C ABI. GPU/I/O lifetime is completion-aware: a
+   `std::expected` error results, bounded queues, move-only ownership
+   wrappers. No exceptions: jitLLM code builds with `-fno-exceptions` (D-066).
+   GPU/I/O lifetime is completion-aware: a
    destructor is not proof that submitted work finished. Warning, format, and
    lint pins are recorded in D-059; M1 applies them at the repository root.
 7. **Keep the always-loaded context lean.** This file is imported into every
@@ -195,14 +197,14 @@ the human commit gate.
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
 cluster/API, task/completion, reservation, SDK, kernel-dispatch and model-storage
-choices are recorded through D-063; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+choices are recorded through D-069; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
 spike selects initial 2 MiB extents (D-033); the I/O spike selects direct
 files into GPU-accessible host VMM without a staging copy (D-034). Both Sparks
 are reachable over SSH; the `sparky` DAC baseline passed, with 184.76 Gb/s
-combined host writes and validated NCCL over host buffers (architecture.md).
+combined host writes and validated NCCL over host buffers (environment.md).
 The 27-trial reference cycle and bounded full paging-feasibility study are
 recorded (plan.md). Qwen route estimates are conditional on numerical drift;
 unvalidated spill continuations use conservative recomputation. The owner
@@ -232,7 +234,12 @@ layout (`jitllm` user, TOML with drop-ins in `/etc/jitllm`, `/var/lib/jitllm`,
 loopback ports 8114/8115); D-064 keeps local management anonymous behind
 browser guards and jitLLM a service, not a library; D-065 serves front-door
 TLS from certificate files kept current by certbot or `tailscale cert`, with a
-local CA fallback. Provisioning remains M1. Next: the architecture draft and
+local CA fallback. Provisioning remains M1. The owner approved the first full
+architecture draft on 2026-09-23; drafting added D-066 (no exceptions, `std::expected`
+errors) and D-067 (native per-template chat renderers); D-068 designs for
+speculative (MTP) and block-diffusion decoding and uncovered model shapes
+now, executing them in M7; D-069 makes switching a configurable policy that
+pauses only at completed phase boundaries (priority-aware by default). Next:
 the milestone rewrite (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

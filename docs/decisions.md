@@ -30,6 +30,370 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-069: Configurable switching at completed phase boundaries, priority-aware by default  (2026-09-23, status: accepted; amends D-050's "never switch mid-request" scheduling rule, not its admission arithmetic)
+
+**Decision.** Owner's answer on 2026-09-23, after an external architecture
+review:
+
+- **Policy, not safety.** Which admitted request runs next is a
+  configurable switching policy. A running request may be *paused* only at a
+  completed phase boundary (D-050), never mid-phase and never while routing
+  activations or other phase-live state is outstanding. A paused request
+  keeps its admitted retained state resident and protected in `R(G)`. Only
+  idle cache, such as its unleased weights, may be evicted while it waits.
+  It resumes when the policy next gives it the slot.
+- **Inputs.** The policy considers:
+  - the request's class: interactive or background (D-042's priority;
+    D-045's advisory request-class signal, capped by the alias's configured
+    maximum class, so a hint cannot raise a request above it);
+  - per-model and per-alias configuration;
+  - the estimated switch cost from the catalog: bytes to page in, plus the
+    bytes the switch would evict;
+  - known deadlines of both the waiting and the running request.
+- **Default until M4 measures the alternatives: priority-aware.**
+  - Requests of the same class run to completion, as D-050 specified. This
+    keeps D-050's protection against per-token alternation between models.
+  - An interactive request pauses a background request at the background
+    request's next completed boundary, but only after that request has had
+    a minimum run.
+  - A request whose known deadline cannot be met behind the queue ahead of
+    it is refused before admission with 429 and a `retry-after` of at most
+    60 that reflects queue wait only (D-045). Once admitted it is never
+    refused with 429: a streaming request that fails ends with the
+    protocol's in-stream error, and a non-streaming one gets D-047's 504.
+  - A request with a known deadline is not paused unless its own
+    remaining work, the substitute's program bound and both switching costs
+    (to the substitute and back) together fit within that deadline, all
+    estimated from program bounds, measured rates and catalog switch-cost
+    estimates. A wrong estimate can only cost that request its deadline; it
+    never affects safety.
+  - Known deadlines come from server configuration (D-047's request
+    deadline) or per-alias settings. A client hint cannot make a request
+    unpausable.
+- **Alternatives** are selectable in configuration: run-to-completion for
+  every class, and time-slicing (any waiting request may pause the running
+  one after a quantum of tokens or seconds).
+- **Guards for every policy.** Each policy has:
+  - a minimum run before a request can be paused;
+  - a cap on pauses per request;
+  - one substitute per pause, never itself paused while any request paused
+    for it is paused, with every request paused for it resuming next when
+    it ends, ahead of every waiting request;
+  - while a request is paused, every capacity-changing transaction (a new
+    member joining the running set, a grant, an envelope replacement by a
+    running member, an increase to `F` or `J`, a budget reduction) proceeds
+    only if the set that will run after the substitute ends, with every
+    request paused for it back in its place, still passes D-050's cohort
+    inequality. Otherwise the transaction waits until the paused requests
+    have resumed, or is refused. The substitute's own transactions are
+    checked without its own allowance and, if they still fail, refused
+    rather than deferred, so no circular wait arises;
+  - at most one pause, with the cohort peers paused for it, is open at a
+    time. Paused time is therefore bounded by the substitute's finite
+    program plus the switching costs; streaming requests keep sending
+    D-045 keepalives while paused.
+- **Safety conditions.** Nothing a request keeps across a completed
+  boundary (output buffer, task and result records, stream and
+  library-handle allocations, non-reclaimable backend allocations) is
+  charged to its phase envelope `E_i`; it belongs in `R(G)` or `F`. A plan
+  that cannot meet that is not pausable. A pause hands the slot to a
+  substitute only if the resulting running set passes D-050's cohort
+  inequality.
+
+  Every admitted request still completes or ends explicitly.
+
+**Context.** An external review of the first architecture draft (2026-09-23)
+noted that under D-050 a long response on model A holds an interactive
+request for model B until A finishes, unless both fit concurrently, and that
+faster paging cannot shorten that queue wait. The owner proposed making
+switching configurable by use case, model and deadline, and chose the
+priority-aware default over run-to-completion and time-slicing. D-050's
+2026-09-22 rationale (per-step alternation would reload models on every
+token in the agent/subagent workload) still holds for requests of the same
+class. The admission rule already permits a pause at a completed boundary:
+the paused request's retained state is counted in `R(G)`, and only one phase
+envelope is in use outside a cohort, so `F + R(G) + J + max(E_i) ≤ B` is
+unchanged, given the safety conditions above. The external review and the
+adversarial challenge of this decision found those two conditions.
+
+**Consequences.**
+
+- reservation-policy.md, async-model.md and architecture.md are amended
+  where they said the node never switches mid-request.
+- Concurrent cohorts are unchanged: joining a cohort never pauses anyone.
+- M2's fake-backend matrix adds pause cases:
+  - a pause only at a completed boundary;
+  - paused state stays protected;
+  - bounded alternation under time-slicing;
+  - a newcomer, a running member's envelope increase, a new grant or an
+    `F`/`J` increase during a pause;
+  - a deadline check that counts the paused request's remaining work and
+    both switching costs;
+  - deadline-driven early refusal;
+  - progress for every admitted request.
+- M4's acceptance adds a request for B arriving while A is still
+  generating. The scenario reports these separately: queue delay, paging
+  and switch time, first-token compute, the number of pauses and the bytes
+  reloaded. M4 compares the three policies before the default is kept or
+  changed.
+- The policy keys and per-alias overrides are part of the configuration
+  schema (a D-062 public surface). Their spellings are fixed with the M3/M4
+  schema.
+- Pauses add gaps in the paused request's output. D-036's generation-stall
+  measurements report them separately, and never hide them inside
+  generation time.
+
+**Reopen if.** M4's measurements show the default mis-serves the primary
+workload, or pausing causes reload traffic that cancels its latency benefit.
+
+## D-068: Design now for speculative (MTP) and block-diffusion decoding and for uncovered model shapes; execute them in M7  (2026-09-23, status: accepted; confirms the speculative-decoding scope deferred at the 2026-09-21 triage; constrains D-050's phases, D-053's operation contract, D-055's state adapters and D-056's open artifact items)
+
+**Decision.** Owner's answer on 2026-09-23, after the first architecture
+draft:
+
+- **Confirmed scope.** Two decoding modes join the scope:
+  - **Speculative decoding with multi-token prediction (MTP)**, in both
+    forms. One is MTP layers stored inside a checkpoint: Ornith's stored
+    MTP layer, Qwen3.8's MTP head and MiMo's layers. The other is a
+    companion drafter checkpoint, such as Gemma 4's "assistant" drafters,
+    which share the target's input embeddings and read its last-layer
+    activations.
+  - **Block-diffusion text generation**, such as DiffusionGemma-26B-A4B. A
+    causal prefill writes ordinary KV. Then a 256-token block (a "canvas")
+    is denoised with bidirectional attention over the cached context, for
+    at most a configured number of steps (the model card recommends 48,
+    with adaptive stopping), and committed.
+- **Timing.** Execution waits for M7. The design must accommodate both now.
+  M2's operation contract and its phase and state interfaces must be able to
+  express these shapes before they are settled, without implementing them.
+  M5's envelopes and paging must not assume one position per phase.
+- **General rule for shapes not yet covered.** The resource core (catalog,
+  ledgers, admission, leases, retention, scheduler) names no model
+  architecture. Shape-specific behavior lives in build-time contracts, each
+  with declared bounds: adapters, phase kinds, state capabilities, decoding
+  modes and operations. A new shape extends those contracts and passes the
+  existing D-050 and D-055 adversarial matrices; it never adds a special
+  case to the core. A shape the contracts cannot express is a contract
+  change and gets its own decision entry.
+
+**Context.** The owner asked on 2026-09-23 whether MTP and diffusion models
+belong in the model matrix so that every shape is covered, noting that
+Gemma has both. Primary sources checked the same day:
+
+- Google released MTP drafters for Gemma 4 E2B, E4B, 12B, 26B-A4B and 31B
+  on 2026-05-05 ([announcement](https://blog.google/innovation-and-ai/technology/developers-tools/multi-token-prediction-gemma-4/),
+  [overview](https://ai.google.dev/gemma/docs/mtp/overview),
+  [Transformers guide](https://ai.google.dev/gemma/docs/mtp/mtp)).
+- llama.cpp merged Gemma 4 MTP support on 2026-06-07 as a separate draft
+  GGUF ([PR #23398](https://github.com/ggml-org/llama.cpp/pull/23398)). Its
+  contributor reported more than 2× speedup on dense models and none on the
+  MoE model, and Google notes that MoE verification can load additional
+  expert weights.
+- DiffusionGemma was released on 2026-06-10 under Apache-2.0
+  ([model card](https://ai.google.dev/gemma/docs/diffusiongemma/model_card)).
+  vLLM supported it from launch
+  ([vLLM blog](https://vllm.ai/blog/2026-06-10-diffusion-gemma)).
+  llama.cpp support was still an unmerged pull request when searched.
+
+The 2026-09-21 triage had deferred speculative decoding to M7 behind a
+performance trigger. The first draft assumed that a model context is one
+artifact, that phases are prefill chunks and decode steps, that sampling
+reads the final position, and that numerics are compared teacher-forced.
+Each of those would have ruled these shapes out.
+
+**Consequences.**
+
+- architecture.md gains a model-shape section. It generalizes model
+  contexts into compositions of components and requests into finite
+  programs of phase kinds. It adds state capabilities (truncation after a
+  rejected draft, snapshots, transient working state), decoding modes with
+  variable output granularity, and a numerical contract per mode. It also
+  inventories the shapes and says what covers each.
+- Every request program is finite before admission: draft depth, verify
+  width, denoising steps and block count are all bounded. Acceptance and
+  adaptive stopping can only shorten an admitted program (D-050). An
+  envelope uses the worst-case union of routes over every position in its
+  phase, such as a k+1-token verify or a 256-token canvas.
+- Wide phases on routed-expert models may touch most experts in each layer.
+  If so, demand paging would not help diffusion, and the plan must keep
+  those layers resident. This is an unmeasured expectation. A bounded
+  DiffusionGemma reference study measures per-step closures before M7
+  planning.
+- Stored MTP layers are ordinary groups in v0 artifacts. Companion drafters
+  and multi-component pipelines need manifest references to another
+  artifact by ID, with shared resources counted once. That format item stays
+  open until before M7 (artifact-format.md).
+- Retention identity for a composed context covers every component and plan
+  that the state depends on. Working state that a program keeps across its
+  own completed boundaries (a canvas, a drafter's state, drafted positions,
+  rollback snapshots) is charged to the request's `R(G)` allowance under
+  D-050 and discarded at retirement. It never becomes a D-055 entry unless
+  an adapter declares and validates it.
+- M7's numerical gates compare the speculative verify path's teacher-forced
+  logits with plain decoding within declared bounds, reporting top-1
+  agreement. Exact matching accepts what the verify pass predicts, so greedy
+  output equals plain decoding only when the verify and decode plans are
+  numerically identical; free-running divergence is reported with its first
+  position (RE-008). Diffusion is compared step by step under a fixed seed.
+  Performance comparisons already state whether speculation is on, in both
+  views (architecture.md).
+
+**Reopen if.**
+
+- Expressing these shapes in M2's contract would cost the autoregressive
+  path its D-052 or D-036 performance gates.
+- M7 finds that a shape needs a special case in the resource core.
+
+## D-067: Chat templates are rendered by native per-template renderers; template code from a checkpoint never runs in a jitLLM process  (2026-09-23, status: accepted; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract)
+
+**Decision.** Owner's answer on 2026-09-23, asked while drafting
+architecture.md:
+
+- **One native renderer per supported template.** Each supported chat
+  template has a native C++ renderer. The runtime selects it by the SHA-256
+  of the template's exact UTF-8 bytes as recorded in the prepared artifact's
+  metadata. The template text is only identification data. No jitLLM
+  runtime, job or shipped tool parses or evaluates it as a program, and
+  jitLLM ships no Jinja or other template interpreter. The only evaluation
+  is the offline fixture generation below, in developer-run build/test
+  tooling on the pinned template.
+- **Request-supplied templates** (vLLM's `chat_template`, Ollama's
+  `template`) are rejected as unsupported.
+- **What a renderer produces.** It turns the protocol-neutral request (roles,
+  content blocks, tools, tool calls and results, reasoning blocks where
+  supported, the generation-prompt flag and any documented template
+  options) into token IDs. It also reports the segment boundaries that
+  other policies need: the end of the leading system, developer and
+  tool-definition segment that D-055 uses for shared prefixes; the end of
+  each content block or tool definition inside that segment that carries a
+  client cache breakpoint; message boundaries; and where the generation
+  prompt starts. It is paired with that model family's output parser for
+  tool calls and reasoning.
+- **Exactness.** Golden fixtures pin each supported hash. They are produced
+  offline from synthetic conversations by a pinned reference renderer, which
+  is build/test tooling under D-010 and D-017 and never shipped. The native
+  renderer's text and token IDs must equal the fixture's. One renderer may
+  serve several hashes only when every hash passes its own fixtures.
+- **Unknown templates.** A model whose template hash has no renderer can
+  still be installed, but the chat routes (Chat Completions, Responses,
+  Messages and Ollama chat) reject it as unsupported. Routes that take raw
+  text or token IDs stay available where otherwise supported (D-044). There
+  is no generic fallback template and no substitution of another template,
+  such as a base checkpoint's (first-slice.md).
+
+**Context.** Checkpoint chat templates are Jinja programs, and checkpoints
+are untrusted input (D-009). first-slice.md already required an owned
+renderer for the pinned Qwen template instead of upstream's Jinja, parser and
+vendor closure. Two options were offered: native per-template renderers
+(recommended), or a bounded, sandboxed Jinja-subset interpreter that renders
+the checkpoint's own template. The interpreter would add new models faster,
+but it is a large parser and interpreter for untrusted programs on the heavy
+review path, and each model would still need rendering and tool-call
+validation. Support is already earned per checkpoint (vision.md),
+and a native renderer can report the segment boundaries D-055 needs
+directly.
+
+**Consequences.**
+
+- M3 builds and validates renderers for both fixture templates, which have
+  different recorded hashes: the FP16 GGUF's embedded template (SHA-256
+  `d5495a1e…`, [first-slice results](experiments/first-slice/results.json))
+  and the EXL3 fixtures' shared template (`cd8e9439…`,
+  [EXL3 reference runtime](experiments/exl3-reference/runtime.json)).
+  Their fixtures decide whether one renderer can serve both.
+- Every new model family costs a renderer, a parser and fixtures. The
+  support matrix records the supported template hashes.
+- Template options, such as a thinking toggle, are explicit renderer
+  parameters, validated like other request fields.
+- Token counting and prompt preview use the same renderer and tokenizer as
+  inference (D-043).
+- Tokenizer, template and renderer changes produce retention misses, never
+  incompatible hits (D-055).
+
+**Reopen if.**
+
+- Writing renderers becomes the bottleneck for adding supported models.
+- A named client needs a model whose template cannot be rendered natively
+  at reasonable cost.
+- A vetted, bounded template engine would cost less to review than the
+  renderers it replaces.
+
+## D-066: jitLLM code builds without exceptions; errors are explicit values  (2026-09-23, status: accepted; settles D-010's deferred exception policy; applied with D-059's warning set in M1)
+
+**Decision.** Owner's answer on 2026-09-23, asked while drafting
+architecture.md:
+
+- **No exceptions in jitLLM code.** Every profile builds jitLLM-owned C++,
+  and the host side of its CUDA translation units, with `-fno-exceptions`.
+  That includes the tests of that code. Owned code contains no `throw` or
+  `try`.
+- **Errors are values.** A fallible operation returns
+  `std::expected<T, Error>`, or a status-only equivalent, and is
+  `[[nodiscard]]`. `Error` is a small value type: a category the caller can
+  act on, a code, and bounded static context. Creating or propagating one
+  needs no heap allocation, so error paths still work at full occupancy. An
+  `Error` never carries prompt text, token IDs or KV contents (D-014).
+- **Fatal is reserved for bugs.** A violated internal invariant, or failed
+  C++ heap allocation, ends the process through one fatal path that records
+  a bounded diagnostic. A new-handler and a terminate handler route failed
+  allocation and any stray throw to that path. Untrusted input, provider
+  errors, I/O errors and capacity conflicts are never fatal; they return
+  errors. D-053 already requires kernel implementations to return errors
+  instead of exiting.
+- **Third-party code.** Prefer libraries with a no-exception mode. A library
+  that reports errors only by throwing may be called only from an adapter
+  translation unit compiled with exceptions. The adapter catches everything
+  at its boundary and returns an `Error`, so no exception ever reaches a
+  jitLLM frame. The linker keeps one copy of each inline function or
+  template instantiation, and a copy compiled without exceptions has no
+  cleanups for one: unwinding through it skips destructors, and under
+  Clang it is undefined. So no inline function or template instantiation that
+  an exception can pass through is shared between an adapter and
+  `-fno-exceptions` code, and only trivially destructible types cross the
+  adapter's boundary. The adapter is a reviewed build input.
+- **Standard library.** Use the forms that report expected failures without
+  throwing: `std::from_chars` rather than `std::stoi`, and compile-time-checked
+  format strings. Under `-fno-exceptions`, libstdc++ paths that would throw
+  (allocation, `at()`, `value()` on an empty `std::expected`) terminate the
+  process, so reaching one is a bug.
+
+**Context.** D-010 and ideation §14 deferred the exception policy to a
+deliberate M1 choice. Two options were offered: no exceptions (recommended),
+or exceptions enabled but thrown only for fatal errors and caught where each
+service loop starts. The reasons for the first:
+
+- D-048's completion ownership: a destructor that unwinding runs must not
+  assume that submitted GPU, I/O or network work has finished. Explicit
+  results keep every exit path visible in review and in deterministic tests.
+- Error paths must not allocate at full occupancy (D-050).
+- The reused kernel sources are expected not to throw: GGML's core is C,
+  and the adapted ExLlamaV3 kernels are CUDA behind owned launchers. GGML's
+  CUDA launchers are C++, so M2 checks them for throws at the pinned
+  revision.
+- The cost is asymmetric: relaxing the rule later breaks nothing, while
+  imposing it later means auditing every `throw` and `catch`.
+
+**Consequences.**
+
+- M1 applies the flag at the repository root, alongside D-059's warnings.
+  It checks that the pinned toolchain, GoogleTest 1.18.0 and gMock,
+  sanitizers and NVCC host compilation build and pass under it. D-059's
+  smoke ran with exceptions enabled, so this is not yet shown.
+- Dependency selection in M1 and M3 (configuration, JSON, HTTP and TLS
+  libraries among them) prefers no-exception APIs. A library that can only
+  throw needs an adapter, or it is rejected.
+- Tests cover each error category's path, and use death tests for the fatal
+  path.
+- The error categories and how they map to D-045/D-048/D-050 outcomes are in
+  [architecture.md](architecture.md#errors-faults-startup-and-shutdown).
+
+**Reopen if.**
+
+- A required dependency cannot be adapted at acceptable cost.
+- Measured hot-path cost of explicit results exceeds what exceptions would
+  cost.
+- A later decision requires unwinding across jitLLM frames.
+
 ## D-065: Front-door TLS from certificate files that external tools keep current (certbot with Cloudflare DNS, Tailscale), with a built-in CA as fallback  (2026-09-23, status: accepted; implements D-014's and D-045's "transport protection"; separate from D-038's cluster mTLS)
 
 **Decision.** The owner asked on 2026-09-23 for Let's Encrypt with DNS-based
@@ -1258,7 +1622,7 @@ owner's NAS and only installed models are staged on the Sparks; long-term
 stores (NAS, USB drives) are optional for end-user systems; one Spark pulls
 from long-term storage and syncs the processed artifact to the other over
 the DAC; install-time space is freed by the user's explicit archive/delete
-choice. The [measurements](architecture.md#long-term-model-store-2026-09-22),
+choice. The [measurements](environment.md#long-term-model-store-2026-09-22),
 single `dd`-based samples, found the NAS mount reading 117–118 MB/s per
 client, including both Sparks at once, with NAS-side caching uncontrolled.
 Against 14.9 GB/s local direct reads (D-034), the NAS is an install-time
@@ -1532,7 +1896,7 @@ semantics prevent a bounded first slice, or a newly identified provenance
 restriction blocks the chosen input. A different artifact/profile needs new
 identity and numerical evidence; no silent replacement by a newer model tag.
 
-## D-050: Guarantee bounded requests with retained-state allowance and complete phase envelopes  (2026-09-22, status: accepted; resolves open question 9, specializes D-007 and the D-019/D-020 time-slicing boundary)
+## D-050: Guarantee bounded requests with retained-state allowance and complete phase envelopes  (2026-09-22, status: accepted; resolves open question 9, specializes D-007 and the D-019/D-020 time-slicing boundary; switching rule amended by D-069)
 
 **Decision.** Initial inference admission grants guaranteed capacity for a
 finite request under a validated plan. Reserve its maximum retained state
@@ -3310,7 +3674,7 @@ concurrency, VMM, kernel, and distributed tests run on Sparks. Explicit
 CPU/GPU targets only, never `-march=native` or workstation autodetection.
 
 **Context.** Ideation §1 row "Development", §15. Workstation baseline captured
-2026-09-20 (see architecture.md). Older environments are not a priority;
+2026-09-20 (see environment.md). Older environments are not a priority;
 feature checks are preferred over kernel-version barriers.
 
 **Consequences.** CMake toolchain files for native and Spark builds with
@@ -3323,7 +3687,7 @@ not the primary workflow.
 **Reopen if.** Cross CUDA compilation for GB10 cannot be validated, making a
 target-side build primary.
 
-## D-010: C++23 host runtime, Clang-first, native hot path  (2026-09-20, status: accepted; optional-backend C ABI clause superseded by D-028)
+## D-010: C++23 host runtime, Clang-first, native hot path  (2026-09-20, status: accepted; optional-backend C ABI clause superseded by D-028; exception policy settled by D-066)
 
 **Decision.** The host runtime is C++23. Clang is the primary compiler for code
 we own. NVCC is the default CUDA compiler with Clang as its host compiler

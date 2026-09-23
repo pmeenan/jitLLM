@@ -63,7 +63,7 @@ downgrade a heavy-path change to the light loop on their own.
   workstation, including AArch64 CPU tests under qemu-user (D-061). Anything
   that needs a Spark (GPU, VMM, RDMA/NCCL, ARM concurrency, target I/O,
   performance, distributed) runs on `spark` or `spark-b` (see
-  architecture.md); when it was not run, the note
+  environment.md); when it was not run, the note
   says so rather than implying it passed.
 - **Evidence, not adjectives.** A performance or capability claim in a note
   or doc carries the measurement and its provenance (host, driver, toolkit,
