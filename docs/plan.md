@@ -455,7 +455,8 @@ needs evidence from the real hardware.
       installable `.deb` build from M1 (D-029), versioning/changelog
       conventions for an externally consumed project (D-016), and the
       installed layout that packaging will need (FHS paths, service user,
-      systemd unit; D-027, confirmed 2026-09-21). Record the pins and the
+      systemd unit; D-027, confirmed 2026-09-21), including D-054's
+      storage-role paths and defaults. Record the pins and the
       layout in decisions.md. Provisioning split settled 2026-09-22 (D-049):
       a complete, persistent project SDK, declared system prerequisites and
       shared workstation/container setup. Implementation and remaining tool
@@ -463,7 +464,8 @@ needs evidence from the real hardware.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria, including unassigned D-041–D-044 API delivery (Ollama subset,
-      warm/install jobs, file modalities, MCP, sharing controls, embeddings,
+      warm/install jobs with D-054's archive and peer replication, file
+      modalities, MCP, sharing controls, embeddings,
       compatible tokenization/rendering, constrained output, reasoning,
       reranking, metrics/health/load, raw Completions/token diagnostics and
       D-046's OpenRouter reasoning/cache spellings and hint fields).

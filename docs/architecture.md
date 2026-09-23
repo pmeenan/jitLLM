@@ -85,6 +85,14 @@
   import/execution/eviction/restore evidence (D-009, D-018). Import repacks
   weights for whole-extent DMA; the initial Spark profile uses 2 MiB aligned
   payload extents with an expert/tensor index (D-035).
+- **Storage roles.** The runtime pages only from each node's installed store,
+  a local block-device filesystem that must pass the direct-I/O probe.
+  Source checkpoints and an optional prepared-artifact archive may live on
+  an optional long-term store (a network mount or USB drive) that only
+  import/install jobs touch. A cluster imports once and replicates the
+  verified artifact to peers over the cluster link. Installs never delete
+  models implicitly; the user chooses what to archive or delete when space
+  is short (D-054).
 - **Dependency policy.** Own code Apache-2.0; incorporated core implementation
   uses Apache-2.0 / BSD / MIT / MPL-2.0, with other implementation licenses in
   optional, fully removable modules. Declared tools and platform dependencies
@@ -989,6 +997,60 @@ without promising one-layer prefetch can hide misses. Actual pager execution,
 physical admission safety, and end-to-end latency validation remain runtime
 work. The owner accepted switching-benefit and generation-stall targets in
 D-036 after this study; those targets are not measured achievements.
+
+### Long-term model store (2026-09-22)
+
+The owner's Synology NAS (`192.168.0.3`, share `llm`; owner-reported: more
+than 20 TB free, four bonded 1 Gb/s links, magnetic disks) is the long-term
+store for D-054. It is mounted at `/mnt/llm` on the workstation, `spark` and
+`spark-b`. This is owner environment, not application configuration. Each
+host's `/etc/fstab` gained the entry below; the prior file is kept as
+`/etc/fstab.bak-2026-09-22`:
+
+```text
+//192.168.0.3/llm  /mnt/llm  cifs  guest,vers=3,uid=1000,gid=1000,iocharset=utf8,file_mode=0777,dir_mode=0777,nofail,x-systemd.automount,x-systemd.mount-timeout=30  0  0
+```
+
+The mounts negotiated SMB 3.1.1 with `sec=none`, `soft` and 4 MiB read/write
+sizes; automount with `nofail` keeps an absent NAS from blocking boot. The
+workstation needed `cifs-utils`; the Sparks already had it. The NAS
+advertised NFS v2–v4 but exported nothing; the mounts follow the owner's
+existing guest SMB mount of another share on this NAS, which needs no UID
+mapping. The permissive modes protect nothing
+extra, since any LAN host can read, write or delete as guest; integrity
+comes from import verification (D-009, D-054), but nothing on the share is
+confidential or safe from deletion. The Sparks' LAN ports (`enP7s7`) negotiate
+2.5 Gb/s, yet each client's reads below match one 1 Gb/s link, consistent
+with the NAS's bond carrying a client on one member link.
+
+One `dd` sample per case, 4 MiB blocks, on 2026-09-22. Reads used a 4 GiB
+random file, cold on each reader (first read on that host, or page cache
+dropped):
+
+| Case | Result |
+| --- | --- |
+| Sequential read, one client (`spark-b`, workstation, `spark`) | 118 MB/s each |
+| Both Sparks reading concurrently | 117 MB/s each |
+| Workstation and both Sparks concurrently | 82.7 / 71.4 / 70.5 MB/s, about 225 MB/s total |
+| Write with `fsync` from `spark`, random data | 77.9 MB/s streaming 4 GiB from `/dev/urandom`; 79.7 MB/s for 2 GiB from tmpfs |
+| Write with `fsync` from `spark`, 2 GiB of zeros | 92.9 MB/s |
+
+The owner expects the NAS's magnetic disks to limit aggregate throughput,
+but the NAS itself was not instrumented and its cache state was not
+controlled, so these reads may not reflect its disks, and the cause of the
+three-client limit is not established. Renaming over an existing file works, creating a
+symlink fails with `EOPNOTSUPP`, and a file written on `spark` hashed
+identically on `spark-b`. Test files were removed.
+
+For D-054's peer replication, an 8 GiB random file was copied from `spark`'s
+SSD to `spark-b`'s over the DAC (`10.100.208.x`), with the source cache
+dropped and the receiver finishing with `fsync`. One sample each:
+single-stream unencrypted TCP (`nc`) took 8.19 s, **1.05 GB/s**; `ssh`
+with AES-128-GCM took 18.93 s, **0.45 GB/s**. `spark-b`'s local 8 GiB
+`fsync`'d write of zeros ran at 4.0 GB/s. These rates are far below both
+SSDs' local rates and the link's 184.76 Gb/s RDMA baseline above, so the
+copy method limited them; the bottleneck within it was not profiled. No
+network, driver or SSH settings changed, and the test files were removed.
 
 ## Open architecture questions
 

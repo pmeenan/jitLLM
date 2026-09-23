@@ -30,6 +30,126 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041)
+
+**Decision.** Model storage has three roles, each a configured path; the
+paths must not overlap:
+
+- **Installed store (required, per node).** Published prepared artifacts the
+  runtime pages from. It must be a local block-device filesystem that passes
+  D-034's direct-I/O capability probe; the runtime rejects anything else,
+  such as a network, FUSE or memory-backed filesystem, at startup rather
+  than paging through a slower, buffered or memory-consuming path. It opens
+  files only beneath that path, without following links or crossing mounts.
+  Integrity after publication rests on local permissions, so only jitLLM's
+  service user writes there. Paging, restore and spill use only this store
+  and node-local spill storage (D-014), never the other roles.
+- **Checkpoint store.** Downloaded source checkpoints, kept available for
+  re-import under D-018. It defaults to node-local storage. A user may
+  instead configure an **optional long-term store**: a network mount such as
+  a NAS, or a USB-attached drive.
+- **Artifact archive (optional, on the long-term store).** Prepared
+  artifacts keyed by content identity and the versions and profile they were
+  prepared with (D-035), so a reinstall is a copy plus verification instead
+  of a re-import. An archived artifact the target no longer accepts is
+  ignored, and the model is re-imported from its source (D-018).
+
+jitLLM sees a long-term store only as a filesystem path. Mounting, protocol
+and credentials belong to the OS; jitLLM ships no NFS, SMB or rsync client.
+Only import/install job processes access it. The runtime process never does,
+so a hung or absent mount cannot stall scheduling or paging (D-005, D-048).
+An absent store fails the jobs that need it, explicitly and retryably
+(D-041); it is never a startup or inference failure, and installed models
+keep running. Credentials, spill and conversation state never go there
+(D-014).
+
+Entries are named by a fixed-format content hash and published by a
+per-writer temporary write, flush and rename. Jobs open only regular files
+there and neither create nor follow symlinks, so several nodes can share
+one store without locking and a planted link cannot redirect a read or
+write. A long-term store is untrusted input like any checkpoint (D-009):
+content is verified against identities held outside the store (the origin's
+metadata recorded at download, or the identity recorded when jitLLM
+published an artifact), never against hash files kept in the same store.
+Verification covers the bytes actually used, such as the staged local copy;
+a file verified on the store and then read again is unverified. The
+importer stages a source onto local storage before repacking by default;
+importing directly from the store needs a measured benefit. Jobs keep
+their memory, including cached and dirty file data, within the node's
+OS/external headroom (D-050), and their I/O yields to serving; the effect
+on stalls is measured when built.
+
+**Cluster installation.** One node pulls the source (from the long-term
+store or the origin), imports, verifies and publishes it. Each other target
+node receives the prepared artifact from that node over the cluster link,
+verifies it against the artifact's integrity data and an identity received
+over an authenticated session, not only alongside the bulk data, and
+publishes it atomically; an interrupted transfer never appears installed.
+A target whose provider rejects the artifact's profile (D-035) fails before
+any transfer; another profile needs its own import, not a replica.
+Nodes do not import the same source independently by default. This is a
+management-plane file transfer between enrolled nodes (D-038 identities),
+not the deferred remote extent transfer and not shared storage. The install
+job names its target nodes; which node imports and the bulk transfer
+mechanism are implementation choices, measured when built. An artifact
+prepared off the cluster, such as by workstation-side import (D-009),
+enters the same way through one node, which first validates it as
+untrusted input. On each node, publication and removal are serialized per
+model and checked against job and installed generations, so a cancelled,
+timed-out, superseded or retried job never publishes late, resurrects a
+model deleted after it began, or removes a reinstalled one.
+
+**Local capacity.** Installation never removes installed artifacts on its
+own. If a node the install uses lacks space for its artifact and staging,
+beyond its spill budget and filesystem headroom, the user chooses
+explicitly, as part of the install, which models on that node to archive
+or delete. Otherwise the install fails before transferring anything,
+reporting the space required and the installed candidates. Jobs allocate
+the checked space before writing, so concurrent spill or installs cannot
+exhaust it mid-copy. No default or policy selects victims. Archiving
+verifies the archive copy, read back from the store, before removing the
+local one. Removal quiesces current users and their outstanding I/O
+(D-048) before its space counts as free. Deleting an installed artifact
+keeps its source checkpoint; removing a local source is a separate explicit
+choice, after which re-import needs a new download.
+
+**Context.** Owner direction on 2026-09-22: downloaded models live on the
+owner's NAS and only installed models are staged on the Sparks; long-term
+stores (NAS, USB drives) are optional for end-user systems; one Spark pulls
+from long-term storage and syncs the processed artifact to the other over
+the DAC; install-time space is freed by the user's explicit archive/delete
+choice. The [measurements](architecture.md#long-term-model-store-2026-09-22),
+single `dd`-based samples, found the NAS mount reading 117–118 MB/s per
+client, including both Sparks at once, with NAS-side caching uncontrolled.
+Against 14.9 GB/s local direct reads (D-034), the NAS is an install-time
+source only. A naive single-stream TCP copy between the Sparks' SSDs over
+the DAC moved 8 GiB at 1.05 GB/s (0.45 GB/s through ssh with AES-GCM).
+Both are far below the SSDs' local rates and the link's 184.76 Gb/s RDMA
+baseline, so they are not transport ceilings. Since both Sparks pulled from
+the NAS concurrently at line rate in that sample, one import per cluster is
+not chosen for time-to-install alone; the peer copy adds about a second per
+GB after import at the naive rate. Its value is one import instead of
+several, one read of the source (spinning NAS disks or the internet),
+identical content on every node, and no import load on a node that may be
+serving.
+
+**Consequences.** M1's installed-layout task defines the role paths,
+defaults and configuration keys; long-term stores are absent by default,
+and the configuration schema is a versioned public interface (D-016). The
+storage service's startup probe covers the installed store's filesystem
+type and direct-I/O alignment. D-041's install jobs gain staging,
+archive/restore-from-archive, per-node space checks, the explicit
+archive/delete selection and peer replication; their delivery milestone
+remains unassigned, and replication needs M4a enrollment. The owner's
+`/mnt/llm` mount is environment, not application configuration (D-023).
+No code, configuration format or wire protocol is introduced here.
+
+**Reopen if.** Remote storage passes the direct-I/O probe with acceptable
+latency and paging from it is wanted; staging measurably costs more than
+direct import from the store; the single importing node becomes a
+bottleneck in larger clusters; or users need automatic space management,
+which requires its own decision.
+
 ## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052)
 
 **Decision.** jitLLM's runtime owns operation dispatch on every device. That
