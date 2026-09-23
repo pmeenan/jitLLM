@@ -413,16 +413,23 @@ needs evidence from the real hardware.
       time to the last required completion, and consumer stalls. M4 extends
       this to simultaneous demand reads and state write-back with dependency
       safety and bounded queues. The M0 I/O spike did not measure these mixes.
-- [ ] Define the M4 A→B→A acceptance trace and the bounded retention policy
-      (D-024, D-031): memory/spill/metadata limits, independent shared-prefix
-      and conversation-continuation reuse/expiry policies, cleanup, cache
-      identity, restore boundaries, and fallback/error behavior. Choose
-      numeric defaults from measured state sizes and available headroom
-      before M4. Include resident reuse, forced spill/restore, branch/edit
-      cases, expiry and spill exhaustion; protect admitted suspended work.
-      Include independent conversations sharing a system prefix: releasing
-      or expiring one continuation preserves eligible shared-prefix reuse,
-      and hits on that prefix do not refresh unrelated continuations.
+- [x] Define the M4 A→B→A acceptance trace and the bounded retention policy
+      (2026-09-22, D-055): the [retention policy](retention-policy.md)
+      settles entry identity, adapter restore boundaries, immutable shared
+      blocks charged once, refresh by branch, D-041 close semantics,
+      capacity-driven expiry with 24-hour per-class idle caps (owner
+      decision), an initial victim order, lazy digest-verified spill deleted
+      at startup, and fallback/reporting. The owner named M4's workload:
+      Qwen2.5-0.5B FP16 GGUF and EXL3 4.0 bpw in both orientations on a
+      frozen synthetic transcript under policy-forced budgets. It has six
+      jitLLM arms, including whole-model controls, fresh interleaved
+      llama.cpp/ExLlamaV3 references, at least 72 repetitions per arm and
+      distribution-free 97.5% bounds, plus exact outputs and logits against
+      provenance-matched controls. The functional matrix covers shared
+      prefixes, branches, release races, expiry, spill failures and an
+      unmodified client. Capacity values are pinned at M3 exit from measured
+      state sizes. The transcript, budgets and reference paths are pinned at
+      M4 entry. No retention code or measurement exists yet.
 - [ ] Choose an experimental artifact encoding and layout ABI (open question
       5, D-018), including validation, version rejection, and re-import rules.
       D-035 settles import-time repacking and the initial Spark profile:
@@ -551,12 +558,18 @@ has a promised date; each should leave a usable, testable result.
   performance is not left
   until M7. M2's backend proof supplies the integration evidence;
   M2/M3 implementation may overlap while their gates remain explicit.
+  At exit, measure both supported contexts' state bytes and pin D-055's
+  retention capacity values in [the policy](retention-policy.md#bounds-and-defaults).
 - **M4 — First useful product: A→B→A with partial retention.** Two small
   supported model contexts, one shared local budget, partial eviction of a
   quiescent model, bounded prefix/continuation retention (D-024, D-031), and
   basic status/diagnostics including the admission what-if query and Perfetto
   trace export. Through at least one unmodified named client, build a
-  long conversation on A, request B under pressure, then resume A. *Gate:*
+  long conversation on A, request B under pressure, then resume A. D-055
+  names the timed workload (Qwen2.5-0.5B FP16 and EXL3 4.0 bpw, both
+  orientations) and its arms, statistics and functional matrix
+  ([acceptance workload](retention-policy.md#m4-acceptance-workload)); M4
+  entry pins its transcript, budgets and reference paths. *Gate:*
   only selected extents displaced; untouched data remains resident; reload
   only missing dependencies. Exercise both resident state reuse and forced
   spill/restore, including an EXL3 model context in the matrix (D-052), with

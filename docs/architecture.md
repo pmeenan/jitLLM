@@ -33,8 +33,10 @@
   Standard web-API clients work unmodified; the model field drives switching.
   Prefix matching enables bounded state reuse; it identifies neither a
   conversation nor its lifetime. Shared prompt prefixes and conversation
-  continuations have independent reuse/expiry policies (D-024, D-031).
-  Sessions and hints are optional extensions (D-022). M3 serves Chat
+  continuations have independent reuse/expiry policies (D-024, D-031),
+  capacity-driven with a 24-hour idle cap under D-055's
+  [retention policy](retention-policy.md), which also names M4's acceptance
+  workload. Sessions and hints are optional extensions (D-022). M3 serves Chat
   Completions, Responses and Messages with model listing and token counting
   under the [D-040 client contract](client-api-baseline.md); client compatibility
   requires per-version execution evidence, including Cursor reachability.
@@ -399,25 +401,29 @@ invalidate those resources. After response completion, prefix retention is
 subject to bounded memory and spill capacity. Optional sessions and hints can guide
 policy without making storage unbounded.
 
-Before M4, specify per-node cache-memory and spill-byte limits, metadata/entry
-bounds, idle expiry, and spill cleanup. Shared prompt-prefix snapshots and
-conversation-continuation snapshots have separate reuse statistics and
-retention/expiry decisions within these common bounds. Shared-prefix value
-comes from reuse across conversations; continuation value comes from reuse
-of that history. A hit on the shared prefix does not refresh unrelated
-continuations. Select and record numeric defaults for both policies from
-the measured workload and available headroom. Spill-full or expiry
-invalidates only eligible reusable entries; active work retains a valid
-recovery path or safely fails under the admission policy. No implicit crash
-durability or indefinite retention is promised.
+D-055's [retention policy](retention-policy.md) settles the rules: entry
+identity, restore boundaries, immutable shared blocks, refresh by branch,
+release semantics, the initial victim order, spill storage and M4's named
+acceptance workload. Shared prompt-prefix and conversation-continuation
+entries have separate reuse statistics and retention/expiry decisions within
+common bounds. Shared-prefix value comes from reuse across conversations;
+continuation value comes from reuse of that history. A hit on the shared
+prefix does not refresh unrelated continuations. Retention is
+capacity-driven with a per-class maximum idle age of 24 hours by default.
+The capacity values (resident state, spill bytes, entry counts, minimum
+prefix length) are pinned at M3 exit from measured state sizes and headroom.
+Spill-full or expiry invalidates only eligible reusable entries; active work
+retains a valid recovery path or safely fails under the admission policy.
+Spill is deleted at startup, so no crash durability or indefinite retention
+is promised.
 
 Cache identity covers artifact/model version, relevant execution settings
 (including position/attention configuration), state representation/layout,
 and the exact rendered token prefix from the context origin plus non-text
-input identity when supported. The same system-prompt text after different
-preceding input is not the same prefix; matching a message label or its text
-alone never authorizes a hit. Tokenizer and template changes must not produce
-an incompatible hit. Architecture-specific adapters define which boundaries
+input identity when supported, within one caller scope (D-055). The same
+system-prompt text after different preceding input is not the same prefix;
+matching a message label or its text alone never authorizes a hit.
+Tokenizer and template changes must not produce an incompatible hit. Architecture-specific adapters define which boundaries
 can be restored; do not assume a recurrent snapshot can be truncated like
 full-attention KV.
 Coverage includes the attention window required at the first resumed token,
@@ -1085,9 +1091,10 @@ while drafting:
   [cluster design](cluster-design.md): hardware profiles, bootstrap discovery,
   configuration/transport parsers, authenticated sessions and crash recovery.
   D-037/D-038 settle ownership and initial contracts; election stays deferred.
-- Cache-memory, spill, metadata, and expiry limits for D-024/D-031's shared
-  prompt-prefix and conversation-continuation policies; choose before M4
-  from measured state sizes and available headroom.
+- Capacity values for D-055's [retention policy](retention-policy.md)
+  (resident state, spill bytes, entry counts, minimum prefix length and
+  maintenance interval); pin at M3 exit from measured state sizes and
+  headroom. The 24-hour idle caps and the rules are settled.
 - The minimal provider interface the pager needs from a device memory and
   transfer backend (reserve, back, map, unmap, copy, fence, event; transport
   send and receive with registration); the ledger keys by memory domain from

@@ -171,7 +171,8 @@ handling:
   carrying the gateway doc's stable `capability_rejected:` token, so the
   client's reactive compaction runs instead of a dead end.
 - `cache_control` markers: advisory retention hints, never identity or a
-  retention grant (D-045); usage reports real cache reads and writes only.
+  retention grant (D-045); usage reports real cache reads only, and writes
+  as tokens submitted for retention (D-055).
 - The attribution block: stripped when it arrives unchanged as the first
   `system` entry, matching the behavior the client documents for the
   first-party endpoint, so shared-prefix identity excludes its per-conversation
@@ -283,6 +284,11 @@ identify a conversation or grant retention (D-031):
   never touches another consumer's lease or admitted work; a positive duration
   is an advisory retention preference; a negative value asks for an indefinite
   pin the budget cannot honor and is rejected explicitly.
+
+D-055's [retention policy](retention-policy.md) fixes how these signals act
+on retained state: breakpoints nominate shared-prefix boundaries only inside
+the leading system/tool segment, hosted-cache TTLs are ignored, and
+`keep_alive` concerns weight residency, not conversation state.
 
 **Alias echo and extensions.** The response `model` field echoes the
 requested alias exactly, and the resolved immutable artifact identity travels

@@ -191,7 +191,7 @@ the human commit gate.
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
 cluster/API, task/completion, reservation, SDK, kernel-dispatch and model-storage
-choices are recorded through D-054; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+choices are recorded through D-055; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
@@ -213,6 +213,9 @@ backend-proof scope is recorded (docs/backend-proof.md), with an open EXL3
 GEMV provenance gate; D-053 moves kernel dispatch into jitLLM with swappable
 per-operation kernels. D-054 keeps installed models node-local, with an
 optional long-term store (NAS/USB) and one import per cluster; the owner's NAS
-is mounted at `/mnt/llm`. The remaining M0 decisions are next (plan.md).
+is mounted at `/mnt/llm`. D-055 sets capacity-driven state retention with a
+24-hour idle cap and names M4's Qwen2.5-0.5B FP16/EXL3 acceptance workload;
+capacity values are pinned at M3 exit. The remaining M0 decisions are next
+(plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

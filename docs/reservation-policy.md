@@ -328,8 +328,9 @@ to make progress. M2 must test these premises, not merely absence of OOM.
 | Local fit inferred from aggregate cluster capacity or stale report | M4a: each node rechecks its own guarantees; M6 adds per-rank coordinated admission and failure/collective tests |
 
 M2 supplies deterministic fake-backend execution plus the real GGML/VMM
-allocation and retirement evidence. M3 binds finite API request defaults;
-M4 chooses measured retention limits and proves concurrent execution;
+allocation and retirement evidence. M3 binds finite API request defaults
+and, at exit, D-055's measured [retention limits](retention-policy.md);
+M4 proves retention and concurrent execution;
 M5 validates pessimistic routing envelopes before overlap optimizations.
 No new runtime, model support, spill format, public configuration schema or
 numeric production default is introduced by this policy document.

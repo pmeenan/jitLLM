@@ -30,6 +30,86 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036)
+
+**Decision.** Reusable conversation state follows the
+[retention policy](retention-policy.md):
+
+- **Two classes of revocable cache.** A retiring request publishes a
+  continuation entry for its branch. A request that starts a new branch also
+  publishes shared-prefix entries at declared boundaries: the
+  renderer-reported end of the leading system/tool segment and client
+  breakpoints inside it. Entries are immutable, hold claims on blocks
+  charged once, and are never capacity grants. Admitted state stays under
+  D-050 and outside this policy.
+- **Identity and boundaries.** A hit needs the same artifact, state-producing
+  plan, exact rendered tokens, non-text inputs and caller scope. State
+  adapters declare restore boundaries and coverage; an unvalidated
+  representation gets no reuse.
+- **Refresh follows the branch.** A request that continues a branch refreshes
+  and later supersedes only that continuation; final, no-retain and auxiliary
+  requests do neither. Other requests may reuse matching blocks and refresh
+  shared prefixes, never another branch's continuation.
+- **Capacity-driven expiry with a long cap.** An entry ends through capacity,
+  a per-class maximum idle age (`T_cont` and `T_prefix`, 24 hours each by
+  default, configurable downward), release (close, final requests or
+  compaction signals), invalidation or restart. No-retain suppresses only the
+  current request's publication. Hints nominate boundaries or lower
+  retention; hosted-cache TTLs are ignored.
+- **Initial victim order.** Released and expired entries go first, then idle
+  weight extents while resident state is within `M_state`, then the least
+  recently refreshed entry, spilled if valid and budgeted and otherwise
+  dropped. A victim is credited only with blocks no other claim, lease or
+  consumer holds. Spill is lazy, block-granular, private, direct-I/O,
+  verified against catalog-held digests, unflushed and deleted at startup.
+  Its encoding is internal, not a compatibility format.
+- **Numbers.** Capacity values (`M_state`, `S_spill`, entry caps, minimum
+  prefix length, maintenance interval) are pinned at M3 exit from jitLLM's
+  measured state bytes and headroom. The spill write budget is pinned at M4
+  entry from the drive's rated endurance.
+- **M4 named workload.** Qwen2.5-0.5B-Instruct FP16 GGUF and its EXL3 4.0
+  bpw quant, in both orientations, run a frozen synthetic A→B→A transcript
+  with fixed replies and policy-forced budgets. Six jitLLM arms, including
+  both whole-model controls, run against fresh interleaved llama.cpp and
+  ExLlamaV3 reference arms. Every trial starts clean. The switching floor
+  needs 72 pinned repetitions per arm, orientation and cache condition, and
+  jitLLM's one-sided 97.5% distribution-free upper bound must be at most
+  every valid reference arm's lower bound, at the median and p95. Outputs
+  and logits must exactly match controls with the same state provenance.
+
+**Context.** On 2026-09-22 the owner chose the M4 pair and capacity-driven
+retention with a long cap, so an hours-long conversation survives a pause.
+The cap bounds how long spilled prompts linger (D-014). Both models are
+contexts M3 must support. D-036 requires M4's own dense workload, and
+D-052 requires EXL3 in M4's switching matrix. The remaining rules are design
+for review. They follow the reference cycle's measured value of retained
+state (18.304 s restore versus 25.236 s recompute on return, historical under
+RE-007), RE-007's coverage failure and RE-008's cross-schedule differences.
+Also, a physical pressure holder cannot safely force displacement of 1–2 GB
+models. Claude Code's per-message `cache_control` markers would otherwise
+create a prefix entry every turn and, with their 5-minute default TTL (1 hour
+when configured), defeat the chosen cap. Fixed synthetic assistant replies
+give every arm and engine identical inputs.
+
+**Consequences.** The arithmetic scale (12,288 bytes of KV per token,
+96 MiB at 8,192 tokens) is not measurement; M3 exit records the capacity
+values in the policy. M4 entry pins the transcript and its per-model hashes,
+the budgets and their displacement record, the reference paths, the arm
+order and the rejection criteria. The whole-model control and no-retention
+policies must be selectable. D-041's handle and close wire names remain M4
+API design under these semantics. At this model size, M4 proves mechanics,
+the switching floor and correctness under policy-forced pressure;
+physical-pressure and state-dominated evidence waits for M5's Gemma/Ornith
+configuration and M7's larger-than-memory library. No code, configuration
+schema, public API or durable spill format is introduced.
+
+**Reopen if.** M4 traces show that the victim order or lazy spill costs the
+floor or the M7 benefit, or M5/M7 workloads show idle state within
+`M_state` starving weight residency; users need retention across restarts
+or a different idle cap; a supported representation cannot express restore
+boundaries or coverage; or a larger dense model enters M3/M4 support, in
+which case add it as a named configuration rather than replace this one.
+
 ## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041)
 
 **Decision.** Model storage has three roles, each a configured path; the
@@ -1110,7 +1190,7 @@ public API, wire format or implementation is introduced by this decision.
 host, or measured coordination contention justifies a sidecar. Preserve the
 single front door and authoritative local admission if process placement changes.
 
-## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025)
+## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025; M4 workload named in D-055)
 
 *Refined the same day at the owner's direction after review: the benefit
 comparator, the switch/continuation distinction, which reference arm sets
@@ -1512,7 +1592,7 @@ The copied sysroot is a local input, not a redistributable SDK.
 the target OS changes, or M1 clean setup cannot reproduce the smoke.
 Validate native, cross, and Spark fallback paths before changing pins.
 
-## D-031: Shared prompt prefixes and conversation continuations have independent reuse and retention  (2026-09-21, status: accepted; clarifies D-024 and D-030; supersedes D-022's prefix-as-conversation identity)
+## D-031: Shared prompt prefixes and conversation continuations have independent reuse and retention  (2026-09-21, status: accepted; clarifies D-024 and D-030; supersedes D-022's prefix-as-conversation identity; retention policy in D-055)
 
 **Decision.** Prefix matching identifies reusable computation, never a unique
 conversation or its lifetime. A system-prompt prefix can be cached and reused
@@ -1730,7 +1810,7 @@ normal-reference configurations remain separate views under
 record the limitation and select another validated comparator before making
 the corresponding performance claim.
 
-## D-024: Conversation reuse is bounded; prefix identity does not imply session lifetime  (2026-09-20, status: accepted; amends D-019 and D-022; independent prefix retention clarified by D-031)
+## D-024: Conversation reuse is bounded; prefix identity does not imply session lifetime  (2026-09-20, status: accepted; amends D-019 and D-022; independent prefix retention clarified by D-031; retention policy in D-055)
 
 **Decision.** For clients that resend their history, prefix matching finds
 reusable computation. It does not establish a unique conversation, whether
