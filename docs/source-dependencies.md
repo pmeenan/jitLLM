@@ -130,11 +130,13 @@ boundary. For declared population, `FETCHCONTENT_FULLY_DISCONNECTED` assumes
 already populated sources, and `FETCHCONTENT_SOURCE_DIR_<NAME>` overrides skip fetching;
 neither establishes source integrity. Our preparation/identity check owns
 that guarantee. [CMake's documented behavior](https://cmake.org/cmake/help/v4.4/module/FetchContent.html#variables).
-CI must additionally deny network access during configure/build and inspect
-the resulting dependency closure, since upstream build scripts can execute
+The check gate must additionally deny network access during configure/build
+and inspect the resulting dependency closure. Until hosted CI exists, that is
+D-061's `check:full` tier in the reference container with `--network none`
+(RE-013), since upstream build scripts can execute
 arbitrary commands. No CMake variable makes them a sandbox.
 
-Supported CI/release profiles reject unrecorded source overrides, dependency
+Supported check/release profiles reject unrecorded source overrides, dependency
 providers and package-search fallbacks. A deliberate local development
 override may use edited source, but records that identity as modified and
 cannot produce an official release receipt. Source selection never bypasses
@@ -188,8 +190,7 @@ it need not import the M2 kernels to prove source acquisition:
   discovery does not find host implementation libraries. Match the actual
   compile/link/package inventory to the receipt, notices and SBOM.
 
-The remaining M0 toolchain task still selects the CI shape and installed
-layout; D-058 settled CMake, and D-059 settled Ninja, the developer tools and
-GoogleTest, M1's test dependency for these gates.
-This decision
-settles their source-dependency mechanism without claiming those tasks done.
+D-058 settled CMake, D-059 settled Ninja, the developer tools and
+GoogleTest (M1's test dependency for these gates), D-061 the local check
+gate that runs them and D-063 the installed layout the package follows. None
+of these claims the M1 implementation done.

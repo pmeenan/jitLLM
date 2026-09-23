@@ -295,7 +295,8 @@ requested alias exactly, and the resolved immutable artifact identity travels
 in a jitLLM response header and in native discovery and diagnostics. jitLLM
 extensions travel as namespaced request and response headers on every
 protocol, and as namespaced body fields only where the protocol tolerates
-unknown keys. Exact names follow M1's versioning conventions.
+unknown keys. D-062 sets the lowercase `jitllm-` header prefix and a single
+top-level `jitllm` body object; M3 fixes the individual names.
 
 ## Shared correctness and limits
 

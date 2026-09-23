@@ -27,6 +27,35 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-014: LeakSanitizer aborts AArch64 tests under qemu-user  (2026-09-23, status: worked-around)
+
+Workstation (x86-64), Ubuntu `qemu-user-static` 1:8.2.2+ds-0ubuntu1.18 via
+binfmt, running the D-059 GoogleTest suite cross-built with Clang 22.1.8,
+`-fsanitize=address,undefined`, the D-060 static GCC 16.2 runtime and the
+arm64 compiler-rt from the D-059 SDK, with `QEMU_LD_PREFIX` set to the
+sysroot. All 10 tests pass. At exit, LeakSanitizer reports "LeakSanitizer has
+encountered a fatal error" and the process exits 1, so a passing suite looks
+failed. With `ASAN_OPTIONS=detect_leaks=0` it exits 0, and ASan still catches
+the heap-overflow probe. Workaround (D-061): leak detection is off for
+emulated AArch64 runs; LSan runs natively on x86-64 and on the Sparks.
+ThreadSanitizer under qemu-user was not tried.
+
+## RE-013: Ubuntu 24.04 blocks unprivileged network sandboxes (`unshare -rn`, `bwrap`)  (2026-09-23, status: worked-around)
+
+The workstation, `spark` and `spark-b` (Ubuntu 24.04.5) all set
+`kernel.apparmor_restrict_unprivileged_userns=1`. Two unprivileged ways to
+deny a build its network both fail:
+
+- `unshare -rn` stops at `write failed /proc/self/uid_map: Operation not permitted`.
+- `bwrap --unshare-net` stops at `loopback: Failed RTM_NEWADDR: Operation not permitted`.
+
+Both need an AppArmor profile or root. Workaround (D-061): the offline
+build gate runs in the reference container with `docker run --network none`,
+which works on the workstation. The owner's `spark` account is not in the
+`docker` group; arm64 containers run on the workstation through qemu binfmt
+(installed 2026-09-23, D-061). Changing the sysctl or adding an AppArmor
+profile is a system change the owner has not made.
+
 ## RE-012: Pinned SGLang MiMo-V2 startup fails with a misleading processor error without torchcodec  (2026-09-22, status: worked-around)
 
 `lmsysorg/sglang` nightly `0f6761b5` (arm64 digest `9e1fb4c3…`) on both

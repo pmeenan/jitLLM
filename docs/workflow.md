@@ -12,11 +12,11 @@ lighter than a team with maintainers. The default path from idea to commit is
 
 1. **Build.** One agent implements the task (scope from
    [plan.md](plan.md)), adds or updates tests for any behaviour change, runs
-   the repo's checks (see the README for the check commands once the
-   toolchain lands), and writes a handoff note: what changed, what was
-   verified, on which host, and what was not run and why. The note goes in
-   the agent's final message, for the commit; the docs themselves carry at
-   most a one-line provenance stamp.
+   the repo's checks (D-061's local `check`, `check:full` and `check:spark`
+   tiers once M1 lands them; there is no hosted CI yet), and writes a
+   handoff note: what changed, what was verified, on which host, and what
+   was not run and why. The note goes in the agent's final message, for the
+   commit; the docs themselves carry at most a one-line provenance stamp.
 2. **Review.** A separate agent with fresh context reviews the whole
    uncommitted diff against the handoff note. It hunts real defects — data
    loss or corruption, invariant violations, security, broken behaviour,
@@ -60,8 +60,10 @@ downgrade a heavy-path change to the light loop on their own.
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
 - **Say which checks ran where.** Native builds and CPU tests run on the
-  workstation. Anything that needs a Spark (ARM, VMM, CUDA, distributed) runs
-  on `spark` or `spark-b` (see architecture.md); when it was not run, the note
+  workstation, including AArch64 CPU tests under qemu-user (D-061). Anything
+  that needs a Spark (GPU, VMM, RDMA/NCCL, ARM concurrency, target I/O,
+  performance, distributed) runs on `spark` or `spark-b` (see
+  architecture.md); when it was not run, the note
   says so rather than implying it passed.
 - **Evidence, not adjectives.** A performance or capability claim in a note
   or doc carries the measurement and its provenance (host, driver, toolkit,
@@ -89,5 +91,7 @@ downgrade a heavy-path change to the light loop on their own.
   flags.
 - **Public surfaces are decisions.** Changing an on-disk format, the
   management API, the CLI, or configuration semantics gets a
-  [decisions.md](decisions.md) entry and a version bump per the conventions
-  set in M1.
+  [decisions.md](decisions.md) entry and a version bump per D-062.
+- **External pull requests never run locally** (D-061). Agents may read an
+  external PR's diff but never check it out, build or test it on the
+  workstation or the Sparks; its checks wait for hosted CI.

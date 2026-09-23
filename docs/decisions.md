@@ -30,6 +30,667 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-065: Front-door TLS from certificate files that external tools keep current (certbot with Cloudflare DNS, Tailscale), with a built-in CA as fallback  (2026-09-23, status: accepted; implements D-014's and D-045's "transport protection"; separate from D-038's cluster mTLS)
+
+**Decision.** The owner asked on 2026-09-23 for Let's Encrypt with DNS-based
+validation through a Cloudflare zone token, user-supplied certificates,
+Tailscale, and a built-in CA as a last-resort fallback. The owner then asked
+to use certbot on the Sparks rather than building ACME into jitLLM. jitLLM
+therefore contains no ACME, Cloudflare or Tailscale client. The runtime
+serves TLS from certificate files that the owner's tools keep current, and
+falls back to its own CA. This applies to any non-loopback front-door or
+management binding.
+
+- **Per-name assignment.** Each served DNS name maps to exactly one
+  certificate file set, or to the local CA. Two assignments for one name is
+  a configuration error. TLS SNI selects the certificate. Config sketch
+  (spellings fixed with the M3 schema): `[[tls.certificate]]` entries with
+  `names` and either one combined PEM path or cert and key paths, plus
+  `tls.local_ca`.
+- **Certificate files.** The runtime reads them under D-063's credential
+  rules. A file must be a regular file, not a link, that only root or the
+  runtime's user could replace, and a key must not be readable by other
+  users. Files live by default under `/etc/jitllm/tls/` (`root:jitllm`,
+  0750; files 0640), so only root writes there. The runtime re-reads them
+  on change, including replacement by rename. It swaps in a new pair for
+  new connections only after checking that the key matches the
+  certificate; a mismatched, unreadable or expired pair leaves the current
+  one in place. A combined PEM (key plus full chain), written with a
+  temporary file and a rename, replaces the pair atomically. The runtime
+  warns ahead of expiry for every source, since maximum lifetimes are
+  shrinking under CA/Browser Forum ballot SC-081: 200 days from 2026-03-15,
+  100 from 2027-03-15 and 47 from 2029-03-15.
+- **Let's Encrypt through certbot.** The owner runs certbot on each node as
+  root: the snap (5.8.0 on 2026-09-23) with its `certbot-dns-cloudflare`
+  plugin, a credentials file (0600) holding a `Zone:DNS:Edit` token scoped
+  to the zone, and `-d <name>`.
+  - certbot owns the ACME account, DNS-01 validation, profiles
+    (`--preferred-profile`) and scheduled renewal (the snap's
+    `snap.certbot.renew.timer`). Renewal uses ARI (RFC 9773), which
+    exempts it from rate limits, falling back to a third of the lifetime
+    remaining.
+  - jitLLM ships `/usr/libexec/jitllm/certbot-deploy-hook`, given to
+    certbot as that lineage's `--deploy-hook` (at issuance or through
+    `certbot reconfigure`; certbot stores it in the lineage's renewal
+    configuration). After each issue or renewal, the hook writes
+    `$RENEWED_LINEAGE`'s key and full chain as one combined PEM,
+    `certbot-<lineage>.pem`, into `/etc/jitllm/tls/`, atomically, as
+    `root:jitllm` 0640. It accepts only a lineage directly under certbot's
+    `live/` directory, and the prefix keeps it off the other sources'
+    files.
+  - The hook is needed because certbot's `live/` files are symlinks into
+    root-only `archive/`, and the runtime refuses links.
+  - The Cloudflare token stays in certbot's configuration and never
+    reaches jitLLM.
+  - DNS A/AAAA records for the names are the owner's to set, DNS-only
+    (`proxied: false`) for LAN or tailnet addresses. jitLLM manages no DNS
+    records.
+- **Tailscale.** jitLLM ships a systemd timer and service. The timer runs
+  `tailscale cert` as root for the node's `ts.net` name about twice a day,
+  without `--min-validity`, and writes the result as a combined PEM,
+  `tailscale-<name>.pem`, into `/etc/jitllm/tls/`, the same way.
+  `tailscaled` renews a fetched name only when asked: such a call starts a
+  background renewal once ARI or two-thirds of the lifetime says so and
+  returns the current certificate, so the next run picks up the new one.
+  `--min-validity` would instead renew synchronously whenever less than
+  that remains, bypassing ARI, and re-issue on every run if set near the
+  lifetime. `tailscaled`'s own refresh loop covers only Serve/Funnel
+  names, hence the timer. The owner enables HTTPS certificates for the
+  tailnet and enables the timer. No `TS_PERMIT_CERT_UID` or `--operator`
+  grant is needed.
+- **`local_ca` (on by default; created only when a non-loopback binding
+  needs it).** The runtime creates a node-local CA and keeps its key in the
+  `state` role (0700). The CA covers every name and address with no
+  assigned file set, and serves a name whose assigned certificate has
+  lapsed or was not valid at startup, reporting that loudly.
+  - Its certificate is name-constrained (critical, RFC 5280) to the node's
+    configured names and addresses. RFC 5280 leaves a name type with no
+    permitted entry unconstrained. So when there is no permitted DNS name
+    or no permitted address, the CA excludes a zero-length DNS name or the
+    whole IPv4 and IPv6 ranges.
+  - Changing the covered names or addresses re-issues the CA certificate,
+    and clients must import it again.
+  - Every leaf lists all its names in the SAN, never only in the CN.
+  - `jitllm` exports the CA certificate. Clients trust it through
+    `NODE_EXTRA_CA_CERTS` (Claude Code; or its OS-store mode),
+    `SSL_CERT_FILE` or `CODEX_CA_CERTIFICATE` (Codex), `--cacert` (curl),
+    or the system store.
+  - With `local_ca` off, a name that has no valid certificate fails its TLS
+    handshakes and is reported. Startup and other names are unaffected.
+- **Failure isolation.** A failing certbot, Cloudflare, Let's Encrypt or
+  `tailscaled` never touches the runtime. It only stops the files from
+  being refreshed. The current certificate serves until it lapses, and then
+  the local CA takes over for that name.
+
+**Context.** D-014 and D-045 required credentials and "transport protection"
+for any non-loopback binding without saying how. The owner's clients run on
+the workstation and reach a Spark over the network. A first draft built a
+minimal RFC 8555 client and Cloudflare/Tailscale API clients into a jitLLM
+certificate job. The research had found no permissively licensed C++ ACME
+library with ES256, ARI and profiles (acme-lw, MIT, lacks all three), so
+that client would have been jitLLM's own heavy-path parser of external
+input. certbot (Apache-2.0) already provides it. Facts checked on
+2026-09-23:
+
+- **certbot versions:** on `spark`, Ubuntu's apt certbot is 2.9.0 and
+  `python3-certbot-dns-cloudflare` is 2.0.0. Both predate profiles (4.0.0,
+  2025-04-07) and ARI (4.1.0, 2025-06-10), so the snap is the supported
+  install. The snap is 5.8.0 (2026-09-01) for both certbot and the plugin.
+- **certbot behaviour:** the plugin needs only `Zone:DNS:Edit` for the
+  zones concerned and warns about credentials files readable by others.
+  Deploy hooks run once per issued or renewed certificate with
+  `$RENEWED_LINEAGE` set. Private keys default to 0600 root.
+- **Let's Encrypt profiles:** `classic` 90 days, falling to 64 days in
+  February 2027 and 45 in February 2028; `tlsserver` 45 days.
+- **Let's Encrypt limits:** 5 certificates per identical name set per 7
+  days, and ARI renewals are exempt. OCSP ended on 2025-08-06.
+- **Challenges:** DNS-01 never checks A records, so names that point at
+  private addresses can be issued. DNS-PERSIST-01 is not yet deployed
+  (staff post, 2026-06-25).
+- **Cloudflare:** proxying does not work for private addresses or port 8114.
+- **Tailscale:** `tailscaled` renews a name only when `tailscale cert`
+  asks: asynchronously at the ARI or two-thirds point without
+  `--min-validity`, synchronously when less than the given validity
+  remains with it (`feature/acme/cert.go`). Its hourly refresh loop covers
+  only Serve/Funnel names (`feature/acme/refresh.go`). Tailscale
+  certificates are recorded in Certificate Transparency logs.
+- **certbot renewal configuration:** the snap is classic-confined and runs
+  `certbot renew` from `snap.certbot.renew.timer`. A `--deploy-hook` is
+  stored per lineage, and a later `certonly` for that lineage rewrites the
+  stored options, dropping a hook it does not repeat
+  (`storage.py`/`renewal.py`).
+- **Client trust:** Claude Code documents `NODE_EXTRA_CA_CERTS` and the OS
+  store; Codex reads `CODEX_CA_CERTIFICATE`/`SSL_CERT_FILE` on top of the
+  native roots.
+- **OpenSSL:** 3.5 is supported to 2030-04-08 (Apache-2.0). Ubuntu 24.04
+  ships a Canonical-patched 3.0.13.
+
+**Consequences.**
+- **Dependencies.** The only new library is the TLS library for serving and
+  for the local CA (OpenSSL 3.5 LTS is the candidate), a D-017/D-057 choice
+  audited with the M3 endpoint work. No HTTP client or ACME code enters
+  jitLLM. certbot and Tailscale are optional host tools the owner installs,
+  under their own licenses (D-017's tool category). jitLLM ships only the
+  hook, the timer and documentation. The deploy hook and timer script run
+  as root, so they are small, touch only `/etc/jitllm/tls/`, and are
+  reviewed on the heavy path. Their units are sandboxed so they can write
+  only to `/etc/jitllm/tls/`.
+- **Delivery.** M3's endpoint ships certificate files, the local CA, reload
+  and the certbot hook. The ladder rewrite places the Tailscale timer. Until
+  then, an SSH tunnel to the loopback front door works.
+- **Known limits, reported by `doctor` or the docs:**
+  - Every Let's Encrypt and Tailscale name lands in public Certificate
+    Transparency logs.
+  - Router or resolver DNS-rebinding protection (for example dnsmasq's
+    `--stop-dns-rebind`, which may also drop 100.64/10) can hide the public
+    A record of a LAN or tailnet name. The fix is a local resolver override
+    or MagicDNS.
+  - If the zone is DNSSEC-signed, its signatures must validate: CAs have
+    had to validate DNSSEC where present since 2026-03-15. An unsigned zone
+    is fine.
+  - A DNS Write token can change every record in its zone. Scope it to one
+    zone, preferably a dedicated zone containing the served names. The
+    selected `certbot-dns-cloudflare` plugin does not follow
+    `_acme-challenge` CNAME delegation: it selects the zone from the
+    original certificate domain, so a token scoped only to a delegated
+    target zone cannot issue or renew its certificate
+    ([plugin source](https://github.com/certbot/certbot/blob/v5.8.0/certbot-dns-cloudflare/src/certbot_dns_cloudflare/_internal/dns_cloudflare.py#L123-L134)).
+  - Certificates expire if certbot's scheduled renewal or the Tailscale
+    timer stops running, or if re-issuing a lineage with `certbot certonly`
+    without `--deploy-hook` drops the stored hook (`certbot reconfigure`
+    restores it). The runtime's expiry warning and `doctor` report it.
+- **Cursor.** Cursor routes requests through its own servers, so it needs a
+  publicly reachable endpoint. No source here provides one. Public exposure
+  (Tailscale Funnel's ports 443/8443/10000, port forwarding) is a separate,
+  deferred choice.
+- **Hardening.** From 2027-03-15 CAs must process CAA `accounturi` (ballot
+  SC-098v2), so a CAA record may pin issuance to certbot's account. The docs
+  recommend it; jitLLM does not require it.
+- **Scope.** D-038's cluster mTLS keeps its own CA and is unchanged.
+
+**Reopen if.** The owner wants jitLLM to manage DNS records or certificates
+itself (for example, dynamic addresses); certbot's snap stops being
+maintained for arm64; DNS-PERSIST-01 ships and certbot supports it
+(removing the standing DNS Write token); or Tailscale starts renewing
+fetched certificates on its own.
+
+## D-064: Local management is anonymous on loopback behind browser guards; jitLLM is a service, not a library  (2026-09-23, status: accepted; specializes D-014 and D-045; public surfaces as listed in D-062)
+
+**Decision.** Owner's answers on 2026-09-23, before the architecture draft:
+
+- **Local management authority.** Any local process may call the management
+  API on its loopback listener (default `127.0.0.1:8115`, D-063) without a
+  credential. This is the same "box access is the gate" stance D-063 takes
+  for its shared directories. A web page in a local browser is an off-box
+  attacker, so the listener rejects browser-originated requests:
+  - The `Host` header must name a loopback address, `localhost` or a
+    configured name (the DNS-rebinding guard D-045 already applies to the
+    front door).
+  - A request carrying an `Origin` header (including `null`), or
+    `Sec-Fetch-Site` other than `none`/`same-origin`, is rejected. The CLI
+    and other non-browser clients send neither. The listener sends no CORS
+    headers and answers no preflight.
+  - Mutating operations never use `GET`, and they require
+    `Content-Type: application/json` even without a body, which a browser
+    cannot send cross-origin without a preflight.
+
+  The guards apply to every request, including WebSocket upgrades and SSE
+  streams, and a rejected request does no work.
+
+  The future dashboard (a separate process, D-005) calls the management API
+  from its own server side and never from the browser, so it must apply
+  these guards, or its own authentication with CSRF protection, to its
+  browser-facing routes. A non-loopback management binding still requires
+  credentials and transport protection (D-014), and inference credentials
+  never carry management authority (D-045).
+- **Service, not library.** jitLLM's public surfaces are those D-062
+  versions: the HTTP APIs, CLI, configuration, artifact format and cluster
+  protocol. The native C++ API
+  ([architecture.md](architecture.md#conceptual-native-api-20-confirmed-2026-09-21-as-the-starting-shape-a-sketch-not-compilable))
+  is internal and may change without a version bump. No public headers,
+  C ABI or stable linkable library ships. This matches D-028's rejection of
+  a runtime plugin ABI.
+
+**Context.** D-014 and D-045 made management local-only by default but did
+not say who may call it locally. The second review round (2026-09-23)
+flagged how the CLI reaches the runtime and with whose authority as open.
+Offered: anonymous access with browser guards (recommended), or a token file
+readable by the `jitllm` group. The owner chose the first. On the library
+question, the owner chose service-only over also shipping public headers.
+
+**Consequences.** The CLI talks to the loopback management listener over
+HTTP like any other local client. Tests cover the browser guards
+(rebinding `Host`, cross-origin and `null` `Origin`, `Sec-Fetch-Site`,
+form-encoded, bodiless and `GET` mutations, cross-origin upgrades) and that
+the CLI passes them. Any local user or service can remove models, change
+residency policy or capture traces. That includes prompt-derived captures,
+such as per-token routing and expert choices. The owner confirmed on
+2026-09-23 that these need no further gate, which makes D-014's
+"deliberately enabled" detailed capture an explicit management request.
+Captures still never contain prompt text or KV contents unless a later
+decision adds such a capture. All of this is accepted on single-owner
+nodes (vision.md's multi-tenant non-goal), not an isolation claim. Internal
+headers carry no compatibility promise, and the CHANGELOG records no
+internal API changes.
+
+**Reopen if.** Nodes gain untrusted local users or services (use a token
+file or a Unix socket with group permissions), a browser-hosted dashboard
+must call the API directly, or an embedding customer needs a supported
+library.
+
+## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface)
+
+**Decision.** Owner's answers on 2026-09-23 chose TOML configuration and
+`/var/lib/jitllm` as the default data directory. The packaged layout is
+recorded in [architecture.md](architecture.md#installed-layout) and consists of:
+
+- **Package and executables.** One core package, `jitllm`, arm64 first
+  (D-027). The user-facing CLI is `/usr/bin/jitllm`. The node runtime process
+  (D-005) and the separate job processes (import, install, archive; D-054)
+  live under `/usr/libexec/jitllm/`. systemd starts the runtime; users do not
+  run it directly. Optional modules are separate packages (D-017, D-027).
+- **Service identity.** A `jitllm` system user and group, declared through
+  `sysusers.d`, with no login shell and home at the data directory. Only this
+  user writes the installed store, spill and state (D-054, D-055). On `spark`
+  the GPU (`/dev/nvidia*`) and RDMA verbs/CM (`/dev/infiniband/uverbs*`,
+  `rdma_cm`) device nodes are mode 0666, so the user needs no supplementary
+  groups there; `umad*` stays root-only and is not needed.
+- **One unit.** `jitllm.service` runs the node runtime as `jitllm` with
+  readiness notification. `ConfigurationDirectory`, `StateDirectory` (mode
+  0755) and `RuntimeDirectory` are all named `jitllm`, and the locked-memory
+  limit is raised for RDMA registration. Logs go to the journal; there are no
+  log files, and D-014's content rules apply to the journal. Stop means drain
+  (D-027). M1 selects and validates the sandboxing directives together with
+  GPU and RDMA device access.
+- **Configuration.** The node's configuration is one logical document:
+  `/etc/jitllm/jitllm.toml` plus the fragments in `/etc/jitllm/jitllm.d/`. The
+  owner asked on 2026-09-23 for includes, to keep it clean. It is
+  cluster-design.md's node-local document (D-038/D-039), extended with
+  `[storage]` and the other node keys, in UTF-8 TOML 1.0.0 (1.1.0 is current,
+  but the candidate parser implements 1.0.0) with a top-level integer
+  `schema_version` in every file, which must agree. The loader reads the main
+  file, then every regular `*.toml` file in the drop-in directory in bytewise
+  lexical order. It skips other names (dotfiles, `.dpkg-old`) and does not
+  recurse. Tables merge across files, but a key other than `schema_version`
+  set in more than one file is fatal, like a duplicate key within one file. A
+  key is a full dotted path to a value; an inline table or array is one value,
+  owned whole by one file. There is no silent override, and each key has one
+  owning file: setup tooling writes its own fragment (cluster enrollment
+  writes `cluster_file`, `node_id`, `[credentials]` and `[control]`), and the
+  admin owns the rest. There are no include directives, environment expansion,
+  secret interpolation or hooks, and cluster-design's size limit applies to
+  the merged document. Unknown keys and versions, invalid types and ranges are
+  fatal at startup, so a typo never silently becomes a default. The runtime
+  refuses a configuration file or fragment that is a link or not a regular
+  file, or that users other than root and the runtime's user could replace,
+  and a drop-in directory those users could add files to. A standalone node
+  omits the cluster keys (`cluster_file`, `node_id`, `[credentials]`,
+  `[control]`); a member adds them. `/etc/jitllm/cluster.toml` stays a single,
+  byte-identical shared membership document, since its digest is the
+  membership identity. At the default path the main file is optional
+  (owner confirmed 2026-09-23), since enrollment may write only its
+  fragment: fragments alone form the document, and neither means built-in
+  defaults (standalone, loopback-only; D-014, D-045). Deleting the main file
+  therefore does not reset a node; resetting removes the fragments too. A
+  missing `--config` file is fatal. A node whose `state` role holds
+  enrollment or epoch records refuses to start standalone, from an absent
+  configuration or one without cluster keys, so a lost file never silently
+  drops a member to loopback.
+
+  The configuration can relocate `state`, so losing the configuration would
+  also lose track of those records. Enrollment therefore also writes an
+  **enrollment anchor** at a fixed path, `/var/lib/jitllm/enrollment`. The
+  unit creates that directory whatever the configuration says. The anchor
+  records the node ID, the cluster ID, the resolved `state` path and a
+  random enrollment ID that enrollment also records in `state`. Device
+  numbers are not recorded, since they can change across reboots. The
+  anchor holds no secrets, carries D-062's internal record version, and is
+  written atomically, owned by the runtime's user and subject to the
+  write-or-replace check. No storage role may equal, contain or lie inside
+  the anchor's path. The packaged runtime always reads the anchor before
+  anything else. If it exists, the resolved configuration must be a member
+  with the same node and cluster IDs and the same `state` path, whose
+  records hold the same enrollment ID. Otherwise startup refuses and names
+  the anchor. Leaving a cluster is an explicit setup step that retires the
+  records and removes the anchor (cluster-design.md). Moving `state` is
+  also a setup step: it moves the records and rewrites the anchor, since a
+  directory moved by hand no longer matches the anchor. Development runs
+  pass their configuration explicitly and name their anchor path the same
+  way. Losing both the anchor and the configuration while a relocated
+  `state` survives is a double failure this does not cover.
+
+  An annotated example ships under
+  `/usr/share/doc/jitllm/examples/`. The package ships no configuration file
+  (main file, fragment or `cluster.toml`), so upgrades never raise conffile
+  prompts. Setup tooling writes its files atomically (temporary file, flush,
+  rename), so a reader never sees them half-written. Secrets are never
+  inline. Configuration references credential files by path, by default under
+  `/etc/jitllm/credentials/` (mode 0750, `root:jitllm`). Here and below, the
+  runtime's user is `jitllm` when packaged and the invoking user in
+  development runs. The runtime refuses a credential path or `cluster_file`
+  that is a link or not a regular file, or that users other than root and the
+  runtime's user could replace, and a credential file those users could read.
+  Neither may lie inside `long_term` (D-054). Executables take `--config
+  FILE`, which must end in `.toml` and whose drop-in directory is `FILE` with
+  `.toml` replaced by `.d`; the default is `/etc/jitllm/jitllm.toml`. There is
+  no implicit per-user search path, so development runs (mise tasks) pass an
+  explicit file and the same validation applies.
+- **Storage roles (D-054, D-055).** Keys in `[storage]`:
+
+  | Key | Default | Rule |
+  | --- | --- | --- |
+  | `data_dir` | `/var/lib/jitllm` | Absolute; base for relative role paths; not itself a role; mode 0755 |
+  | `installed` | `models` | Installed store, including D-056's `.staging/`; local block filesystem passing D-034's probe; mode 0755 |
+  | `spill` | `spill` | Mode 0700 with marker (D-055); passes D-034's probe |
+  | `state` | `state` | Durable runtime records (D-038 conductor epochs and epoch floors, job and install generations); mode 0700, local |
+  | `checkpoints` | `checkpoints` | Node-local by default; the user may point it into a long-term store; mode 1777 when created |
+  | `long_term` | unset | Optional absolute path (NAS, USB); only job processes touch it |
+  | `archive` | unset; `archive` under `long_term` when that is set | Requires `long_term` and lies inside it (D-054); relative values resolve against `long_term` |
+
+  Relative role paths resolve against `data_dir`, except `archive`. Paths are
+  compared after canonical resolution (links in existing components followed)
+  and, where they exist, by device and inode, so a link cannot alias one role
+  into another and a bind mount cannot make two roles one directory. After
+  resolution no two role paths may be equal or nested (D-054); `data_dir` and
+  `long_term` are roots, not roles. `long_term` must not equal, contain or lie
+  inside `installed`, `spill` or `state`, which are the only roles the runtime
+  opens; it never opens `long_term`, `archive` or `checkpoints`. The runtime
+  resolves only its own three roles and compares the others' text against them
+  without filesystem access, so a hung mount cannot stall startup (D-054);
+  each job repeats the full resolved check before touching them. A network
+  mount aliased into a runtime role, which text comparison misses, still fails
+  that role's local-filesystem check. The runtime refuses an `installed`,
+  `spill` or `state` path that users other than root and the runtime's user
+  could write or, through a writable ancestor or link, replace, since
+  installed integrity rests on local permissions (D-054). Setting `long_term`
+  never moves checkpoints implicitly. The runtime probes the resolved
+  `installed` and `spill` paths at startup (D-054, D-055).
+
+  **Directory creation and modes** (owner's answer on 2026-09-23: box access
+  is the gate, split by role). The process that uses a role creates it when
+  missing, including missing parents it is allowed to create, owned by the
+  runtime's user: the runtime creates `installed`, `spill` and `state`, and
+  jobs create `checkpoints` and `archive`. The package also creates the
+  default `checkpoints` from `tmpfiles.d`, so users can use it before any job
+  has run. It does so even when `checkpoints` or `data_dir` is relocated,
+  leaving an empty, unused directory at the default path; the owner accepted
+  that on 2026-09-23. Its `d` lines declare `/var/lib/jitllm` (`jitllm`, 0755, as the
+  unit does, so the unit's first start never re-owns the tree recursively) and
+  `checkpoints` (`jitllm`, 1777, with `:`-prefixed mode and owner, which apply
+  only on creation). Neither sets an age, so tmpfiles never cleans them
+  ([tmpfiles.d(5)](https://www.freedesktop.org/software/systemd/man/255/tmpfiles.d.html),
+  [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html),
+  systemd 255, checked 2026-09-23). D-056's `.staging` directory is 0700, so
+  staged bytes and job lock files stay private and no other user can hold a
+  job's lock. Jobs create artifact directories 0755 and files 0644 explicitly,
+  not from the umask, so the publishing rename exposes them readable. Everyone
+  on the box can read `data_dir` and `installed` (0755), but only the
+  runtime's user writes them. The page-in path does not re-verify hashes
+  (D-056), so write permission is what keeps executed weights equal to the
+  verified ones (D-054). `checkpoints` is created 1777 (world-writable,
+  sticky), so users can drop sources in without sudo. That is safe because the
+  checkpoint store is untrusted input wherever it lives. Jobs apply D-054's
+  long-term-store rules to it: regular files only, no links followed or
+  created, per-writer temporary publication, and verification against
+  identities held outside the store. Jobs also reject a source file with more
+  than one hard link, so a user cannot use the store to launder a file only
+  the service user can read (such as a credential) into a world-readable
+  artifact. The owner confirmed on 2026-09-23 that hard-linked sources (for
+  example deduplicated copies) and symlinked sources (for example a Hugging
+  Face cache `snapshots/` tree) are rejected. Users copy them in or download
+  with `--local-dir`, and M3's user docs say so. The capability probe
+  (`doctor`) also reports
+  `fs.protected_hardlinks` other than 1 (the Ubuntu default; 1 on the
+  workstation, `spark` and `spark-b` on 2026-09-23). M3's import design
+  confines import sources to the configured stores. Any local user can fill
+  the shared filesystem or occupy a predictable entry name. D-054's space
+  checks and explicit failures bound the effect, and box access is the
+  accepted gate. `spill` (conversation state; D-014, D-055) and `state`
+  (fencing records; D-038) stay 0700. Modes on a long-term mount belong to
+  that mount (D-054). An existing directory keeps its mode, subject to the
+  runtime's write-or-replace check above and D-055's spill check, except that
+  the unit re-applies 0755 to `/var/lib/jitllm` at every start
+  (`StateDirectoryMode`).
+- **Other paths.** `/run/jitllm/` holds runtime sockets and locks. Package
+  documentation (`copyright`, `NOTICE`, changelog and SBOM; D-029) lives in
+  `/usr/share/doc/jitllm/`.
+- **Package dependencies.** Static libstdc++/libgcc/cudart (D-060) leave
+  glibc and the driver. The package depends on `libc6` at the version the
+  binaries' symbols require (`GLIBC_2.38` for D-060's probe) and on the versioned
+  virtual package `libcuda.so.1`, not a named driver package. On `spark`,
+  `libnvidia-compute-580` provides `libcuda.so.1 (= 580.178.04-0ubuntu0.24.04.1)`.
+  M1 takes the version floor from NVIDIA's minimum driver for the pinned
+  CUDA toolkit and tests it on the Sparks' current driver. rdma-core
+  libraries join when M4a links them.
+
+**Context.** D-027 and the confirmed features.md rows require an FHS layout,
+a non-root service user and a systemd unit settled before M3's endpoint.
+D-054 left the role paths, defaults and keys to this task, and D-055 added
+the spill directory's rules. `/var/lib/jitllm` is the systemd StateDirectory
+convention. On `spark` it is on the single 3.7 TB ext4 NVMe root (2.9 TB
+free on 2026-09-23), the filesystem D-034's direct-I/O measurements used.
+Checked on `spark` on 2026-09-23: device-node modes, the `libcuda.so.1`
+provider, systemd 255 and an unlimited memlock limit for the login user.
+TOML was chosen over YAML (implicit typing) and JSON (no comments) for
+hand-edited configuration. The candidate parser,
+[toml++](https://github.com/marzer/tomlplusplus) (MIT, header-only,
+TOML 1.0.0; checked 2026-09-23), still needs D-017/D-057 admission in M1.
+
+**Consequences.**
+- No configuration format has shipped, so M1 folds `[storage]` and the
+  other node keys into the unimplemented v2 node-local schema without a
+  version bump and fixes the full key spellings; the first shipped
+  `schema_version` of both documents is cluster-design.md's 2. Later changes
+  follow D-062.
+- **Default listener ports** (owner's choice on 2026-09-23; D-045's two
+  listeners): the front door (on a conductor or standalone node; workers
+  have none) binds `127.0.0.1:8114` and the management API
+  `127.0.0.1:8115`, both overridable. The owner first chose 8000/8001, then
+  picked jitLLM's own ports so the defaults stay clear of other engines. No
+  LLM API port standard exists, and the common defaults all belong to
+  someone else:
+  - 8000 is used by vLLM, TensorRT-LLM's `trtllm-serve`, NVIDIA NIM and
+    NVIDIA's DGX Spark playbooks, and Triton takes 8000 and 8001.
+  - 8080 is llama.cpp's `llama-server`, llamafile and LocalAI.
+  - 11434 is IANA-registered to Ollama, which D-045 keeps jitLLM off. It is
+    the only port clients find without configuration (Codex `--oss`,
+    Continue, Open WebUI).
+
+  Claude Code, OpenCode and Cursor always take an explicit URL, so a
+  distinct port costs them nothing. In the IANA registry (updated
+  2026-09-11), 8114 lies in the unassigned block 8112–8114. 8115 is
+  registered to "MTL8000 Matrix" (2002), a dormant legacy assignment. The
+  only other use found was a 3-star hobby project's configuration;
+  Frigate's documented ports (8971, 5000, 8554, 8555, 1984) do not include
+  them. On 2026-09-23 neither port was listening on the workstation,
+  `spark` or `spark-b`. The engine defaults were checked the same day
+  against current sources and docs: vLLM `cli_args.py`, `trtllm-serve`
+  `serve.py`, the NIM architecture docs, llama.cpp `common.h`, Ollama
+  `envconfig`, Triton `command_line_parser`, Codex `model-provider-info` and
+  NVIDIA `dgx-spark-playbooks`. The cluster control port keeps
+  cluster-design's rule: no application-wide default; setup proposes one.
+- Relocating a data role outside the unit's writable paths needs a systemd
+  unit override if M1's sandboxing makes the filesystem read-only. The capability
+  probe (`doctor`) reports that case.
+- Packaging mechanics (CPack or debhelper, maintainer scripts, drain on
+  upgrade) are M1/M7 implementation choices. Repository hosting and signing
+  keys remain M7 (D-027).
+
+**Reopen if.** DGX OS or the target moves off systemd/Debian; the Spark
+device-node permissions change so the service user needs groups; a data role
+must live on a filesystem the direct-I/O probe rejects; or users need
+per-user (non-service) installs.
+
+## D-062: SemVer 0.x product versions, independent public-surface versions and a maintained changelog  (2026-09-23, status: accepted; implements D-016's versioning consequence and D-045's extension naming, moving individual names from M1 to M3)
+
+**Decision.** Owner's answer on 2026-09-23:
+
+- **Product version.** [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html),
+  held in the top-level CMake `project(VERSION)` as the *next* release. The
+  project stays at 0.x, where a MINOR bump may break things, until the owner
+  declares 1.0 on D-018's compatibility evidence. Pre-1.0, MINOR covers
+  breaking changes and notable features, and PATCH covers fixes. A
+  public-surface version bump implies at least a MINOR bump.
+- **Builds and packages.** Releases are owner-created, signed annotated tags
+  `vX.Y.Z`; agents never tag (D-016). Any build but a clean checkout of a
+  release tag reports `X.Y.Z-dev.N+g<sha>` (N commits since the last tag;
+  `+g<sha>.dirty` when the tree is modified). The first commit after a
+  release tag raises `project(VERSION)`; for N > 0, version derivation fails
+  unless it is above the last tag, so a later dev build never sorts below a
+  release. The Debian upstream version maps `-` to `~` so dev builds
+  sort before their release: `X.Y.Z~dev.N+g<sha>-1`. `jitllm --version` and
+  the build receipt (D-057) carry the version, commit, license profile and
+  SDK identity.
+- **Public surfaces carry their own integer versions**, independent of the
+  product version and of each other:
+  - the artifact format and layout profile (D-056's `format_version` and
+    `profile_version`; exact-match readers, re-import on mismatch);
+  - the node and shared cluster configuration documents (`schema_version`;
+    D-063, cluster-design.md);
+  - the management API (major version in its route prefix, set with the M3
+    API);
+  - jitLLM's inference extensions (below);
+  - the node-to-node cluster protocol (D-038), where a mismatched version
+    is refused at the session handshake rather than negotiated.
+
+  Spill files and in-memory formats are not public: spill is deleted at
+  startup (D-055) and never crosses versions. The durable records in D-063's
+  `state` role and its enrollment anchor are not public either, but they
+  survive upgrades. They carry
+  an internal integer version, a runtime refuses a version it does not
+  know rather than guessing, and a release that changes them ships the
+  migration and names it in the CHANGELOG. Any breaking change to a
+  public surface bumps its version and gets a CHANGELOG entry and a
+  decisions.md entry (D-016).
+- **Extension naming (D-045).** jitLLM request and response headers use the
+  lowercase `jitllm-` prefix, following `anthropic-`/`openai-` practice and
+  [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) (no `x-`). Body
+  extensions sit under a single top-level `jitllm` object, only where the
+  protocol tolerates unknown keys. Discovery reports the extension version;
+  additions within a version are backward compatible. M3 fixes the
+  individual header and field names.
+- **Changelog.** From M1, a root `CHANGELOG.md` follows
+  [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), with an
+  `Unreleased` section and Added/Changed/Deprecated/Removed/Fixed/Security
+  headings. A change with user-visible effect (behaviour, CLI,
+  configuration, a public surface, packaging, supported models) adds its
+  line in the same unit of work, naming any surface version bump. Planning,
+  doc-only, test-only and internal changes add none. The release commit
+  retitles `Unreleased`; that section's contents become the release notes.
+
+**Context.** D-016 deferred versioning, changelog and release conventions to
+this task, and features.md confirmed "versioned releases with a changelog
+and a compatibility policy". D-045 left extension names to M1 versioning.
+Artifact versions already exist in D-056. CalVer was offered and declined;
+it conveys dates, not compatibility.
+
+**Consequences.** M1 seeds `CHANGELOG.md` (with its REUSE header), the CMake
+version and the dev-version derivation, and `--version`. Artifact
+compatibility guarantees still wait on D-018's evidence; a 0.x product
+version does not relax exact-version artifact readers. The release checklist
+(beyond D-061's rule that the tagged commit passes all three tiers, with
+`check:full` from a fresh clone) is recorded with the first release.
+
+**Reopen if.** External consumers need a stable-series maintenance policy
+(backports, LTS), or a surface needs version negotiation instead of exact
+matching.
+
+## D-061: A local, tiered check gate instead of hosted CI for now; the Sparks are never runners for the public repository  (2026-09-23, status: accepted; amends D-029's "CI runs" to the local gate; specializes D-011, D-012 and D-057's CI requirements)
+
+**Decision.** Owner's answer on 2026-09-23: no hosted CI until the
+repository has external contributors. Every check that earlier decisions and
+features.md assign to "CI" (REUSE lint, the embedded-header check, the
+copyleft-disabled profile, D-057's offline and exclusion gates, the `.deb`
+build, benchmark replay thresholds) is instead a **local gate of mise
+tasks**, delivered in M1 with the same scope. The tiers:
+
+- **`check`** (workstation, every change): formatting, clang-tidy, REUSE
+  lint, the embedded-header check, then native builds and tests in the
+  default and CPU-only (no CUDA SDK visible, D-026) configurations, and the
+  AArch64 cross build with its CPU tests run locally under qemu-user
+  (owner's direction on 2026-09-23: arm64 testing is local wherever it does
+  not need the real GPU, RDMA or NCCL).
+- **`check:full`** (workstation; toolchain, dependency, packaging and
+  blast-radius changes, and every release): `check` plus the sanitizer
+  builds (x86-64 native, and AArch64 ASan+UBSan under qemu-user with leak
+  detection off; RE-014), and a copyleft-disabled build from empty
+  caches. Its offline gate prepares sources, then configures and builds in
+  the digest-pinned reference container (D-012, D-049) with
+  `--network none`. It also covers D-057's source-dependency gates, the
+  arm64 `.deb` build and its install test in a disposable arm64 container,
+  and a package inventory checked against the receipt, NOTICE and SBOM
+  (D-029).
+- **`check:spark`** (on `spark`/`spark-b` over SSH): only what needs the
+  hardware. That covers CUDA, GPU and VMM suites, RDMA/NCCL and two-node
+  tests, direct I/O on the target NVMe, performance measurements, and
+  ARM concurrency and memory-ordering stress. qemu-user on an x86-64 host
+  cannot be relied on to exhibit AArch64's weaker memory ordering, so
+  emulated runs are not concurrency evidence. It also runs the sanitizers
+  not run under qemu: LeakSanitizer, which aborts there (RE-014), and
+  ThreadSanitizer, untested there.
+
+Handoff notes name the tiers that ran and where (workflow.md). A release
+tag's commit has passed all three.
+
+When hosted CI is adopted, it wraps the same tasks. The standard
+GitHub-hosted runners are free on public repositories: x64 and arm64, each
+4 vCPU / 16 GB RAM / 14 GB SSD
+([GitHub reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
+checked 2026-09-23). Whether the SDK fits 14 GB is unmeasured. **The Sparks
+are never registered as self-hosted runners for this public repository.**
+GitHub's guidance: self-hosted runners "should almost never be used for public
+repositories … because any user can open pull requests against the
+repository and compromise the environment"
+([secure use](https://docs.github.com/en/actions/reference/security/secure-use),
+checked 2026-09-23). GPU checks stay in `check:spark`.
+
+**Context.** The repository is public on GitHub (`pmeenan/jitLLM`, checked
+2026-09-23). Offered: GitHub-hosted CI plus a local Spark gate
+(recommended), a Spark runner on trusted refs, or no hosted CI. The owner
+chose the last: one developer, agents never push, and every change passes
+the human commit gate. Measured on 2026-09-23: Ubuntu 24.04 sets
+`kernel.apparmor_restrict_unprivileged_userns=1`, so `unshare -rn` and
+`bwrap --unshare-net` fail on the workstation, `spark` and `spark-b`
+(RE-013). `docker run --network none` denies network on the workstation.
+The owner's account on `spark` is not in the `docker` group. With the
+owner's approval, Ubuntu's `qemu-user-static` 1:8.2.2+ds-0ubuntu1.18 was
+installed on the workstation (binfmt flags `POF`). Afterwards an arm64
+`ubuntu:24.04` container ran (`--network none` too), and the D-059/D-060
+cross-built GoogleTest suite passed 10/10 under qemu-user with
+`QEMU_LD_PREFIX` set to the D-060 sysroot, while its failing control
+failed. A cross-built ASan+UBSan suite passed with `detect_leaks=0`, and
+the heap-overflow probe was caught. Default leak detection aborts under
+emulation (RE-014).
+
+**Consequences.**
+- D-029's "from M1, CI runs REUSE lint … and a separate check" means the
+  `check` tier. The features.md rows for the copyleft-disabled profile,
+  `.deb` builds and replay thresholds now name the gate, not hosted CI.
+- The network-denied proof of D-057's offline build exists only inside the
+  reference container on the workstation. A native build outside it can
+  still use CMake's disconnected mode, but that is not the proof (D-057:
+  those flags are no sandbox).
+- `qemu-user-static` (with its binfmt registration) is a declared
+  workstation prerequisite (D-049), and the capability probe checks it. The
+  arm64 `.deb` install test runs in an arm64 container on the workstation,
+  never in the Sparks' live systems. Starting the unit under systemd inside
+  that container is untested; M1 decides whether the install test covers
+  it.
+- Nothing independently rebuilds the public tree. A broken or unreproducible
+  commit is caught only by the next local run, so `check:full` from a
+  fresh clone is part of every release.
+- **External pull requests never run locally.** Owner's answer on
+  2026-09-23: no code from an external pull request (build scripts, tests,
+  tools) executes on the workstation or the Sparks, and agents never check
+  one out to run it. D-029's external PRs therefore wait for hosted CI; the
+  first one is the trigger to adopt it for untrusted code. Code the owner
+  has merged is trusted like any other commit.
+
+**Reopen if.** The first external pull request arrives or is invited
+(adopt hosted CI for untrusted code, still never on the Sparks); releases
+need third-party-verifiable builds; or the tiers take too long to run for
+every change.
+
 ## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family)
 
 **Decision.** The owner asked on 2026-09-23 for GCC 16.2, static linking
@@ -280,7 +941,7 @@ requires an update. Repeat both-host semantic checks and the applicable M1
 build tests; update archive identities deliberately rather than following
 the latest installed CMake.
 
-## D-057: Locked CMake source acquisition with curated vendoring for adapted kernels  (2026-09-23, status: accepted; resolves open question 7; specializes D-012, D-017 and D-053)
+## D-057: Locked CMake source acquisition with curated vendoring for adapted kernels  (2026-09-23, status: accepted; resolves open question 7; specializes D-012, D-017 and D-053; "CI" gates run in D-061's local gate)
 
 **Decision.** Use CMake FetchContent for hash-pinned source archives and
 curated vendoring for selected source units that need adaptation. A single
@@ -509,7 +1170,7 @@ or a different idle cap; a supported representation cannot express restore
 boundaries or coverage; or a larger dense model enters M3/M4 support, in
 which case add it as a named configuration rather than replace this one.
 
-## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041)
+## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063)
 
 **Decision.** Model storage has three roles, each a configured path; the
 paths must not overlap:
@@ -1129,7 +1790,7 @@ versioning names any jitLLM `format` value. No implementation is claimed.
 the schema under a pinned client version, or fallback is accepted under
 D-042 and needs the reserved spelling made concrete.
 
-## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047)
+## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064)
 
 **Decision.** At the owner's direction after review of the D-040–D-044
 documents, the inference front door adopts these public-interface rules:
@@ -2053,7 +2714,7 @@ A→B→A may run through any named client.
 or maintaining two formats measurably delays M3, in which case the Messages
 format drops back to an M7 extension.
 
-## D-029: Contributions under DCO; REUSE-style SPDX headers and a NOTICE file from M1; SBOM with packaging  (2026-09-21, status: accepted)
+## D-029: Contributions under DCO; REUSE-style SPDX headers and a NOTICE file from M1; SBOM with packaging  (2026-09-21, status: accepted; "CI" checks run in D-061's local gate, and external PRs wait for hosted CI)
 
 **Decision.** External pull requests are accepted and must carry a Developer
 Certificate of Origin sign-off (`Signed-off-by`); there is no CLA. Every
@@ -2123,7 +2784,7 @@ without a fork; the flagship recipes need kernels GGML cannot host; or an
 out-of-tree, differently licensed backend must load without rebuilding the
 core.
 
-## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted)
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063)
 
 **Decision.** The user-facing installation path is the platform's package
 manager. For DGX Spark that is apt with a project-hosted, signed repository
@@ -2501,7 +3162,7 @@ not approve incorporation or change this policy.
 **Reopen if.** A selected component's actual terms cannot be met, or the core
 allowlist or declared platform dependency families need to change.
 
-## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001)
+## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062)
 
 **Decision.** jitLLM is a single-developer project intended for external
 consumption, so the process is heavier than the lean personal-project default.
@@ -2571,7 +3232,7 @@ in the handoff note.
 (a product-scope decision to make explicitly), or the owner extends the core
 list.
 
-## D-014: Local-first management and privacy defaults  (2026-09-20, status: accepted)
+## D-014: Local-first management and privacy defaults  (2026-09-20, status: accepted; TLS certificate sources in D-065; local management authority in D-064)
 
 **Decision.** The management API binds to local interfaces by default. Remote
 access requires authentication and transport protection. Prompts and KV/state
@@ -2611,7 +3272,7 @@ an isolated benchmark winner. No rewrite-to-own without a measured need.
 profile, or a native rewrite is justified by measurement rather than
 ownership.
 
-## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted; provisioning split refined by D-049; source-dependency mechanism in D-057)
+## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted; provisioning split refined by D-049; source-dependency mechanism in D-057; "CI" checks run in D-061's local gate)
 
 **Decision.** Tool setup, environment selection, and tasks are declared in a
 checked-in `mise.toml` and `mise.lock`. The full LLVM / CUDA / AArch64 SDK is
@@ -2874,7 +3535,7 @@ D-015.
 for a different arrangement, or a core dependency turns out to be
 incompatible with Apache-2.0 distribution.
 
-## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted)
+## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate)
 
 *Scope note (owner, 2026-09-20): model weights are outside the project's
 licensing scope. Users download them directly; jitLLM supports loading them

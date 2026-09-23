@@ -231,8 +231,10 @@ Sync enrolled jitLLM members. No NVIDIA setup script was executed or copied.
 
 ## Configuration v2
 
-Use **UTF-8 TOML**, `schema_version = 2`, with no includes, environment expansion,
-secret interpolation or executable hooks. This supersedes the unimplemented v1 draft with the explicit scan policy;
+Use **UTF-8 TOML**, `schema_version = 2`, with no include directives, environment expansion,
+secret interpolation or executable hooks. D-063 lets the node-local document be split
+into drop-in fragments (a key other than `schema_version` set in two files is fatal); the shared document
+stays one file. This supersedes the unimplemented v1 draft with the explicit scan policy;
 no older runtime format exists. Both shared and local documents use v2. Reject unknown versions/keys,
 duplicate keys/IDs, invalid types/ranges and conflicting conductor declarations
 before opening remote listeners or dispatching work. Configuration files are
@@ -317,7 +319,10 @@ labels are nonempty UTF-8 strings of at most 128 bytes, and paths must be
 absolute. No leading-zero/negative/overflow acceptance for bounded integers.
 Per-node identity/port/path policy mismatches reject startup or peer handshake.
 
-Example local document for the first member (paths are illustrative until M1):
+Example local document for the first member (paths are illustrative until M1).
+D-063 makes this document the node's `/etc/jitllm/jitllm.toml` plus its
+`jitllm.d/` fragments, extended with `[storage]` and the other node keys; a standalone node omits `cluster_file`,
+`node_id`, `[credentials]` and `[control]`:
 
 ```toml
 schema_version = 2
@@ -334,7 +339,7 @@ port = 7443
 interfaces = "auto"
 
 [client]
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:8114"
 
 [limits]
 profile = "initial-v2"
@@ -343,8 +348,8 @@ profile = "initial-v2"
 The placeholder hashes intentionally fail semantic validation. Port 7443 and
 these seed addresses are examples, not assigned product ports or subnet rules.
 A setup-generated file contains real hashes and observed/selected endpoints.
-The syntax is settled here; the parser library, exhaustive diagnostic strings
-and installed paths are selected in M1. Endpoint protocol/client settings
+The syntax is settled here; D-063 sets the installed paths, and the parser
+library and exhaustive diagnostic strings are selected in M1. Endpoint protocol/client settings
 remain the separate named-client/API planning task; this schema does not
 invent their authentication format or a remote-client default.
 
@@ -374,7 +379,11 @@ Normal startup verifies files, local node identity and the conductor's single
 process lock. Every runtime gets a fresh random incarnation; every conductor
 start durably increments a monotonic **authority epoch** before accepting
 clients. Setup initializes epoch state once at enrollment; normal startup
-never initializes a missing state file. Missing/corrupt authority state or
+never initializes a missing state file, and never runs a node standalone
+while its enrollment or epoch state exists. D-063's fixed-path enrollment
+anchor, `/var/lib/jitllm/enrollment`, keeps that true when a relocated
+`state` role and its configuration are lost. Leaving a cluster is an
+explicit setup step that retires that state and removes the anchor. Missing/corrupt authority state or
 a rollback detected against worker epoch floors fails closed; it is not
 reset to zero. Each worker atomically and durably records the highest accepted conductor
 (epoch, incarnation) pair before acknowledging it and rejects lower epochs. The cluster ID, membership revision/digest,

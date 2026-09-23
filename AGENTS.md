@@ -99,8 +99,9 @@ affected docs. Until then, these govern.
   sacrifice nothing on NVIDIA, but don't foreclose them. The CPU-only build
   and the fake backend are the guardrail. (D-026)
 - **Develop on x86-64 Linux, cross-build, test on Spark over SSH.** Native
-  builds and CPU tests run on the workstation; ARM concurrency, VMM, kernel,
-  and distributed tests run on the Sparks, which in the owner's environment
+  builds and CPU tests, including AArch64 CPU tests under qemu-user, run on
+  the workstation; ARM concurrency, VMM, kernel, GPU, RDMA/NCCL, and
+  distributed tests run on the Sparks, which in the owner's environment
   are `spark` and `spark-b` (inventory in architecture.md; those names are
   not application configuration). Explicit CPU/GPU targets only, never
   `-march=native` or autodetection. Toolchain provisioning is declarative and
@@ -194,7 +195,7 @@ the human commit gate.
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
 cluster/API, task/completion, reservation, SDK, kernel-dispatch and model-storage
-choices are recorded through D-058; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+choices are recorded through D-063; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
@@ -224,7 +225,14 @@ paging chunks, verified on real fixtures and Gemma 4. D-057 selects locked
 CMake source acquisition with curated vendoring; D-058 pins CMake 4.4.3;
 D-059 pins Ninja, GoogleTest and the LLVM developer tools; D-060 links a
 source-built GCC 16.2 C++ runtime and cudart statically (LLVM stays 22.1.8),
-all checked on workstation and Spark. Provisioning remains M1. Next: the CI,
-versioning and installed-layout decisions (plan.md).
+all checked on workstation and Spark. D-061 replaces hosted CI with a local
+tiered check gate until there are external contributors (the Sparks are never
+runners); D-062 sets SemVer 0.x and surface versions; D-063 the installed
+layout (`jitllm` user, TOML with drop-ins in `/etc/jitllm`, `/var/lib/jitllm`,
+loopback ports 8114/8115); D-064 keeps local management anonymous behind
+browser guards and jitLLM a service, not a library; D-065 serves front-door
+TLS from certificate files kept current by certbot or `tailscale cert`, with a
+local CA fallback. Provisioning remains M1. Next: the architecture draft and
+the milestone rewrite (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

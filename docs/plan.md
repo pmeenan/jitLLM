@@ -465,7 +465,7 @@ needs evidence from the real hardware.
       owes implementation, concrete dependency pins, native/cross offline
       checks and proof of copyleft-disabled exclusion. Existing source
       provenance gates remain open.
-- [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /
+- [x] Toolchain decisions: build-system conventions (CMake presets / Ninja /
       LLD, confirmed 2026-09-21), test framework, format and lint pins, CI
       shape including the copyleft-disabled profile, REUSE lint, a separate
       embedded-header check for commentable source/docs, and an
@@ -486,9 +486,29 @@ needs evidence from the real hardware.
       headers (amending D-032; the headers were replaced by D-060's static GCC
       16.2 runtime), with candidate style, check and warning sets.
       Native, sanitizer, cross-to-Spark CTest and native Spark runs passed
-      ([report](experiments/dev-tools/README.md)). The CI shape,
-      versioning/changelog conventions, installed layout, implementation and
-      application build validation are still owed.
+      ([report](experiments/dev-tools/README.md)). On 2026-09-23 the owner
+      chose no hosted CI until the repository has external contributors
+      (D-061). The "CI" checks become
+      M1's local `check`/`check:full`/`check:spark` mise tiers, and the
+      offline gate runs in the reference container with `--network none`,
+      because Ubuntu's user-namespace restriction blocks `unshare`/`bwrap`
+      on all three hosts (RE-013). AArch64 CPU tests and ASan/UBSan run
+      locally under qemu-user (installed on the workstation 2026-09-23;
+      leak detection off, RE-014), as does the arm64 package-install test in
+      an arm64 container. The Sparks keep GPU, VMM, RDMA/NCCL, target I/O,
+      performance and ARM concurrency work, and are never runners for the
+      public repository. D-062 sets SemVer 0.x product versions (signed
+      owner tags, `~dev` Debian builds), independent surface versions, the
+      `jitllm-` extension prefix and a Keep a Changelog `CHANGELOG.md` from
+      M1. D-063 sets the [installed layout](architecture.md#installed-layout):
+      a `jitllm` service user, one unit, a strict TOML 1.0 node document
+      at `/etc/jitllm/jitllm.toml` plus `jitllm.d/` fragments
+      (cluster-design's node-local schema, extended) and D-054's roles
+      under `/var/lib/jitllm` with their `[storage]` keys. Implementation,
+      application build validation and the remaining key spellings are
+      M1 work. On the owner's follow-up the same day: includes via
+      `jitllm.d/` fragments, loopback defaults of 8114 (front door) and
+      8115 (management), and directory modes split by role.
 - [x] Evaluate static runtime linking with GCC 16.2 (owner follow-up
       2026-09-23, D-060): GCC 16.2 built from GPG-verified source on both
       hosts. libstdc++, libgcc and cudart are linked statically, and Clang
@@ -510,7 +530,12 @@ needs evidence from the real hardware.
       modalities, MCP, sharing controls, embeddings,
       compatible tokenization/rendering, constrained output, reasoning,
       reranking, metrics/health/load, raw Completions/token diagnostics and
-      D-046's OpenRouter reasoning/cache spellings and hint fields).
+      D-046's OpenRouter reasoning/cache spellings and hint fields). Owner
+      input 2026-09-23: the first daily-driver models are M5's MoE targets,
+      so M3/M4 stay on the small D-051/D-052 fixtures and minimal
+      quantization and kernel coverage. Also place D-065's Tailscale
+      certificate timer (M3 ships certificate files, the local CA, reload
+      and the certbot deploy hook).
 
 **Exit criteria:** the owner has walked features.md and says the plan is good
 enough to build from; open questions 1–7 and 9 are answered or explicitly
@@ -543,10 +568,12 @@ has a promised date; each should leave a usable, testable result.
 - **M1 — Bootstrap.** Repository skeleton, declarative SDK setup (mise plus
   shared workstation/container provisioning into a persistent, versioned
   project SDK; D-012/D-049), C++23/Clang native build, Spark cross build, ARM/CUDA
-  smoke binary running over SSH, CI with the copyleft-disabled profile, initial
+  smoke binary running over SSH, the local tiered check gate with the
+  copyleft-disabled profile (D-061; no hosted CI yet), initial
   license and provenance tooling (REUSE lint, embedded-header check, NOTICE),
-  a first-cut capability probe (the future `doctor` task), and an installable
-  `.deb` build. *Gate:* clean host and container setup with declared OS
+  a first-cut capability probe (the future `doctor` task), version derivation
+  and `CHANGELOG.md` (D-062), and an installable arm64 `.deb` in D-063's
+  layout. *Gate:* clean host and container setup with declared OS
   prerequisites and the complete tool/runtime set for each profile, including
   formatter, linter, language server, symbolizer and sanitizer runtimes;
   project tool selection works without global compiler/environment changes

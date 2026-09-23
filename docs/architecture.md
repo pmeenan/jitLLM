@@ -129,8 +129,9 @@
   probed capabilities. Apple silicon and AMD single machines are possible
   later targets; nothing is done or sacrificed for them now (D-026).
 - **Distribution.** Users install from a signed apt repository, Spark first;
-  the developer toolchain path is separate. Installed layout, service user,
-  and unit are settled before the endpoint lands (D-027, D-012).
+  the developer toolchain path is separate (D-027, D-012). The
+  [installed layout](#installed-layout), service user and unit are settled
+  in D-063; product and surface versioning in D-062.
 
 ### Mandatory pager invariants (§18)
 
@@ -749,6 +750,55 @@ ownership in [async-model.md](async-model.md). There is no runtime plugin ABI
 (D-028); optional backends are build-time modules behind the operation contract, which is
 finalized after the M2 GGML and EXL3 proofs (D-052).
 
+### Installed layout
+
+D-063 records the packaged layout; D-062 versions the configuration schema.
+Nothing below is implemented yet; M1 builds the package and M7 the
+repository.
+
+| Path | Owner / mode | Holds |
+| --- | --- | --- |
+| `/usr/bin/jitllm` | root | User-facing CLI |
+| `/usr/libexec/jitllm/` | root | Node runtime process, the import/install/archive job processes (D-005, D-054), and the certbot deploy hook and Tailscale certificate script (D-065) |
+| `/usr/lib/systemd/system/jitllm.service` | root | The runtime's one unit; runs it as `jitllm`. An optional, disabled-by-default Tailscale certificate timer and service ship alongside it (D-065) |
+| `/usr/lib/sysusers.d/jitllm.conf` | root | `jitllm` system user and group, no login shell |
+| `/usr/lib/tmpfiles.d/jitllm.conf` | root | `d` lines for `/var/lib/jitllm` (`jitllm` 0755) and the default `checkpoints` (`jitllm` 1777, applied only on creation); no age, so never cleaned |
+| `/etc/jitllm/jitllm.toml` | root, not shipped | Optional main file of the node document (`schema_version`, strict); with no main file or fragments, standalone loopback defaults, refused while `state` holds enrollment or epoch records |
+| `/etc/jitllm/jitllm.d/*.toml` | root, not shipped | Fragments of the node document, read in lexical order; a key other than `schema_version` set in two files is fatal. Setup tooling owns its own fragment |
+| `/etc/jitllm/cluster.toml` | root, not shipped | Shared membership document for cluster members (D-038/D-039) |
+| `/usr/share/doc/jitllm/examples/` | root | Annotated example node document |
+| `/etc/jitllm/credentials/` | `root:jitllm` 0750 | Credential files referenced by path, never inline in TOML |
+| `/etc/jitllm/tls/` | `root:jitllm` 0750, files 0640 | Front-door certificate files (combined PEM or cert/key pairs), written atomically by the certbot deploy hook, the Tailscale timer or the owner (D-065) |
+| `/var/lib/jitllm/` | `jitllm` 0755 | `storage.data_dir` (absolute), the base for relative role paths |
+| `/var/lib/jitllm/enrollment` | `jitllm` | Enrollment anchor (node and cluster IDs, `state` path, enrollment ID) at a fixed path independent of configuration; while present, startup refuses a configuration or `state` that does not match it. Moving `state` or leaving the cluster is a setup step that rewrites or removes it (D-063) |
+| `…/models/` | `jitllm` 0755 | `storage.installed`, including D-056's `.staging/` (0700); artifact directories 0755, files 0644; readable by all, written only by the runtime's user |
+| `…/checkpoints/` | `jitllm` 1777 | `storage.checkpoints` (node-local default, created by the package's tmpfiles entry); anyone may add sources, which jobs treat as untrusted |
+| `…/spill/` | `jitllm` 0700 + marker | `storage.spill` (D-055) |
+| `…/state/` | `jitllm` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job and install generations), plus the local CA's key and leaves (D-065) |
+| `/run/jitllm/` | `jitllm` | Runtime sockets and locks |
+| `/usr/share/doc/jitllm/` | root | `copyright`, `NOTICE`, changelog, SBOM (D-029) |
+
+The optional `storage.long_term` (unset by default) holds `archive`
+(default `<long_term>/archive`; an archive requires it) and, only if the
+user points it there, the checkpoint store. Only job processes open it; the
+runtime opens only `installed`, `spill` and `state`, and `long_term` may not
+equal, contain or sit inside any of them. After canonical resolution (links
+followed, device and inode compared) no two role paths may be equal or
+nested; the runtime checks the job-only paths' text against its resolved
+roles, so a hung mount cannot stall it, and jobs repeat the full check. The
+runtime refuses its roles if users other than root and its own user
+(`jitllm` when packaged) could write or replace them, and probes
+`installed` and `spill` with D-034's direct-I/O check at startup; those
+checks, not the text comparison, reject a network mount aliased into its
+roles.
+`jitllm.toml` and its fragments form cluster-design.md's node-local document
+extended with `[storage]`; a standalone node omits its cluster keys, including
+`[credentials]`. Logs go to the journal. The package depends on glibc and
+the versioned `libcuda.so.1` virtual package; the C++ and CUDA runtimes are
+static (D-060). The process that uses a role creates it when missing. The
+front door (conductor or standalone node) defaults to `127.0.0.1:8114` and
+the management API to `127.0.0.1:8115`.
+
 ## Development host baseline
 
 Captured 2026-09-20 on the reference workstation, read-only. The brief asked
@@ -1077,6 +1127,61 @@ with AES-128-GCM took 18.93 s, **0.45 GB/s**. `spark-b`'s local 8 GiB
 SSDs' local rates and the link's 184.76 Gb/s RDMA baseline above, so the
 copy method limited them; the bottleneck within it was not profiled. No
 network, driver or SSH settings changed, and the test files were removed.
+
+### Front-door TLS certificates (2026-09-23)
+
+Owner environment for D-065, not application configuration. At the owner's
+request, certbot 5.8.0 (snap, classic confinement) and its
+`certbot-dns-cloudflare` 5.8.0 plugin are installed on `spark` and
+`spark-b`, with `trust-plugin-with-root=ok` and a `/usr/bin/certbot` symlink
+(certbot's snap instructions). Each host holds the owner's Cloudflare token
+(`Zone:DNS:Edit`, scoped to `meenan.us`) in
+`/root/.secrets/certbot/cloudflare.ini`, root 0600 in a 0700 directory. The
+owner wrote those files; they were checked only for mode and format. The
+ACME account was registered with the owner's agreement to the Let's Encrypt
+Subscriber Agreement and no email.
+
+| Node | Name | LAN address | Certificate |
+| --- | --- | --- | --- |
+| `spark` | `spark.meenan.us` | 192.168.0.100 | Let's Encrypt YE2, 2026-09-23 to 2026-12-22 |
+| `spark-b` | `spark-b.meenan.us` | 192.168.0.101 | Let's Encrypt YE2, 2026-09-23 to 2026-12-22 |
+
+- **Checks run:** a staging `--dry-run`, then production issuance with DNS-01
+  and a 30 s propagation wait, then `certbot renew --dry-run`, all passed on
+  both hosts. Afterwards Cloudflare's authoritative servers returned no
+  leftover `_acme-challenge` TXT records.
+- **Renewal:** runs from `snap.certbot.renew.timer` with the settings saved
+  in `/etc/letsencrypt/renewal/<name>.conf`. No deploy hook is set until
+  M3's jitLLM hook, which is added with
+  `certbot reconfigure --cert-name <name> --deploy-hook …`.
+- **Local DNS:** the names resolve only on the LAN, through the router's
+  local DNS at `192.168.0.1`; `meenan.us` has no public records for them.
+  The router drops public answers that contain private addresses, so public
+  A records would not help LAN clients.
+- **Zone:** `meenan.us` has no CAA records and no DNSSEC.
+- **Public exposure:** both names are now in public Certificate Transparency
+  logs.
+
+**Tailscale.** The owner installed Tailscale 1.102.4 on both Sparks,
+enabled `tailscaled`, and enabled HTTPS certificates for the tailnet
+`coati-puffin.ts.net`. `/etc/default/tailscaled` has empty `FLAGS` and no
+`TS_PERMIT_CERT_UID`, as D-065's root-run timer design needs.
+
+| Node | Tailscale name | Tailscale IPv4 |
+| --- | --- | --- |
+| `spark` | `spark.coati-puffin.ts.net` | 100.96.29.72 |
+| `spark-b` | `spark-b.coati-puffin.ts.net` | 100.114.118.63 |
+
+- **Test fetch:** on 2026-09-23 one `sudo tailscale cert` per host, into a
+  root-only temporary directory, returned a Let's Encrypt YE1 certificate
+  valid 2026-09-23 to 2026-12-22 with the node's name as its only SAN. The
+  key was mode 0600. The copies were deleted.
+- **Renewal:** `tailscaled` keeps its own cache in
+  `/var/lib/tailscale/certs` (ACME account key plus the node's certificate
+  and key), and renews it when asked (D-065). Nothing re-fetches it until
+  D-065's timer exists.
+- **Workstation:** not on the tailnet (no `tailscale` installed), so it
+  reaches the Sparks by LAN name.
 
 ## Open architecture questions
 
