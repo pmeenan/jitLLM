@@ -76,8 +76,10 @@ affected docs. Until then, these govern.
   addresses or runtime objects. Import validates lengths, paths, hashes, and
   metadata and never executes checkpoint code. Initial formats are explicitly
   experimental; compatibility guarantees follow execution/restore evidence.
-  Import repacks weights into indexed paging extents; the initial Spark
-  profile uses aligned 2 MiB whole-extent reads. (D-009, D-018, D-035)
+  Import repacks weights into contiguous, indexed dependency groups
+  (4 KiB-aligned on disk, paged in 2 MiB chunks with coalesced direct
+  reads); v0 uses safetensors shards with a jitLLM manifest/index and no
+  page-in hashing. (D-009, D-018, D-035, D-056)
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
@@ -144,6 +146,7 @@ the human commit gate.
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
+| [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M3 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
 
@@ -215,7 +218,9 @@ per-operation kernels. D-054 keeps installed models node-local, with an
 optional long-term store (NAS/USB) and one import per cluster; the owner's NAS
 is mounted at `/mnt/llm`. D-055 sets capacity-driven state retention with a
 24-hour idle cap and names M4's Qwen2.5-0.5B FP16/EXL3 acceptance workload;
-capacity values are pinned at M3 exit. The remaining M0 decisions are next
-(plan.md).
+capacity values are pinned at M3 exit. D-056 settles the experimental v0
+artifact format: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB
+paging chunks, verified on real fixtures and Gemma 4. The remaining M0
+decisions are next (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

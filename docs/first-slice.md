@@ -157,7 +157,8 @@ template must also pass exact fixtures, rather than silently pulling in the
 full upstream Jinja/parser/vendor dependency closure.
 
 The early integration proof covers this control and the D-052 EXL3 companion:
-prepared artifacts, jitLLM-owned weight/state/workspace backing, whole-extent
-reads, completion-safe cancellation/reclaim and correctness after restoration.
-The final immutable container/manifest and mutable spill formats remain
-their own decisions; selecting a GGUF **input** does not settle either ABI.
+prepared artifacts, jitLLM-owned weight/state/workspace backing, chunk-closure
+direct reads, completion-safe cancellation/reclaim and correctness after
+restoration. The immutable artifact is D-056's experimental
+[v0 format](artifact-format.md); the mutable spill format remains its own
+decision. Selecting a GGUF **input** settles neither.

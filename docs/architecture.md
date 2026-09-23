@@ -85,8 +85,9 @@
   process state serialized; checkpoints untrusted. Initial encoding and
   layout are experimental; compatibility guarantees require dense and MoE
   import/execution/eviction/restore evidence (D-009, D-018). Import repacks
-  weights for whole-extent DMA; the initial Spark profile uses 2 MiB aligned
-  payload extents with an expert/tensor index (D-035).
+  weights into contiguous dependency groups, 4 KiB-aligned in safetensors
+  shards and paged in 2 MiB group-relative chunks, with an expert/tensor
+  index ([v0 format](artifact-format.md); D-035, D-056).
 - **Storage roles.** The runtime pages only from each node's installed store,
   a local block-device filesystem that must pass the direct-I/O probe.
   Source checkpoints and an optional prepared-artifact archive may live on
@@ -342,9 +343,12 @@ physical mapping/release granularity and from the storage request size.
 Freeing a suballocation can create a reusable hole subject to address,
 alignment, and lifetime constraints; the whole backing is still occupied
 until every occupant and outstanding registration/consumer permits release.
-Immutable weight slots retain their imported extent layout/content identity;
-padding or unused slots cannot host unrelated allocations while whole-extent
-reloads may overwrite them. General/mutable reuse must also respect restore
+Immutable weight slots retain their imported group/chunk layout and content
+identity. Backing bytes beyond a chunk's stored length (the rest of a 2 MiB
+handle) are not written by reloads; they may be reused only under the general
+suballocation rules below (union protection, content generation, lifetime),
+never as an unprotected free pool, and small state blocks never inherit the
+2 MiB chunk size. General/mutable reuse must also respect restore
 footprints, content generations, and representation compatibility.
 The ledger distinguishes reusable suballocated bytes from physically released
 bytes. Owning all model address spaces in one process does not change the
@@ -470,24 +474,31 @@ separately from longer-history reuse.
 
 Making a model available includes import into an immutable paging artifact,
 with metadata describing architecture, tokenizer, execution representation,
-and the index from logical resources to stored extents (D-009, D-035).
-Publication follows complete validation; interrupted preparation is not an
-available model. The artifact is a logical unit that may have file shards.
-Its container and metadata encoding remain open question 5; runtime paging
-does not inherit the source checkpoint's tensor ordering.
+and the index from logical resources to stored groups and chunks (D-009,
+D-035, D-056). Publication follows complete validation; interrupted
+preparation is not an available model. The artifact is a content-addressed
+logical unit with safetensors file shards and a jitLLM manifest/index,
+specified in [artifact-format.md](artifact-format.md). Runtime paging does
+not inherit the source checkpoint's tensor ordering.
 
-The initial Spark profile stores payload extents at 2 MiB file boundaries
-with initialized tail padding. Each extent populates compatible independent
-VMM backing directly; tensor views refer to logical bytes within that backing.
-Small tensors with compatible use/lifetimes may share an extent. Expert-local
-and layer-local ranges favor bulk reads, while shared weights keep one
-representation and shared ownership. Repacking must honor actual backend
-strides and quantization blocks without CPU payload transformations at page-in.
+Each dependency group (a dense layer, one expert's closure in one layer, a
+row table, the head) is one contiguous file range, 4 KiB-aligned, so disk
+carries almost no padding. Groups divide into group-relative 2 MiB chunks,
+the unit of closures, integrity records and independent 2 MiB backing
+handles. Small tensors with compatible use/lifetimes share a group and may
+share a chunk. Shared or tied weights keep one representation and shared
+ownership. Repacking honors actual backend strides and quantization blocks,
+with no CPU payload transformations at page-in. Whether backing is
+per-chunk handles or slab slots, and whether GGML expert views use pointer
+tables or uniform strides, are runtime choices that the file layout leaves
+open.
 
-Weight misses fetch whole extents; adjacent missing ranges may form larger
-requests when both file and destination ranges are contiguous and protected.
-Resident holes are not overwritten to manufacture a sequential read. Sparse
-row requests also resolve to whole extents initially, with useful-byte/read
+Weight misses fetch their chunk closure. Adjacent missing chunks coalesce
+into bounded, vectored direct reads, with one iovec per separately admitted
+and protected destination. Resident chunks are never overwritten to
+manufacture a sequential read. Page-in does not hash; integrity is checked
+at install, replication and explicit verification (D-054). Sparse row
+requests resolve to their containing chunks, with useful-byte/read
 amplification measured separately. This layout favors sequential work inside
 a resource group; routing can still select distant groups. No physical NAND
 placement or all-sequential workload is promised. Mutable state has separate
@@ -496,7 +507,8 @@ spill files and generation/retention rules; metadata need not use 2 MiB I/O.
 ### Lifecycles (§8)
 
 Page-in: commit capacity for the actual missing extents → obtain backing →
-map and set access → transfer → verify completion and content identity →
+map and set access → transfer → verify completion, full length and the
+current content generation (no page-in hashing, D-056) →
 publish resident → grant lease. Duplicate requests for one content generation
 are coalesced.
 
@@ -1064,10 +1076,10 @@ The architecture-shaping questions are numbered in
 [features.md](features.md#open-questions-answer-during-m0): VMM granularity,
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
 dependency mechanism, license and API surface, reservation guarantees. Initial
-VMM, I/O, task/completion, reservation policy and toolchain answers are
-recorded (D-033, D-034, D-048, D-050 and D-032); D-051 selects the first
-checkpoint/numerical reference, and D-052 adds the required early EXL3
-companion. The matrix tracks each question's remaining scope.
+VMM, I/O, task/completion, reservation policy, artifact format and toolchain
+answers are recorded (D-033, D-034, D-048, D-050, D-056 and D-032); D-051
+selects the first checkpoint/numerical reference, and D-052 adds the
+required early EXL3 companion. The matrix tracks each question's remaining scope.
 Purely technical additions to resolve
 while drafting:
 

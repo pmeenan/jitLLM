@@ -1,0 +1,839 @@
+{
+ "built_artifacts": {
+  "exl3-4.0bpw": {
+   "artifact_bytes": 601043985,
+   "build_with_verify_s": 2.78,
+   "id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+   "loadcheck": {
+    "chunks_read": 1064,
+    "read_requests": 804,
+    "resources": 798
+   },
+   "source_identity": [
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "quantization_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json"
+   ],
+   "source_sha256": "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b",
+   "upstream_safetensors_0.8.0_entries": 992,
+   "verify_s": 0.56
+  },
+  "exl3-4.5bpw": {
+   "artifact_bytes": 623351494,
+   "build_with_verify_s": 2.82,
+   "id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+   "loadcheck": {
+    "chunks_read": 1074,
+    "read_requests": 804,
+    "resources": 798
+   },
+   "source_identity": [
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "quantization_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json"
+   ],
+   "source_sha256": "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc",
+   "upstream_safetensors_0.8.0_entries": 992,
+   "verify_s": 0.58
+  },
+  "gemma": {
+   "artifact_bytes": 16958152889,
+   "build_with_verify_s": 67.79,
+   "id": "d673bf28ab0016797432d65c8a888ee7e579c0ad65475e773ebfbdd1bf8e5cfa",
+   "kv_gguf_fields": 63,
+   "loadcheck": {
+    "chunks_read": 13465,
+    "read_requests": 8289,
+    "resources": 8278
+   },
+   "loadcheck_s": 15.19,
+   "source_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+   "upstream_safetensors_0.8.0_entries": 16194,
+   "verify_s": 14.59
+  },
+  "qwen25": {
+   "artifact_bytes": 994276024,
+   "build_with_verify_s": 5.93,
+   "id": "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073",
+   "kv_gguf_fields": 29,
+   "loadcheck": {
+    "chunks_read": 755,
+    "read_requests": 294,
+    "resources": 290
+   },
+   "rebuild_identical_id": true,
+   "source_sha256": "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc",
+   "upstream_safetensors_0.8.0_entries": 315,
+   "verify_s": 1.07
+  }
+ },
+ "cold_load_gemma": {
+  "bytes": 16939601920,
+  "chunks": 9059,
+  "max_run_16MiB": {
+   "gb_per_s": [
+    9.939,
+    10.066,
+    9.896
+   ],
+   "requests": 1119
+  },
+  "max_run_2MiB": {
+   "gb_per_s": [
+    7.545,
+    7.676,
+    7.438
+   ],
+   "requests": 9058
+  },
+  "max_run_64MiB": {
+   "gb_per_s": [
+    10.511,
+    10.509,
+    10.517
+   ],
+   "requests": 257
+  },
+  "note": "whole artifact, every chunk missing, O_DIRECT preadv scattering each chunk into its own 2 MiB anonymous slot (runs bounded by bytes and IOV_MAX), 8 runs in flight, Python threads; 3 repetitions"
+ },
+ "date": "2026-09-22",
+ "harness_sha256": {
+  "layout.py": "a0d1980a9eddd1adf60863cf7b825396700691fd17b3cd62ca063fda2e0b6809"
+ },
+ "host": "spark (GB10, driver 580.178.04, kernel 7.0.0-1019-nvidia, ext4 on nvme0n1p2, max_sectors_kb 128)",
+ "index_parse_python": {
+  "index_bytes": 6330330,
+  "model": "qwen38",
+  "note": "placeholder chunk hashes; layout.strict_json",
+  "seconds": [
+   0.05,
+   0.048,
+   0.048
+  ]
+ },
+ "offset_alignment_ab": {
+  "aligned_2m_len_2m": {
+   "max": 9.444,
+   "median_gb_per_s": 9.3475,
+   "min": 9.151,
+   "n": 6
+  },
+  "aligned_2m_len_closure": {
+   "max": 9.361,
+   "median_gb_per_s": 9.3295,
+   "min": 9.277,
+   "n": 6
+  },
+  "aligned_4k_len_2m": {
+   "max": 9.36,
+   "median_gb_per_s": 9.2605,
+   "min": 9.225,
+   "n": 6
+  },
+  "aligned_4k_len_closure": {
+   "max": 9.244,
+   "median_gb_per_s": 9.085,
+   "min": 8.972,
+   "n": 6
+  },
+  "note": "io_align.py, 49.6 GB Qwen3.8 GGUF shard, O_DIRECT, 32 threads x 3000 random reads, 6 repetitions, arm order alternated"
+ },
+ "plans": {
+  "dsv4": {
+   "architecture": "deepseek4",
+   "by_kind": {
+    "expert": {
+     "disk": 89774882816,
+     "disk_padding_pct": 0.0,
+     "groups": 11008,
+     "handle_backing": 93952409600,
+     "handle_padding_pct": 4.446,
+     "payload": 89774882816
+    },
+    "head": {
+     "disk": 298143744,
+     "disk_padding_pct": 0.001,
+     "groups": 1,
+     "handle_backing": 299892736,
+     "handle_padding_pct": 0.584,
+     "payload": 298140160
+    },
+    "layer": {
+     "disk": 6390190080,
+     "disk_padding_pct": 0.001,
+     "groups": 43,
+     "handle_backing": 6404702208,
+     "handle_padding_pct": 0.228,
+     "payload": 6390117384
+    },
+    "table": {
+     "disk": 364052480,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 364904448,
+     "handle_padding_pct": 0.233,
+     "payload": 364052480
+    }
+   },
+   "chunks": 48171,
+   "container": {
+    "entries": 34419,
+    "gguf_header_estimate": 2116836,
+    "header_region_bytes": 3637248,
+    "max_safetensors_json_bytes": 161397,
+    "pads": 196,
+    "shards": 23
+   },
+   "disk_bytes": 96827269120,
+   "disk_padding_pct": 0.0,
+   "expert_layers": [
+    {
+     "chunks": 4,
+     "closure_bytes": 8060928,
+     "disk_bytes": 8060928,
+     "disk_padding_pct": 0.0,
+     "handle_padding_pct": 3.906,
+     "layers": 41,
+     "projections": [
+      "ffn_down_exps:IQ3_XXS",
+      "ffn_gate_exps:IQ2_XS",
+      "ffn_up_exps:IQ2_XS"
+     ]
+    },
+    {
+     "chunks": 6,
+     "closure_bytes": 10878976,
+     "disk_bytes": 10878976,
+     "disk_padding_pct": 0.0,
+     "handle_padding_pct": 13.542,
+     "layers": 1,
+     "projections": [
+      "ffn_down_exps:MXFP4",
+      "ffn_gate_exps:IQ3_XXS",
+      "ffn_up_exps:IQ3_XXS"
+     ]
+    },
+    {
+     "chunks": 5,
+     "closure_bytes": 9306112,
+     "disk_bytes": 9306112,
+     "disk_padding_pct": 0.0,
+     "handle_padding_pct": 11.25,
+     "layers": 1,
+     "projections": [
+      "ffn_down_exps:MXFP4",
+      "ffn_gate_exps:IQ2_XS",
+      "ffn_up_exps:IQ2_XS"
+     ]
+    }
+   ],
+   "expert_view_va_bytes": {
+    "pointer_table_handles": 93952409600,
+    "pointer_table_slots": 89774882816,
+    "uniform_stride_one_array": 40692130775040,
+    "uniform_stride_per_projection": 2818035417088
+   },
+   "experts": 256,
+   "group_used_bytes": 96827192840,
+   "groups": 11053,
+   "handle_backing_bytes": 101021908992,
+   "handle_padding_pct": 4.152,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 2076672,
+    "mean": 1717650,
+    "min": 229376
+   },
+   "model": "DeepSeek V4 Flash UD-Q2_K_XL",
+   "readable_overread_bytes": 0,
+   "row_tables": [
+    {
+     "chunks": 174,
+     "name": "token_embd.weight",
+     "row_bytes": 2816,
+     "rows": 129280,
+     "rows_per_chunk": 744.73,
+     "single_row_read_amplification": 744.7,
+     "straddling_rows": 158,
+     "type": "Q5_K"
+    }
+   ],
+   "shards": 23,
+   "tensor_payload_bytes": 96827162972,
+   "ties": {}
+  },
+  "exl3-4.0bpw": {
+   "architecture": "qwen2",
+   "by_kind": {
+    "head": {
+     "disk": 136445952,
+     "disk_padding_pct": 0.003,
+     "groups": 1,
+     "handle_backing": 138412032,
+     "handle_padding_pct": 1.423,
+     "payload": 136442368
+    },
+    "layer": {
+     "disk": 180289536,
+     "disk_padding_pct": 0.051,
+     "groups": 24,
+     "handle_backing": 201326592,
+     "handle_padding_pct": 10.495,
+     "payload": 180197376
+    },
+    "table": {
+     "disk": 272269312,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 272629760,
+     "handle_padding_pct": 0.132,
+     "payload": 272269312
+    }
+   },
+   "chunks": 292,
+   "container": {
+    "entries": 992,
+    "gguf_header_estimate": 64194,
+    "header_region_bytes": 102400,
+    "max_safetensors_json_bytes": 99537,
+    "pads": 194,
+    "shards": 1
+   },
+   "disk_bytes": 589004800,
+   "disk_padding_pct": 0.016,
+   "experts": 0,
+   "group_used_bytes": 588909056,
+   "groups": 26,
+   "handle_backing_bytes": 612368384,
+   "handle_padding_pct": 3.831,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 1736704,
+    "mean": 1198553,
+    "min": 131072
+   },
+   "model": "Qwen2.5-0.5B-Instruct EXL3 4.0 bpw (D-052)",
+   "readable_overread_bytes": 0,
+   "row_tables": [
+    {
+     "chunks": 130,
+     "name": "model.embed_tokens.weight",
+     "row_bytes": 1792,
+     "rows": 151936,
+     "rows_per_chunk": 1170.29,
+     "single_row_read_amplification": 1170.3,
+     "straddling_rows": 111,
+     "type": "BF16"
+    }
+   ],
+   "shards": 1,
+   "tensor_payload_bytes": 588866468,
+   "ties": {}
+  },
+  "exl3-4.5bpw": {
+   "architecture": "qwen2",
+   "by_kind": {
+    "head": {
+     "disk": 136445952,
+     "disk_padding_pct": 0.003,
+     "groups": 1,
+     "handle_backing": 138412032,
+     "handle_padding_pct": 1.423,
+     "payload": 136442368
+    },
+    "layer": {
+     "disk": 202596352,
+     "disk_padding_pct": 0.045,
+     "groups": 24,
+     "handle_backing": 222298112,
+     "handle_padding_pct": 8.904,
+     "payload": 202504192
+    },
+    "table": {
+     "disk": 272269312,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 272629760,
+     "handle_padding_pct": 0.132,
+     "payload": 272269312
+    }
+   },
+   "chunks": 302,
+   "container": {
+    "entries": 992,
+    "gguf_header_estimate": 64194,
+    "header_region_bytes": 102400,
+    "max_safetensors_json_bytes": 99537,
+    "pads": 194,
+    "shards": 1
+   },
+   "disk_bytes": 611311616,
+   "disk_padding_pct": 0.016,
+   "experts": 0,
+   "group_used_bytes": 611215872,
+   "groups": 26,
+   "handle_backing_bytes": 633339904,
+   "handle_padding_pct": 3.493,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 1736704,
+    "mean": 1249910,
+    "min": 131072
+   },
+   "model": "Qwen2.5-0.5B-Instruct EXL3 4.5 bpw (D-052)",
+   "readable_overread_bytes": 0,
+   "row_tables": [
+    {
+     "chunks": 130,
+     "name": "model.embed_tokens.weight",
+     "row_bytes": 1792,
+     "rows": 151936,
+     "rows_per_chunk": 1170.29,
+     "single_row_read_amplification": 1170.3,
+     "straddling_rows": 111,
+     "type": "BF16"
+    }
+   ],
+   "shards": 1,
+   "tensor_payload_bytes": 611173284,
+   "ties": {}
+  },
+  "gemma": {
+   "architecture": "gemma4",
+   "by_kind": {
+    "expert": {
+     "disk": 14360772608,
+     "disk_padding_pct": 0.043,
+     "groups": 3840,
+     "handle_backing": 16374562816,
+     "handle_padding_pct": 12.336,
+     "payload": 14354608128
+    },
+    "global": {
+     "disk": 12288,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 2097152,
+     "handle_padding_pct": 99.414,
+     "payload": 12288
+    },
+    "layer": {
+     "disk": 1794478080,
+     "disk_padding_pct": 0.003,
+     "groups": 30,
+     "handle_backing": 1835008000,
+     "handle_padding_pct": 2.211,
+     "payload": 1794426880
+    },
+    "table": {
+     "disk": 784338944,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 786432000,
+     "handle_padding_pct": 0.267,
+     "payload": 784335120
+    }
+   },
+   "chunks": 9059,
+   "container": {
+    "entries": 16194,
+    "gguf_header_estimate": 840511,
+    "header_region_bytes": 1507328,
+    "max_safetensors_json_bytes": 401819,
+    "pads": 7916,
+    "shards": 4
+   },
+   "disk_bytes": 16939601920,
+   "disk_padding_pct": 0.037,
+   "expert_layers": [
+    {
+     "chunks": 2,
+     "closure_bytes": 3717520,
+     "disk_bytes": 3719168,
+     "disk_padding_pct": 0.044,
+     "handle_padding_pct": 11.367,
+     "layers": 29,
+     "projections": [
+      "ffn_down_exps:Q5_1",
+      "ffn_gate_up_exps:Q4_K"
+     ]
+    },
+    {
+     "chunks": 3,
+     "closure_bytes": 4337296,
+     "disk_bytes": 4337664,
+     "disk_padding_pct": 0.008,
+     "handle_padding_pct": 31.061,
+     "layers": 1,
+     "projections": [
+      "ffn_down_exps:Q8_0",
+      "ffn_gate_up_exps:Q4_K"
+     ]
+    }
+   ],
+   "expert_view_va_bytes": {
+    "pointer_table_handles": 16374562816,
+    "pointer_table_slots": 14360772608,
+    "uniform_stride_one_array": 111132278784,
+    "uniform_stride_per_projection": 100394860544
+   },
+   "experts": 128,
+   "group_used_bytes": 16933382416,
+   "groups": 3872,
+   "handle_backing_bytes": 18998099968,
+   "handle_padding_pct": 10.868,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 1622016,
+    "mean": 1565515,
+    "min": 4096
+   },
+   "model": "Gemma 4 26B-A4B UD-Q4_K_M",
+   "readable_overread_bytes": 1541352,
+   "row_tables": [
+    {
+     "chunks": 375,
+     "name": "token_embd.weight",
+     "row_bytes": 2992,
+     "rows": 262144,
+     "rows_per_chunk": 700.92,
+     "single_row_read_amplification": 700.9,
+     "straddling_rows": 372,
+     "type": "Q8_0"
+    }
+   ],
+   "shards": 4,
+   "tensor_payload_bytes": 16931716216,
+   "ties": {}
+  },
+  "ornith": {
+   "architecture": "qwen35moe",
+   "by_kind": {
+    "expert": {
+     "disk": 20025704448,
+     "disk_padding_pct": 0.0,
+     "groups": 10496,
+     "handle_backing": 22011707392,
+     "handle_padding_pct": 9.022,
+     "payload": 20025704448
+    },
+    "head": {
+     "disk": 417185792,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 417333248,
+     "handle_padding_pct": 0.035,
+     "payload": 417185792
+    },
+    "layer": {
+     "disk": 973639680,
+     "disk_padding_pct": 0.012,
+     "groups": 41,
+     "handle_backing": 1015021568,
+     "handle_padding_pct": 4.088,
+     "payload": 973524992
+    },
+    "table": {
+     "disk": 286064640,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 287309824,
+     "handle_padding_pct": 0.433,
+     "payload": 286064640
+    }
+   },
+   "chunks": 11316,
+   "container": {
+    "entries": 32219,
+    "gguf_header_estimate": 1981441,
+    "header_region_bytes": 3330048,
+    "max_safetensors_json_bytes": 700298,
+    "pads": 101,
+    "shards": 6
+   },
+   "disk_bytes": 21702594560,
+   "disk_padding_pct": 0.001,
+   "expert_layers": [
+    {
+     "chunks": 1,
+     "closure_bytes": 2039808,
+     "disk_bytes": 2039808,
+     "disk_padding_pct": 0.0,
+     "handle_padding_pct": 2.734,
+     "layers": 21,
+     "projections": [
+      "ffn_down_exps:Q6_K",
+      "ffn_gate_exps:Q4_K",
+      "ffn_up_exps:Q4_K"
+     ]
+    },
+    {
+     "chunks": 1,
+     "closure_bytes": 1769472,
+     "disk_bytes": 1769472,
+     "disk_padding_pct": 0.0,
+     "handle_padding_pct": 15.625,
+     "layers": 20,
+     "projections": [
+      "ffn_down_exps:Q4_K",
+      "ffn_gate_exps:Q4_K",
+      "ffn_up_exps:Q4_K"
+     ]
+    }
+   ],
+   "expert_view_va_bytes": {
+    "pointer_table_handles": 22011707392,
+    "pointer_table_slots": 20025704448,
+    "uniform_stride_one_array": 3648037847040,
+    "uniform_stride_per_projection": 1676647858176
+   },
+   "experts": 256,
+   "group_used_bytes": 21702479872,
+   "groups": 10539,
+   "handle_backing_bytes": 23731372032,
+   "handle_padding_pct": 8.549,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 2039808,
+    "mean": 1904650,
+    "min": 307200
+   },
+   "model": "Ornith 1.5 35B Q4_K_M",
+   "readable_overread_bytes": 0,
+   "row_tables": [
+    {
+     "chunks": 137,
+     "name": "token_embd.weight",
+     "row_bytes": 1152,
+     "rows": 248320,
+     "rows_per_chunk": 1820.44,
+     "single_row_read_amplification": 1820.4,
+     "straddling_rows": 121,
+     "type": "Q4_K"
+    }
+   ],
+   "shards": 6,
+   "tensor_payload_bytes": 21702472192,
+   "ties": {}
+  },
+  "qwen25": {
+   "architecture": "qwen2",
+   "by_kind": {
+    "head": {
+     "disk": 272273408,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 272629760,
+     "handle_padding_pct": 0.131,
+     "payload": 272272896
+    },
+    "layer": {
+     "disk": 715948032,
+     "disk_padding_pct": 0.002,
+     "groups": 24,
+     "handle_backing": 754974720,
+     "handle_padding_pct": 5.171,
+     "payload": 715935744
+    }
+   },
+   "chunks": 490,
+   "container": {
+    "entries": 315,
+    "gguf_header_estimate": 17488,
+    "header_region_bytes": 32768,
+    "max_safetensors_json_bytes": 28771,
+    "pads": 25,
+    "shards": 1
+   },
+   "disk_bytes": 988221440,
+   "disk_padding_pct": 0.001,
+   "experts": 0,
+   "group_used_bytes": 988208640,
+   "groups": 25,
+   "handle_backing_bytes": 1027604480,
+   "handle_padding_pct": 3.834,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 1740800,
+    "mean": 521830,
+    "min": 471040
+   },
+   "model": "Qwen2.5-0.5B-Instruct FP16 GGUF (D-051)",
+   "readable_overread_bytes": 0,
+   "row_tables": [
+    {
+     "chunks": 130,
+     "name": "token_embd.weight",
+     "row_bytes": 1792,
+     "rows": 151936,
+     "rows_per_chunk": 1170.29,
+     "single_row_read_amplification": 1170.3,
+     "straddling_rows": 111,
+     "type": "F16"
+    }
+   ],
+   "shards": 1,
+   "tensor_payload_bytes": 988208640,
+   "ties": {
+    "output.weight": "token_embd.weight"
+   }
+  },
+  "qwen38": {
+   "architecture": "qwen4exp",
+   "by_kind": {
+    "expert": {
+     "disk": 48702160896,
+     "disk_padding_pct": 0.14,
+     "groups": 24576,
+     "handle_backing": 52613349376,
+     "handle_padding_pct": 7.563,
+     "payload": 48634003456
+    },
+    "head": {
+     "disk": 528478208,
+     "disk_padding_pct": 0.0,
+     "groups": 1,
+     "handle_backing": 528482304,
+     "handle_padding_pct": 0.001,
+     "payload": 528476416
+    },
+    "layer": {
+     "disk": 3473174528,
+     "disk_padding_pct": 0.003,
+     "groups": 48,
+     "handle_backing": 3519021056,
+     "handle_padding_pct": 1.306,
+     "payload": 3473054720
+    },
+    "table": {
+     "disk": 29321613312,
+     "disk_padding_pct": 0.0,
+     "groups": 2,
+     "handle_backing": 29322379264,
+     "handle_padding_pct": 0.003,
+     "payload": 29321610438
+    }
+   },
+   "chunks": 41000,
+   "container": {
+    "entries": 124227,
+    "gguf_header_estimate": 6639617,
+    "header_region_bytes": 11694080,
+    "max_safetensors_json_bytes": 967915,
+    "pads": 49419,
+    "shards": 14
+   },
+   "disk_bytes": 82025426944,
+   "disk_padding_pct": 0.083,
+   "expert_layers": [
+    {
+     "chunks": 1,
+     "closure_bytes": 1971456,
+     "disk_bytes": 1974272,
+     "disk_padding_pct": 0.143,
+     "handle_padding_pct": 5.994,
+     "layers": 47,
+     "projections": [
+      "ffn_down_exps:IQ4_NL",
+      "ffn_gate_exps:IQ2_S",
+      "ffn_up_exps:IQ2_S"
+     ]
+    },
+    {
+     "chunks": 2,
+     "closure_bytes": 2329856,
+     "disk_bytes": 2330624,
+     "disk_padding_pct": 0.033,
+     "handle_padding_pct": 44.452,
+     "layers": 1,
+     "projections": [
+      "ffn_down_exps:IQ4_NL",
+      "ffn_gate_exps:IQ3_S",
+      "ffn_up_exps:IQ3_S"
+     ]
+    }
+   ],
+   "expert_view_va_bytes": {
+    "pointer_table_handles": 52613349376,
+    "pointer_table_slots": 48702160896,
+    "uniform_stride_one_array": 19153406656512,
+    "uniform_stride_per_projection": 4720169058304
+   },
+   "experts": 512,
+   "group_used_bytes": 81957145030,
+   "groups": 24627,
+   "handle_backing_bytes": 85983232000,
+   "handle_padding_pct": 4.682,
+   "last_chunk_fill_bytes": {
+    "full": 0,
+    "max": 2093056,
+    "mean": 1936442,
+    "min": 233472
+   },
+   "model": "Qwen3.8 Flash Next UD-IQ3_XXS",
+   "readable_overread_bytes": 5347986,
+   "row_tables": [
+    {
+     "chunks": 13733,
+     "name": "per_layer_token_embd.weight",
+     "row_bytes": 90,
+     "rows": 320001536,
+     "rows_per_chunk": 23301.69,
+     "single_row_read_amplification": 23301.7,
+     "straddling_rows": 13427,
+     "type": "IQ4_NL"
+    },
+    {
+     "chunks": 249,
+     "name": "token_embd.weight",
+     "row_bytes": 2100,
+     "rows": 248320,
+     "rows_per_chunk": 998.64,
+     "single_row_read_amplification": 998.6,
+     "straddling_rows": 248,
+     "type": "Q6_K"
+    }
+   ],
+   "shards": 14,
+   "tensor_payload_bytes": 81950799360,
+   "ties": {}
+  }
+ },
+ "profile": {
+  "chunk_bytes": 2097152,
+  "container": "safetensors",
+  "file_alignment": 4096,
+  "ggml_row_padding": 512,
+  "member_alignment": 256,
+  "shard_target": 4294967296
+ },
+ "sha256_per_core": {
+  "buffer_bytes": 2097152,
+  "cortex_a725_gb_per_s": 2.117,
+  "cortex_x925_gb_per_s": 2.487,
+  "openssl": "3.0.13",
+  "seconds": 3
+ },
+ "va_reservation": {
+  "aggregate_1TiB_reservations": [
+   254,
+   255,
+   255
+  ],
+  "cuda_headers": "/usr/local/cuda-13.0, g++ 13.3.0",
+  "far_end_map_4TiB_ok": true,
+  "granularity": 2097152,
+  "largest_single_reservation_bytes": 140737488355328,
+  "runs": 3
+ }
+}

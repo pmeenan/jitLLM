@@ -11,9 +11,9 @@ sources or our own, are build-time implementations of operations, selected
 per plan. This is the M0 scope for that proof, which M2 executes alongside the resource core. It
 fixes stages, numerical oracles, cases and evidence, and records what the
 pinned sources imply for them. It is not an implementation, a measurement or
-a support claim. The artifact encoding (open question 5), source-dependency
-mechanism (question 7) and retained-backing comparison stay separate plan
-items; the proof consumes or hosts them.
+a support claim. The artifact encoding is D-056's [v0 format](artifact-format.md);
+the source-dependency mechanism (question 7) and retained-backing comparison
+stay separate plan items; the proof consumes or hosts them.
 
 ## What the proof settles
 
@@ -23,7 +23,7 @@ items; the proof consumes or hosts them.
 | Coexistence and swapping: several implementations of one operation, and several kernel sources, in one build and process, selected per plan | P1, P3, BP-S cases | Operation contract and implementation registry |
 | Dispatch overhead against upstream's captured decode | BP-F4 | Whether M3 parity needs graph capture with a relocation proof |
 | The operation contract: dependencies, workspace, streams/fences, captured pointers, backend allocations, errors (ideation §10) | All stages | Decision entry at M2 close, before M3 builds on it |
-| Executable-layout constraints: alignment, padding, kernel-readable ranges, tile rules | P2–P4 against the question-5 encoding | Validates or amends the experimental artifact |
+| Executable-layout constraints: alignment, padding, kernel-readable ranges, tile rules | P2–P4 against D-056's v0 encoding | Validates or amends the experimental artifact |
 | Phase envelopes and fixed runtime overhead `F` for the declared profiles | P6 | D-050 admission numbers for M2/M3 |
 | Whether actual kernels regress on host VMM | BP-F1 | D-034 reopen check |
 | EXL3 per-kernel time and workspace parity with upstream | BP-F2 | D-052 M2 gate |
@@ -40,8 +40,8 @@ for the proof.
   GGML subset and the selected ExLlamaV3 files. That mechanism also supplies
   any patch as a reviewed file, with hashes and notices.
 - **P0/P1 need no artifacts.** They start once M1 builds. P2 onward runs from
-  prepared artifacts in question 5's experimental encoding, whose worked
-  examples must include these three fixtures. A proof-only file format does
+  prepared artifacts in D-056's experimental v0 encoding. The M0 layout
+  study built and verified all three fixtures in it. A proof-only file format does
   not satisfy "from prepared artifacts".
 - **P4/P5 run on the M2 resource core:** catalog, leases, storage and device
   services. They validate the code M3 builds on.
@@ -434,11 +434,11 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 
 **Paging (weights and state)**
 
-- **BP-P1:** Evict all weights and restore them with whole-extent direct
-  reads. Logits are bit-identical to resident.
+- **BP-P1:** Evict all weights and restore them with coalesced chunk-closure
+  direct reads. Logits are bit-identical to resident.
 - **BP-P2:** Partial eviction of one layer, of the trellis only, of side
-  vectors or biases only, of a shared small-tensor extent, of a padded tail
-  and of a tensor crossing an extent boundary. An incomplete closure refuses
+  vectors or biases only, of a shared small-tensor chunk, of a padded tail
+  and of a tensor crossing a chunk boundary. An incomplete closure refuses
   launch (invariants 1–2).
 - **BP-P3:** Views of the FP16 tied embedding and output compute
   identically whether storage is duplicated or shared. The EXL3 head is a

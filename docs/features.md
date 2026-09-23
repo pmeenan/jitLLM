@@ -66,7 +66,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Separate commitment and occupancy ledgers | confirmed | D-007 |
 | Completion service tracking GPU, I/O, and network consumers before reclaim | confirmed | ideation §3, §14 |
 | Resumable continuations: suspend a model phase while I/O is pending and run other ready work | confirmed | ideation §7; D-050 bounds suspended phases and retains their full envelope during waits; another model phase needs a successful concurrent-envelope check |
-| Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, sparse lookup tables, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set. Qwen3.8-Flash-Next's 51B n-gram embedding is the first concrete sparse lookup: row requests resolve to whole stored extents initially (D-035) |
+| Per-class lifecycle policies (immutable weights, routed experts, dense/attention weights, sparse lookup tables, live KV/state, reusable prefix state, scratch, graph objects, comm buffers, staging) | confirmed | ideation §5 table is the initial policy set. Qwen3.8-Flash-Next's 51B n-gram embedding is the first concrete sparse lookup: row requests resolve to their containing 2 MiB chunks initially (D-035, D-056) |
 | Architecture-specific adapters for live and reusable state (KV blocks, compressed attention, sliding window, recurrent) | confirmed | conservative semantics per architecture first |
 | Prefix-cache metadata always consistent with physical eviction (no stale hits) | confirmed | pager invariant 4 |
 | Deterministic simulated (fake) resource backend for tests | confirmed | Stage 1 deliverable in ideation §19 |
@@ -118,16 +118,16 @@ client-supplied history when an idle cache entry is unavailable.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Owned import pipeline: validate → select layout → pack/shard → index → hash → atomic publish | confirmed | D-009 |
-| Prepared per-model paging artifact aligned with VMM backing; whole-extent weight DMA | confirmed | D-035: making a model available includes repacking; initial Spark profile uses 2 MiB aligned payload extents and padded tails, packs compatible small tensors, indexes experts/tensors, and requires no CPU payload repacking at page-in. Sparse rows initially fetch their containing extents; mutable spill stays separate |
+| Prepared per-model paging artifact aligned with VMM backing; direct weight DMA | confirmed | D-035, amended by D-056: making a model available includes repacking into contiguous dependency groups (a dense layer, one expert's closure), 4 KiB-aligned on disk and paged in 2 MiB group-relative chunks through coalesced, vectored direct reads; small tensors are packed, experts/tensors indexed, and page-in does no CPU payload repacking. Sparse rows fetch their containing chunks; mutable spill stays separate |
 | Versioned, hashed artifacts supporting bounded range reads without reprocessing | confirmed | D-009, D-018; experimental initially, with explicit rejection of incompatible versions; compatibility guarantees follow dense and MoE restore evidence |
 | Checkpoints treated as untrusted input; no code execution; lengths, paths, hashes, metadata validated | confirmed | D-009 |
 | Resumable import; free-space and peak-temp checks; interrupted imports never appear valid | confirmed | |
 | Workstation-side import; target-assisted tuning as an explicit mode with separately keyed results | confirmed | x86 importer, ARM importer, and architecture-independent artifact format are distinct things |
 | Immutable model files separate from mutable spill files | confirmed | |
-| Artifact contents: manifest, tokenizer/config, representation catalog, resource index, immutable data, integrity/provenance, optional plan metadata | confirmed | 2026-09-21: the required content set (ideation §11); the encoding is open question 5 |
+| Artifact contents: manifest, tokenizer/config, representation catalog, resource index, immutable data, integrity/provenance, optional plan metadata | confirmed | 2026-09-21: the required content set (ideation §11); encoded by D-056's [v0 format](artifact-format.md). Plan metadata is not yet part of v0 |
 | Multiple alternative backend layouts of the same resource per artifact | deferred | 2026-09-21. Earliest M7; trigger: measurement justifies storing alternatives' disk/import cost. D-052 already requires representation-aware descriptors and separate GGML/EXL3 prepared artifacts in M2; this deferral does not postpone EXL3 support |
-| Reuse a known container for the immutable blobs (GGUF- or safetensors-style aligned tensor data) and own only the manifest and resource index | confirmed | *agent-suggested*, confirmed 2026-09-21 as the principle; the specific container is chosen in the question 5 schema task. Re-packing experts into contiguous aligned extents is justified; inventing a container is not. Keeps tooling available while D-018 keeps the format experimental |
-| Standalone artifact verification tool (checksums, index bounds, manifest consistency) | confirmed | *agent-suggested*, confirmed 2026-09-21; delivered with the M3 importer. Cheap given per-extent checksums; separates "bad artifact" from "pager bug" during bring-up |
+| Reuse a known container for the immutable blobs (GGUF- or safetensors-style aligned tensor data) and own only the manifest and resource index | confirmed | *agent-suggested*, confirmed 2026-09-21 as the principle; D-056 chooses safetensors shards (2026-09-22), with GGUF kept only as the carrier of GGUF sources' metadata. Re-packing experts into contiguous aligned extents is justified; inventing a container is not. Keeps tooling available while D-018 keeps the format experimental |
+| Standalone artifact verification tool (checksums, index bounds, manifest consistency) | confirmed | *agent-suggested*, confirmed 2026-09-21; delivered with the M3 importer. Cheap given per-chunk checksums (D-056); separates "bad artifact" from "pager bug" during bring-up |
 | Model support matrix per checkpoint: unsupported → import-only → resident-correct → paged-correct → distributed-correct → performance-validated | confirmed | ideation §19 |
 | Direct model download from the Hugging Face Hub in the importer and the management API | confirmed | owner request 2026-09-20; downloads are resumable and verified like any import input (D-009) |
 | Hugging Face token from a `.env` or config file tied to the user's HF account, also settable from the web management UI | confirmed | owner request 2026-09-20. Secret handling: never logged, restricted file permissions, `.env` git-ignored, management stays local by default (D-014). Gated repositories download only with a token whose account already has access; the tool cannot grant it |
@@ -415,9 +415,15 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    passed import, execution, eviction, and restoration checks. Experimental
    revisions may require explicit re-import. The blob container is a reused
    known container, not bespoke (settled 2026-09-21); pick which one (see
-   the Artifacts rows). D-035 settles the paging layout direction and initial
-   2 MiB whole-extent Spark profile; concrete encoding and executable layout
-   examples with padding/read-amplification checks remain this task.
+   the Artifacts rows). → Answered 2026-09-22 (D-056): the
+   [v0 format](artifact-format.md) uses safetensors shards, a strict JSON
+   manifest/index, content-addressed atomic publication, exact version and
+   profile rejection with re-import, 4 KiB-aligned dependency groups paged in
+   2 MiB chunks, and no page-in hashing. The [layout study](experiments/artifact-layout/README.md)
+   covers seven real models and built four verified artifacts. Model-parallel
+   (TP/EP) partitioning is explicitly deferred, with a deadline of M6 entry:
+   it depends on M6's sharding design, and v0 artifacts are whole-model.
+   Compatibility guarantees stay behind D-018's gate.
 6. **Exact toolchain pins validated as one unit.** Resolved 2026-09-21
    by D-032 and the [toolchain smoke](experiments/toolchain-smoke/README.md):
    LLVM 22.1.8, pinned libstdc++/glibc and Spark sysroot, NVCC 13.4.92

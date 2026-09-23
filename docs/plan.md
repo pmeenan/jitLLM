@@ -407,7 +407,13 @@ needs evidence from the real hardware.
       the shared pool, concurrent compute, and end-to-end restore latency.
       Prove alias/captured-pointer/late-I/O safety for any address changes.
       Both designs retain useful contents within budget; disk transfer size
-      remains independent. Use the result to retain or amend D-033 explicitly.
+      remains independent. D-056's layout serves both. Inputs: the measured
+      expert-closure sizes (about 1.8–10.9 MB), the per-model memory padding
+      of per-chunk handles (3.49–10.87%), and a cross-model swap trace that
+      exercises slab holes. Evaluate contiguous-run eviction, size classes,
+      a hybrid, and the owner's activity-sorted compaction (a completion-safe
+      relocation that competes with decode for memory bandwidth). Use the
+      result to retain or amend D-033 explicitly.
       Include checkpoint batches mixing small and bulk transfers: compare
       serial and bounded asynchronous submission, scheduling order/depth,
       time to the last required completion, and consumer stalls. M4 extends
@@ -430,30 +436,33 @@ needs evidence from the real hardware.
       unmodified client. Capacity values are pinned at M3 exit from measured
       state sizes. The transcript, budgets and reference paths are pinned at
       M4 entry. No retention code or measurement exists yet.
-- [ ] Choose an experimental artifact encoding and layout ABI (open question
-      5, D-018), including validation, version rejection, and re-import rules.
-      D-035 settles import-time repacking and the initial Spark profile:
-      2 MiB aligned payload extents, whole-extent weight reads, explicit
-      expert/tensor indexing, and no CPU payload repacking during page-in.
-      The immutable data reuses a known aligned container and jitLLM owns
-      the manifest and resource index (settled 2026-09-21); pick the
-      container here. Work through dense, expert-axis, tied-weight, small-tensor,
-      sparse-row, and final-tail examples: map stored ranges to executable
-      GGML views and EXL3 trellis/side-vector views, report padding and read
-      amplification, reject invalid ranges, and account for shared extents
-      and backend-readable padding. Include
-      extent-boundary reads, a leased tensor sharing an otherwise evictable
-      extent, resident holes between misses, and interrupted multi-file import.
-      Distinguish logical suballocations/reusable holes from released physical
-      backing; small state blocks do not inherit a 2 MiB logical size.
-      Reject reuse of an immutable extent's padding/unused slots that conflicts
-      with its whole-extent restoration or integrity footprint.
-      Include explicit EXL3 format/codebook/per-tensor rate metadata, derived
-      side-vector identity and complete kernel dependencies (D-052). Neither
-      one global bitrate nor a GGML-only view descriptor is sufficient.
-      Mutable spill encoding remains separate.
-      Compatibility guarantees wait for dense and MoE
-      execution and restore evidence; they are not an M0 requirement.
+- [x] Choose an experimental artifact encoding and layout ABI (open question
+      5, 2026-09-22, D-056): the [v0 format](artifact-format.md) uses
+      safetensors shards with explicit zero pads, strict JSON manifest/index,
+      a manifest-digest artifact ID with deterministic import and one-rename
+      publication, exact version/profile rejection with re-import, and
+      verification at install/replication/on demand but never at page-in.
+      After owner questions during the task, D-056 amends D-035: dependency
+      groups (a dense layer, one expert's closure) are single 4 KiB-aligned
+      file ranges paged in 2 MiB group-relative chunks, and adjacent misses
+      coalesce into vectored direct reads.
+      The [layout study](experiments/artifact-layout/README.md) covers seven
+      real models: 4 KiB groups leave ≤0.083% disk padding versus 3.49–10.87%
+      at 2 MiB. Worked examples cover dense, expert, tied (Qwen2.5's embedding
+      and head stored once), small-tensor, sparse-row, tail, chunk-boundary,
+      shared-chunk-lease, resident-hole and interrupted-import cases, plus
+      EXL3 descriptors and closure rules, and GGML's row-padding over-read.
+      Both D-051/D-052 fixtures (FP16 and EXL3) and Gemma 4 built, verified,
+      paged back byte-exact with direct reads and passed the pinned upstream
+      safetensors reader. The verifier was hardened until a tenth adversarial
+      challenge round came back clean (104 unit tests). On `spark`, 4 KiB offsets
+      cost at most 2.6% raw read throughput but win on useful bytes; SHA-256
+      runs at 2.49 GB/s per core; one process could reserve 128 TiB of GPU
+      VA in one range. The pinned GGML expert stride makes uniform-stride
+      expert views cost large VA; a per-expert pointer table is recommended
+      for M5. Model-parallel partitioning is deferred to M6 entry.
+      The C++ importer/verifier are M3; compatibility guarantees stay behind
+      D-018's gate.
 - [ ] Decide the C++ source-dependency mechanism (open question 7).
 - [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /
       LLD, confirmed 2026-09-21), test framework, format and lint pins, CI

@@ -71,13 +71,16 @@ They describe the input and proof obligations, not a frozen artifact ABI.
   marker presence selects them; do not invent a required resident lookup
   table or infer a codebook from an unused marker scalar value.
   [Markers](https://github.com/turboderp-org/exllamav3/blob/6b84a21b6f1e5da3f291b9e1019061f0de788279/exllamav3/modules/quant/exl3_lib/quantize.py#L1663-L1686)
-- Import into D-035's aligned whole extents without changing the quantized
-  model. Prepare lossless derived representations at import with provenance
-  and hashes; no CPU payload repacking on page-in. A 2 MiB extent boundary
-  is a storage boundary, not permission to execute part of a trellis matrix.
+- Import into D-056's v0 dependency groups (D-035) without changing the
+  quantized model. Prepare lossless derived representations at import with
+  provenance and hashes; no CPU payload repacking on page-in. A 2 MiB chunk
+  boundary is a paging boundary, not permission to execute part of a trellis
+  matrix.
   No GGUF conversion, requantization or permanently expanded FP16 shadow
   satisfies this proof. Kernel-readable padding and all side tensors belong
-  in the resource-to-extent index and admission envelope.
+  in the resource index and admission envelope. The v0 descriptors carry
+  per-tensor `k_bits`, the codebook and 4-byte marker resources
+  ([format](artifact-format.md#indexjson)).
 - Port selected device kernels behind a narrow native C++/CUDA boundary;
   jitLLM owns allocations, explicit streams, contexts, completion and errors.
   Shared Qwen operations may still use GGML. Upstream ATen wrappers, implicit
@@ -144,7 +147,7 @@ The M2 challenge matrix includes:
 - Valid trellis paired with wrong codebook/rate, invalid shapes/offsets,
   truncation, unsupported version/variant and damaged payload checksums.
 - Partial eviction of trellis and of side vectors/bias independently,
-  shared extents, padded tails and matrices crossing extent boundaries;
+  shared chunks, padded tails and matrices crossing chunk boundaries;
   never execute a dependency until its entire required closure is resident.
 - Restore at completed state boundaries; delayed reads into retired
   generations; relocated backing and stale executable pointers; cancellation
@@ -181,7 +184,7 @@ and verify the actually selected kernel/plan. For end-to-end comparisons,
 include native orchestration and separately report load, first-use tuning,
 warm compute and reload stalls. Record all peak physical memory and
 workspace, including non-evictable allocations, retained backing and any
-reconstruction; separately expose extent padding and native runtime overhead
+reconstruction; separately expose chunk/backing padding and native runtime overhead
 against upstream instead of requiring identical allocator footprints. Report
 both matched settings and upstream's normal optimized
 configuration under D-021; do not secure parity by disabling a reference

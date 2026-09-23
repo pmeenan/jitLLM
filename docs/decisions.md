@@ -30,6 +30,111 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054)
+
+**Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
+experimental under D-018:
+
+- **Container.** Immutable payload lives in safetensors shards of at most
+  4 GiB of data. Each stored resource is one entry; gaps are explicit zero
+  pad entries; the header is space-padded so data starts at 4 KiB. jitLLM
+  owns a strict JSON `manifest.json` (versions, profile, source identities,
+  lossless transformations, file hashes) and `index.json` (groups,
+  resources, expert arrays, representation descriptors, chunk hashes).
+  The index is the only authority for representation. The container's
+  dtype is informational, and GGML block formats are stored as `U8`. GGUF
+  sources keep their key/value metadata as a zero-tensor GGUF.
+- **Identity and publication.** The artifact ID is the SHA-256 of the exact
+  manifest bytes. Import is deterministic, writes into private staging, and
+  publishes with one rename. Readers accept exact format and profile
+  versions only; anything else requires re-import, never migration in place.
+- **Layout.** A dependency group (a dense layer, one expert's closure in one
+  layer, a row table, the head) is one contiguous file range. It starts and
+  ends at 4 KiB; resources inside are 256-byte aligned. **This amends
+  D-035:** 2 MiB is no longer a file alignment or padding unit. It
+  survives as the group-relative **chunk**, the unit of closures,
+  integrity records and independent 2 MiB backing. Byte-identical tied
+  tensors are stored once with both roles. Each resource's readable range
+  includes its backend's over-read and stays zero-padded inside its own
+  group. Pinned GGML CUDA over-reads quantized rows up to 512 elements, and
+  per expert slice that padding never reaches another expert's chunk.
+- **Reads.** A miss reads its chunk closure. Missing chunks that are
+  adjacent in the file coalesce into bounded, vectored direct reads with
+  one iovec per separately admitted and protected destination, bounded by
+  bytes and `IOV_MAX`. **This amends D-035's rule** that disk adjacency
+  alone never permits one read into scattered destinations. Runs still
+  never bridge resident chunks.
+- **Integrity and validation.** Hashes are computed at import and checked
+  at install, replication and explicit verification (D-054). Verification
+  treats the artifact as untrusted input:
+  - strict, typed, canonical JSON, ASCII strings and canonical list order,
+    so one content has one ID;
+  - shard headers rebuilt from the index and compared;
+  - representation-derived sizes;
+  - EXL3 variant and closure checks;
+  - container/index agreement;
+  - each document parsed from the bytes that were hashed.
+
+  Import verifies before its one-rename publication. Page-in does not
+  hash: a chunk is usable once its read has completed with the full
+  length.
+- **Expert views.** The recommended GGML path is a per-expert pointer table
+  through a build-time dispatch patch (D-053). Uniform-stride remapping with
+  stock kernels stays possible but costs large VA. The M5 GGML proof
+  settles it.
+
+**Context.** Owner questions during the task (2026-09-22) led to the
+alignment change and the relaxed read rule. A GPU managing its own
+suballocations is not bound by CUDA's mapping granularity; large models
+are read as long coalesced runs, not in 4 KiB pieces; there is no reason
+to hash while paging in a closed system; each expert should be one
+contiguous range. Evidence is in the
+[artifact layout study](experiments/artifact-layout/README.md):
+
+- Planned seven real models: 4 KiB groups leave ≤0.083% padding on disk,
+  versus 3.49–10.87% for 2 MiB groups. That cost remains only in memory, and
+  only for independent-handle backing.
+- Built the D-051/D-052 fixtures and Gemma 4. They passed verification,
+  byte-exact direct page-in, and the pinned upstream safetensors 0.8.0
+  reader; the two GGUF-sourced artifacts' metadata also passed gguf-py.
+- Ten adversarial challenge rounds and two reviews hardened the prototype
+  verifier and importer until the tenth came back clean; 104 unit tests
+  cover each class they reproduced, and rounds two to ten found no false
+  rejections.
+- On `spark`, 4 KiB versus 2 MiB offsets were within noise at 2 MiB
+  lengths and 2.6% slower at closure length, but still win on useful bytes.
+  A Python harness loaded Gemma faster with longer coalesced runs; D-034's
+  native io_uring already reached ~15 GB/s with 2 MiB reads, so the native
+  benefit of coalescing is unmeasured.
+- SHA-256 runs at 2.49 GB/s per X925 core.
+- One process could reserve 128 TiB of GPU VA in one range and about
+  255 TiB in total.
+- The pinned GGML kernels compute the expert stride as `nb[2]/block_bytes`,
+  forcing a 630 MiB stride for Q4_K+Q6_K experts on independently mapped
+  handles.
+
+safetensors was chosen over GGUF for the smallest parser surface (a length
+plus JSON, which the API layer needs anyway), linear reference validation
+against the pinned GGUF reader's O(n²) duplicate check, sanctioned
+data-section alignment, and representation neutrality (D-052).
+
+**Consequences.** The M3 importer and standalone verifier implement these
+rules in C++, using the Python prototype and its tests as the oracle. The
+M2 backend proof runs from v0 artifacts. D-035's retained-backing
+comparison is not constrained by the file layout. It must weigh
+independent handles (no external fragmentation, measured memory padding)
+against slab slots (no padding, but holes sized to 1.8–10.9 MB expert
+closures). Options include contiguous-run eviction, size classes and
+activity-sorted compaction, which needs a validated relocation/completion
+policy. Model-parallel partitioning is deferred until M6 entry, since it
+depends on M6's sharding design. Mutable spill stays separate (D-055).
+
+**Reopen if.** A backend requires a conflicting layout; native asynchronous
+I/O shows that 4 KiB offsets cost more than their padding savings; a
+provider's backing cannot take a group from a 4 KiB-aligned run; tooling or
+parser evidence favours another container; or D-018's gate records a
+compatibility policy.
+
 ## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036)
 
 **Decision.** Reusable conversation state follows the
@@ -1302,7 +1407,7 @@ product tradeoff the owner wants to change, or a new correct reference changes
 the practical comparison. Amend explicitly; never silently loosen a target or
 exclude a failing named configuration.
 
-## D-035: Import models into paging artifacts aligned with managed backing  (2026-09-21, status: accepted; specializes D-009 and D-034)
+## D-035: Import models into paging artifacts aligned with managed backing  (2026-09-21, status: accepted; specializes D-009 and D-034; on-disk alignment and read coalescing amended by D-056)
 
 **Decision.** Making a model available includes preparing and atomically
 publishing its immutable paging artifact and resource index. Source GGUF or
@@ -2014,7 +2119,7 @@ model alternation and long context, not a mixed-traffic benchmark.
 **Reopen if.** The project targets multi-user serving, where fairness and
 throughput under contention would move up the priority list.
 
-## D-018: Experimental artifacts before compatibility guarantees  (2026-09-20, status: accepted; amends D-009)
+## D-018: Experimental artifacts before compatibility guarantees  (2026-09-20, status: accepted; amends D-009; v0 encoding in D-056)
 
 **Decision.** M0 chooses an experimental artifact encoding and layout ABI for
 bring-up. Every artifact still declares its format and layout versions and
