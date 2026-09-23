@@ -194,11 +194,12 @@ client-supplied history when an idle cache entry is unavailable.
 | Cross-compile from x86-64 to Spark; deploy and test over SSH; explicit targets only | confirmed | D-011 |
 | `mise.toml` + `mise.lock` for tool setup, environment, and tasks | confirmed | D-012 |
 | Project-owned SDK provisioning; native Ubuntu and a reference dev container from the same logic | confirmed | D-012 |
+| Locked CMake source acquisition with curated vendoring for adapted units | confirmed | D-057: audited source closure selected before acquisition, hash-verified local inputs, offline configure/build, profile exclusion and receipts; separate from the D-049 SDK. Implementation and concrete dependency pins are M1 |
 | Copyleft-components-disabled CI profile with audited dependency closure | confirmed | D-002, D-017; excludes optional implementation dependencies and records declared tools/platform runtimes separately |
 | Optional implementation modules/plugins selectable at build time; incorporated core implementation uses Apache-2.0 / BSD / MIT / MPL-2.0 | confirmed | D-017; default build may use declared platform dependencies under their actual terms; classification never waives license obligations |
 | Reference container pinned by digest; target driver recorded separately from toolkit and library versions | confirmed | ideation §16 |
 | Core builds and its tests pass in a CPU-only configuration with no vendor SDK present | confirmed | ideation §16, D-026; the portability guardrail and the fake backend's home |
-| CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | confirmed | 2026-09-21; exact pins come from the toolchain smoke and are recorded in the M0 toolchain decision entry (ideation §14) |
+| CMake presets + Ninja + `compile_commands.json`; LLD where validated; pinned LLVM format/analysis tools | confirmed | 2026-09-21; D-032 pins validated compilers/LLD; D-058 pins CMake 4.4.3 with both-host FetchContent checks and native/cross/CUDA smoke. Remaining tool pins and application build validation are still owed (ideation §14) |
 | File set: `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`, `tools/setup-toolchain`, `tools/check-toolchain`, `cmake/toolchains/`, `CMakePresets.json`, `.devcontainer/` | confirmed | 2026-09-21 as M1 scope, minus the `dev` script (next row); ideation §16 |
 | `setup / doctor / build / test / deploy` contributor entry point as mise tasks | confirmed | 2026-09-21: D-012 already makes mise the task runner, so these are mise tasks rather than a separate `./dev` script (ideation §16) |
 | REUSE-style file-level SPDX identifiers; NOTICE file; SBOM | confirmed | 2026-09-21 (D-029): copyright/license metadata with REUSE lint plus a separate embedded-header check for commentable source and docs, and a NOTICE file from M1; uncommentable files use sidecars or REUSE.toml. The SBOM lands with `.deb` packaging and is tied to the license profile (ideation §17) |
@@ -430,9 +431,12 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    (Toolkit 13.4.2) with Clang host compiler, `sm_121`, C++23 throughout.
    Native workstation, cross-to-Spark, and native Spark fallback passed;
    declarative provisioning and clean-container verification remain M1.
-7. **C++ source-dependency mechanism.** vcpkg, Conan, CPM/FetchContent,
-   submodules, or vendoring, independent of toolchain provisioning. Blocks M1
-   and interacts with the copyleft-disabled profile. → M0 decision.
+7. **C++ source-dependency mechanism.** Resolved 2026-09-23 by D-057:
+   [CMake FetchContent with a source lock and curated vendoring](source-dependencies.md)
+   for adapted units, separate from SDK provisioning. Audit and select the
+   full profile closure before acquisition; configure/build uses verified
+   local inputs. M1 implements and proves native/cross, offline and
+   copyleft-disabled behavior; no dependency is admitted by this choice.
 8. **Inference API surface.** Resolved 2026-09-20 by D-022: standard web-API
    compatibility (Cursor, OpenCode, Codex, and since 2026-09-21 Claude Code,
    D-030) is the baseline, with sessions and hints as optional extensions.

@@ -194,7 +194,7 @@ the human commit gate.
 
 Milestone **M0 (plan the plan)** — direction, retention/measurement,
 cluster/API, task/completion, reservation, SDK, kernel-dispatch and model-storage
-choices are recorded through D-055; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
+choices are recorded through D-058; the feature matrix was triaged with the owner on 2026-09-21. M4 targets A→B→A with
 retained state; M4a adds configured placement before MoE and sharding. Remaining planning,
 hardware spikes, and reference experiments are in [docs/plan.md](docs/plan.md).
 Toolchain smoke passed on the workstation and `spark` (D-032); the Spark VMM
@@ -220,7 +220,9 @@ is mounted at `/mnt/llm`. D-055 sets capacity-driven state retention with a
 24-hour idle cap and names M4's Qwen2.5-0.5B FP16/EXL3 acceptance workload;
 capacity values are pinned at M3 exit. D-056 settles the experimental v0
 artifact format: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB
-paging chunks, verified on real fixtures and Gemma 4. The remaining M0
-decisions are next (plan.md).
+paging chunks, verified on real fixtures and Gemma 4. D-057 selects locked
+CMake source acquisition with curated vendoring; D-058 pins CMake 4.4.3,
+checked on workstation and Spark. Provisioning remains M1.
+The remaining M0 toolchain decisions are next (plan.md).
 No application code exists yet; scaffolding is M1. Keep this paragraph short
 and current when plan.md milestone status changes (rule 4).

@@ -12,8 +12,9 @@ per plan. This is the M0 scope for that proof, which M2 executes alongside the r
 fixes stages, numerical oracles, cases and evidence, and records what the
 pinned sources imply for them. It is not an implementation, a measurement or
 a support claim. The artifact encoding is D-056's [v0 format](artifact-format.md);
-the source-dependency mechanism (question 7) and retained-backing comparison
-stay separate plan items; the proof consumes or hosts them.
+sources are acquired under D-057's [source-dependency mechanism](source-dependencies.md),
+and the retained-backing comparison stays a separate plan item; the proof
+consumes or hosts them.
 
 ## What the proof settles
 

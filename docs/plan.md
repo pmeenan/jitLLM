@@ -463,7 +463,15 @@ needs evidence from the real hardware.
       for M5. Model-parallel partitioning is deferred to M6 entry.
       The C++ importer/verifier are M3; compatibility guarantees stay behind
       D-018's gate.
-- [ ] Decide the C++ source-dependency mechanism (open question 7).
+- [x] Decide the C++ source-dependency mechanism (2026-09-23, D-057):
+      [locked CMake FetchContent acquisition and curated vendoring](source-dependencies.md)
+      for adapted source units, separate from D-049's SDK. Select and audit
+      each profile's complete closure before fetching; configure/build uses
+      verified local inputs, with no implicit downloads or implementation
+      library substitution. Official tool documentation checked; M1 still
+      owes implementation, concrete dependency pins, native/cross offline
+      checks and proof of copyleft-disabled exclusion. Existing source
+      provenance gates remain open.
 - [ ] Toolchain decisions: build-system conventions (CMake presets / Ninja /
       LLD, confirmed 2026-09-21), test framework, format and lint pins, CI
       shape including the copyleft-disabled profile, REUSE lint, a separate
@@ -475,8 +483,12 @@ needs evidence from the real hardware.
       storage-role paths and defaults. Record the pins and the
       layout in decisions.md. Provisioning split settled 2026-09-22 (D-049):
       a complete, persistent project SDK, declared system prerequisites and
-      shared workstation/container setup. Implementation and remaining tool
-      pins are still owed.
+      shared workstation/container setup. CMake 4.4.3 pinned 2026-09-23
+      (D-058), with both Linux archive hashes and seven FetchContent semantic
+      checks passing on workstation and Spark; CMake-driven native CPU,
+      AArch64 cross CPU/CUDA and native Spark CPU/CUDA smoke also passed
+      ([report](experiments/cmake-fetchcontent/README.md)). Implementation,
+      application build validation and remaining tool pins are still owed.
 - [ ] First full draft of [architecture.md](architecture.md).
 - [ ] Rewrite the provisional ladder below into real milestones with exit
       criteria, including unassigned D-041–D-044 API delivery (Ollama subset,
@@ -526,7 +538,9 @@ has a promised date; each should leave a usable, testable result.
   project tool selection works without global compiler/environment changes
   or dependency on temporary SDK directories;
   native tests pass, including a CPU-only configuration with no CUDA toolkit
-  present (D-026 guardrail); smoke binary runs on a Spark; exact pins recorded;
+  present (D-026 guardrail); D-057's [source-dependency gates](source-dependencies.md#upgrades-packaging-and-m1-gates)
+  pass, including fresh offline builds and disabled-module exclusion before
+  fetching; smoke binary runs on a Spark; exact pins recorded;
   any deferred feasibility experiment, measured reference switching baseline,
   agreed performance criteria, and reservation policy are complete before M2.
 - **M2 — Resource core.** Catalog, reservation/lease state machine,

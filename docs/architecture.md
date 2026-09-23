@@ -106,6 +106,13 @@
   D-012). D-049 selects a complete, persistent project SDK with declared
   system prerequisites, project-scoped tool selection and shared
   workstation/reference-container provisioning; implementation is M1 work.
+  D-058 pins CMake 4.4.3 with both-host FetchContent checks and a
+  native/cross/CUDA smoke; application build validation remains M1.
+- **Source dependencies.** D-057 selects [locked CMake FetchContent acquisition
+  and curated vendoring](source-dependencies.md) for adapted source units,
+  separate from the SDK. Select the audited profile closure before fetching;
+  configure/build uses verified local inputs. M1 owes native/cross, offline
+  and disabled-module exclusion checks; source adoption gates remain open.
 - **First model/reference.** D-051 selects the official Qwen2.5-0.5B-Instruct
   FP16 GGUF and pinned llama.cpp CUDA reference on Spark, with CPU diagnostics;
   [identities and numerical contract](first-slice.md). GGML supplies operations,
@@ -1077,7 +1084,8 @@ The architecture-shaping questions are numbered in
 I/O path, async model, first vertical slice, artifact schema, toolchain pins,
 dependency mechanism, license and API surface, reservation guarantees. Initial
 VMM, I/O, task/completion, reservation policy, artifact format and toolchain
-answers are recorded (D-033, D-034, D-048, D-050, D-056 and D-032); D-051
+answers are recorded (D-033, D-034, D-048, D-050, D-056 and D-032), as is
+the source-dependency mechanism (D-057); D-051
 selects the first checkpoint/numerical reference, and D-052 adds the
 required early EXL3 companion. The matrix tracks each question's remaining scope.
 Purely technical additions to resolve

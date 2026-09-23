@@ -30,6 +30,98 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-058: Pin CMake 4.4.3 and its current FetchContent policies  (2026-09-23, status: accepted; implements D-012 validation; specializes D-049 and D-057)
+
+**Decision.** Use the official CMake **4.4.3** Linux binary distributions:
+x86-64 for workstation native/cross builds and AArch64 for the native Spark
+fallback. Exact archive URLs, SHA-256 values and sizes are in the
+[CMake smoke pins](experiments/cmake-fetchcontent/pins.json). M1 provisions
+this version in D-049's persistent SDK and checks the exact selected version;
+the Sparks' distro CMake 3.28.3 remains an environment observation.
+
+Project entry points and preparation scripts use
+`cmake_minimum_required(VERSION 4.4.3)`, establishing current policies,
+including `CMP0168`, `CMP0169` and `CMP0170` as `NEW`. A minimum-version
+declaration alone does not enforce the exact SDK pin. Preparation uses the
+supported long-form `FetchContent_Populate(name ...options...)` in script
+mode; the deprecated single-argument form is not used. Do not lower these
+policies to accommodate a dependency without reviewing its integration.
+
+**Context.** The owner requested a recent pin after review found that D-057
+relied on unpinned CMake semantics. Kitware lists 4.4.3 as the stable release
+on [its download page](https://cmake.org/download/) checked 2026-09-23.
+`CMP0168=NEW` avoids a generator/build-tool prerequisite for script population.
+The long-form call ignores the disconnected flags; `CMP0170=NEW` enforces
+the existing-source-directory requirement for declared fully disconnected
+population, but does not verify existing bytes. D-057's explicit preparation,
+identity checks and CI network restrictions remain necessary.
+
+**Evidence.** Both official archives matched upstream hashes. The
+[seven-case semantic smoke](experiments/cmake-fetchcontent/README.md) passed
+on the workstation and `spark`, including hash rejection, the deprecated
+form's rejection, missing/prepared/modified-source behavior and script
+population without a build tool. CMake-driven builds of D-032's C++23
+CPU/CUDA fixtures also passed: native CPU on the workstation, AArch64 cross
+build with execution on `spark`, and native Spark CPU/CUDA fallback. Both
+GPU runs checked 257 outputs on driver 580.178.04 with PTX JIT disabled;
+the ARM binaries have the correct architecture and no SDK rpath. This
+satisfies D-012's end-to-end smoke gate. Persistent SDK setup, application
+builds, CTest/CPack and fully isolated builds remain M1 work.
+
+**Consequences.** This settles only the CMake pin within the remaining M0
+toolchain task. CMake is a declared build tool under D-017; preserve bundled
+notices and complete the SDK audit before redistribution. The other tool
+pins, test framework, CI and installed layout remain open.
+
+**Reopen if.** A security fix or validated compiler/dependency integration
+requires an update. Repeat both-host semantic checks and the applicable M1
+build tests; update archive identities deliberately rather than following
+the latest installed CMake.
+
+## D-057: Locked CMake source acquisition with curated vendoring for adapted kernels  (2026-09-23, status: accepted; resolves open question 7; specializes D-012, D-017 and D-053)
+
+**Decision.** Use CMake FetchContent for hash-pinned source archives and
+curated vendoring for selected source units that need adaptation. A single
+checked-in source lock records exact identities, patches, transitive inputs,
+profile selection and license/provenance evidence. D-049's project SDK
+continues to own compiler, tool and platform provisioning. Do not introduce
+vcpkg, Conan, CPM or recursive Git submodules as the default mechanism.
+
+Select the dependency closure before acquisition. Optional implementation
+modules default off and their payloads stay outside the core checkout;
+the copyleft-disabled profile never fetches or builds them, including their
+generators and generated code (D-017). Explicit preparation obtains and
+verifies local sources; configure/build consumes them without downloads or
+unrecorded system-package substitutions. Keep source caches separate from
+target/profile build products. Unrecorded local edits must be identified and
+excluded from official release receipts.
+
+**Context.** CMake is already selected, and D-053 needs audited GGML/EXL3
+source slices with owned dispatch rather than whole upstream runtimes.
+FetchContent supplies archive acquisition without another resolver; vendoring
+keeps adapted units and their notices reviewable. vcpkg and Conan remain
+viable alternatives if ordinary library graphs or binary reuse later justify
+them. This is a maintenance choice, not a benchmark result.
+
+**Evidence.** The [mechanism and comparison](source-dependencies.md) cite
+official CMake, CPM, vcpkg, Conan and Git documentation checked 2026-09-23.
+CMake's disconnected/source-override switches alone do not verify sources or
+enforce network isolation; the project must validate prepared inputs and
+deny configure/build network access in CI. No build implementation or new
+dependency pin was validated by this documentation task.
+
+**Consequences.** M1 implements preparation, lock validation, native/cross
+and offline checks, profile exclusion, and build receipts feeding notices
+and SBOMs. M2 adopts audited kernel closures under the same rules. Existing
+tokenizer and EXL3 GEMV provenance gates remain open; this decision approves
+neither source incorporation nor redistribution. The next M0 toolchain task
+still owns remaining tool/test pins, CI shape and packaging layout.
+
+**Reopen if.** A substantial transitive library graph, conflicting versions
+or a measured need for shared binary packages makes maintaining this explicit
+closure more work than a package manager. Preserve pinned inputs, cross-build
+separation and D-017's profile exclusion under any replacement.
+
 ## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054)
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
@@ -2317,7 +2409,7 @@ an isolated benchmark winner. No rewrite-to-own without a measured need.
 profile, or a native rewrite is justified by measurement rather than
 ownership.
 
-## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted; provisioning split refined by D-049)
+## D-012: Declarative, pinned toolchain provisioning via mise plus project-owned SDK manifests  (2026-09-20, status: accepted; provisioning split refined by D-049; source-dependency mechanism in D-057)
 
 **Decision.** Tool setup, environment selection, and tasks are declared in a
 checked-in `mise.toml` and `mise.lock`. The full LLVM / CUDA / AArch64 SDK is
