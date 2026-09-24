@@ -1,0 +1,53 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// A diagnostic report, such as `jitllm doctor` prints: titled sections of
+// facts, the problems that make the check fail, and warnings that do not.
+// Each probe adds its own sections and judges its own facts; the program
+// that runs the probes formats the result.
+
+#ifndef JITLLM_BASE_REPORT_H_
+#define JITLLM_BASE_REPORT_H_
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace jitllm::base {
+
+struct ReportLine {
+  std::string key;
+  std::string value;
+};
+
+struct ReportSection {
+  std::string title;
+  std::vector<ReportLine> lines;
+
+  void Add(std::string key, std::string value) {
+    lines.push_back({.key = std::move(key), .value = std::move(value)});
+  }
+};
+
+struct Report {
+  std::vector<ReportSection> sections;
+  // What stops this host from running this build as designed.
+  std::vector<std::string> problems;
+  // What deserves attention but does not stop it.
+  std::vector<std::string> warnings;
+
+  // The new section; the reference lasts until the next AddSection().
+  ReportSection& AddSection(std::string title) {
+    sections.push_back({.title = std::move(title), .lines = {}});
+    return sections.back();
+  }
+};
+
+// A byte count for people: whole binary units where exact ("2 MiB"),
+// otherwise one decimal place ("121.7 GiB"), and plain bytes below 1 KiB.
+std::string FormatBytes(std::uint64_t bytes);
+
+}  // namespace jitllm::base
+
+#endif  // JITLLM_BASE_REPORT_H_

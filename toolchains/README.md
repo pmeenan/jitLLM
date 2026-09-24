@@ -41,7 +41,7 @@ the root for the current checkout.
 | --- | --- |
 | `bin/` | `clang`, `clang++`, `ld.lld`, `clang-format`, `clang-tidy`, `clangd`, `clang-scan-deps`, `llvm-symbolizer` and other LLVM binary tools, `cmake`, `ctest`, `cpack`, `ninja` |
 | `llvm/` | LLVM 22.1.8. The resource directory holds the host's compiler-rt and, on x86-64 hosts, the AArch64 archives for cross sanitizer builds |
-| `cuda/` | NVCC, CRT, libNVVM, libnvptxcompiler, cudart (including `libcudart_static.a`) and CCCL; x86-64 hosts also get `targets/sbsa-linux` for cross builds. Run NVCC as `cuda/bin/nvcc`: it finds its configuration beside the path it is invoked by, so a symlink elsewhere breaks it |
+| `cuda/` | NVCC, CRT, libNVVM, libnvptxcompiler, cudart (including `libcudart_static.a`), CCCL and the driver's link stub (`targets/*/lib/stubs/libcuda.so`); x86-64 hosts also get `targets/sbsa-linux` for cross builds. Run NVCC as `cuda/bin/nvcc`: it finds its configuration beside the path it is invoked by, so a symlink elsewhere breaks it |
 | `cmake/`, `ninja/` | CMake and Ninja release binaries |
 | `gcc/<triple>/` | The host's GCC 16.2 runtime: `include/c++/16`, `lib64/{libstdc++,libsupc++,libatomic}.a` and `lib/gcc/<triple>/16/{crt*.o,libgcc.a,libgcc_eh.a}`. Select it with `--gcc-install-dir=<root>/gcc/<triple>/lib/gcc/<triple>/16` |
 | `sysroot/aarch64-linux-gnu/` | x86-64 hosts only: the Spark sysroot (glibc 2.39 and kernel headers from pinned Ubuntu arm64 packages) with the cross-built GCC runtime at `opt/gcc`, in the same layout |

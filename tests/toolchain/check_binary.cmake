@@ -6,10 +6,11 @@
 # libraries (the C++ and CUDA runtimes are static), no symbol version newer
 # than GLIBC_MAX (if given), and no RPATH or RUNPATH. A sanitizer build
 # (SANITIZED) may also need glibc's libresolv, which the sanitizer runtimes
-# use.
+# use. A binary that uses the CUDA driver (CUDA_DRIVER) must also need the
+# driver's libcuda.so.1, and one that does not must not (D-072).
 #
 #   cmake -DREADELF=<llvm-readelf> -DARCH=<x86_64|aarch64> [-DGLIBC_MAX=<x.y>]
-#         [-DSANITIZED=ON] -DBINARY=<file> -P check_binary.cmake
+#         [-DSANITIZED=ON] [-DCUDA_DRIVER=ON] -DBINARY=<file> -P check_binary.cmake
 cmake_minimum_required(VERSION 4.4.3)
 
 foreach(var IN ITEMS READELF ARCH BINARY)
@@ -55,10 +56,17 @@ set(needed "")
 foreach(entry IN LISTS entries)
   string(REGEX REPLACE ".*\\[(.*)\\]" "\\1" library "${entry}")
   list(APPEND needed "${library}")
-  if(NOT library STREQUAL loader_name AND NOT library MATCHES "${glibc_libraries}")
-    list(APPEND problems "needs ${library}, but only glibc may be dynamic (D-060)")
+  if(library STREQUAL "libcuda.so.1")
+    if(NOT CUDA_DRIVER)
+      list(APPEND problems "needs libcuda.so.1, but uses no CUDA driver")
+    endif()
+  elseif(NOT library STREQUAL loader_name AND NOT library MATCHES "${glibc_libraries}")
+    list(APPEND problems "needs ${library}, but only glibc and the CUDA driver may be dynamic (D-060)")
   endif()
 endforeach()
+if(CUDA_DRIVER AND NOT "libcuda.so.1" IN_LIST needed)
+  list(APPEND problems "does not need libcuda.so.1, the CUDA driver (D-072)")
+endif()
 if(elf MATCHES "\\((RPATH|RUNPATH)\\)")
   list(APPEND problems "has an RPATH or RUNPATH")
 endif()

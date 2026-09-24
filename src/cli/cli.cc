@@ -4,26 +4,33 @@
 #include "cli/cli.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <span>
 #include <string>
 #include <string_view>
 
 #include "base/build_info.h"
+#include "base/report.h"
+#include "cli/doctor.h"
 
 namespace jitllm::cli {
 namespace {
 
 constexpr std::string_view kUsage =
-    "Usage: jitllm --version\n"
+    "Usage: jitllm doctor\n"
+    "       jitllm --version\n"
     "       jitllm --help\n";
 
 constexpr std::string_view kHelp =
-    "Usage: jitllm --version\n"
+    "Usage: jitllm doctor\n"
+    "       jitllm --version\n"
     "       jitllm --help\n"
     "\n"
     "jitLLM, a just-in-time LLM inference engine.\n"
     "\n"
+    "  doctor     report this build, the host, the GPU driver and devices, and\n"
+    "             RDMA; exit 1 if this host cannot run this build\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";
 
@@ -59,16 +66,28 @@ std::string VersionText(const base::BuildInfo& info) {
 
 int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) {
   if (args.empty()) {
-    return UsageError(err, "no option given");
+    return UsageError(err, "no command or option given");
   }
-  const std::string_view option = args.front();
-  if (option != "--version" && option != "--help" && option != "-h") {
-    return UsageError(err, std::format("unknown option '{}'", option));
+  const std::string_view command = args.front();
+  if (command != "doctor" && command != "--version" && command != "--help" && command != "-h") {
+    return UsageError(err, std::format("unknown command or option '{}'", command));
   }
   if (args.size() > 1) {
-    return UsageError(err, std::format("unexpected argument '{}' after {}", args[1], option));
+    return UsageError(err, std::format("unexpected argument '{}' after {}", args[1], command));
   }
-  if (option == "--version") {
+  if (command == "doctor") {
+    // doctor compiles nothing, so the driver has no reason to write its JIT
+    // cache under $HOME; this keeps the command from writing files. Nothing
+    // has started a thread yet.
+    (void)::setenv("CUDA_CACHE_DISABLE", "1", 1);  // NOLINT(concurrency-mt-unsafe)
+    base::Report report;
+    if (!Doctor("/", report, [out](std::string_view text) { return WriteAll(out, text); })) {
+      WriteAll(err, "jitllm: cannot write to standard output\n");
+      return kExitFailure;
+    }
+    return report.problems.empty() ? kExitOk : kExitFailure;
+  }
+  if (command == "--version") {
     return Print(out, err, VersionText(base::GetBuildInfo()));
   }
   return Print(out, err, kHelp);

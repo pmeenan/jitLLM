@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The CPU-only profile's device probe: no device provider (D-026).
+
+#include <filesystem>
+
+#include "base/report.h"
+#include "providers/device_probe.h"
+
+namespace jitllm::providers {
+
+void DescribeDevices(const std::filesystem::path& /*root*/, base::Report& report) {
+  report.AddSection("devices").Add("provider", "none (a CPU-only build, D-026)");
+}
+
+}  // namespace jitllm::providers

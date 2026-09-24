@@ -1242,7 +1242,7 @@ signatures follow the M2 proof.
 | Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (a staged fallback, relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
 | Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges; reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034); every request ends not started, accepted or unknown |
 | Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M6, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
-| Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `doctor` (M1) and node capability reports |
+| Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `jitllm doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
 
 The fakes keep backing in host memory filled with poison patterns, so a touch
 of absent backing shows up in tests. They script completion order, delays,
@@ -1687,8 +1687,9 @@ builds, linked with LLD, plus D-032's native Spark diagnostic profile with
 GNU binutils (D-032, D-058, D-059). Every build names
 explicit CPU and GPU targets (`sm_121` for GB10), never `-march=native`
 (D-011). The C++ and CUDA runtimes link statically, so a binary needs only
-glibc, the NVIDIA driver's user-space libraries (`libcuda`, NVML) and, once
-RDMA is linked, rdma-core at run time (D-060). Sources come through
+glibc and, in CUDA builds, the NVIDIA driver's `libcuda.so.1` at run time
+(D-060, D-072). The driver is a hard requirement; the build links NVIDIA's
+stub from the SDK. Once RDMA is linked, rdma-core joins them. Sources come through
 D-057's locked acquisition, and tools through the mise-managed SDK (D-049).
 Build profiles select optional modules; the copyleft-disabled profile
 excludes them before any source is fetched. `jitllm --version` and the build

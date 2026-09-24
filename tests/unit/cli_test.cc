@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The `jitllm` command's options and output (D-062), and the surface
-// versions it is built with.
+// The `jitllm` command's commands, options and output (D-062), and the
+// surface versions it is built with.
 
 #include "cli/cli.h"
 
@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <format>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -18,12 +19,15 @@
 #include <vector>
 
 #include "base/build_info.h"
+#include "base/report.h"
 #include "base/surface_versions.h"
+#include "cli/doctor.h"
 
 namespace {
 
 using ::testing::HasSubstr;
 using ::testing::MatchesRegex;
+using ::testing::Not;
 using ::testing::StartsWith;
 
 // A FILE* that collects what is written to it.
@@ -105,25 +109,29 @@ TEST(Cli, Help) {
   for (const std::string_view option : {"--help", "-h"}) {
     const Result result = RunWith({option});
     EXPECT_EQ(result.status, jitllm::cli::kExitOk) << option;
-    EXPECT_THAT(result.out, StartsWith("Usage: jitllm --version\n")) << option;
+    EXPECT_THAT(result.out, StartsWith("Usage: jitllm doctor\n       jitllm --version\n"))
+        << option;
+    EXPECT_THAT(result.out, HasSubstr("\n  doctor ")) << option;
     EXPECT_EQ(result.err, "") << option;
   }
 }
 
 TEST(Cli, UsageErrors) {
   const std::vector<std::pair<std::vector<std::string_view>, std::string>> cases = {
-      {{}, "jitllm: no option given\n"},
-      {{"--verison"}, "jitllm: unknown option '--verison'\n"},
-      {{"version"}, "jitllm: unknown option 'version'\n"},
+      {{}, "jitllm: no command or option given\n"},
+      {{"--verison"}, "jitllm: unknown command or option '--verison'\n"},
+      {{"version"}, "jitllm: unknown command or option 'version'\n"},
+      {{"Doctor"}, "jitllm: unknown command or option 'Doctor'\n"},
       {{"--version", "--help"}, "jitllm: unexpected argument '--help' after --version\n"},
       {{"--help", "x"}, "jitllm: unexpected argument 'x' after --help\n"},
+      {{"doctor", "--help"}, "jitllm: unexpected argument '--help' after doctor\n"},
   };
   for (const auto& [args, message] : cases) {
     const Result result = RunWith(args);
     EXPECT_EQ(result.status, jitllm::cli::kExitUsage) << message;
     EXPECT_EQ(result.out, "") << message;
     EXPECT_THAT(result.err, StartsWith(message));
-    EXPECT_THAT(result.err, HasSubstr("Usage: jitllm --version\n")) << message;
+    EXPECT_THAT(result.err, HasSubstr("Usage: jitllm doctor\n")) << message;
   }
 }
 
@@ -139,6 +147,113 @@ TEST(Cli, WriteFailureFails) {
   const std::vector<std::string_view> args = {"--version"};
   EXPECT_EQ(jitllm::cli::Run(args, full.get(), err.stream()), jitllm::cli::kExitFailure);
   EXPECT_EQ(err.text(), "jitllm: cannot write to standard output\n");
+}
+
+// Whatever this host is, doctor prints a report whose summary agrees with
+// its exit status. smoke.doctor checks the binary on a GB10.
+TEST(Doctor, ExitStatusFollowsTheReport) {
+  const Result result = RunWith({"doctor"});
+  EXPECT_EQ(result.err, "");
+  EXPECT_THAT(result.out, StartsWith("build\n  version: "));
+  const bool clean = result.out.contains("\ndoctor: no problems, ");
+  EXPECT_EQ(result.status, clean ? jitllm::cli::kExitOk : jitllm::cli::kExitFailure) << result.out;
+  EXPECT_EQ(clean, !result.out.contains("\nproblem: ")) << result.out;
+}
+
+TEST(Doctor, WriteFailureFails) {
+  const std::unique_ptr<std::FILE, CloseFile> full(std::fopen("/dev/full", "w"));
+  ASSERT_NE(full, nullptr);
+  Capture err;
+  const std::vector<std::string_view> args = {"doctor"};
+  EXPECT_EQ(jitllm::cli::Run(args, full.get(), err.stream()), jitllm::cli::kExitFailure);
+  EXPECT_EQ(err.text(), "jitllm: cannot write to standard output\n");
+}
+
+TEST(Doctor, Build) {
+  const jitllm::base::BuildInfo info{.version = "0.2.0-dev.7+g0123456789ab.dirty",
+                                     .commit = "0123456789abcdef0123456789abcdef01234567",
+                                     .modified = true,
+                                     .license_profile = "core",
+                                     .sdk = "aarch64-0123456789abcdef",
+                                     .target = "aarch64-linux-gnu"};
+  jitllm::base::Report report;
+  jitllm::cli::DescribeBuild(info, report);
+  ASSERT_EQ(report.sections.size(), 1U);
+  const jitllm::base::ReportSection& build = report.sections[0];
+  EXPECT_EQ(build.title, "build");
+  std::string text;
+  for (const auto& line : build.lines) {
+    text += line.key + ": " + line.value + "\n";
+  }
+  EXPECT_THAT(text, StartsWith("version: 0.2.0-dev.7+g0123456789ab.dirty\n"
+                               "commit: 0123456789abcdef0123456789abcdef01234567 (with uncommitted "
+                               "changes)\n"
+                               "license profile: core\n"
+                               "SDK: aarch64-0123456789abcdef\n"
+                               "target: aarch64-linux-gnu\n"));
+  // The test is built by the compiler that built the command.
+  EXPECT_THAT(text, HasSubstr(std::format("\ncompiler: Clang {}.{}.{}\n", __clang_major__,
+                                          __clang_minor__, __clang_patchlevel__)));
+  EXPECT_THAT(text, HasSubstr("C++ runtime: libstdc++ from GCC 16, linked statically (D-060)\n"));
+  EXPECT_TRUE(report.problems.empty());
+}
+
+TEST(Doctor, ControlCharactersAreEscaped) {
+  EXPECT_EQ(jitllm::cli::Printable("a\nproblem: b\t\x7f\x1b[31m"),
+            "a\\x0aproblem: b\\x09\\x7f\\x1b[31m");
+  EXPECT_EQ(jitllm::cli::Printable("GB10 caf\xc3\xa9"), "GB10 caf\xc3\xa9");
+  jitllm::base::Report report;
+  report.AddSection("t\n").Add("k\n", "v\nproblem: forged");
+  report.warnings = {"w\nproblem: forged"};
+  EXPECT_EQ(jitllm::cli::DoctorText(report),
+            "t\\x0a\n  k\\x0a: v\\x0aproblem: forged\n\n"
+            "warning: w\\x0aproblem: forged\ndoctor: no problems, 1 warning\n");
+}
+
+// The build and host sections go out before the device probe runs, and a
+// failed write stops the run.
+TEST(Doctor, WritesInStages) {
+  std::vector<std::string> parts;
+  jitllm::base::Report report;
+  ASSERT_TRUE(jitllm::cli::Doctor("/nonexistent", report, [&](std::string_view text) {
+    parts.emplace_back(text);
+    return true;
+  }));
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_THAT(parts[0], StartsWith("build\n"));
+  EXPECT_THAT(parts[0], HasSubstr("\nhost\n"));
+  EXPECT_THAT(parts[0], HasSubstr("\nRDMA\n"));
+  EXPECT_THAT(parts[0], Not(HasSubstr("doctor: ")));
+  EXPECT_THAT(parts[1], HasSubstr("\ndoctor: "));
+  EXPECT_EQ(parts[0] + parts[1], jitllm::cli::DoctorText(report));
+
+  jitllm::base::Report stopped;
+  int calls = 0;
+  EXPECT_FALSE(jitllm::cli::Doctor("/nonexistent", stopped, [&](std::string_view) {
+    ++calls;
+    return false;
+  }));
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(stopped.sections.size(), 3U);  // build, host, RDMA: no device probe
+}
+
+TEST(Doctor, Text) {
+  jitllm::base::Report report;
+  jitllm::base::ReportSection& first = report.AddSection("first");
+  first.Add("a", "1");
+  first.Add("b c", "two words");
+  report.AddSection("empty");
+  EXPECT_EQ(jitllm::cli::DoctorText(report),
+            "first\n  a: 1\n  b c: two words\n\nempty\n\ndoctor: no problems, 0 warnings\n");
+  report.problems = {"p1", "p2"};
+  report.warnings = {"w1"};
+  EXPECT_EQ(jitllm::cli::DoctorText(report),
+            "first\n  a: 1\n  b c: two words\n\nempty\n\n"
+            "problem: p1\nproblem: p2\nwarning: w1\ndoctor: 2 problems, 1 warning\n");
+  report.problems = {"p1"};
+  report.warnings = {"w1", "w2"};
+  EXPECT_THAT(jitllm::cli::DoctorText(report),
+              testing::EndsWith("doctor: 1 problem, 2 warnings\n"));
 }
 
 // What the build generated: D-062's forms, for this checkout's project(VERSION).

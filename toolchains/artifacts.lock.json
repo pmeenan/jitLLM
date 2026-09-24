@@ -309,6 +309,28 @@
       "sha256": "3c24b4d5a00b17d42bc1a18dbb28e93927db6c8b3299f68f90d378b69dcfcf1e",
       "size": 1573268
     },
+    "deb/cuda-driver-dev-13-4/amd64": {
+      "package": "cuda-driver-dev-13-4",
+      "version": "13.4.92-1",
+      "arch": "amd64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-driver-dev-13-4_13.4.92-1_amd64.deb"
+      ],
+      "sha256": "60a8dec9b540e5b9567cf6c0bb93ab056376fc3ea761b76c1ae7c4a37cfcbe1c",
+      "size": 31290
+    },
+    "deb/cuda-driver-dev-13-4/arm64": {
+      "package": "cuda-driver-dev-13-4",
+      "version": "13.4.92-1",
+      "arch": "arm64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-driver-dev-13-4_13.4.92-1_arm64.deb"
+      ],
+      "sha256": "7d3c15357704d685d0549fa31096f8e7137861f13e134deebf7e3bc6495ce5ee",
+      "size": 32826
+    },
     "deb/cuda-nvcc-13-4/amd64": {
       "package": "cuda-nvcc-13-4",
       "version": "13.4.92-1",

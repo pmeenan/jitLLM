@@ -137,6 +137,7 @@ add_subdirectory(tests/toolchain)
 add_subdirectory(tests/sources)
 add_subdirectory(tests/version)
 add_subdirectory(tests/unit)
+add_subdirectory(tests/smoke)
 
 # Last: checks what the whole configure looked up, then writes the receipt.
 jitllm_sources_finalize(VERSION "${JITLLM_BUILD_JSON}")

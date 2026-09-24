@@ -52,7 +52,9 @@ the work, reviews it, and is the sole committer.
 **Pre-release. M0 (plan the plan) is done; M1 (bootstrap) is in progress.**
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
 feature matrix, architecture, and decision log are in `docs/`. The only
-application code so far is a `jitllm` command that reports its version.
+application code so far is a `jitllm` command that reports its version and,
+with `jitllm doctor`, what a host offers it: driver, GPUs, VMM granularity
+and RDMA.
 Planned distribution is a signed apt repository for DGX Spark; changes are
 recorded in [CHANGELOG.md](CHANGELOG.md).
 
@@ -113,6 +115,18 @@ and binary inspections stay on the workstation. `mise run deploy --
 a host for you. Deploying needs `ssh` and `rsync` on the workstation and
 `rsync` on the Spark.
 
+A CUDA build's binaries need the NVIDIA driver (`libcuda.so.1`) to start: a
+hard requirement, which every Spark meets (D-072). The build links NVIDIA's
+stub from the SDK, so building needs no driver. The workstation presets'
+tests skip GPU tests and always load that stub from `build/<preset>/cuda-stub/`,
+so they also run where there is no driver; only Spark runs use the driver. On
+a host without the driver, run the `cpu` preset's `jitllm` by hand instead.
+
+A built `jitllm doctor` (in `build/<preset>/src/cli/`) reports what a host
+offers that build: the driver, each GPU's compute capability, VMM support and
+backing granularity, and RDMA ports. It exits 1 when the host cannot run the
+build: anything but a GB10 with VMM and host-backed VMM (D-072).
+
 To run CMake by hand, point `JITLLM_SDK` at the SDK and use its `cmake`:
 
 ```bash
@@ -164,7 +178,7 @@ commit and SDK they ran with:
 | --- | --- | --- |
 | `mise run check` | Every change | clang-format, REUSE lint, the embedded-header check, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
 | `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`, and the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network. Needs Docker |
-| `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests and leak detection included |
+| `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests (`jitllm doctor` on the GB10 among them) and leak detection included |
 
 Check builds configure afresh with the build tool's `--locked`: the core
 profile, from locked sources only, with nothing kept from a build

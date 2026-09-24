@@ -20,7 +20,8 @@ else()
 endif()
 add_test(NAME version.jitllm.binary
          COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DARCH=${target_arch}
-                 -DGLIBC_MAX=${glibc_max} -DSANITIZED=${sanitized} -DBINARY=$<TARGET_FILE:jitllm>
+                 -DGLIBC_MAX=${glibc_max} -DSANITIZED=${sanitized} -DCUDA_DRIVER=${JITLLM_CUDA}
+                 -DBINARY=$<TARGET_FILE:jitllm>
                  -P ${PROJECT_SOURCE_DIR}/tests/toolchain/check_binary.cmake)
 add_test(NAME version.jitllm
          COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:jitllm>

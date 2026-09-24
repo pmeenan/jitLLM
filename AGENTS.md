@@ -137,10 +137,10 @@ affected docs. Until then, these govern.
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057) |
 | `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
-| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions) and `cli/` (the `jitllm` command) |
+| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports), `platform/` (reads of `/proc` and `/sys`, the host probe), `providers/` (the device probe; `providers/cuda/` links the NVIDIA driver, D-072) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
-| `tests/unit/`, `tests/version/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt |
+| `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test and deploy tasks), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
@@ -224,7 +224,8 @@ the local check gate (`mise run check`, `check:full` and `check:spark`,
 D-061), license and provenance (REUSE lint, the header check, `NOTICE`
 and the toolchain's provenance records, D-071) and versioning (the
 `jitllm --version` command, the receipt's version and `CHANGELOG.md`,
-D-062) have landed. Next: the smoke binary and package, node configuration
-and the confined-job proof ([docs/plan.md](docs/plan.md)). The only
-application code is that `--version`. Keep this paragraph short and current
+D-062) and the smoke binary with its capability probe (`jitllm doctor`,
+D-072) have landed. Next: the package, node configuration and the
+confined-job proof ([docs/plan.md](docs/plan.md)). The only application code
+is that command. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

@@ -87,8 +87,16 @@ artifacts = ["deb/cuda-crt-13-4", "deb/cuda-cudart-13-4", "deb/cuda-cudart-dev-1
 category = "platform"
 license = "LicenseRef-NVIDIA-CUDA-EULA"
 ships = true
-enters = "CUDA builds: libcudart_static.a (cudart_static.o, redistributable under the EULA's Attachment A), NVCC's host stubs and fatbinary registration code (crt/host_runtime.h, fatbinary_section.h), device code built from the CUDA headers and, where device math is used, libNVVM's libdevice. libcudadevrt.a is on the link line but contributes nothing without relocatable device code. libcuda (the driver) is loaded at run time and never shipped."
+enters = "CUDA builds: libcudart_static.a (cudart_static.o, redistributable under the EULA's Attachment A), NVCC's host stubs and fatbinary registration code (crt/host_runtime.h, fatbinary_section.h), device code built from the CUDA headers and, where device math is used, libNVVM's libdevice. libcudadevrt.a is on the link line but contributes nothing without relocatable device code. libcuda.so.1 (the driver) is a needed library that the driver's package supplies; it is never shipped."
 notices = ["nvidia-cuda-eula", "nvidia-header-notice", "nvidia-math-juffa", "nvidia-softfloat"]
+
+[units.cuda-driver-stub]
+artifacts = ["deb/cuda-driver-dev-13-4"]
+category = "platform"
+license = "LicenseRef-NVIDIA-CUDA-EULA"
+ships = false
+enters = "Nothing: CUDA builds link against the stub libcuda.so, which only records libcuda.so.1 as a needed library (D-072). The NVIDIA driver supplies the real one at run time. Tests that need no GPU load the stub instead on hosts without the driver (qemu-user, the reference container); it never ships."
+notices = []
 
 [units.cccl]
 # Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).

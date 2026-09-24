@@ -62,6 +62,7 @@ component, GoogleTest, links into tests alone.
 | glibc 2.39-0ubuntu8.9 (sysroot) | platform | LGPL-2.1-or-later | Start files and `libc_nonshared.a` members, under a linking exception; libc, libm and the loader stay dynamic |
 | Linux UAPI headers 6.8.0-142.142 | platform | GPL-2.0-only WITH Linux-syscall-note | Constants and macros |
 | CUDA 13.4.92 runtime and headers | platform | NVIDIA CUDA EULA | CUDA builds: `libcudart_static.a`, NVCC's host stubs and registration code, device code |
+| CUDA driver link stub 13.4.92 (`cuda-driver-dev-13-4`) | platform | NVIDIA CUDA EULA | Nothing: CUDA builds need `libcuda.so.1`, which the driver supplies (D-072) |
 | CCCL 13.3.4.3.1 (libcu++, `nv/`) | platform | Apache-2.0 WITH LLVM-exception | Through CUDA headers such as `cuda_fp16.h` |
 | NVCC, libNVVM, ptxas and the other CUDA tools | tool | NVIDIA CUDA EULA (internal use) | Generated code |
 | REUSE lint 6.2.0 and nine wheels | tool | GPL-3.0-or-later and others (provenance.toml) | Nothing |

@@ -17,3 +17,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   release, `X.Y.Z-dev.N+g<commit>` otherwise), the commit, the license
   profile, the SDK identity and the target. The build receipt records the
   same version, with its Debian form (`X.Y.Z~dev.N+g<commit>-1`).
+- `jitllm doctor`, a capability probe: the build, the host (kernel, glibc,
+  memory), RDMA ports, the NVIDIA driver and each GPU's compute capability,
+  compute mode, VMM support and backing granularity. It exits 1 when the
+  host cannot run the build, which needs a GB10 with VMM and host-backed
+  VMM.
+- CUDA builds of `jitllm` need the NVIDIA driver (`libcuda.so.1`) to start.

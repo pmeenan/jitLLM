@@ -177,9 +177,9 @@ gate in force and the first `jitllm` binary running on a Spark.
       REUSE lint and the embedded-header check joined `check` with License
       and provenance. *Owned elsewhere:* the `.deb`, its install test and
       the package inventory against the receipt, NOTICE and SBOM join
-      `check:full` with the Package item. `jitllm doctor` joins `check:spark`
-      with the Smoke binary item. The GPU, VMM, I/O and ARM stress suites
-      join it in M2.
+      `check:full` with the Package item. `jitllm doctor` joined
+      `check:spark` with the Smoke binary item. The GPU, VMM, I/O and ARM
+      stress suites join it in M2.
 - [x] **License and provenance** (D-017, D-029): `LICENSES/`, REUSE
       metadata and lint, the embedded-header check, a root `NOTICE`, and an
       SBOM generated with the package. Audit the notices of what ships and
@@ -223,12 +223,34 @@ gate in force and the first `jitllm` binary running on a Spark.
       synthetic repositories, `version.jitllm` (`--version` against the
       receipt and the checkout now) and the binary's link contract, and
       the CLI unit tests.
-- [ ] **Smoke binary and capability probe** (D-026): a `jitllm` binary,
+- [x] **Smoke binary and capability probe** (D-026): a `jitllm` binary,
       from the cross build and from the native Spark fallback, that runs on
       `spark` over SSH, with a first-cut `doctor` reporting VMM granularity,
       GDS mode, RDMA availability, driver and toolkit versions, glibc and
       ABI, the selected tools and host prerequisites, and any data role
       relocated onto a read-only filesystem (D-063).
+      *Landed (D-072):* `jitllm doctor` reports the build (version, SDK,
+      target, compiler, C++ runtime), the host (kernel, glibc, page size,
+      memory, `fs.protected_hardlinks`), RDMA ports with this user's access
+      to their device nodes, the NVIDIA driver (kernel module, library,
+      CUDA API against the build's toolkit and GPU code, `nvidia_fs`), and
+      each GPU's compute capability, compute mode, VMM support and
+      device-local and host-NUMA granularity. It exits 1 when this host
+      cannot run this build: anything but a GB10 with VMM and host-backed
+      VMM fails. New modules: `platform` (reads of `/proc` and `/sys`, the
+      host probe) and `providers` (the device probe). CUDA builds link the
+      driver's `libcuda.so.1`, a documented hard requirement, through
+      NVIDIA's stub, which the SDK gains (`cuda-driver-dev-13-4`); tests
+      that need no GPU load the stub on hosts without the driver.
+      Tests: unit tests on fake `/proc`, `/sys` and `/dev` trees and on
+      made-up driver facts; `smoke.doctor` on every host; and
+      `smoke.doctor.gpu`, which requires a clean report on a GB10 and so
+      runs in `check:spark` and `spark-native`.
+      *Owned elsewhere:* the read-only data-role report, with Node
+      configuration and the unit's sandboxing (Package); the direct-I/O
+      probe of the storage roles, with Node configuration; the
+      `libcuda.so.1` version floor, with the Package item. `mise run doctor`
+      keeps reporting the SDK and the development host's prerequisites.
 - [ ] **Package and installed layout** (D-027, D-063): an arm64 `.deb`
       (M1 chooses CPack or debhelper) in the
       [installed layout](architecture.md#installed-layout): the `jitllm`

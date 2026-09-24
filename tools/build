@@ -51,7 +51,7 @@ REMOTE_TEST_PRESET = {"cross": "cross-remote", "cross-asan": "cross-asan-remote"
                       "cross-tsan": "cross-tsan-remote"}
 # Build-tree files a remote run never needs.
 DEPLOY_EXCLUDES = ("CMakeFiles/", "*.o", "*.a", "/.ninja_*", "/build.ninja", "/CMakeCache.txt",
-                   "/compile_commands.json", "/Testing/", "/toolchain/")
+                   "/compile_commands.json", "/Testing/", "/toolchain/", "/cuda-stub/")
 # Parallel remote tests share one SSH connection; sshd allows 10 sessions on it by default.
 REMOTE_TEST_JOBS = 8
 

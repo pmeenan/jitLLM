@@ -31,7 +31,9 @@ and checks:
   personality symbols, or a landing-pad table), whatever the flags said;
 - every link input from outside the SDK and platform is, by its content, an
   object file or archive (audited as above): never a shared library (D-064),
-  a linker script or anything else.
+  a linker script or anything else; and the only shared libraries linked
+  from the SDK are the sysroot's glibc and NVIDIA's driver stub, libcuda.so,
+  which binaries resolve to the driver's libcuda.so.1 at run time (D-072).
 """
 
 import argparse
@@ -366,10 +368,19 @@ def main() -> int:
     # file in a component) is audited the same way, chosen by content, not
     # name: the linker reads any object or archive, whatever it is called.
     # The SDK's runtimes and the host's glibc are the declared platform
-    # (D-017, D-060), and no build here makes or links a shared library (D-064).
+    # (D-017, D-060). No build here makes a shared library (D-064), and the
+    # only one linked is the CUDA driver, through its stub in the SDK (D-072).
     for path in link_inputs:
         full = os.path.realpath(path if os.path.isabs(path) else os.path.join(build, path))
-        if within(full, sdk) or (platform is not None and ({path, full, usr_merged(path)} & platform)):
+        if within(full, sdk):
+            # The cross build's glibc lives in the SDK's sysroot.
+            platform_shared = (within(full, os.path.join(sdk, "sysroot"))
+                               or full.endswith("/lib/stubs/libcuda.so"))
+            if not platform_shared and os.path.isfile(full) and link_input_kind(full) == "shared":
+                problems.append(f"a link uses the SDK's shared library {path}; only glibc and the "
+                                "CUDA driver stub may be linked shared (D-060, D-072)")
+            continue
+        if platform is not None and ({path, full, usr_merged(path)} & platform):
             continue
         if not os.path.isfile(full):
             continue  # an input of a target that was never built; nothing linked it

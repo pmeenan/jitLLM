@@ -33,6 +33,128 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-072: `jitllm doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries)
+
+**Decision.** Owner's answers on 2026-09-24 settled the driver binding, what
+fails, and what is stable. How M1's Smoke binary item probes a host:
+
+- **The command.** `jitllm doctor` takes no arguments, and it only reads
+  and queries. It prints titled sections of facts: `build` (version, commit,
+  license profile, SDK, target, compiler, C++ runtime), `host` (kernel,
+  glibc, page size, memory totals, `fs.protected_hardlinks`), `RDMA` (each
+  device port's state, link layer, rate and network interface, and whether
+  the invoking user, named by uid, can open its verbs node and `rdma_cm`),
+  `NVIDIA driver`
+  (kernel module and library, the driver's CUDA API version, this build's
+  toolkit and GPU code, whether `nvidia_fs` is loaded), and one section
+  per GPU (compute capability and whether this build has code for it,
+  integrated or not, memory, compute mode, VMM support, and the minimum
+  and recommended granularity of device-local and host-NUMA backing). Then
+  come the problems, the warnings and a summary line. The build and host
+  sections are written before the driver is touched, so a driver that
+  hangs still leaves them. Control characters in reported text are
+  escaped, so no value can forge a line. It exits 0 with no problems, 1
+  with any problem or when it cannot write its report (a closed pipe
+  included, not death by SIGPIPE), and 2 on a usage error. A CPU-only
+  build reports that it has no device provider, which is not a problem
+  (D-026).
+- **What is a problem.** What stops this host from running this build as
+  designed. Spark is the only target (owner), so anything short of a GB10
+  with everything D-006 and D-034 need fails the command. That covers a
+  driver for an older CUDA major version than the toolkit's or one that
+  does not report its version (within a major version, minor-version
+  compatibility applies and is shown), a failed `cuInit`, no GPU, more
+  GPUs than the 64 it checks, and no GPU whose compute capability exactly
+  matches an architecture the build compiled (SASS only, `sm_121`; D-011).
+  Other GPUs beside a GB10, such as one attached over Thunderbolt, are
+  reported but not judged (owner). It also covers a targeted GPU in the prohibited compute mode, without
+  VMM (D-006), or whose device-local or host-NUMA backing is missing or
+  cannot back D-056's 2 MiB paging chunks (a minimum of zero, not a power
+  of two or above 2 MiB). Without host-NUMA backing D-034's direct file I/O
+  into host VMM is impossible, and there is no staged path to fall back on.
+  **Warnings** do not fail the command: `fs.protected_hardlinks` other than
+  1 (D-063), an RDMA device without a verbs node or one this user cannot
+  open, and `/proc` facts it cannot read. Having no RDMA devices and no
+  native GDS are facts, not warnings (D-004, D-034). Ports to other
+  vendors, which the owner calls massive projects, revisit these rules
+  (D-026).
+- **What is stable.** The command name, its arguments and its exit statuses
+  are the public surface (D-062). The report is text for people and may
+  change in any release; the owner expects it to. Anything automated that needs capabilities gets a
+  typed, versioned interface of its own, such as the node capability report
+  the cluster needs.
+- **Driver binding.** CUDA builds link the NVIDIA driver's
+  `libcuda.so.1` as a shared library, the dynamic dependency D-060 left to
+  the driver. The driver is a hard requirement, documented as such: a
+  Spark always has it, and a development host that runs a CUDA build
+  installs it (owner). A binary started without it stops in the dynamic
+  loader, before `doctor` can say anything. The link uses NVIDIA's stub
+  `libcuda.so` from `cuda-driver-dev-13-4` 13.4.92, a new SDK package, so
+  the build needs no driver. The workstation presets' tests (`native`,
+  `cross`, `cross-asan`), which skip GPU tests, always load the same stub,
+  so they run on hosts without the driver (qemu-user, the reference
+  container); its `cuInit` fails, which `doctor` reports. Only Spark runs
+  use the driver. CPU-only builds link nothing of
+  CUDA. The probe calls `cuInit`, but it creates no
+  context and allocates or maps nothing. It sets `CUDA_CACHE_DISABLE`
+  first (in the command, not the provider), so the driver writes no JIT
+  cache under `$HOME`. `cuInit` may
+  still load the driver's kernel modules, as it does for any CUDA
+  program.
+
+**Context.** The plan's M1 item asks for a `jitllm` binary, from the cross
+build and the native Spark fallback, that runs on `spark` over SSH, with a
+first-cut `doctor`. D-026 makes platform properties probed capabilities, not
+constants, and D-049 and D-063 name facts the probe reports. The first cut
+loaded the driver at run time with `dlopen`, so binaries would start and
+report a missing driver anywhere. The owner chose an ordinary link
+instead, since Sparks always have the driver, and hard failures for a GPU
+other than a GB10 and for missing host-backed VMM.
+
+**Evidence.** On `spark` (GB10, driver 580.178.04, 2026-09-24), the cross
+build's `jitllm doctor` reported no problems and no warnings. It reported
+the CUDA driver API as 13.0 against the toolkit's 13.4, VMM supported, and a
+2 MiB minimum and recommended granularity for both device-local and host
+NUMA node 0 backing, which agrees with D-033's and D-034's measurements. It
+found the four RoCE ports, two of them active at 200 Gb/s, with read-write
+verbs nodes, and `nvidia_fs` not loaded. On the workstation (RTX 3080 Ti,
+driver 595.91.07), it reported one problem: the GPU is `sm_86`, which the
+build has no code for.
+
+**Consequences.**
+- `smoke.doctor.gpu` (label `gpu`) requires a clean report and a targeted
+  GB10 with VMM, so `check:spark` runs `doctor` in the cross, ASan and TSan
+  builds, and `spark-native` runs it too. `smoke.doctor` checks, on every
+  host, that the exit status matches the report.
+- Owned elsewhere: the report of a data role relocated onto a read-only
+  filesystem waits for node configuration and the unit's sandboxing; the
+  direct-I/O probe of `installed` and `spill` comes with node configuration;
+  the package's `libcuda.so.1` version floor comes with the Package item.
+- M2's CUDA provider calls the rest of the driver API the same way, through
+  the link.
+- The SDK gains `cuda-driver-dev-13-4` for both architectures, so its
+  identity changes and every host runs `mise run setup` once. Among the
+  binaries the link check (`tests/toolchain/check_binary.cmake`) inspects,
+  it requires `libcuda.so.1` in CUDA builds' `jitllm` and allows it nowhere
+  else; `sources.closure` allows the stub as the only shared library a link
+  takes from the SDK.
+- Driver symbols bind lazily, so a function added after the Sparks' driver
+  (CUDA 13.0) would link against the 13.4 stub and fail only when first
+  called. M2 either links with `-z now` or checks the imported symbols
+  against the oldest supported driver (found in this change's challenge
+  pass).
+- The arm64 `.deb` install test runs in a container without the driver.
+  The package depends on `libcuda.so.1` (D-063), so the Package item must
+  give that container the stub or a stand-in package.
+- An x86-64 CUDA build under ASan needs `protect_shadow_gap=0`, or
+  `cuInit` fails with `CUDA_ERROR_OUT_OF_MEMORY` (found in this change's
+  challenge pass). No preset builds that combination today.
+
+**Reopen if.** jitLLM targets anything but a Spark (another NVIDIA GPU,
+AMD or Apple silicon); binaries must start without the driver; a driver
+function jitLLM needs is reachable only through `cuGetProcAddress`; or
+automation needs capabilities before a typed report exists.
+
 ## D-071: REUSE lint from a pinned SDK tool, embedded headers enforced, sidecars instead of REUSE.toml, and provenance records for the toolchain  (2026-09-24, status: accepted; implements D-029's M1 checks and NOTICE and D-017's records for tools and platform dependencies; corrects D-060's list of embedded runtime code)
 
 **Decision.** How M1's License and provenance item meets D-017 and D-029

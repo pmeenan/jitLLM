@@ -2,7 +2,8 @@
   "version": 10,
   "$comment": [
     "Build profiles (D-011, D-026, D-032). Every preset needs JITLLM_SDK, the pinned SDK's root, and that SDK's cmake; `mise run build`, `test` and `deploy` (tools/build) supply both.",
-    "Test presets skip the `gpu` label except where a GB10 is present: spark-native, and cross-remote, with which `mise run test -- cross --host HOST` runs the deployed cross build's tests on a Spark over SSH."
+    "Test presets skip the `gpu` label except where a GB10 is present: spark-native, and cross-remote, with which `mise run test -- cross --host HOST` runs the deployed cross build's tests on a Spark over SSH.",
+    "CUDA builds link the driver's libcuda.so.1 (D-072). Where GPU tests are skipped, the tests always load NVIDIA's stub from build/<preset>/cuda-stub instead, so they also run on hosts without the driver; only Spark runs use the driver."
   ],
   "cmakeMinimumRequired": {"major": 4, "minor": 4, "patch": 3},
   "configurePresets": [
@@ -82,9 +83,15 @@
       "inherits": "base",
       "filter": {"exclude": {"label": "gpu"}}
     },
-    {"name": "native", "inherits": "no-gpu", "configurePreset": "native"},
+    {
+      "name": "no-gpu-cuda",
+      "hidden": true,
+      "inherits": "no-gpu",
+      "environment": {"LD_LIBRARY_PATH": "${sourceDir}/build/${presetName}/cuda-stub"}
+    },
+    {"name": "native", "inherits": "no-gpu-cuda", "configurePreset": "native"},
     {"name": "cpu", "inherits": "no-gpu", "configurePreset": "cpu"},
-    {"name": "cross", "inherits": "no-gpu", "configurePreset": "cross"},
+    {"name": "cross", "inherits": "no-gpu-cuda", "configurePreset": "cross"},
     {"name": "cross-remote", "inherits": "base", "configurePreset": "cross"},
     {"name": "spark-native", "inherits": "base", "configurePreset": "spark-native"},
     {
@@ -99,7 +106,7 @@
     },
     {
       "name": "cross-asan",
-      "inherits": "no-gpu",
+      "inherits": "no-gpu-cuda",
       "configurePreset": "cross-asan",
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=0",

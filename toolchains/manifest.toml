@@ -72,20 +72,22 @@ packages = ["libclang-rt-22-dev"]
 select = ["usr/lib/llvm-22/lib/clang/22/lib/linux/*-aarch64*"]
 
 [components.cuda]
-# NVCC, CRT, libNVVM, libnvptxcompiler, cudart and CCCL (D-032).
+# NVCC, CRT, libNVVM, libnvptxcompiler, cudart, CCCL (D-032) and the
+# driver's link stub, libcuda.so (D-072).
 kind = "debs"
 dest = "pkgs/cuda"
 packages = ["cuda-nvcc-13-4", "cuda-crt-13-4", "libnvvm-13-4", "libnvptxcompiler-13-4",
-            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cccl-13-4"]
+            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cuda-driver-dev-13-4", "cccl-13-4"]
 link = { cuda = "pkgs/cuda/usr/local/cuda-13.4" }
 
 [components.cuda-sbsa-target]
-# The ARM (sbsa-linux) target headers and runtime for NVCC's cross builds.
+# The ARM (sbsa-linux) target headers, runtime and driver link stub for
+# cross builds.
 kind = "debs"
 arch = "arm64"
 dest = "pkgs/cuda"
 packages = ["cuda-nvcc-13-4", "cuda-crt-13-4", "libnvvm-13-4", "libnvptxcompiler-13-4",
-            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cccl-13-4"]
+            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cuda-driver-dev-13-4", "cccl-13-4"]
 select = ["usr/local/cuda-13.4/targets/sbsa-linux"]
 
 [components.cmake]
