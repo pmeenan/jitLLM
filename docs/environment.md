@@ -57,6 +57,21 @@ for x86-64 and ARM64. Clang ASan/UBSan passed the
 natively on the workstation and cross-built on `spark`; pins and reproduction
 are in the smoke manifest and experiment report.
 
+### M1 SDK provisioning (2026-09-23)
+
+With the owner's approval, mise 2026.9.12 was installed as a user-level
+binary at `~/.local/bin/mise` on the workstation and on `spark`, from the
+GitHub release archives. Each archive matched the SHA-256 in the release's
+`SHASUMS256.asc`, whose signature verified against the mise release key
+(`24853EC9F655CE80B48E6C3A8B81C9D17413A06D`). No system package or shell
+file changed. D-070's SDK lives under each host's
+`~/.local/share/jitllm/sdk/`, with its cache in `~/.cache/jitllm/`. The
+native Spark fallback runs from a copy of the working tree at
+`spark:~/src/jitLLM`. The workstation already had
+`binutils-aarch64-linux-gnu` 2.42-4ubuntu2.10, which the cross-built GCC
+runtime needs. The baseline table above is the historical 2026-09-20
+snapshot.
+
 ## Target nodes (DGX Sparks)
 
 Captured 2026-09-20 over SSH, read-only, no sudo. Both nodes are identical in

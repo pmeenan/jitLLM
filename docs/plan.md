@@ -69,7 +69,7 @@ How to read the milestones below:
   repository is already public (D-061); until then it carries only `-dev`
   builds.
 
-## M1 — Bootstrap  `pending`
+## M1 — Bootstrap  `in progress`
 
 Goal: a reproducible, pinned developer setup and repository skeleton that
 every later milestone builds, tests and packages on, with D-061's local check
@@ -92,6 +92,11 @@ gate in force and the first `jitllm` binary running on a Spark.
       target sysroot (D-060). Host prerequisites stay system-managed and are
       declared and checked, `qemu-user-static` with binfmt among them. The
       mise tasks are `setup`, `doctor`, `build`, `test` and `deploy`.
+      *Landed (D-070):* the manifest, lock, prerequisite lists, `setup` and
+      `doctor` tasks and reference container, with the sysroot built from
+      pinned Ubuntu packages and the AArch64 GCC runtime cross-built. Setup
+      passed on the workstation, on `spark` and in a clean reference
+      container. `build`, `test` and `deploy` arrive with the Build item.
 - [ ] **Build** (D-010, D-011): `CMakePresets.json` and `cmake/toolchains/`
       for native x86-64, the AArch64 cross build (CPU, and CUDA for
       `sm_121`), the native-Spark fallback, and a CPU-only configuration

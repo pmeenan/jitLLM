@@ -1,0 +1,396 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Unit tests for the SDK tools' pure logic (no downloads, builds or SDK needed).
+
+Run: python3 -m unittest discover -s tools/tests
+"""
+
+import dataclasses
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+sys.dont_write_bytecode = True
+TOOLS = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TOOLS))
+import jitllm_sdk as sdklib  # noqa: E402
+
+
+def load_script(name: str):
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(TOOLS / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+setup = load_script("setup-toolchain")
+check = load_script("check-toolchain")
+
+
+class ManifestAndLock(unittest.TestCase):
+    def test_every_component_artifact_is_locked(self):
+        for arch in ("x86_64", "aarch64"):
+            sdk = sdklib.load(arch)
+            keys = setup.artifact_keys(sdk)  # raises SdkError on a key missing from the lock
+            self.assertTrue(keys)
+            for key in keys:
+                entry = sdk.artifact(key)
+                self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreater(entry["size"], 0)
+                self.assertTrue(entry["urls"])
+
+    def test_identity_depends_on_host_and_inputs(self):
+        x86, arm = sdklib.load("x86_64"), sdklib.load("aarch64")
+        self.assertTrue(x86.identity.startswith("x86_64-"))
+        self.assertEqual(x86.identity.split("-", 1)[1], arm.identity.split("-", 1)[1])
+        self.assertEqual(set(x86.inputs), {str(p.relative_to(sdklib.REPO)) for p in sdklib.IDENTITY_INPUTS})
+
+    def test_bin_links_avoid_nvcc(self):
+        # NVCC finds nvcc.profile beside its invocation path, so a bin/ link breaks it.
+        self.assertNotIn("nvcc", sdklib.load("x86_64").manifest["bin"])
+
+
+class Roots(unittest.TestCase):
+    SPEC = {"env": "JITLLM_TEST_HOME", "xdg": "JITLLM_TEST_XDG", "default": "~/.local/share", "suffix": "jitllm/sdk"}
+
+    def test_override_then_xdg_then_default(self):
+        with mock.patch.dict(os.environ, {"JITLLM_TEST_HOME": "/opt/sdk", "JITLLM_TEST_XDG": "/x"}):
+            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/opt/sdk"))
+        with mock.patch.dict(os.environ, {"JITLLM_TEST_XDG": "/x"}):
+            os.environ.pop("JITLLM_TEST_HOME", None)
+            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/x/jitllm/sdk"))
+        with mock.patch.dict(os.environ, {"HOME": "/home/u"}):
+            os.environ.pop("JITLLM_TEST_HOME", None)
+            os.environ.pop("JITLLM_TEST_XDG", None)
+            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/home/u/.local/share/jitllm/sdk"))
+
+    def test_relative_override_is_rejected(self):
+        with mock.patch.dict(os.environ, {"JITLLM_TEST_HOME": "relative/dir"}):
+            with self.assertRaises(sdklib.SdkError):
+                sdklib.resolve_root(self.SPEC)
+
+
+class Prerequisites(unittest.TestCase):
+    def test_lists_parse(self):
+        for arch in ("x86_64", "aarch64"):
+            reqs = sdklib.prerequisites(sdklib.load(arch))
+            names = [name for name, _, _ in reqs]
+            self.assertIn("libc6-dev", names)
+            self.assertEqual(len(names), len(set(names)))
+        x86 = dict((n, (op, v)) for n, op, v in sdklib.prerequisites(sdklib.load("x86_64")))
+        self.assertEqual(x86["libc6-dev"], (">=", "2.39"))
+        self.assertIn("binutils-aarch64-linux-gnu", x86)
+        self.assertIn("qemu-user-static", x86)
+        for arch in ("x86_64", "aarch64"):  # llvm-22's debuginfod client (llvm-symbolizer)
+            self.assertIn("libcurl4t64", [n for n, _, _ in sdklib.prerequisites(sdklib.load(arch))])
+
+    def test_installed_means_installed_state_and_native_arch(self):
+        out = ("held\tamd64\thi \t1.0\n"        # held but installed: counts
+               "removed\tamd64\trc \t1.0\n"     # config files only: missing
+               "foreign\tarm64\tii \t1.0\n"     # another architecture: missing
+               "arch-all\tall\tii \t2.0\n")
+        def fake_run(cmd, **kwargs):
+            stdout = "amd64\n" if cmd[:2] == ["dpkg", "--print-architecture"] else out
+            return mock.Mock(stdout=stdout, returncode=0)
+        with mock.patch.object(sdklib.subprocess, "run", fake_run):
+            versions = sdklib.installed_versions(["held", "removed", "foreign", "arch-all"])
+        self.assertEqual(versions, {"held": "1.0", "arch-all": "2.0"})
+
+
+class Trees(unittest.TestCase):
+    def test_absolute_links_become_relative(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "usr/lib/aarch64-linux-gnu").mkdir(parents=True)
+            (root / "usr/lib/aarch64-linux-gnu/libm.so.6").write_text("")
+            link = root / "usr/lib/aarch64-linux-gnu/libm.so"
+            link.symlink_to("/usr/lib/aarch64-linux-gnu/libm.so.6")
+            self.assertEqual(setup.relativize_absolute_links(root), 1)
+            self.assertEqual(os.readlink(link), "libm.so.6")
+            self.assertTrue(link.resolve().is_relative_to(root.resolve()))
+
+    def test_links_leaving_the_sysroot_are_refused(self):
+        for target in ("/../../etc/passwd", "../../../../etc/passwd"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp) / "sysroot"
+                (root / "usr/lib").mkdir(parents=True)
+                (root / "usr/lib/escape").symlink_to(target)
+                with self.assertRaises(sdklib.SdkError):
+                    setup.relativize_absolute_links(root)
+
+    def test_unreadable_receipt_is_no_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.assertIsNone(sdklib.read_receipt(root))
+            (root / sdklib.RECEIPT).write_text("")  # a crash before the data reached disk
+            self.assertIsNone(sdklib.read_receipt(root))
+            for content in (b'[]', b'"text"', b'null', b'\xff'):
+                (root / sdklib.RECEIPT).write_bytes(content)
+                self.assertIsNone(sdklib.read_receipt(root))
+
+    def test_tree_digest_tracks_content_mode_and_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "a").write_text("x")
+            (root / "l").symlink_to("a")
+            (root / sdklib.RECEIPT).write_text("ignored")
+            base = sdklib.tree_digest(root)
+            (root / sdklib.RECEIPT).write_text("changed")
+            self.assertEqual(sdklib.tree_digest(root), base)
+            (root / "a").chmod(0o755)
+            moded = sdklib.tree_digest(root)
+            self.assertNotEqual(moded, base)
+            (root / "a").write_text("y")
+            self.assertNotEqual(sdklib.tree_digest(root), moded)
+            (root / "l").unlink()
+            (root / "l").symlink_to("b")
+            self.assertNotEqual(sdklib.tree_digest(root), moded)
+
+
+class Fetch(unittest.TestCase):
+    PAYLOAD = b"pinned bytes"
+
+    def fetch(self, served: bytes) -> tuple[bytes | None, str]:
+        """Fetches a locked artifact from a file:// URL serving `served`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            (tmp / "a.bin").write_bytes(served)
+            entry = {"urls": [(tmp / "a.bin").as_uri()], "size": len(self.PAYLOAD),
+                     "sha256": hashlib.sha256(self.PAYLOAD).hexdigest()}
+            sdk = sdklib.Sdk(manifest={}, lock={"artifacts": {"archive/a/x86_64": entry}}, arch="x86_64",
+                             identity="x86_64-test", inputs={}, home=tmp / "home", cache=tmp / "cache")
+            try:
+                path = setup.fetch(sdk, "archive/a/x86_64")
+                return path.read_bytes(), ""
+            except sdklib.SdkError as e:
+                leftovers = list((tmp / "cache").rglob(".part-*"))
+                self.assertEqual(leftovers, [])
+                return None, str(e)
+
+    def test_verified_bytes_are_cached(self):
+        self.assertEqual(self.fetch(self.PAYLOAD), (self.PAYLOAD, ""))
+
+    def test_truncated_transfer_is_retried(self):
+        data, error = self.fetch(self.PAYLOAD[:-1])
+        self.assertIsNone(data)
+        self.assertIn("attempt 3", error)
+
+    def test_wrong_bytes_are_not_retried(self):
+        for served in (b"x" * len(self.PAYLOAD), self.PAYLOAD + b"!"):
+            data, error = self.fetch(served)
+            self.assertIsNone(data)
+            self.assertIn("attempt 1", error)
+            self.assertNotIn("attempt 2", error)
+
+
+class Binfmt(unittest.TestCase):
+    def report(self, entries: dict[str, str]) -> "check.Report":
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, text in entries.items():
+                (pathlib.Path(tmp) / name).write_text(text)
+            r = check.Report()
+            with (mock.patch.object(check, "BINFMT_MISC", pathlib.Path(tmp)),
+                  mock.patch.object(sdklib, "check_prerequisites", return_value=[])):
+                check.check_prerequisites(sdklib.load("x86_64"), r)
+            return r
+
+    def test_unmounted_binfmt_misc_defers_to_the_cross_probe(self):
+        self.assertEqual(self.report({}).problems, [])
+
+    def test_missing_or_unfixed_handler_is_a_problem(self):
+        self.assertEqual(len(self.report({"status": "enabled"}).problems), 1)
+        r = self.report({"status": "enabled", "qemu-aarch64": "enabled\ninterpreter /x\nflags: PO\n"})
+        self.assertEqual(len(r.problems), 1)
+        r = self.report({"status": "enabled", "qemu-aarch64": "enabled\ninterpreter /x\nflags: POF\n"})
+        self.assertEqual(r.problems, [])
+
+
+class Pruning(unittest.TestCase):
+    def test_dry_run_prune_preserves_sdk_and_build_trees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sdk = dataclasses.replace(sdklib.load(), home=pathlib.Path(tmp) / "home",
+                                      cache=pathlib.Path(tmp) / "cache")
+            old = sdk.home / "old-sdk"
+            work = sdk.cache / "builds" / "gcc.work"
+            old.mkdir(parents=True)
+            work.mkdir(parents=True)
+            (old / sdklib.RECEIPT).write_text('{"identity": "old-sdk"}')
+            (work / "build.log").write_text("build evidence")
+            before = sorted(p.relative_to(tmp) for p in pathlib.Path(tmp).rglob("*"))
+            with (mock.patch.object(sdklib, "load", return_value=sdk),
+                  mock.patch.object(sys, "argv", ["setup-toolchain", "--dry-run", "--prune"]),
+                  mock.patch.object(setup, "log")):
+                self.assertEqual(setup.main(), 0)
+            self.assertEqual(sorted(p.relative_to(tmp) for p in pathlib.Path(tmp).rglob("*")), before)
+            with mock.patch.object(setup, "log"):
+                setup.prune(sdk)
+            self.assertFalse(old.exists())
+            self.assertFalse(work.exists())
+
+    def test_preview_with_missing_roots_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sdk = dataclasses.replace(sdklib.load(), home=pathlib.Path(tmp) / "home",
+                                      cache=pathlib.Path(tmp) / "cache")
+            setup.prune(sdk, dry_run=True)
+            self.assertEqual(list(pathlib.Path(tmp).iterdir()), [])
+
+
+class InstalledSdk(unittest.TestCase):
+    def test_only_a_receipt_matching_all_inputs_is_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sdk = dataclasses.replace(sdklib.load(), home=pathlib.Path(tmp))
+            self.assertFalse(setup.sdk_is_ready(sdk))
+            sdk.root.mkdir()
+            valid = {"schema": 1, "identity": sdk.identity, "inputs": sdk.inputs}
+            for receipt in ({}, {**valid, "schema": 2}, {**valid, "inputs": {}},
+                            {**valid, "identity": "different-sdk"}):
+                (sdk.root / sdklib.RECEIPT).write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(sdklib.SdkError, "remove it and rerun setup"):
+                    setup.sdk_is_ready(sdk)
+            (sdk.root / sdklib.RECEIPT).write_text(json.dumps(valid))
+            self.assertTrue(setup.sdk_is_ready(sdk))
+
+
+class Doctor(unittest.TestCase):
+    def test_missing_tool_without_a_version_probe_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sdk = dataclasses.replace(sdklib.load(), home=pathlib.Path(tmp))
+            paths = [*(f"bin/{name}" for name in sdk.manifest["bin"]), "cuda/bin/nvcc"]
+            for path in paths:
+                tool = sdk.root / path
+                tool.parent.mkdir(parents=True, exist_ok=True)
+                tool.write_text("#!/bin/sh\nexit 0\n")
+                tool.chmod(0o755)
+            (sdk.root / "bin/llvm-strip").unlink()
+            r = check.Report()
+            with mock.patch.object(check, "VERSION_PATTERNS", {}):
+                check.check_tools(sdk, r)
+            self.assertEqual(len(r.problems), 1)
+            self.assertIn("bin/llvm-strip", r.problems[0])
+
+    def test_failed_library_inspection_is_not_an_empty_dependency_list(self):
+        out = subprocess.CompletedProcess([], 1, stdout="", stderr="invalid ELF file")
+        with mock.patch.object(check, "capture", return_value=out):
+            with self.assertRaisesRegex(sdklib.SdkError, "invalid ELF file"):
+                check.needed(sdklib.load(), pathlib.Path("probe"))
+
+    def test_missing_executable_is_an_actionable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(sdklib.SdkError, "could not run"):
+                check.capture([pathlib.Path(tmp) / "missing"])
+
+
+class Signals(unittest.TestCase):
+    def setUp(self):
+        saved = {s: signal.getsignal(s) for s in setup.STOP_SIGNALS}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in saved.items()])
+        for s in setup.STOP_SIGNALS:
+            signal.signal(s, setup._stop)
+
+    def test_first_stop_signal_unwinds_and_the_rest_are_ignored(self):
+        with self.assertRaises(SystemExit) as cm:
+            setup._stop(signal.SIGTERM, None)
+        self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
+        for s in setup.STOP_SIGNALS:
+            self.assertIs(signal.getsignal(s), signal.SIG_IGN)
+
+    def test_a_repeated_sigterm_still_kills_the_build_group(self):
+        # mise delivers a group signal twice. The copy that lands as cleanup
+        # starts must not stop run_group from killing the build's group.
+        real_killpg = os.killpg
+        def killpg_after_a_second_signal(pgid, sig):
+            signal.raise_signal(signal.SIGTERM)
+            real_killpg(pgid, sig)
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = pathlib.Path(tmp) / "pid"
+            finished = threading.Event()
+            timed_out = threading.Event()
+            def terminate():
+                # Wait until the child has exec'd sleep: a signal between
+                # fork and exec could otherwise hit its inherited shell trap.
+                deadline = time.monotonic() + 5
+                group = None
+                while not finished.wait(0.01):
+                    try:
+                        group, child = map(int, pidfile.read_text().split())
+                        if pathlib.Path(f"/proc/{child}/comm").read_text().strip() == "sleep":
+                            break
+                    except (FileNotFoundError, ValueError):
+                        pass
+                    if time.monotonic() >= deadline:
+                        timed_out.set()
+                        break
+                else:
+                    return
+                os.kill(os.getpid(), signal.SIGTERM)
+                # If run_group only stops the leader, its TERM trap waits
+                # for the live child. Fail promptly and clean up that group.
+                if not finished.wait(5):
+                    timed_out.set()
+                    if group is not None:
+                        try:
+                            real_killpg(group, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+            worker = threading.Thread(target=terminate, daemon=True)
+            worker.start()
+            try:
+                with (mock.patch.object(setup.os, "killpg", killpg_after_a_second_signal),
+                      self.assertRaises(SystemExit)):
+                    # Reap the child before the shell exits, so the assertion
+                    # also works when container PID 1 does not reap orphans.
+                    # This trap deliberately does not signal the child itself.
+                    setup.run_group(["sh", "-c", "trap 'wait; exit 0' TERM; "
+                                     'sleep 30 & echo "$$ $!" > "$1"; wait',
+                                     "sdk-signal-test", str(pidfile)])
+            finally:
+                finished.set()
+                worker.join(timeout=1)
+            self.assertFalse(timed_out.is_set(), "the build's live child did not stop promptly")
+            group = int(pidfile.read_text().split()[0])
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.killpg(group, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("the build's process group outlived the interrupt")
+
+
+class CrossConfigure(unittest.TestCase):
+    def test_defines_land_in_the_linux_cross_branch_only_once(self):
+        text = "native branch\n" + setup.LIBSTDCXX_CROSS_ANCHOR + "rest\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            configure = pathlib.Path(tmp) / "configure"
+            configure.write_text(text)
+            setup.record_cross_results(configure, ["HAVE_ICONV 1", "ICONV_CONST"])
+            out = configure.read_text()
+            self.assertIn('$as_echo "#define HAVE_ICONV 1" >>confdefs.h\n'
+                          '$as_echo "#define ICONV_CONST" >>confdefs.h\n    ;;\n  *-mingw32*)\n', out)
+            with self.assertRaises(sdklib.SdkError):  # the anchor is gone now
+                setup.record_cross_results(configure, ["HAVE_ICONV 1"])
+
+    def test_missing_anchor_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            configure = pathlib.Path(tmp) / "configure"
+            configure.write_text("some other GCC version\n")
+            with self.assertRaises(sdklib.SdkError):
+                setup.record_cross_results(configure, ["HAVE_ICONV 1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

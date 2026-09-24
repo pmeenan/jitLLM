@@ -15,3 +15,6 @@
 /docs/experiments/**/*.stderr
 /docs/experiments/**/*.stderr.license
 /docs/experiments/**/__pycache__/
+
+# Python bytecode from tools/ (the scripts themselves write none).
+/tools/**/__pycache__/

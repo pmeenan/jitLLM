@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Verifies this host's pinned SDK and prerequisites and reports their identities (D-012, D-049).
+
+Checks the host prerequisites, the SDK's receipt against the current inputs,
+each tool's version against the manifest, and that every SDK tool's shared
+libraries resolve. A C++ probe is compiled, linked and run natively and, on
+x86-64 hosts, cross-built and run under qemu-user; a CUDA probe is compiled
+and linked (not run) for the same targets. It reports the host, driver, GPU
+and tool identities. Exits nonzero on any problem. `mise run doctor` runs it.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import json
+import os
+import pathlib
+import platform
+import re
+import shlex
+import shutil
+import subprocess
+import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_sdk as sdklib  # noqa: E402
+from jitllm_sdk import SdkError  # noqa: E402
+
+# Probe sources. The C++ probe exercises the GCC 16 library features D-060
+# selected and prints the runtime it was built against.
+CXX_PROBE = r"""
+#include <cstdio>
+#include <expected>
+#include <flat_map>
+#include <mdspan>
+#include <print>
+#include <ranges>
+#include <vector>
+int main() {
+  std::flat_map<int, int> m{{2, 20}, {1, 10}};
+  std::vector<int> v{1, 2, 3, 4, 5, 6};
+  std::mdspan grid(v.data(), 2, 3);
+  auto half = [](int x) -> std::expected<int, int> {
+    if (x % 2) return std::unexpected(x);
+    return x / 2;
+  };
+  auto evens = v | std::views::filter([](int x) { return x % 2 == 0; }) | std::ranges::to<std::vector>();
+  if (m.begin()->second != 10 || grid[1, 2] != 6 || half(4).value_or(0) != 2 || evens.size() != 3) {
+    return 1;
+  }
+  std::println("jitllm-sdk-probe glibcxx={} cplusplus={}", __GLIBCXX__, __cplusplus);
+  return 0;
+}
+"""
+CUDA_PROBE = r"""
+#include <cstdio>
+#include <cuda_runtime.h>
+static_assert(__cplusplus >= 202302L);
+__global__ void fill(int* out, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) out[i] = i;
+}
+int main() {
+  int* d = nullptr;
+  if (cudaMalloc(&d, 64 * sizeof(int)) != cudaSuccess) return 2;
+  fill<<<1, 64>>>(d, 64);
+  cudaError_t err = cudaDeviceSynchronize();
+  cudaFree(d);
+  std::printf("jitllm-sdk-cuda-probe %s\n", cudaGetErrorName(err));
+  return err == cudaSuccess ? 0 : 1;
+}
+"""
+GLIBCXX_EXPECTED = "20260807"  # __GLIBCXX__ of GCC 16.2.0
+CROSS = {"triple": "aarch64-linux-gnu", "march": "armv8-a", "sysroot": "sysroot/aarch64-linux-gnu",
+         "gcc": "sysroot/aarch64-linux-gnu/opt/gcc"}
+MARCH = {"x86_64": "x86-64", "aarch64": "armv8-a"}
+BINFMT_MISC = pathlib.Path("/proc/sys/fs/binfmt_misc")
+
+
+class Report:
+    def __init__(self) -> None:
+        self.sections: dict[str, dict] = {}
+        self.problems: list[str] = []
+
+    def add(self, section: str, key: str, value) -> None:
+        self.sections.setdefault(section, {})[key] = value
+
+    def problem(self, message: str) -> None:
+        self.problems.append(message)
+
+
+def capture(cmd: list, env: dict | None = None, cwd=None) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, env=env, cwd=cwd)
+    except OSError as e:
+        raise SdkError(f"could not run {cmd[0]}: {e}") from e
+
+
+def first_line(text: str) -> str:
+    return text.strip().splitlines()[0] if text.strip() else ""
+
+
+def host_facts(r: Report) -> None:
+    os_release = {}
+    with open("/etc/os-release") as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.rstrip().split("=", 1)
+                os_release[k] = v.strip('"')
+    r.add("host", "os", os_release.get("PRETTY_NAME", "?"))
+    r.add("host", "arch", platform.machine())
+    r.add("host", "kernel", platform.release())
+    r.add("host", "glibc", os.confstr("CS_GNU_LIBC_VERSION"))
+    r.add("host", "python", platform.python_version())
+    mise = shutil.which("mise")
+    r.add("host", "mise", first_line(capture([mise, "--version"]).stdout) if mise else None)
+    if not mise:
+        r.problem("mise is not on PATH (declared prerequisite, D-012)")
+
+
+def driver_facts(r: Report) -> None:
+    version = pathlib.Path("/proc/driver/nvidia/version")
+    if version.exists():
+        r.add("gpu", "kernel_module", first_line(version.read_text()))
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        out = capture([smi, "--query-gpu=name,driver_version,compute_cap", "--format=csv,noheader"])
+        gpus = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+        r.add("gpu", "devices", gpus if out.returncode == 0 else f"nvidia-smi failed: {out.stderr.strip()}")
+    if not version.exists() and not smi:
+        r.add("gpu", "devices", "no NVIDIA driver found")
+
+
+def check_prerequisites(sdk: sdklib.Sdk, r: Report) -> None:
+    problems = sdklib.check_prerequisites(sdk)
+    r.add("prerequisites", "list", str(sdklib.TOOLCHAINS.relative_to(sdklib.REPO) / sdk.host["prerequisites"]))
+    r.add("prerequisites", "unmet", problems)
+    for p in problems:
+        r.problem(f"prerequisite {p}")
+    if problems:
+        r.problem("install with: " + sdklib.install_hint(sdk, problems))
+    if sdk.arch == "x86_64":
+        binfmt = BINFMT_MISC / "qemu-aarch64"
+        if not (BINFMT_MISC / "status").exists():
+            # Containers usually don't mount binfmt_misc, yet the host's
+            # F-flagged handler still runs AArch64 binaries in them. The cross
+            # probe below fails loudly if it can't.
+            r.add("prerequisites", "qemu_binfmt", "binfmt_misc not mounted here; the cross probe checks execution")
+        elif not binfmt.exists():
+            r.problem("qemu-aarch64 binfmt is not registered (qemu-user-static, D-061)")
+            r.add("prerequisites", "qemu_binfmt", None)
+        else:
+            lines = binfmt.read_text().splitlines()
+            flags = next((l.split(":", 1)[1].strip() for l in lines if l.startswith("flags:")), "")
+            r.add("prerequisites", "qemu_binfmt", f"{lines[0]}, flags {flags}")
+            if lines[0] != "enabled" or "F" not in flags:
+                r.problem("qemu-aarch64 binfmt must be enabled with the F (fix binary) flag")
+
+
+def check_receipt(sdk: sdklib.Sdk, r: Report, deep: bool) -> bool:
+    r.add("sdk", "identity", sdk.identity)
+    r.add("sdk", "root", str(sdk.root))
+    receipt = sdklib.read_receipt(sdk.root)
+    if receipt is None:
+        r.problem(f"no SDK for these inputs at {sdk.root}; run `mise run setup`")
+        return False
+    r.add("sdk", "created", receipt.get("created"))
+    if (receipt.get("schema") != 1 or receipt.get("identity") != sdk.identity
+            or receipt.get("inputs") != sdk.inputs):
+        r.problem(f"{sdk.root} receipt does not match the current inputs; remove it and rerun setup")
+        return False
+    if deep:
+        actual = sdklib.tree_digest(sdk.root)
+        r.add("sdk", "tree_sha256", actual)
+        if actual != receipt.get("tree_sha256"):
+            r.problem(f"{sdk.root} was modified after setup (tree digest differs); remove it and rerun setup")
+    return True
+
+
+# Tool (path under the SDK root) -> (version pattern, manifest version key).
+VERSION_PATTERNS = {
+    "bin/clang++": (r"clang version (\S+)", "llvm"),
+    "bin/ld.lld": (r"LLD (\S+)", "llvm"),
+    "bin/clang-format": (r"version (\d+\.\d+\.\d+)", "llvm"),
+    "bin/clang-tidy": (r"version (\d+\.\d+\.\d+)", "llvm"),
+    "bin/clangd": (r"version (\d+\.\d+\.\d+)", "llvm"),
+    "bin/llvm-symbolizer": (r"version (\d+\.\d+\.\d+)", "llvm"),
+    "cuda/bin/nvcc": (r"V(\d+\.\d+\.\d+)", "cuda"),
+    "bin/cmake": (r"cmake version (\S+)", "cmake"),
+    "bin/ninja": (r"^(\S+)$", "ninja"),
+}
+
+
+def check_tools(sdk: sdklib.Sdk, r: Report) -> None:
+    versions = sdk.manifest["versions"]
+    paths = [*(f"bin/{name}" for name in sdk.manifest["bin"]), "cuda/bin/nvcc"]
+    missing_tools = set()
+    for path in paths:
+        tool = sdk.root / path
+        if not tool.is_file() or not os.access(tool, os.X_OK):
+            missing_tools.add(path)
+            r.problem(f"{path}: missing or not executable; remove the SDK and rerun setup")
+    for path, (pattern, pin) in VERSION_PATTERNS.items():
+        if path in missing_tools:
+            continue
+        name = path.rsplit("/", 1)[1]
+        try:
+            out = capture([sdk.root / path, "--version"])
+        except SdkError as e:
+            r.problem(str(e))
+            continue
+        match = re.search(pattern, out.stdout + out.stderr, re.M)
+        found = match.group(1) if match else None
+        r.add("tools", name, found)
+        if out.returncode or found != versions[pin]:
+            r.problem(f"{name}: expected {versions[pin]}, got {found or first_line(out.stderr) or '?'}")
+    for path in paths:
+        if path in missing_tools:
+            continue
+        link = sdk.root / path
+        target = link.resolve()
+        try:
+            with open(target, "rb") as f:
+                if f.read(4) != b"\x7fELF":
+                    continue
+        except OSError as e:
+            r.problem(f"{link.name}: {e}")
+            continue
+        try:
+            out = capture(["ldd", target])
+            if out.returncode:
+                # ldd also fails for legitimate static executables. An ELF
+                # inspection distinguishes those from damaged files or a
+                # dynamic loader failure, neither of which proves resolution.
+                if needed(sdk, target):
+                    r.problem(f"{link.name}: ldd failed (exit {out.returncode}): "
+                              f"{(out.stderr or out.stdout).strip()}")
+                continue
+        except SdkError as e:
+            r.problem(f"{link.name}: {e}")
+            continue
+        missing_libraries = [l.split()[0] for l in out.stdout.splitlines() if "not found" in l]
+        if missing_libraries:
+            r.problem(f"{link.name}: unresolved shared libraries {', '.join(missing_libraries)}")
+
+
+def needed(sdk: sdklib.Sdk, binary: pathlib.Path) -> list[str]:
+    out = capture([sdk.root / "bin" / "llvm-readelf", "--dynamic", binary])
+    if out.returncode:
+        raise SdkError(f"could not inspect shared libraries of {binary.name}: {out.stderr.strip()}")
+    return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out.stdout)
+
+
+def cxx_flags(sdk: sdklib.Sdk, cross: bool) -> tuple[list[str], list[str]]:
+    """Returns (compile flags, link-only flags) for the native or cross target."""
+    root = sdk.root
+    if cross:
+        sysroot = root / CROSS["sysroot"]
+        return ([f"--target={CROSS['triple']}", f"--sysroot={sysroot}", f"-march={CROSS['march']}",
+                 f"--gcc-install-dir={root / CROSS['gcc']}/lib/gcc/{CROSS['triple']}/16"], ["-fuse-ld=lld"])
+    flags = [f"--target={sdk.triple}", f"-march={MARCH[sdk.arch]}",
+             f"--gcc-install-dir={root}/gcc/{sdk.triple}/lib/gcc/{sdk.triple}/16"]
+    # The x86-64 host links with LLD; the native Spark fallback uses GNU ld (D-032).
+    return flags, (["-fuse-ld=lld"] if sdk.arch == "x86_64" else [])
+
+
+def write_wrapper(path: pathlib.Path, sdk: sdklib.Sdk, cross: bool) -> None:
+    """A Clang wrapper that adds the target flags, and the link flags only when
+    linking, so NVCC's compile-only host passes see no unused arguments."""
+    compile_flags, link_flags = cxx_flags(sdk, cross)
+    path.write_text(
+        "#!/bin/sh\n"
+        f"link={shlex.quote(shlex.join(link_flags))}\n"
+        'for arg in "$@"; do case "$arg" in -c|-E|-S|-M|-MM|-fsyntax-only) link=;; esac; done\n'
+        f"exec {shlex.join([str(sdk.root / 'bin' / 'clang++'), *compile_flags])} $link \"$@\"\n")
+    path.chmod(0o755)
+
+
+def run_cxx_probe(sdk: sdklib.Sdk, r: Report, tmp: pathlib.Path, cross: bool) -> None:
+    label = "cross_aarch64" if cross else "native"
+    src = tmp / "probe.cc"
+    src.write_text(CXX_PROBE)
+    exe = tmp / f"probe-{label}"
+    wrapper = tmp / f"cxx-{label}"
+    write_wrapper(wrapper, sdk, cross)
+    out = capture([wrapper, "-std=c++23", "-O1", "-static-libstdc++", "-static-libgcc", src, "-o", exe])
+    if out.returncode:
+        r.add("probes", f"cxx_{label}", "build failed")
+        r.problem(f"C++ probe ({label}) failed to build:\n{out.stderr.strip()}")
+        return
+    libs = needed(sdk, exe)
+    bad = [l for l in libs if l.startswith(("libstdc++", "libgcc_s"))]
+    if bad:
+        r.problem(f"C++ probe ({label}) links the C++ runtime dynamically: {', '.join(bad)}")
+    env = dict(os.environ)
+    if cross:
+        env["QEMU_LD_PREFIX"] = str(sdk.root / CROSS["sysroot"])
+    try:
+        result = capture([exe], env=env)
+    except SdkError as e:  # no binfmt handler for a cross binary, for example
+        r.add("probes", f"cxx_{label}", "built, could not run")
+        r.problem(f"C++ probe ({label}) could not run: {e}")
+        return
+    expected = f"jitllm-sdk-probe glibcxx={GLIBCXX_EXPECTED} cplusplus=202302"
+    status = "ok" if result.returncode == 0 and result.stdout.strip() == expected else "failed"
+    how = " under qemu-user" if cross else ""
+    r.add("probes", f"cxx_{label}", f"{status}{how}: {result.stdout.strip() or result.stderr.strip()}; "
+          f"needs {', '.join(libs)}")
+    if status != "ok":
+        r.problem(f"C++ probe ({label}) did not run as expected{how}: "
+                  f"exit {result.returncode}, {result.stdout.strip() or result.stderr.strip()}")
+
+
+def run_cuda_probe(sdk: sdklib.Sdk, r: Report, tmp: pathlib.Path, cross: bool) -> None:
+    """Compiles and links (does not run) the CUDA probe for sm_121 with a static cudart."""
+    label = "cross_aarch64" if cross else "native"
+    cuda = sdk.root / "cuda"
+    # NVCC's host compiler is the C++ probe's Clang wrapper, so the target flags
+    # reach NVCC's preprocessing passes too.
+    wrapper = tmp / f"cxx-{label}"
+    write_wrapper(wrapper, sdk, cross)
+    src = tmp / "probe.cu"
+    src.write_text(CUDA_PROBE)
+    obj = tmp / f"probe-cuda-{label}.o"
+    target_dir = "sbsa-linux" if cross or sdk.arch == "aarch64" else "x86_64-linux"
+    compile_cmd = [cuda / "bin" / "nvcc", "-std=c++23", "-arch=sm_121", "--target-directory", target_dir,
+                   "-ccbin", wrapper, "-Werror", "all-warnings", "-c", src, "-o", obj]
+    out = capture(compile_cmd)
+    if out.returncode:
+        r.add("probes", f"nvcc_{label}", "compile failed")
+        r.problem(f"NVCC probe ({label}) failed to compile:\n{(out.stderr or out.stdout).strip()}")
+        return
+    exe = tmp / f"probe-cuda-{label}"
+    libdir = cuda / "targets" / target_dir / "lib"
+    out = capture([wrapper, obj, "-o", exe, f"-L{libdir}", "-lcudart_static", "-ldl", "-lrt", "-lpthread",
+                   "-static-libstdc++", "-static-libgcc"])
+    if out.returncode:
+        r.add("probes", f"nvcc_{label}", "link failed")
+        r.problem(f"NVCC probe ({label}) failed to link:\n{out.stderr.strip()}")
+        return
+    libs = needed(sdk, exe)
+    r.add("probes", f"nvcc_{label}", f"ok (sm_121, compiled and linked, not run); needs {', '.join(libs)}")
+    if any(l.startswith(("libcudart", "libstdc++", "libgcc_s")) for l in libs):
+        r.problem(f"NVCC probe ({label}) links a runtime dynamically: {', '.join(libs)}")
+
+
+def print_report(r: Report) -> None:
+    for section, values in r.sections.items():
+        print(section)
+        for key, value in values.items():
+            if isinstance(value, list):
+                value = "; ".join(value) if value else "none"
+            print(f"  {key:<16} {value}")
+    if r.problems:
+        print(f"\n{len(r.problems)} problem(s):")
+        for p in r.problems:
+            print("  - " + p.replace("\n", "\n    "))
+    else:
+        print("\nall checks passed")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--deep", action="store_true", help="also re-hash the whole SDK tree")
+    parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    args = parser.parse_args()
+    r = Report()
+    sdk = sdklib.load()
+    host_facts(r)
+    driver_facts(r)
+    check_prerequisites(sdk, r)
+    if check_receipt(sdk, r, args.deep):
+        r.add("sdk", "versions", ", ".join(f"{k} {v}" for k, v in sdk.manifest["versions"].items()))
+        check_tools(sdk, r)
+        with tempfile.TemporaryDirectory(prefix="jitllm-check-") as tmp:
+            tmp = pathlib.Path(tmp)
+            for cross in ([False, True] if sdk.arch == "x86_64" else [False]):
+                for probe in (run_cxx_probe, run_cuda_probe):
+                    try:
+                        probe(sdk, r, tmp, cross=cross)
+                    except SdkError as e:
+                        r.problem(str(e))
+    if args.json:
+        print(json.dumps({"sections": r.sections, "problems": r.problems}, indent=2))
+    else:
+        print_report(r)
+    return 1 if r.problems else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SdkError as e:
+        print(f"check-toolchain: {e}", file=sys.stderr)
+        sys.exit(1)

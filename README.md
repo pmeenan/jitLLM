@@ -57,6 +57,28 @@ pressure, then resume A with retained state, through an unmodified client.
 M4a adds configured placement across nodes; demand-paged MoE and sharding
 have separate later gates. See [the plan](docs/plan.md).
 
+## Development setup
+
+Development happens on an x86-64 Ubuntu 24.04 workstation. Spark binaries
+are cross-built there and tested over SSH. The compilers, CUDA, CMake and
+Ninja come from a pinned SDK that the project provisions under your home
+directory. Setup changes no system compilers, packages or shell files.
+
+1. Install [mise](https://mise.jdx.dev) 2026.9.12 or newer and the packages
+   in [toolchains/prerequisites/](toolchains/prerequisites/). Setup prints
+   the `apt-get` command for any that are missing.
+2. In the checkout, run `mise trust` and then `mise run setup`. Setup
+   downloads the artifacts pinned in
+   [toolchains/artifacts.lock.json](toolchains/artifacts.lock.json),
+   checking each SHA-256, builds the GCC 16.2 runtimes and assembles the
+   SDK. Later runs return at once.
+3. `mise run doctor` checks the SDK and reports the host, driver and
+   toolchain identities.
+
+[toolchains/README.md](toolchains/README.md) describes the SDK. The
+reference container in [.devcontainer/](.devcontainer/) runs the same setup
+on a clean Ubuntu image.
+
 ## License
 
 jitLLM's own code is Apache-2.0 (see [LICENSE](LICENSE)). Incorporated core

@@ -1,0 +1,667 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Provisions jitLLM's pinned development SDK for this build host (D-012, D-049, D-070).
+
+Reads toolchains/manifest.toml and toolchains/artifacts.lock.json, downloads
+each pinned artifact into a persistent cache (checking its size and SHA-256
+before use), builds the GCC runtimes, and assembles the SDK in a new
+directory named by its identity. It writes only under the SDK home and the
+cache; it never installs packages or changes system defaults. Unmet host
+prerequisites are reported with the command that installs them.
+
+Idempotent: when the SDK for the current inputs exists, it does nothing.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import concurrent.futures
+import contextlib
+import datetime
+import fcntl
+import fnmatch
+import hashlib
+import http.client
+import json
+import os
+import pathlib
+import shutil
+import signal
+import subprocess
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_sdk as sdklib  # noqa: E402
+from jitllm_sdk import SdkError  # noqa: E402
+
+# Bump when the GCC build steps change in a way the cache key doesn't capture.
+GCC_RECIPE = 2
+GCC_CACHE_RECEIPT = "build-receipt.json"
+# The end of the Linux branch of GCC 16.2's cross configuration in the
+# generated libstdc++-v3/configure, where the cross build records results
+# that configure only detects natively (manifest gcc.cross_libstdcxx_defines).
+LIBSTDCXX_CROSS_ANCHOR = """#define HAVE_SECURE_GETENV 1
+_ACEOF
+
+fi
+done
+
+
+    ;;
+  *-mingw32*)
+"""
+# GCC builds see only system tools (the declared prerequisites), never a
+# caller's compiler wrappers or the SDK itself.
+SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def human_bytes(n: int) -> str:
+    return f"{n / 1e6:.1f} MB" if n < 1e9 else f"{n / 1e9:.2f} GB"
+
+
+def run(cmd: list, **kwargs) -> None:
+    subprocess.run([str(c) for c in cmd], check=True, **kwargs)
+
+
+def run_group(cmd: list, **kwargs) -> None:
+    """Runs cmd in its own process group, killing the whole group if interrupted,
+    so an interrupted make leaves no compilers running."""
+    proc = subprocess.Popen([str(c) for c in cmd], start_new_session=True, **kwargs)
+    try:
+        code = proc.wait()
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait()
+        raise
+    if code:
+        raise subprocess.CalledProcessError(code, cmd)
+
+
+# Artifacts ----------------------------------------------------------------------
+
+def artifact_keys(sdk: sdklib.Sdk) -> list[str]:
+    """Lock keys of every artifact this host's SDK needs."""
+    keys = []
+    for name, comp in sdk.components():
+        kind = comp["kind"]
+        if kind in ("debs", "sysroot"):
+            arch = comp.get("arch", sdk.host["deb_arch"])
+            keys += [f"deb/{p}/{arch}" for p in comp["packages"]]
+        elif kind == "archive":
+            keys.append(f"{comp['artifact']}/{sdk.arch}")
+        elif kind == "gcc":
+            keys += ["source/gcc"] + sorted(k for k in sdk.lock["artifacts"]
+                                            if k.startswith("source/gcc-prerequisite/"))
+        else:
+            raise SdkError(f"component {name}: unknown kind {kind!r}")
+    for key in keys:
+        sdk.artifact(key)  # fails early on a key missing from the lock
+    return list(dict.fromkeys(keys))
+
+
+def download_path(sdk: sdklib.Sdk, key: str) -> pathlib.Path:
+    entry = sdk.artifact(key)
+    name = urllib.parse.unquote(entry["urls"][0].rsplit("/", 1)[1])
+    return sdk.cache / "downloads" / entry["sha256"] / name
+
+
+def verified(path: pathlib.Path, entry: dict) -> bool:
+    return (path.is_file() and path.stat().st_size == entry["size"]
+            and sdklib.sha256_file(path) == entry["sha256"])
+
+
+def fetch(sdk: sdklib.Sdk, key: str) -> pathlib.Path:
+    """Returns the cached artifact, downloading it first if needed. Always re-verifies."""
+    entry = sdk.artifact(key)
+    path = download_path(sdk, key)
+    if verified(path, entry):
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    errors = []
+    for url in entry["urls"]:
+        for attempt in range(3):
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".part-", delete=False) as tmp:
+                try:
+                    digest, size = hashlib.sha256(), 0
+                    request = urllib.request.Request(url, headers={"User-Agent": "jitllm-setup-toolchain"})
+                    with urllib.request.urlopen(request, timeout=60) as response:
+                        while chunk := response.read(1 << 20):
+                            size += len(chunk)
+                            if size > entry["size"]:
+                                raise SdkError(f"more than the locked {entry['size']} bytes")
+                            digest.update(chunk)
+                            tmp.write(chunk)
+                    if size < entry["size"]:  # a truncated transfer: retry
+                        raise http.client.IncompleteRead(b"", entry["size"] - size)
+                    if digest.hexdigest() != entry["sha256"]:
+                        raise SdkError(f"got {size} bytes with SHA-256 {digest.hexdigest()}")
+                    tmp.close()
+                    os.replace(tmp.name, path)
+                    return path
+                except (OSError, http.client.HTTPException, SdkError) as e:
+                    errors.append(f"{url} (attempt {attempt + 1}): {e}")
+                    permanent = isinstance(e, SdkError) or (
+                        isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500)
+                    if permanent:  # wrong bytes or a missing file: try the next URL
+                        break
+                finally:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp.name)
+    raise SdkError(f"could not fetch {key}:\n  " + "\n  ".join(errors))
+
+
+def fetch_all(sdk: sdklib.Sdk, keys: list[str]) -> None:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    try:
+        for key, future in [(k, pool.submit(fetch, sdk, k)) for k in keys]:
+            future.result()
+            log(f"  verified {key}")
+    finally:
+        # On a failure or an interrupt, drop the queued downloads rather than
+        # wait for all of them; only the ones in flight finish.
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+# Unpacking ----------------------------------------------------------------------
+
+def extract_deb(deb: pathlib.Path, dest: pathlib.Path) -> None:
+    # dpkg-deb -x unpacks the data archive only; no maintainer scripts run.
+    run(["dpkg-deb", "-x", deb, dest])
+
+
+def copy_selected(src_root: pathlib.Path, dest_root: pathlib.Path, patterns: list[str]) -> list[str]:
+    """Copies paths under src_root matching the glob patterns; never overwrites."""
+    copied = []
+    for pattern in patterns:
+        matches = sorted(src_root.glob(pattern))
+        if not matches:
+            raise SdkError(f"no files match {pattern!r}")
+        for src in matches:
+            rel = src.relative_to(src_root)
+            dest = dest_root / rel
+            if dest.exists() or dest.is_symlink():
+                raise SdkError(f"{rel} already exists in {dest_root}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir() and not src.is_symlink():
+                shutil.copytree(src, dest, symlinks=True)
+            else:
+                shutil.copy2(src, dest, follow_symlinks=False)
+            copied.append(str(rel))
+    return copied
+
+
+def relative_link(link: pathlib.Path, target: pathlib.Path) -> None:
+    """Creates link -> target as a relative symlink."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(os.path.relpath(target, link.parent))
+
+
+def relativize_absolute_links(root: pathlib.Path) -> int:
+    """Rewrites absolute symlinks inside a sysroot so they resolve within it,
+    and refuses any link whose target would leave it."""
+    count = 0
+    base = pathlib.Path(os.path.normpath(root))
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = pathlib.Path(dirpath) / name
+            if path.is_symlink():
+                target = os.readlink(path)
+                absolute = target.startswith("/")
+                resolved = os.path.normpath(base / target.lstrip("/") if absolute else path.parent / target)
+                if not pathlib.Path(resolved).is_relative_to(base):
+                    raise SdkError(f"{path.relative_to(root)} -> {target} leaves the sysroot")
+                if absolute:
+                    path.unlink()
+                    relative_link(path, pathlib.Path(resolved))
+                    count += 1
+    return count
+
+
+def install_debs(sdk: sdklib.Sdk, comp: dict, staging: pathlib.Path) -> dict:
+    arch = comp.get("arch", sdk.host["deb_arch"])
+    dest = staging / comp["dest"]
+    dest.mkdir(parents=True, exist_ok=True)
+    keys = [f"deb/{p}/{arch}" for p in comp["packages"]]
+    if "select" in comp:
+        with tempfile.TemporaryDirectory(dir=staging) as tmp:
+            for key in keys:
+                extract_deb(fetch(sdk, key), pathlib.Path(tmp))
+            copy_selected(pathlib.Path(tmp), dest, comp["select"])
+    else:
+        for key in keys:
+            extract_deb(fetch(sdk, key), dest)
+    return {"artifacts": keys}
+
+
+def install_llvm_library_links(dest: pathlib.Path, triple: str) -> None:
+    # The tools' RUNPATH is $ORIGIN/../lib (usr/lib/llvm-22/lib), but the
+    # runtime packages put some shared libraries (libLLVM, libz3) only in
+    # usr/lib/<triple>, where dpkg's ldconfig would have found them. Link
+    # them next to the tools so nothing needs LD_LIBRARY_PATH.
+    libdir = dest / "usr" / "lib" / triple
+    runpath = dest / "usr" / "lib" / "llvm-22" / "lib"
+    for lib in sorted(libdir.glob("*.so.*")):
+        link = runpath / lib.name
+        if not (link.exists() or link.is_symlink()):
+            relative_link(link, lib)
+
+
+def build_sysroot(sdk: sdklib.Sdk, comp: dict, dest: pathlib.Path) -> dict:
+    keys = [f"deb/{p}/{comp['arch']}" for p in comp["packages"]]
+    dest.mkdir(parents=True, exist_ok=True)
+    for key in keys:
+        extract_deb(fetch(sdk, key), dest)
+    # Ubuntu's merged /usr: /lib is a base-files symlink, and ELF interpreters
+    # name /lib/ld-linux-aarch64.so.1.
+    for link, target in comp.get("links", {}).items():
+        if not (dest / link).is_symlink():
+            relative_link(dest / link, dest / target)
+    fixed = relativize_absolute_links(dest)
+    return {"artifacts": keys, "absolute_links_rewritten": fixed}
+
+
+def install_archive(sdk: sdklib.Sdk, comp: dict, staging: pathlib.Path) -> dict:
+    key = f"{comp['artifact']}/{sdk.arch}"
+    path = fetch(sdk, key)
+    dest = staging / comp["dest"]
+    dest.mkdir(parents=True, exist_ok=True)
+    if path.name.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                target = (dest / info.filename).resolve()
+                if not target.is_relative_to(dest.resolve()):
+                    raise SdkError(f"{key}: unsafe path {info.filename!r}")
+                z.extract(info, dest)
+                mode = info.external_attr >> 16
+                if mode:
+                    target.chmod(mode & 0o777)
+    else:
+        run(["tar", "-xf", path, "-C", dest, f"--strip-components={comp.get('strip', 0)}",
+             "--no-same-owner"])
+    return {"artifacts": [key]}
+
+
+# GCC runtime --------------------------------------------------------------------
+
+def tool_version(cmd: list[str]) -> str:
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                         env={"PATH": SYSTEM_PATH, "LC_ALL": "C"}).stdout
+    return out.splitlines()[0].strip()
+
+
+def gcc_build_inputs(sdk: sdklib.Sdk, comp: dict, target: str, cross: bool) -> dict:
+    keys = artifact_keys_for_gcc(sdk)
+    inputs = {
+        "recipe": GCC_RECIPE,
+        "sources": {k: sdk.artifact(k)["sha256"] for k in keys},
+        "configure": sdk.manifest["gcc"]["configure"],
+        "outputs": {k: sdk.manifest["gcc"][k] for k in ("headers", "libraries", "support", "licenses")},
+        "build": sdk.triple,
+        "target": target,
+        # The build compiler and binutils shape the objects, so they key the cache.
+        "host_gcc": tool_version(["gcc", "--version"]),
+        "host_gxx": tool_version(["g++", "--version"]),
+        "host_make": tool_version(["make", "--version"]),
+        "binutils": tool_version([f"{target}-as" if cross else "as", "--version"]),
+    }
+    if cross:
+        inputs["cross_libstdcxx_defines"] = sdk.manifest["gcc"]["cross_libstdcxx_defines"]
+        sysroot_comp = next(c for n, c in sdk.components() if c["dest"] == comp["sysroot"])
+        inputs["sysroot"] = {p: sdk.artifact(f"deb/{p}/{sysroot_comp['arch']}")["sha256"]
+                             for p in sysroot_comp["packages"]} | {"links": sysroot_comp.get("links", {})}
+    return inputs
+
+
+def artifact_keys_for_gcc(sdk: sdklib.Sdk) -> list[str]:
+    return ["source/gcc"] + sorted(k for k in sdk.lock["artifacts"] if k.startswith("source/gcc-prerequisite/"))
+
+
+def gcc_cache_dir(sdk: sdklib.Sdk, comp: dict) -> tuple[pathlib.Path, dict]:
+    target = sdk.triple if comp["target"] == "host" else comp["target"]
+    cross = target != sdk.triple
+    inputs = gcc_build_inputs(sdk, comp, target, cross)
+    key = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
+    return sdk.cache / "builds" / f"gcc-{target}-{key}", inputs
+
+
+def build_gcc(sdk: sdklib.Sdk, comp: dict, out: pathlib.Path, inputs: dict, jobs: int,
+              keep: bool) -> None:
+    target, cross = inputs["target"], inputs["target"] != sdk.triple
+    work = out.with_name(out.name + ".work")
+    if work.exists():
+        shutil.rmtree(work)
+    src, build, prefix = work / "src", work / "build", work / "install"
+    for d in (src, build):
+        d.mkdir(parents=True)
+    log(f"  unpacking GCC {sdk.artifact('source/gcc')['version']} in {work}")
+    run(["tar", "-xf", fetch(sdk, "source/gcc"), "-C", src, "--strip-components=1", "--no-same-owner"])
+    # What contrib/download_prerequisites does, from locked archives.
+    for key in artifact_keys_for_gcc(sdk)[1:]:
+        archive = fetch(sdk, key)
+        run(["tar", "-xf", archive, "-C", src, "--no-same-owner"])
+        versioned = sdk.artifact(key)["file"].split(".tar")[0]
+        (src / key.rsplit("/", 1)[1]).symlink_to(versioned)
+    if cross:
+        record_cross_results(src / "libstdc++-v3" / "configure", sdk.manifest["gcc"]["cross_libstdcxx_defines"])
+    configure = [src / "configure", f"--prefix={prefix}", f"--build={sdk.triple}",
+                 f"--host={sdk.triple}", f"--target={target}"]
+    if cross:
+        sysroot_comp = next(c for n, c in sdk.components() if c["dest"] == comp["sysroot"])
+        sysroot = work / "sysroot"
+        build_sysroot(sdk, sysroot_comp, sysroot)
+        configure.append(f"--with-sysroot={sysroot}")
+    configure += sdk.manifest["gcc"]["configure"]
+    # A clean environment: the system compiler builds GCC, and nothing from the
+    # caller's compiler or flag variables leaks in.
+    env = {"PATH": SYSTEM_PATH, "HOME": os.environ.get("HOME", "/"), "LC_ALL": "C",
+           "LANG": "C", "TMPDIR": str(work)}
+    # libgcc.a keeps its debug info through install-strip. Map the build
+    # directory to a fixed name so no local path ends up in the runtime and
+    # the bytes don't depend on where the cache lives. Otherwise GCC's
+    # default target flags.
+    target_flags = f"-g -O2 -ffile-prefix-map={work}=/usr/src/jitllm-gcc-{sdk.artifact('source/gcc')['version']}"
+    env |= {"CFLAGS_FOR_TARGET": target_flags, "CXXFLAGS_FOR_TARGET": target_flags}
+    logfile = work / "build.log"
+    log(f"  building GCC runtime for {target} ({jobs} jobs; log: {logfile})")
+    try:
+        with open(logfile, "w") as out_log:
+            for cmd in (configure, ["make", f"-j{jobs}"], ["make", "install-strip"]):
+                out_log.write(f"$ {' '.join(map(str, cmd))}\n")
+                out_log.flush()
+                run_group(cmd, cwd=build, env=env, stdout=out_log, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError:
+        tail = logfile.read_text(errors="replace").splitlines()[-40:]
+        raise SdkError("GCC build failed; last lines of the log:\n" + "\n".join(tail)) from None
+    curate_gcc(sdk, src, prefix, target, cross, work / "runtime")
+    (work / "runtime" / "build-inputs.json").write_text(json.dumps(inputs, indent=2) + "\n")
+    seal_gcc_cache(work / "runtime")
+    staged = out.with_name(out.name + ".new")
+    if staged.exists():
+        shutil.rmtree(staged)
+    (work / "runtime").rename(staged)
+    staged.rename(out)
+    if not keep:
+        shutil.rmtree(work)
+
+
+def record_cross_results(configure: pathlib.Path, defines: list[str]) -> None:
+    """Adds `#define` results to the Linux cross branch of libstdc++'s configure."""
+    text = configure.read_text()
+    if text.count(LIBSTDCXX_CROSS_ANCHOR) != 1:
+        raise SdkError(f"{configure} does not have the expected GCC 16.2 cross branch; "
+                       "review gcc.cross_libstdcxx_defines for this GCC version")
+    lines = "".join(f'$as_echo "#define {d}" >>confdefs.h\n' for d in defines)
+    head, tail = LIBSTDCXX_CROSS_ANCHOR.split("    ;;\n")
+    configure.write_text(text.replace(LIBSTDCXX_CROSS_ANCHOR, head + lines + "    ;;\n" + tail))
+
+
+def curate_gcc(sdk: sdklib.Sdk, src: pathlib.Path, prefix: pathlib.Path, target: str, cross: bool,
+               out: pathlib.Path) -> None:
+    """Copies only the outputs jitLLM uses (D-060) into a native-layout tree."""
+    g = sdk.manifest["gcc"]
+    base = prefix / target if cross else prefix
+    headers = base / g["headers"]
+    libdir = next((d for d in (base / "lib64", base / "lib") if (d / "libstdc++.a").exists()), None)
+    support = prefix / "lib" / "gcc" / target / "16"
+    if not headers.is_dir() or libdir is None or not support.is_dir():
+        raise SdkError(f"GCC install under {prefix} lacks the expected runtime layout")
+    shutil.copytree(headers, out / g["headers"], symlinks=True)
+    (out / "lib64").mkdir(parents=True)
+    for name in g["libraries"]:
+        shutil.copy2(libdir / name, out / "lib64" / name)
+    dest = out / "lib" / "gcc" / target / "16"
+    dest.mkdir(parents=True)
+    for pattern in g["support"]:
+        matches = sorted(p for p in support.iterdir() if fnmatch.fnmatch(p.name, pattern))
+        if not matches:
+            raise SdkError(f"GCC install lacks {pattern} in {support}")
+        for p in matches:
+            shutil.copy2(p, dest / p.name)
+    docs = out / "share" / "doc" / f"gcc-{sdk.artifact('source/gcc')['version']}"
+    docs.mkdir(parents=True)
+    for name in g["licenses"]:
+        shutil.copy2(src / name, docs / name)
+
+
+def seal_gcc_cache(out: pathlib.Path) -> None:
+    """Records the freshly built runtime's content before publishing the cache."""
+    receipt = {"schema": 1, "tree_sha256": sdklib.tree_digest(out, exclude=(GCC_CACHE_RECEIPT,))}
+    (out / GCC_CACHE_RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def verify_gcc_cache(out: pathlib.Path, inputs: dict) -> None:
+    """Rejects incomplete, stale or modified builds instead of blessing their bytes."""
+    repair = f"remove this cached build and rerun setup: {out}"
+    if not out.is_dir() or out.is_symlink():
+        raise SdkError(f"GCC runtime cache is not a regular directory; {repair}")
+    try:
+        recorded_inputs = json.loads((out / "build-inputs.json").read_text())
+        receipt = json.loads((out / GCC_CACHE_RECEIPT).read_text())
+        if recorded_inputs != inputs:
+            raise SdkError(f"GCC runtime cache has different build inputs; {repair}")
+        if not isinstance(receipt, dict) or receipt.get("schema") != 1:
+            raise SdkError(f"GCC runtime cache has an invalid receipt; {repair}")
+        if receipt.get("tree_sha256") != sdklib.tree_digest(out, exclude=(GCC_CACHE_RECEIPT,)):
+            raise SdkError(f"GCC runtime cache was modified after its build; {repair}")
+    except (OSError, UnicodeError, json.JSONDecodeError) as e:
+        raise SdkError(f"GCC runtime cache has no readable integrity record ({e}); {repair}") from None
+
+
+def install_gcc(sdk: sdklib.Sdk, comp: dict, staging: pathlib.Path, jobs: int, keep: bool) -> dict:
+    out, inputs = gcc_cache_dir(sdk, comp)
+    if not out.exists() and not out.is_symlink():
+        build_gcc(sdk, comp, out, inputs, jobs, keep)
+    else:
+        verify_gcc_cache(out, inputs)
+        log(f"  using cached GCC runtime build {out.name}")
+    dest = staging / comp["dest"].format(triple=sdk.triple)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(out, dest, symlinks=True,
+                    ignore=shutil.ignore_patterns("build-inputs.json", GCC_CACHE_RECEIPT))
+    return {"artifacts": artifact_keys_for_gcc(sdk), "build": out.name, "inputs": inputs}
+
+
+# Assembly -----------------------------------------------------------------------
+
+def assemble(sdk: sdklib.Sdk, jobs: int, keep: bool) -> None:
+    sdk.home.mkdir(parents=True, exist_ok=True)
+    staging = sdk.home / f".staging-{sdk.identity}-{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        record = {}
+        for name, comp in sdk.components():
+            log(f"installing {name}")
+            kind = comp["kind"]
+            if kind == "debs":
+                record[name] = install_debs(sdk, comp, staging)
+                if name == "llvm":
+                    install_llvm_library_links(staging / comp["dest"], sdk.triple)
+            elif kind == "sysroot":
+                record[name] = build_sysroot(sdk, comp, staging / comp["dest"])
+            elif kind == "archive":
+                record[name] = install_archive(sdk, comp, staging)
+            elif kind == "gcc":
+                record[name] = install_gcc(sdk, comp, staging, jobs, keep)
+            for link, target in comp.get("link", {}).items():
+                relative_link(staging / link, staging / target)
+        for name, target in sdk.manifest["bin"].items():
+            if not (staging / target).exists():
+                raise SdkError(f"bin/{name}: {target} is missing from the SDK")
+            relative_link(staging / "bin" / name, staging / target)
+        receipt = {
+            "schema": 1,
+            "identity": sdk.identity,
+            "host_arch": sdk.arch,
+            "triple": sdk.triple,
+            "created": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+            "inputs": sdk.inputs,
+            "versions": sdk.manifest["versions"],
+            "components": record,
+            "tree_sha256": sdklib.tree_digest(staging),
+        }
+        (staging / sdklib.RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+        staging.rename(sdk.root)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+@contextlib.contextmanager
+def setup_lock(sdk: sdklib.Sdk):
+    """Serializes setups sharing an SDK home or a cache (always in that order)."""
+    with contextlib.ExitStack() as stack:
+        for directory in (sdk.home, sdk.cache):
+            directory.mkdir(parents=True, exist_ok=True)
+        # One lock per distinct directory: a second flock on the same file
+        # through another open() would wait for the first forever.
+        for directory in dict.fromkeys(d.resolve() for d in (sdk.home, sdk.cache)):
+            f = stack.enter_context(open(directory / ".setup.lock", "w"))
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def list_sdks(sdk: sdklib.Sdk) -> None:
+    if not sdk.home.is_dir():
+        log(f"no SDKs under {sdk.home}")
+        return
+    for path in sorted(sdk.home.iterdir()):
+        if path.name.startswith("."):
+            continue
+        receipt = sdklib.read_receipt(path) or {}
+        mark = "*" if path == sdk.root else " "
+        log(f"{mark} {path.name}  created {receipt.get('created', '?')}")
+
+
+def prune(sdk: sdklib.Sdk, dry_run: bool = False) -> None:
+    # A preview must not create directories or lock files either.
+    with contextlib.nullcontext() if dry_run else setup_lock(sdk):
+        for path in sorted(sdk.home.iterdir()) if sdk.home.is_dir() else []:
+            if path.name.startswith(".setup") or path == sdk.root:
+                continue
+            if path.is_dir() and (path.name.startswith(".staging-") or sdklib.read_receipt(path)):
+                log(f"{'would remove' if dry_run else 'removing'} {path}")
+                if not dry_run:
+                    shutil.rmtree(path)
+        builds = sdk.cache / "builds"
+        if builds.is_dir():
+            for path in builds.glob("*.work"):
+                log(f"{'would remove' if dry_run else 'removing'} {path}")
+                if not dry_run:
+                    shutil.rmtree(path)
+
+
+def sdk_is_ready(sdk: sdklib.Sdk) -> bool:
+    receipt = sdklib.read_receipt(sdk.root)
+    if (receipt and receipt.get("schema") == 1 and receipt.get("identity") == sdk.identity
+            and receipt.get("inputs") == sdk.inputs):
+        return True
+    if sdk.root.exists() or sdk.root.is_symlink():
+        raise SdkError(f"{sdk.root} exists without a valid receipt; remove it and rerun setup")
+    return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--dry-run", action="store_true", help="print the plan and change nothing")
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel GCC build jobs")
+    parser.add_argument("--keep-build", action="store_true", help="keep GCC build trees in the cache")
+    parser.add_argument("--print-root", action="store_true", help="print this checkout's SDK root and exit")
+    parser.add_argument("--list", action="store_true", help="list SDKs under the SDK home")
+    parser.add_argument("--prune", action="store_true",
+                        help="remove other SDKs and leftover build trees (downloads stay cached)")
+    args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    sdk = sdklib.load()
+    if args.print_root:
+        print(sdk.root)
+        return 0
+    if args.list:
+        list_sdks(sdk)
+        return 0
+    if args.prune:
+        prune(sdk, dry_run=args.dry_run)
+        return 0
+
+    problems = sdklib.check_prerequisites(sdk)
+    if problems:
+        log("Missing host prerequisites (" + str(sdklib.TOOLCHAINS / sdk.host["prerequisites"]) + "):")
+        for p in problems:
+            log(f"  {p}")
+        log("Install them with:\n  " + sdklib.install_hint(sdk, problems))
+        return 1
+
+    if sdk_is_ready(sdk):
+        log(f"SDK {sdk.identity} is ready at {sdk.root}")
+        return 0
+
+    keys = artifact_keys(sdk)
+    missing = [k for k in keys if not download_path(sdk, k).is_file()]
+    gcc = [(n, gcc_cache_dir(sdk, c)[0]) for n, c in sdk.components() if c["kind"] == "gcc"]
+    log(f"SDK {sdk.identity} for {sdk.arch} build hosts")
+    log(f"  install to   {sdk.root}")
+    log(f"  cache        {sdk.cache}")
+    log(f"  components   {', '.join(n for n, _ in sdk.components())}")
+    log(f"  downloads    {len(missing)} of {len(keys)} artifacts, "
+        f"{human_bytes(sum(sdk.artifact(k)['size'] for k in missing))}")
+    for name, out in gcc:
+        state = "cached" if out.is_dir() else "build from source (several GB of scratch under the cache)"
+        log(f"  {name:<12} {state}")
+    log("  system       no changes (no packages, defaults or shell files are touched)")
+    if args.dry_run:
+        return 0
+
+    with setup_lock(sdk):
+        if sdk_is_ready(sdk):
+            log(f"SDK {sdk.identity} is ready at {sdk.root}")
+            return 0
+        log("fetching artifacts")
+        fetch_all(sdk, keys)
+        assemble(sdk, args.jobs, args.keep_build)
+    log(f"SDK {sdk.identity} is ready at {sdk.root}")
+    return 0
+
+
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def _stop(signum, frame):
+    """Unwinds on the first Ctrl-C, SIGTERM or SIGHUP and ignores the rest.
+
+    GCC steps run in their own session, so these never reach them; the
+    unwinding is what stops them (run_group kills the build's process group)
+    and removes the staging tree. mise forwards a signal its process group
+    already delivered, so a second copy arrives at once, and it must not cut
+    that cleanup short.
+    """
+    for s in STOP_SIGNALS:
+        signal.signal(s, signal.SIG_IGN)
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
+    raise SystemExit(128 + signum)
+
+
+if __name__ == "__main__":
+    for s in STOP_SIGNALS:
+        signal.signal(s, _stop)
+    try:
+        sys.exit(main())
+    except SdkError as e:
+        print(f"setup-toolchain: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

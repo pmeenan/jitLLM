@@ -30,6 +30,118 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-070: Provision the SDK from pinned inputs alone: a package-built Spark sysroot, a cross-built AArch64 GCC runtime and a mise-pinned Python  (2026-09-23, status: accepted; replaces D-032's sysroot snapshot; amends D-060 for the cross build's AArch64 runtime; implements D-012 and D-049)
+
+**Decision.** The owner's answers on 2026-09-23 for M1's SDK provisioning
+([toolchains/README.md](../toolchains/README.md)):
+
+- **Sysroot.** The cross build's Spark sysroot is assembled from Ubuntu
+  24.04 arm64 packages pinned by SHA-256: `libc6` and `libc6-dev`
+  2.39-0ubuntu8.9 (the Sparks' glibc) and `linux-libc-dev` 6.8.0-142.142.
+  It replaces D-032's copy of `spark`'s directories. Absolute symlinks
+  are rewritten to stay inside it, and `/lib` points at `usr/lib` as on
+  the target. Native x86-64 builds keep the host's `libc6-dev` (≥ 2.39, a
+  declared prerequisite).
+- **AArch64 GCC runtime.** On x86-64 build hosts, D-060's GCC 16.2 runtime
+  for the Spark target is cross-built from the same source, prerequisites
+  and configure flags, adding `--target=aarch64-linux-gnu --with-sysroot`
+  and using Ubuntu's `binutils-aarch64-linux-gnu`. Its used outputs sit in
+  the sysroot at `opt/gcc`, in the native install layout. The native Spark
+  fallback SDK still builds its runtime natively. GCC 16.2's cross
+  configuration never checks glibc for iconv or `setenv`, so the cross build
+  records the results the native build detects (`HAVE_ICONV`, an empty
+  `ICONV_CONST`, `HAVE_SETENV`) in libstdc++'s generated `configure`; the
+  library sources are unmodified. Every runtime build maps its build
+  directory with `-ffile-prefix-map`, because `libgcc.a` keeps its debug
+  info through `install-strip`.
+- **mise and Python.** mise 2026.9.12 is a declared host prerequisite
+  (`min_version`); the reference container installs it by SHA-256. mise pins
+  one tool, Python 3.14.7 (python-build-standalone 20260901), which runs
+  `tools/`; `mise.lock` holds its checksums for linux-x64 and linux-arm64.
+  CMake and Ninja stay in the SDK, as M1's scope lists them.
+- **Layout.** Each build host's SDK is assembled at
+  `~/.local/share/jitllm/sdk/<arch>-<digest>`, where the digest covers the
+  manifest, the artifact lock and the setup program, so SDKs from different
+  inputs never mix. Downloads are cached under `~/.cache/jitllm` by
+  SHA-256 and re-verified on every use; GCC runtime builds are cached there
+  by their build inputs, with their recorded inputs and content digest checked
+  before reuse. Setup checks the declared prerequisites and never installs them.
+- **Reference container.** `ubuntu:24.04` and the Dockerfile frontend by digest, always as
+  `linux/amd64` (RE-015), with the prerequisites from Ubuntu's snapshot
+  `20260923T000000Z`. Only `ca-certificates` and its dependency closure
+  come from the live archive: the base image cannot reach the HTTPS-only
+  snapshot without them.
+
+**Context.** M1's exit requires setup from the declared prerequisites alone
+on a clean host and in the reference container, and D-012 says build-only
+setup needs no Spark access. The D-032 snapshot could only be recopied from
+a Spark, and its hash stops matching as soon as the Spark's packages change.
+D-060's native AArch64 build likewise needs a Spark, or hours under qemu.
+With no tools under `[tools]`, mise writes no lock file at all; the tools'
+interpreter is the one tool it pins well. Ubuntu's snapshot service refuses
+`ubuntu-ports` (HTTP 401), so the arm64 packages were verified against the
+live signed ports index, in which `linux-libc-dev` 6.8.0-139 (still on the
+Sparks) is already superseded by 142. The two differ only in kernel UAPI
+headers.
+
+**Evidence.** From 2026-09-23, on the workstation, the reference container and
+`spark` (GB10, driver 580.178.04):
+
+- **Lock.** Every `.deb` hash comes from a gpgv-verified index: apt.llvm.org's
+  (unchanged since D-032), NVIDIA's CUDA repository's and Ubuntu's. Every hash
+  M0 recorded matched. GCC's signature verified again. mise's archives match
+  its signed `SHASUMS256.asc`, and the Python checksums in `mise.lock` match
+  GitHub's asset digests.
+- **Reproducibility.** The native x86-64 runtime's `libstdc++.a`,
+  `libsupc++.a`, `libatomic.a`, crt objects and headers are byte-identical to
+  D-060's validated build. Before the path mapping, `libgcc.a` differed only
+  in embedded build paths. The workstation and a clean reference container
+  built byte-identical runtimes for both targets. The SDK's `sbsa-linux` CUDA
+  target tree reproduces D-032's snapshot hash exactly.
+- **Cross versus native runtime.** Compared with the runtime `spark` built
+  natively, the cross-built one has identical headers, including
+  `c++config.h`, and a byte-identical `libstdc++.a`, `libsupc++.a`,
+  `libatomic.a` and crt objects. `libgcc.a` and `libgcc_eh.a` differ only in
+  debug info (the sysroot's header paths); with debug sections stripped,
+  every member is identical. Without `gcc.cross_libstdcxx_defines`,
+  `c++config.h` lacked `HAVE_ICONV`, `ICONV_CONST` and `HAVE_SETENV`, and
+  `format.o` lost its iconv path: the generated configure runs `AM_ICONV`
+  only in its native branch.
+- **Execution.** `mise run doctor` passed on the workstation, in the
+  container and on `spark`: tool versions, resolved shared libraries, and C++
+  and CUDA probes. The C++ probes also ran natively, and the cross build ran
+  under qemu-user. D-032's CPU/CUDA smoke and D-060's probes ran on the GB10,
+  cross-built and native, checking 257 CUDA values with PTX JIT disabled; the
+  binaries need only `libc` and `libm`. D-059's GoogleTest suite passed 10/10
+  natively, with ASan+UBSan (symbolized), cross-built under qemu-user (ASan
+  with leak detection off, RE-014), and on `spark` through CTest over SSH,
+  including ASan+UBSan with LeakSanitizer.
+- **Clean setup.** In the reference container, from empty volumes and with
+  the checkout mounted read-only, setup completed, computed the same
+  identity as the workstation and assembled a byte-identical SDK (the same
+  tree digest, both GCC runtimes included).
+
+**Consequences.**
+- D-032's snapshot and D-060's scratch recipes stay as history. M1's
+  toolchain files and presets use the SDK layout.
+- Updating a sysroot package (a glibc security fix, say) is a lock change
+  followed by the cross validation above. Binaries so far need at most
+  `GLIBC_2.38`.
+- Ubuntu's pool drops superseded builds, so the lock lists Launchpad
+  librarian URLs as fallbacks. apt.llvm.org may likewise drop the 22.1.8
+  build when 22.1.9 appears; the persistent download cache covers existing
+  hosts, and a clean host would then need the pin revisited.
+- D-017 categories: mise (MIT), Python (PSF-2.0) and Ubuntu's
+  `binutils-aarch64-linux-gnu` (GPL-3.0-or-later) are build tools and never
+  ship. The sysroot's glibc is the platform runtime D-017 already declares;
+  `linux-libc-dev`'s UAPI headers (GPL-2.0 WITH Linux-syscall-note) are a
+  platform dependency used only at compile time. M1's license audit covers
+  them with the rest of the SDK.
+
+**Reopen if.** DGX OS moves off Ubuntu 24.04 or glibc 2.39; a cross-built
+runtime behaves differently from a native one; a pinned package disappears
+from every listed URL; or mise cannot express a needed pin.
+
 ## D-069: Configurable switching at completed phase boundaries, priority-aware by default  (2026-09-23, status: accepted; amends D-050's "never switch mid-request" scheduling rule, not its admission arithmetic)
 
 **Decision.** Owner's answer on 2026-09-23, after an external architecture
@@ -1055,7 +1167,7 @@ emulation (RE-014).
 need third-party-verifiable builds; or the tiers take too long to run for
 every change.
 
-## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family)
+## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family; the cross build's AArch64 runtime is cross-built per D-070)
 
 **Decision.** The owner asked on 2026-09-23 for GCC 16.2, static linking
 wherever possible, and the newest version of every component that is still
@@ -2957,7 +3069,7 @@ batched driver operations, or a bounded unused-handle cache improve measured
 end-to-end latency enough to justify their occupancy/reclamation cost. Reprobe
 when device, driver, allocation properties, or sharing requirements change.
 
-## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins; libstdc++ development files amended by D-059, then replaced by D-060's statically linked GCC 16.2 runtime)
+## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins; libstdc++ development files amended by D-059, then replaced by D-060's statically linked GCC 16.2 runtime; the Spark sysroot snapshot replaced by D-070's package-built sysroot)
 
 *2026-09-22 follow-up:* the [smoke manifest](experiments/toolchain-smoke/artifacts.json)
 now includes matching `libclang-rt-22-dev` packages for amd64 and arm64.

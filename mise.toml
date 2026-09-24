@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Project tools and tasks (D-012, D-049, D-070). mise pins only the Python that
+# runs tools/; the compilers, CUDA, CMake and Ninja come from the pinned SDK
+# that `mise run setup` provisions from toolchains/. Nothing here changes
+# global compilers or shell startup files. The first time, run `mise trust`.
+
+min_version = "2026.9.12"
+
+[settings]
+lockfile = true
+lockfile_platforms = ["linux-x64", "linux-arm64"]
+
+[tools]
+python = "3.14.7"
+
+[tasks.setup]
+description = "Provision the pinned SDK for this host (idempotent; --dry-run previews)"
+run = "python3 tools/setup-toolchain"
+
+[tasks.doctor]
+description = "Check the SDK and host prerequisites and report toolchain, driver and SDK identities"
+run = "python3 tools/check-toolchain"

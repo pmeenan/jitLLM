@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Ubuntu 24.04 (DGX OS) packages an AArch64 build host needs for the native
+# Spark fallback SDK (D-032, D-049). tools/check-toolchain checks them; setup
+# never installs them. Format as in ubuntu-24.04-x86_64.txt.
+
+# Fetching and unpacking pinned artifacts.
+ca-certificates
+dpkg
+tar
+xz-utils
+bzip2
+gzip
+
+# Building the GCC 16.2 runtime natively (D-060). The native Spark profile
+# also links with the host's GNU binutils (D-032).
+gcc
+g++
+make
+m4
+binutils
+
+# glibc headers and start files for native builds.
+libc6-dev >= 2.39
+
+# Shared libraries of the apt.llvm.org tools in the SDK's bin/ (their
+# packages' Depends, less what the SDK ships). libcurl is llvm-22's
+# debuginfod client, used by llvm-symbolizer, llvm-cov, llvm-objdump and
+# llvm-profdata. libpfm4, which only llvm-exegesis needs, is left out.
+libc6 >= 2.39
+libcurl4t64
+libgcc-s1
+libstdc++6
+libedit2
+libffi8
+libxml2
+libzstd1
+zlib1g

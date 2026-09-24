@@ -1,0 +1,15 @@
+{
+  "name": "jitLLM reference",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": ["--platform=linux/amd64"],
+  "remoteUser": "ubuntu",
+  "workspaceFolder": "/workspaces/jitLLM",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/jitLLM,type=bind",
+  "mounts": [
+    "source=jitllm-sdk,target=/home/ubuntu/.local/share/jitllm,type=volume",
+    "source=jitllm-cache,target=/home/ubuntu/.cache/jitllm,type=volume"
+  ]
+}

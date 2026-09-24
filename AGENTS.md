@@ -129,8 +129,12 @@ affected docs. Until then, these govern.
 | `docs/` | Vision, plan, architecture, decisions, features, rough edges, workflow |
 | `docs/ideation.md` | The kickoff design brief (2026-09-20). Frozen origin document with source links; the living docs above supersede it where they differ |
 | `LICENSE` | Apache-2.0, the license for all jitLLM-authored code (D-003; dependency policy in D-017) |
+| `mise.toml`, `mise.lock` | mise tasks (`setup`, `doctor`) and the pinned Python that runs `tools/` (D-070) |
+| `toolchains/` | The SDK manifest, artifact lock and host prerequisite lists ([README](toolchains/README.md); D-049, D-070) |
+| `tools/` | `setup-toolchain` and `check-toolchain`, which provision and verify the SDK |
+| `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
-The application scaffolding lands in M1 — update this table when it does.
+The rest of the application scaffolding lands in M1 — update this table as it does.
 
 ## Doc map — pull what the task needs, not everything
 
@@ -201,7 +205,8 @@ owner's approval). The vision, the triaged feature matrix, the approved
 architecture, decisions D-001–D-069 and the M1–M8 milestone ladder with exit
 criteria are in place; M0's spikes and reference runs are summarized in
 [docs/m0-record.md](docs/m0-record.md) with their reports under
-`docs/experiments/`. **Next: M1 (Bootstrap)**: SDK provisioning, builds, the
-local check gate, the package skeleton and the confined-job proof
+`docs/experiments/`. **M1 (Bootstrap) is in progress**: the pinned SDK
+(`mise run setup` and `doctor`, D-070) has landed. Next: builds, the local
+check gate, the package skeleton and the confined-job proof
 ([docs/plan.md](docs/plan.md)). No application code exists yet. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

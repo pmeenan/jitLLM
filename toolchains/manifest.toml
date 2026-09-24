@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# jitLLM development SDK manifest (D-012, D-049, D-070).
+#
+# This file says what the SDK contains for each build host. The exact bytes
+# (URLs, SHA-256, sizes and how each was verified) are in artifacts.lock.json.
+# tools/setup-toolchain provisions the SDK from both files; tools/check-toolchain
+# verifies it and reports its identity. Changing either file, or the setup
+# program, gives the SDK a new identity and a new directory, so SDKs built
+# from different inputs never mix.
+
+schema = 1
+
+[sdk]
+# Persistent roots outside the checkout and /tmp (D-049). Environment
+# variables override them; unset, they follow the XDG base directories.
+home = { env = "JITLLM_SDK_HOME", xdg = "XDG_DATA_HOME", default = "~/.local/share", suffix = "jitllm/sdk" }
+cache = { env = "JITLLM_CACHE_HOME", xdg = "XDG_CACHE_HOME", default = "~/.cache", suffix = "jitllm" }
+
+# Pinned versions, for reports. The lock holds the bytes.
+[versions]
+llvm = "22.1.8"          # D-032, D-059
+cuda = "13.4.92"         # Toolkit 13.4.2, CCCL 13.3.4.3.1 (D-032, D-060)
+cmake = "4.4.3"          # D-058
+ninja = "1.13.2"         # D-059
+gcc_runtime = "16.2.0"   # D-060, source-built and linked statically
+glibc = "2.39"           # target floor: sysroot and host libc6-dev (D-070)
+mise = "2026.9.12"       # D-070; mise.toml's min_version
+
+# Build hosts. A component listed for a host is installed into that host's SDK.
+# x86_64: the workstation and the reference container (native and cross).
+# aarch64: the native Spark fallback (D-032).
+[hosts.x86_64]
+triple = "x86_64-linux-gnu"
+deb_arch = "amd64"
+components = ["llvm", "llvm-aarch64-runtimes", "cuda", "cuda-sbsa-target", "cmake", "ninja",
+              "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64"]
+prerequisites = "prerequisites/ubuntu-24.04-x86_64.txt"
+
+[hosts.aarch64]
+triple = "aarch64-linux-gnu"
+deb_arch = "arm64"
+components = ["llvm", "cuda", "cmake", "ninja", "gcc-runtime"]
+prerequisites = "prerequisites/ubuntu-24.04-aarch64.txt"
+
+# Components. `kind` selects the recipe in tools/setup-toolchain. Paths are
+# relative to the SDK root. Lock keys are deb/<package>/<deb arch>,
+# archive/<name>/<host arch> and source/<name>.
+
+[components.llvm]
+# Clang/LLD, compiler-rt sanitizer runtimes and the developer tools from one
+# apt.llvm.org build (D-032, D-059). libz3-4 is Ubuntu's; the other shared
+# libraries the tools need are host prerequisites.
+kind = "debs"
+dest = "pkgs/llvm"
+packages = ["clang-22", "libclang-common-22-dev", "libclang-cpp22", "libclang1-22", "libllvm22",
+            "lld-22", "llvm-22-linker-tools", "libclang-rt-22-dev", "clang-format-22",
+            "clang-tidy-22", "clang-tools-22", "clangd-22", "llvm-22", "llvm-22-runtime",
+            "libz3-4"]
+link = { llvm = "pkgs/llvm/usr/lib/llvm-22" }
+
+[components.llvm-aarch64-runtimes]
+# AArch64 compiler-rt archives, merged into the x86-64 Clang's resource
+# directory so cross sanitizer builds need no -resource-dir.
+kind = "debs"
+arch = "arm64"
+dest = "pkgs/llvm"
+packages = ["libclang-rt-22-dev"]
+select = ["usr/lib/llvm-22/lib/clang/22/lib/linux/*-aarch64*"]
+
+[components.cuda]
+# NVCC, CRT, libNVVM, libnvptxcompiler, cudart and CCCL (D-032).
+kind = "debs"
+dest = "pkgs/cuda"
+packages = ["cuda-nvcc-13-4", "cuda-crt-13-4", "libnvvm-13-4", "libnvptxcompiler-13-4",
+            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cccl-13-4"]
+link = { cuda = "pkgs/cuda/usr/local/cuda-13.4" }
+
+[components.cuda-sbsa-target]
+# The ARM (sbsa-linux) target headers and runtime for NVCC's cross builds.
+kind = "debs"
+arch = "arm64"
+dest = "pkgs/cuda"
+packages = ["cuda-nvcc-13-4", "cuda-crt-13-4", "libnvvm-13-4", "libnvptxcompiler-13-4",
+            "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cccl-13-4"]
+select = ["usr/local/cuda-13.4/targets/sbsa-linux"]
+
+[components.cmake]
+kind = "archive"
+artifact = "archive/cmake"
+dest = "cmake"
+strip = 1
+
+[components.ninja]
+kind = "archive"
+artifact = "archive/ninja"
+dest = "ninja"
+
+[components.sysroot-aarch64]
+# Spark target sysroot from pinned Ubuntu 24.04 arm64 packages (D-070):
+# glibc at the Sparks' version and the kernel UAPI headers. Nothing links
+# a dynamic C++ runtime from here; the GCC runtime below is static.
+kind = "sysroot"
+arch = "arm64"
+dest = "sysroot/aarch64-linux-gnu"
+packages = ["libc6", "libc6-dev", "linux-libc-dev"]
+links = { lib = "usr/lib" }
+
+[components.gcc-runtime]
+# GCC 16.2's C++ runtime, built natively for the build host (D-060).
+kind = "gcc"
+target = "host"
+dest = "gcc/{triple}"
+
+[components.gcc-runtime-aarch64]
+# The same runtime for the Spark target, cross-built against the sysroot
+# with the host's aarch64 binutils (D-070), and placed inside the sysroot,
+# where Clang searches a GCC install's libraries (D-060).
+kind = "gcc"
+target = "aarch64-linux-gnu"
+sysroot = "sysroot/aarch64-linux-gnu"
+dest = "sysroot/aarch64-linux-gnu/opt/gcc"
+
+[gcc]
+# Inputs: source/gcc and the source/gcc-prerequisite/* archives, unpacked
+# in-tree as contrib/download_prerequisites does. --build/--host/--target
+# (and --with-sysroot for the cross build) are added per component.
+configure = [
+  "--enable-languages=c,c++", "--disable-multilib", "--disable-bootstrap",
+  "--with-gcc-major-version-only", "--enable-default-pie",
+  "--enable-threads=posix", "--enable-clocale=gnu", "--enable-libstdcxx-time=yes",
+  "--with-default-libstdcxx-abi=new", "--enable-gnu-unique-object",
+  "--disable-libsanitizer", "--disable-libgomp", "--disable-libitm", "--disable-libssp",
+  "--disable-libvtv", "--disable-libquadmath", "--disable-libquadmath-support",
+  "--disable-nls", "--disable-werror",
+]
+# The only outputs jitLLM uses (D-060), copied into the native install layout.
+# libstdc++exp.a (std::stacktrace, libbacktrace) is deliberately absent.
+headers = "include/c++/16"
+libraries = ["libstdc++.a", "libsupc++.a", "libatomic.a"]
+support = ["crt*.o", "libgcc.a", "libgcc_eh.a"]
+licenses = ["COPYING", "COPYING3", "COPYING.LIB", "COPYING3.LIB", "COPYING.RUNTIME"]
+# GCC 16.2's generated libstdc++ configure runs its iconv check only in its
+# native branch, and its Linux cross branch never records iconv or setenv,
+# both of which glibc provides. The cross build adds the results the native
+# build detects, so both runtimes get the same c++config.h and the same code
+# (D-070; without this, format.o loses iconv-based locale conversion).
+cross_libstdcxx_defines = ["HAVE_ICONV 1", "ICONV_CONST", "HAVE_SETENV 1"]
+
+# Tools exposed in <sdk>/bin, by the path they resolve to. NVCC is not among
+# them: it finds nvcc.profile beside the path it was invoked by, so it is
+# always run as <sdk>/cuda/bin/nvcc.
+[bin]
+clang = "llvm/bin/clang"
+"clang++" = "llvm/bin/clang++"
+"clang-scan-deps" = "llvm/bin/clang-scan-deps"
+"ld.lld" = "llvm/bin/ld.lld"
+"clang-format" = "llvm/bin/clang-format"
+"clang-tidy" = "llvm/bin/clang-tidy"
+clangd = "llvm/bin/clangd"
+"llvm-symbolizer" = "llvm/bin/llvm-symbolizer"
+"llvm-ar" = "llvm/bin/llvm-ar"
+"llvm-nm" = "llvm/bin/llvm-nm"
+"llvm-objcopy" = "llvm/bin/llvm-objcopy"
+"llvm-objdump" = "llvm/bin/llvm-objdump"
+"llvm-ranlib" = "llvm/bin/llvm-ranlib"
+"llvm-readelf" = "llvm/bin/llvm-readelf"
+"llvm-strip" = "llvm/bin/llvm-strip"
+"llvm-cov" = "llvm/bin/llvm-cov"
+"llvm-profdata" = "llvm/bin/llvm-profdata"
+cmake = "cmake/bin/cmake"
+ctest = "cmake/bin/ctest"
+cpack = "cmake/bin/cpack"
+ninja = "ninja/ninja"

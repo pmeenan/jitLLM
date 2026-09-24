@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Ubuntu 24.04 packages an x86-64 build host needs for the jitLLM SDK
+# (D-049). tools/check-toolchain checks them; setup never installs them.
+# Format: `package`, `package >= version` or `package = version`.
+
+# Fetching and unpacking pinned artifacts.
+ca-certificates
+dpkg
+tar
+xz-utils
+bzip2
+gzip
+
+# Building the GCC 16.2 runtimes (D-060): the system compiler builds GCC,
+# and the aarch64 binutils assemble and archive the cross-built runtime (D-070).
+gcc
+g++
+make
+m4
+binutils
+binutils-aarch64-linux-gnu
+
+# Native x86-64 builds use the host's glibc headers and start files, at the
+# Sparks' glibc (D-032).
+libc6-dev >= 2.39
+
+# Shared libraries of the apt.llvm.org tools in the SDK's bin/ (their
+# packages' Depends, less what the SDK ships). libcurl is llvm-22's
+# debuginfod client, used by llvm-symbolizer, llvm-cov, llvm-objdump and
+# llvm-profdata. libpfm4, which only llvm-exegesis needs, is left out.
+libc6 >= 2.39
+libcurl4t64
+libgcc-s1
+libstdc++6
+libedit2
+libffi8
+libxml2
+libzstd1
+zlib1g
+
+# AArch64 CPU tests under qemu-user; binfmt registration is checked too (D-061).
+qemu-user-static

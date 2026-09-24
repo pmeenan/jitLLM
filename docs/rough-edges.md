@@ -27,6 +27,20 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-015: A multi-arch image digest can run the wrong architecture from the local image store  (2026-09-23, status: worked-around)
+
+Workstation, Docker 29.8.1 with the containerd image store and qemu binfmt
+registered. `docker run ubuntu:24.04@sha256:008173c2…` (the multi-platform
+index digest) ran the **arm64** image under qemu-user, with only the warning
+"The requested image's platform (linux/arm64/v8) does not match the detected
+host platform". An arm64 `ubuntu:24.04` pulled for the D-061 qemu tests was
+the local content for that digest. With binfmt registered, nothing fails, so
+builds and tests silently run emulated for the wrong target. Workaround: the
+reference container's `FROM` and every `docker run` or `docker build` of it
+name `--platform linux/amd64` (the Dockerfile skips BuildKit's
+`FromPlatformFlagConstDisallowed` check on purpose), and `doctor` inside the
+container reports the architecture.
+
 ## RE-014: LeakSanitizer aborts AArch64 tests under qemu-user  (2026-09-23, status: worked-around)
 
 Workstation (x86-64), Ubuntu `qemu-user-static` 1:8.2.2+ds-0ubuntu1.18 via

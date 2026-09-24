@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# The reference container's build context needs only these; the checkout is
+# mounted at run time.
+*
+!toolchains/prerequisites/
+!mise.toml
+!mise.lock
