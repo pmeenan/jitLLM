@@ -95,6 +95,9 @@ and write to `build/<preset>/`:
 | `cpu` | x86-64 with no CUDA toolkit | On the workstation |
 | `cross` | AArch64 for DGX Spark, CUDA for `sm_121` | Under qemu-user, GPU tests skipped; or on a Spark with `--host` |
 | `spark-native` | AArch64, built on a Spark (a diagnostic fallback) | On that Spark |
+| `cpu-asan` | `cpu` with ASan, UBSan and LeakSanitizer | On the workstation |
+| `cross-asan` | `cross` with ASan and UBSan | Under qemu-user without leak detection; or on a Spark with it, with `--host` |
+| `cross-tsan` | `cross` with ThreadSanitizer | Only on a Spark, with `--host` |
 
 For example, `mise run test -- native cpu cross` runs every workstation
 profile, and arguments after a second `--` go to CTest
@@ -112,6 +115,26 @@ To run CMake by hand, point `JITLLM_SDK` at the SDK and use its `cmake`:
 export JITLLM_SDK=$(tools/setup-toolchain --print-root)
 "$JITLLM_SDK/bin/cmake" --preset native && "$JITLLM_SDK/bin/cmake" --build --preset native
 ```
+
+## Checks
+
+Before handing off a change, run the local check gate (D-061; there is no
+hosted CI yet). Each tier ends with a summary of its steps and the host,
+commit and SDK they ran with:
+
+| Task | When | Runs |
+| --- | --- | --- |
+| `mise run check` | Every change | clang-format, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
+| `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`, and the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network. Needs Docker |
+| `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests and leak detection included |
+
+Check builds configure afresh with the build tool's `--locked`: the core
+profile, from locked sources only, with nothing kept from a build
+directory's cache. The steps ignore the caller's compiler, CMake, test and
+sanitizer environment (`CXXFLAGS`, `GTEST_FILTER`, `ASAN_OPTIONS` and the
+like; `tools/check` lists them). The reference build provisions its SDK inside the
+container, into the `jitllm-sdk` and `jitllm-cache` volumes the dev
+container also uses. The first run takes as long as `mise run setup`.
 
 ## License
 

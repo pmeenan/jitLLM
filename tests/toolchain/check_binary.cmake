@@ -4,10 +4,12 @@
 # Checks one executable against the link contract (D-011, D-060, D-070): the
 # target's ELF machine and dynamic loader, glibc as its only shared
 # libraries (the C++ and CUDA runtimes are static), no symbol version newer
-# than GLIBC_MAX (if given), and no RPATH or RUNPATH.
+# than GLIBC_MAX (if given), and no RPATH or RUNPATH. A sanitizer build
+# (SANITIZED) may also need glibc's libresolv, which the sanitizer runtimes
+# use.
 #
 #   cmake -DREADELF=<llvm-readelf> -DARCH=<x86_64|aarch64> [-DGLIBC_MAX=<x.y>]
-#         -DBINARY=<file> -P check_binary.cmake
+#         [-DSANITIZED=ON] -DBINARY=<file> -P check_binary.cmake
 cmake_minimum_required(VERSION 4.4.3)
 
 foreach(var IN ITEMS READELF ARCH BINARY)
@@ -44,12 +46,16 @@ if(NOT elf MATCHES "\\[Requesting program interpreter: ${loader_pattern}\\]")
   list(APPEND problems "dynamic loader is not ${loader}")
 endif()
 cmake_path(GET loader FILENAME loader_name)
+set(glibc_libraries "^lib(c|m)\\.so\\.6$")
+if(SANITIZED)
+  set(glibc_libraries "^(lib(c|m)\\.so\\.6|libresolv\\.so\\.2)$")
+endif()
 string(REGEX MATCHALL "\\(NEEDED\\) +Shared library: \\[[^]\n]+\\]" entries "${elf}")
 set(needed "")
 foreach(entry IN LISTS entries)
   string(REGEX REPLACE ".*\\[(.*)\\]" "\\1" library "${entry}")
   list(APPEND needed "${library}")
-  if(NOT library STREQUAL loader_name AND NOT library MATCHES "^lib(c|m)\\.so\\.6$")
+  if(NOT library STREQUAL loader_name AND NOT library MATCHES "${glibc_libraries}")
     list(APPEND problems "needs ${library}, but only glibc may be dynamic (D-060)")
   endif()
 endforeach()

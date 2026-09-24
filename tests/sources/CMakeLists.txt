@@ -31,8 +31,8 @@ add_test(NAME sources.closure
 set_tests_properties(sources.lock sources.receipt sources.closure PROPERTIES LABELS sources)
 
 # The mechanism's gates on fixtures. They build natively for the host, so
-# they run once, in the CPU-only profile.
-if(NOT CMAKE_CROSSCOMPILING AND NOT JITLLM_CUDA)
+# they run once, in the CPU-only profile (not again in its sanitizer build).
+if(NOT CMAKE_CROSSCOMPILING AND NOT JITLLM_CUDA AND NOT JITLLM_SANITIZE)
   add_test(NAME sources.mechanism
            COMMAND ${JITLLM_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/mechanism_test.py
                    --repo ${PROJECT_SOURCE_DIR} --work ${CMAKE_CURRENT_BINARY_DIR}/mechanism

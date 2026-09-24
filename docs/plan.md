@@ -153,11 +153,30 @@ gate in force and the first `jitllm` binary running on a Spark.
       `check:full` with the Local check gate; vendored units with M2's first
       adapted kernel; build-host tools, which the lock refuses until the first
       generator needs them.
-- [ ] **Local check gate** (D-061): the `check`, `check:full` and
+- [x] **Local check gate** (D-061): the `check`, `check:full` and
       `check:spark` tasks with D-061's contents. Benchmarks join the gate as
       regressions when their harnesses and baselines exist (the EXL3 kernel
       and parity benchmarks from M2/M3, trace replay from M4/M5); thresholds
       follow measurement.
+      *Landed:* `tools/check` behind `mise run check`, `check:full` and
+      `check:spark -- --host <spark>`; coverage and usage are in
+      [README.md](../README.md#checks). Every tier reports each step's result
+      with the host, commit and SDK. Check builds use the core profile from
+      locked sources, configure afresh and ignore the caller's compiler,
+      CMake, test and sanitizer environment. Formatting covers tracked and
+      new owned sources; clang-tidy checks C++ units once per architecture,
+      while NVCC's `.cu` units are formatted only. Sanitizer builds include
+      GoogleTest and require deliberate defects to produce sanitizer reports;
+      leak detection is off only under qemu-user (RE-014). The reference
+      build checks the core closure from an empty source download cache and
+      runs with no network; its provisioned SDK persists separately.
+      *Verified 2026-09-24:* `check:full` (including `check`) on the workstation; `check:spark` on `spark` (GB10, driver 580.178.04).
+      *Owned elsewhere:* REUSE lint and the embedded-header check join
+      `check` with License and provenance. The `.deb`, its install test and
+      the package inventory against the receipt, NOTICE and SBOM join
+      `check:full` with the Package item. `jitllm doctor` joins `check:spark`
+      with the Smoke binary item. The GPU, VMM, I/O and ARM stress suites
+      join it in M2.
 - [ ] **License and provenance** (D-017, D-029): `LICENSES/`, REUSE
       metadata and lint, the embedded-header check, a root `NOTICE`, and an
       SBOM generated with the package. Audit the notices of what ships and

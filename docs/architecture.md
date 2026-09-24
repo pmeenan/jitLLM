@@ -134,7 +134,7 @@
   tool selection and shared workstation/reference-container provisioning.
   D-058 and D-059 pin CMake, Ninja, GoogleTest and the LLVM developer tools;
   D-061 replaces hosted CI with local `check`, `check:full` and
-  `check:spark` tiers. Implementation is M1 work.
+  `check:spark` tiers (`tools/check`, the `mise run check` tasks).
 - **Errors.** jitLLM code builds with `-fno-exceptions`. Fallible operations
   return `std::expected` values, and only a violated invariant or failed heap
   allocation is fatal (D-066; [errors and faults](#errors-faults-startup-and-shutdown)).

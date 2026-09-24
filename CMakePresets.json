@@ -40,13 +40,34 @@
       "displayName": "Native build on a DGX Spark (diagnostic fallback)",
       "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-native.cmake",
       "cacheVariables": {"JITLLM_CUDA": "ON"}
+    },
+    {
+      "name": "cpu-asan",
+      "inherits": "cpu",
+      "displayName": "x86-64 native, CPU only, ASan+UBSan with leak detection",
+      "cacheVariables": {"JITLLM_SANITIZE": "address;undefined"}
+    },
+    {
+      "name": "cross-asan",
+      "inherits": "cross",
+      "displayName": "AArch64 cross build, ASan+UBSan (leak detection only on a Spark)",
+      "cacheVariables": {"JITLLM_SANITIZE": "address;undefined"}
+    },
+    {
+      "name": "cross-tsan",
+      "inherits": "cross",
+      "displayName": "AArch64 cross build, ThreadSanitizer (tests run only on a Spark)",
+      "cacheVariables": {"JITLLM_SANITIZE": "thread"}
     }
   ],
   "buildPresets": [
     {"name": "native", "configurePreset": "native"},
     {"name": "cpu", "configurePreset": "cpu"},
     {"name": "cross", "configurePreset": "cross"},
-    {"name": "spark-native", "configurePreset": "spark-native"}
+    {"name": "spark-native", "configurePreset": "spark-native"},
+    {"name": "cpu-asan", "configurePreset": "cpu-asan"},
+    {"name": "cross-asan", "configurePreset": "cross-asan"},
+    {"name": "cross-tsan", "configurePreset": "cross-tsan"}
   ],
   "testPresets": [
     {
@@ -65,6 +86,38 @@
     {"name": "cpu", "inherits": "no-gpu", "configurePreset": "cpu"},
     {"name": "cross", "inherits": "no-gpu", "configurePreset": "cross"},
     {"name": "cross-remote", "inherits": "base", "configurePreset": "cross"},
-    {"name": "spark-native", "inherits": "base", "configurePreset": "spark-native"}
+    {"name": "spark-native", "inherits": "base", "configurePreset": "spark-native"},
+    {
+      "name": "cpu-asan",
+      "inherits": "no-gpu",
+      "configurePreset": "cpu-asan",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1",
+        "ASAN_SYMBOLIZER_PATH": "$env{JITLLM_SDK}/bin/llvm-symbolizer"
+      }
+    },
+    {
+      "name": "cross-asan",
+      "inherits": "no-gpu",
+      "configurePreset": "cross-asan",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=0",
+        "UBSAN_OPTIONS": "print_stacktrace=1",
+        "ASAN_SYMBOLIZER_PATH": "$env{JITLLM_SDK}/bin/llvm-symbolizer"
+      }
+    },
+    {
+      "name": "cross-asan-remote",
+      "inherits": "base",
+      "configurePreset": "cross-asan",
+      "environment": {"ASAN_OPTIONS": "detect_leaks=1", "UBSAN_OPTIONS": "print_stacktrace=1"}
+    },
+    {
+      "name": "cross-tsan-remote",
+      "inherits": "base",
+      "configurePreset": "cross-tsan",
+      "environment": {"TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"}
+    }
   ]
 }

@@ -136,7 +136,7 @@ affected docs. Until then, these govern.
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
-| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test and deploy tasks) and `run-target` (runs cross-built tests under qemu-user or over SSH) |
+| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test and deploy tasks), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
 The rest of the application scaffolding lands in M1 — update this table as it does.
@@ -212,9 +212,10 @@ criteria are in place; M0's spikes and reference runs are summarized in
 [docs/m0-record.md](docs/m0-record.md) with their reports under
 `docs/experiments/`. **M1 (Bootstrap) is in progress**: the pinned SDK
 (`mise run setup` and `doctor`, D-070), the build (`mise run build`,
-`test` and `deploy` over four CMake presets) and the source lock
-(`mise run prepare`, GoogleTest, the build receipt, D-057) have landed.
-Next: the local check gate, license and provenance, the package skeleton
+`test` and `deploy` over CMake presets, sanitizer presets included), the
+source lock (`mise run prepare`, GoogleTest, the build receipt, D-057) and
+the local check gate (`mise run check`, `check:full` and `check:spark`,
+D-061) have landed. Next: license and provenance, the package skeleton
 and the confined-job proof ([docs/plan.md](docs/plan.md)). No application code
 exists yet. Keep this paragraph short and current when plan.md milestone
 status changes (rule 4).

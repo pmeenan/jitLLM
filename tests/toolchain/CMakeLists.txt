@@ -14,6 +14,11 @@ if(target_arch STREQUAL "aarch64")
 else()
   set(glibc_max "")
 endif()
+if(JITLLM_SANITIZE)
+  set(sanitized ON)
+else()
+  set(sanitized OFF)
+endif()
 
 function(jitllm_toolchain_test target)
   target_link_libraries(${target} PRIVATE jitllm_warnings)
@@ -21,7 +26,7 @@ function(jitllm_toolchain_test target)
   add_test(NAME toolchain.${target} COMMAND ${target})
   add_test(NAME toolchain.${target}.binary
            COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DARCH=${target_arch}
-                   -DGLIBC_MAX=${glibc_max} -DBINARY=$<TARGET_FILE:${target}>
+                   -DGLIBC_MAX=${glibc_max} -DSANITIZED=${sanitized} -DBINARY=$<TARGET_FILE:${target}>
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_binary.cmake)
   set_tests_properties(toolchain.${target} toolchain.${target}.binary PROPERTIES LABELS toolchain)
 endfunction()
@@ -37,7 +42,7 @@ jitllm_gtest(gtest_contract_test TEST_PREFIX toolchain.gtest. TEST_FILTER -Negat
              PROPERTIES LABELS toolchain)
 add_test(NAME toolchain.gtest_contract_test.binary
          COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DARCH=${target_arch}
-                 -DGLIBC_MAX=${glibc_max} -DBINARY=$<TARGET_FILE:gtest_contract_test>
+                 -DGLIBC_MAX=${glibc_max} -DSANITIZED=${sanitized} -DBINARY=$<TARGET_FILE:gtest_contract_test>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_binary.cmake)
 add_test(NAME toolchain.gtest_negative_control
          COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:gtest_contract_test>
@@ -53,6 +58,20 @@ add_test(NAME toolchain.sdk_path
                  -DTOOLCHAIN=${CMAKE_TOOLCHAIN_FILE} -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/sdk-path
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_sdk_path.cmake)
 set_tests_properties(toolchain.sdk_path PROPERTIES LABELS toolchain)
+
+# In a sanitizer build, each sanitizer must report its deliberate defect
+# (D-061). The control builds everywhere, so clang-tidy sees it.
+add_executable(sanitizer_control sanitizer_control.cc)
+target_link_libraries(sanitizer_control PRIVATE jitllm_warnings)
+jitllm_test_executable(sanitizer_control)
+if(JITLLM_SANITIZE)
+  list(JOIN JITLLM_SANITIZE "|" sanitizers)
+  add_test(NAME toolchain.sanitizer_control
+           COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:sanitizer_control> -DSANITIZERS=${sanitizers}
+                   "-DEMULATOR=$<JOIN:$<TARGET_PROPERTY:sanitizer_control,CROSSCOMPILING_EMULATOR>,|>"
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/check_sanitizer.cmake)
+  set_tests_properties(toolchain.sanitizer_control PROPERTIES LABELS toolchain)
+endif()
 
 if(JITLLM_CUDA)
   add_executable(cuda_contract_test cuda_contract_test.cu)

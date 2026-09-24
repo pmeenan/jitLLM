@@ -38,6 +38,10 @@ RUN tar -xzf /tmp/mise.tar.gz -C /tmp \
  && install -m 0755 /tmp/mise/bin/mise /usr/local/bin/mise \
  && rm -rf /tmp/mise /tmp/mise.tar.gz
 
+# The check gate mounts a fresh volume here for its copy of the checkout
+# (tools/check); a new named volume inherits this ownership.
+RUN install -d -o ubuntu -g ubuntu /workspaces
+
 # The image's existing uid 1000 user. The SDK home and cache exist here so
 # fresh named volumes mounted on them inherit this ownership.
 USER ubuntu

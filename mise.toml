@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# Project tools and tasks (D-012, D-049, D-057, D-070). mise pins only the
+# Project tools and tasks (D-012, D-049, D-057, D-061, D-070). mise pins only the
 # Python that runs tools/; the compilers, CUDA, CMake and Ninja come from the
 # pinned SDK that `mise run setup` provisions from toolchains/, and the
 # third-party sources from third_party/sources.lock.json. Nothing here changes
 # global compilers or shell startup files. The first time, run `mise trust`.
 # Arguments after the task name go to the tool, for example
-# `mise run test -- cross` or `mise run test -- cross --host <spark>`.
+# `mise run test -- cross`, `mise run test -- cross --host <spark>` or
+# `mise run check:spark -- --host <spark>`.
 
 min_version = "2026.9.12"
 
@@ -35,9 +36,21 @@ description = "Configure and build CMake presets with the SDK (default: this hos
 run = "python3 tools/build build"
 
 [tasks.test]
-description = "Build presets and run their tests; --host runs the cross build's tests on a Spark over SSH"
+description = "Build presets and run their tests; --host runs a cross build's tests on a Spark over SSH"
 run = "python3 tools/build test"
 
 [tasks.deploy]
 description = "Build the cross preset and copy it to a Spark over SSH (--host is required)"
 run = "python3 tools/build deploy"
+
+[tasks.check]
+description = "The check gate for every change: formatting, clang-tidy, tooling tests, native, CPU-only and cross builds and tests"
+run = "python3 tools/check"
+
+[tasks."check:full"]
+description = "check, the sanitizer builds and the offline, copyleft-disabled build in the reference container"
+run = "python3 tools/check full"
+
+[tasks."check:spark"]
+description = "The cross, ASan and TSan builds' tests on a Spark over SSH, GPU tests included (--host is required)"
+run = "python3 tools/check spark"

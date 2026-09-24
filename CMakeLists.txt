@@ -46,6 +46,32 @@ if(JITLLM_CUDA)
   add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fno-exceptions>")
 endif()
 
+# Sanitizer builds for D-061's check tiers (the `*-asan` and `*-tsan`
+# presets): every target, tests and third-party code included, is
+# instrumented. A UBSan report ends the process as an ASan one does; the
+# test presets make ThreadSanitizer's do so too. NVCC splits -Xcompiler
+# values at commas, so each sanitizer gets its own flag.
+set(JITLLM_SANITIZE "" CACHE STRING "Sanitizers to build with (D-061): address;undefined, thread, or empty")
+set(_jitllm_sanitizers address undefined thread)
+foreach(_jitllm_sanitizer IN LISTS JITLLM_SANITIZE)
+  if(NOT _jitllm_sanitizer IN_LIST _jitllm_sanitizers)
+    message(FATAL_ERROR "JITLLM_SANITIZE names ${_jitllm_sanitizer}; it takes ${_jitllm_sanitizers}")
+  endif()
+endforeach()
+if("thread" IN_LIST JITLLM_SANITIZE AND "address" IN_LIST JITLLM_SANITIZE)
+  message(FATAL_ERROR "JITLLM_SANITIZE cannot combine thread with address")
+endif()
+foreach(_jitllm_sanitizer IN LISTS JITLLM_SANITIZE)
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=${_jitllm_sanitizer}>"
+                      "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fsanitize=${_jitllm_sanitizer}>")
+  add_link_options("-fsanitize=${_jitllm_sanitizer}")
+endforeach()
+if(JITLLM_SANITIZE)
+  message(STATUS "Sanitizers: ${JITLLM_SANITIZE}")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-sanitize-recover=all;-fno-omit-frame-pointer>"
+                      "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fno-sanitize-recover=all,-fno-omit-frame-pointer>")
+endif()
+
 # A build directory keeps the compilers and initial flags of its first
 # configure, whatever the toolchain file now says. If JITLLM_SDK names another
 # SDK than that one, the two would mix: require a fresh configure.

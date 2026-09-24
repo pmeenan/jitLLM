@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for tools/build, tools/run-target and the presets they rely on (no SDK needed)."""
 
+import contextlib
 import importlib.machinery
+import io
 import importlib.util
 import json
 import os
@@ -33,11 +35,25 @@ run_target = load_script("run-target")
 PRESETS = json.loads((REPO / "CMakePresets.json").read_text())
 
 
+def inherited(kind: str, name: str, key: str, default=None):
+    """A preset's value for key, following `inherits` as CMake does (single inheritance here)."""
+    presets = {p["name"]: p for p in PRESETS[kind]}
+    preset = presets[name]
+    while key not in preset and "inherits" in preset:
+        preset = presets[preset["inherits"]]
+    return preset.get(key, default)
+
+
+def environment(test_preset: str) -> dict:
+    return inherited("testPresets", test_preset, "environment", {})
+
+
 class Presets(unittest.TestCase):
     def test_driver_names_existing_presets(self):
         configure = {p["name"] for p in PRESETS["configurePresets"]}
         tests = {p["name"]: p for p in PRESETS["testPresets"]}
-        self.assertEqual(set(build.configure_presets()), {"native", "cpu", "cross", "spark-native"})
+        self.assertEqual(set(build.configure_presets()),
+                         {"native", "cpu", "cross", "spark-native", "cpu-asan", "cross-asan", "cross-tsan"})
         self.assertLessEqual(set(build.DEFAULT_PRESET.values()), configure)
         for preset, remote in build.REMOTE_TEST_PRESET.items():
             self.assertIn(preset, configure)
@@ -45,14 +61,37 @@ class Presets(unittest.TestCase):
 
     def test_every_visible_preset_has_a_toolchain_file_and_build_and_test_presets(self):
         builds = {p["name"] for p in PRESETS["buildPresets"]}
-        tests = {p["name"] for p in PRESETS["testPresets"]}
+        tests = set(build.test_presets())
         for preset in PRESETS["configurePresets"]:
             if preset.get("hidden"):
                 continue
-            toolchain = preset["toolchainFile"].replace("${sourceDir}", str(REPO))
+            name = preset["name"]
+            toolchain = inherited("configurePresets", name, "toolchainFile").replace("${sourceDir}", str(REPO))
             self.assertTrue(pathlib.Path(toolchain).is_file(), toolchain)
-            self.assertIn(preset["name"], builds)
-            self.assertIn(preset["name"], tests)
+            self.assertIn(name, builds)
+            if name == "cross-tsan":  # ThreadSanitizer is untested under qemu-user (D-061): Spark only
+                self.assertIn(name, build.REMOTE_TEST_PRESET)
+                self.assertNotIn(name, tests)
+            else:
+                self.assertIn(name, tests)
+
+    def test_sanitizer_presets_and_their_run_time_options(self):
+        sanitize = lambda name: inherited("configurePresets", name, "cacheVariables")  # noqa: E731
+        self.assertEqual(sanitize("cpu-asan"), {"JITLLM_SANITIZE": "address;undefined"})
+        self.assertEqual(sanitize("cross-asan"), {"JITLLM_SANITIZE": "address;undefined"})
+        self.assertEqual(sanitize("cross-tsan"), {"JITLLM_SANITIZE": "thread"})
+        for name in ("cpu-asan", "cross-asan", "cross-tsan"):
+            self.assertEqual(inherited("configurePresets", name, "binaryDir"), "${sourceDir}/build/${presetName}")
+        # Leak detection is on natively and on a Spark, off only under qemu-user (RE-014).
+        self.assertEqual(environment("cpu-asan")["ASAN_OPTIONS"], "detect_leaks=1")
+        self.assertEqual(environment("cross-asan")["ASAN_OPTIONS"], "detect_leaks=0")
+        self.assertEqual(environment("cross-asan-remote")["ASAN_OPTIONS"], "detect_leaks=1")
+        self.assertIn("halt_on_error=1", environment("cross-tsan-remote")["TSAN_OPTIONS"])
+        for name in ("cpu-asan", "cross-asan", "cross-asan-remote"):
+            self.assertEqual(environment(name)["UBSAN_OPTIONS"], "print_stacktrace=1")
+        # Only the options run-target forwards reach a Spark.
+        for name in ("cross-asan-remote", "cross-tsan-remote"):
+            self.assertLessEqual(set(environment(name)), set(run_target.FORWARD_NAMES))
 
     def test_build_dir_matches_the_presets_binary_dir(self):
         base = next(p for p in PRESETS["configurePresets"] if p["name"] == "base")
@@ -72,7 +111,7 @@ class Presets(unittest.TestCase):
                 preset = tests[preset["inherits"]]
 
         self.assertEqual({n for n in tests if not tests[n].get("hidden") and not excludes_gpu(n)},
-                         {"cross-remote", "spark-native"})
+                         {"cross-remote", "cross-asan-remote", "cross-tsan-remote", "spark-native"})
 
 
 class ConfiguredSdk(unittest.TestCase):
@@ -94,13 +133,27 @@ class CtestArgs(unittest.TestCase):
         self.assertEqual(build.split_ctest_args(["test"]), (["test"], []))
 
 
+class ConfigureArgs(unittest.TestCase):
+    SDK = types.SimpleNamespace(root=pathlib.Path("/sdk"))
+
+    def test_locked_selects_the_core_profile_from_locked_sources(self):
+        self.assertEqual(build.configure_args(self.SDK, "cpu", False, True),
+                         ["--preset", "cpu", "-DJITLLM_SDK=/sdk", "-DJITLLM_REQUIRE_LOCKED_SOURCES=ON",
+                          "-DJITLLM_MODULES="])
+
+    def test_unlocked_clears_a_previous_checks_setting_and_keeps_modules(self):
+        args = build.configure_args(self.SDK, "cpu", True, False)
+        self.assertEqual(args, ["--preset", "cpu", "-DJITLLM_SDK=/sdk", "-DJITLLM_REQUIRE_LOCKED_SOURCES=OFF",
+                                "--fresh"])
+
+
 class TestDriverEnvironment(unittest.TestCase):
-    def run_driver(self, *args):
+    def run_driver(self, *args, preset="cross"):
         sdk = types.SimpleNamespace(root=pathlib.Path("/sdk"), arch="x86_64")
         ambient = {"JITLLM_TARGET_HOST": "stale-host", "JITLLM_TARGET_DIR": "/stale/build",
                    "JITLLM_TARGET_SSH_CONTROL": "/stale/socket", "GTEST_FILTER": "Example.*"}
         with mock.patch.dict(os.environ, ambient), \
-                mock.patch.object(sys, "argv", ["build", "test", "cross", *args]), \
+                mock.patch.object(sys, "argv", ["build", "test", preset, *args]), \
                 mock.patch.object(build, "ready_sdk", return_value=sdk), \
                 mock.patch.object(build, "configured_sdk", return_value=None), \
                 mock.patch.object(build, "deploy", return_value="/new/build") as deploy, \
@@ -128,6 +181,22 @@ class TestDriverEnvironment(unittest.TestCase):
         self.assertNotIn("JITLLM_TARGET_SSH_CONTROL", env)
         for call in calls[:-1]:
             self.assertNotIn("JITLLM_TARGET_HOST", call.args[1])
+
+    def test_sanitizer_cross_builds_use_their_remote_presets(self):
+        for preset in ("cross-asan", "cross-tsan"):
+            calls, _ = self.run_driver("--host", "new-host", "--locked", preset=preset)
+            self.assertIn("-DJITLLM_REQUIRE_LOCKED_SOURCES=ON", calls[0].args[0])
+            self.assertEqual(calls[-1].args[0][1:3], ["--preset", f"{preset}-remote"])
+
+    def test_thread_sanitizer_tests_need_a_spark(self):
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", ["build", "test", "cross-tsan"]), \
+                mock.patch.object(build, "ready_sdk", return_value=types.SimpleNamespace(arch="x86_64")), \
+                mock.patch.object(build, "run") as run, contextlib.redirect_stderr(stderr), \
+                self.assertRaises(SystemExit):
+            build.main()
+        run.assert_not_called()
+        self.assertIn("cross-tsan's tests run only on a Spark", stderr.getvalue())
 
 
 class PathMapping(unittest.TestCase):

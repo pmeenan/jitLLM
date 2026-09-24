@@ -12,8 +12,8 @@ lighter than a team with maintainers. The default path from idea to commit is
 
 1. **Build.** One agent implements the task (scope from
    [plan.md](plan.md)), adds or updates tests for any behaviour change, runs
-   the repo's checks (D-061's local `check`, `check:full` and `check:spark`
-   tiers once M1 lands them; there is no hosted CI yet), and writes a
+   the repo's checks (D-061's local `mise run check`, `check:full` and
+   `check:spark` tiers; there is no hosted CI yet), and writes a
    handoff note: what changed, what was verified, on which host, and what
    was not run and why. The note goes in the agent's final message, for the
    commit; the docs themselves carry at most a one-line provenance stamp.

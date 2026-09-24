@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Runs the local check gate's tiers (D-061).
+
+    tools/check [check]              every change, on the workstation
+    tools/check full                 toolchain, dependency, packaging and blast-radius changes
+    tools/check spark --host HOST    what needs a Spark, run there over SSH
+    tools/check TIER --list          the tier's steps, without running them
+
+`mise run check`, `mise run check:full` and `mise run check:spark -- --host
+HOST` run these. `check` checks formatting, runs the tooling tests, builds
+and tests the native, CPU-only and cross presets (cross under qemu-user),
+then runs clang-tidy. `full` adds the sanitizer builds and the offline,
+copyleft-disabled build in the reference container. `spark` deploys the
+cross, cross-asan and cross-tsan builds to HOST and runs their tests there,
+GPU tests and leak detection included. Every build is --locked (tools/build),
+the core profile from locked sources only, and configured afresh, so nothing
+set in a build directory's cache carries into it. The steps never see the
+caller's compiler, CMake, test or sanitizer settings (IGNORED_ENV).
+
+Every step runs even if an earlier one failed. The summary gives each step's
+result with the host, commit and SDK, for the handoff note (workflow.md).
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import concurrent.futures
+import dataclasses
+import json
+import os
+import pathlib
+import platform
+import secrets
+import shlex
+import shutil
+import signal
+import subprocess
+import tarfile
+import time
+from collections.abc import Callable
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_sdk as sdklib  # noqa: E402
+import jitllm_sources as srclib  # noqa: E402
+from jitllm_sdk import SdkError  # noqa: E402
+
+REPO = sdklib.REPO
+BUILD = REPO / "tools" / "build"
+
+# jitLLM's own C, C++ and CUDA sources: every tracked or new file with these
+# suffixes outside frozen experiment evidence and third-party code. jitLLM
+# names its C++ .cc and .h, but a file named otherwise is checked, not skipped.
+SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".cu", ".cuh")
+NOT_OURS = ("docs/experiments/", "third_party/")
+# clang-tidy checks each translation unit once per target architecture, from
+# the first of these compile databases that has it. NVCC's .cu commands are
+# not Clang's, so CUDA units are formatted but not linted.
+TIDY_DATABASES = {"native": "x86_64", "cross": "aarch64", "cpu": "x86_64"}
+TIDY_SUFFIXES = (".cc", ".cpp", ".cxx", ".c")
+# What the caller's environment could change about a check: compiler, linker
+# and include settings that CMake, Clang or NVCC read (CXXFLAGS=-w would
+# silence -Werror), CMake's and CTest's defaults, the loader, qemu-user, and
+# test and sanitizer controls (GTEST_FILTER would narrow test discovery). The
+# steps never see them; the test presets set the sanitizer options they need.
+IGNORED_ENV = frozenset({
+    "CC", "CXX", "CUDACXX", "CUDAHOSTCXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "CUDAFLAGS", "LDFLAGS",
+    "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", "CCC_OVERRIDE_OPTIONS",
+    "NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS", "NVCC_CCBIN", "LD_PRELOAD", "LD_LIBRARY_PATH",
+    "ASAN_OPTIONS", "UBSAN_OPTIONS", "LSAN_OPTIONS", "TSAN_OPTIONS", "MSAN_OPTIONS",
+    "ASAN_SYMBOLIZER_PATH", "LLVM_SYMBOLIZER_PATH"})
+IGNORED_ENV_PREFIXES = ("CMAKE_", "CTEST_", "GTEST_", "JITLLM_TEST_", "QEMU_")
+
+# The reference container (.devcontainer/, D-012, D-049). Its SDK lives in the
+# devcontainer's volumes; each check copies the checkout into a fresh volume
+# at /workspaces, whose download cache starts empty.
+IMAGE = "jitllm-reference:check"
+PLATFORM = "linux/amd64"  # never let a multi-arch digest pick the architecture (RE-015)
+SDK_VOLUME = "jitllm-sdk:/home/ubuntu/.local/share/jitllm"
+SDK_CACHE_VOLUME = "jitllm-cache:/home/ubuntu/.cache/jitllm"
+WORKSPACE = "/workspaces"
+CONTAINER_REPO = f"{WORKSPACE}/jitLLM"
+CONTAINER_CACHE = f"{WORKSPACE}/cache"
+# Checked inside the network-denied container before it builds anything.
+NO_NETWORK = ('test "$(ls /sys/class/net)" = lo || '
+              '{ echo "the container has a network: $(ls /sys/class/net)" >&2; exit 1; }')
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def run(cmd: list, **kwargs) -> int:
+    log("$ " + shlex.join(str(c) for c in cmd))
+    return subprocess.run([str(c) for c in cmd], cwd=REPO, **kwargs).returncode
+
+
+def isolate_environment(environ=os.environ) -> list[str]:
+    """Removes what IGNORED_ENV names from environ, which the steps inherit; returns the names removed."""
+    removed = sorted(name for name in environ if name in IGNORED_ENV or name.startswith(IGNORED_ENV_PREFIXES))
+    for name in removed:
+        del environ[name]
+    return removed
+
+
+def ready_sdk() -> sdklib.Sdk:
+    """The SDK this checkout's inputs describe; it must be set up (as tools/build requires)."""
+    sdk = sdklib.load()
+    receipt = sdklib.read_receipt(sdk.root)
+    if not receipt or receipt.get("identity") != sdk.identity or receipt.get("inputs") != sdk.inputs:
+        raise SdkError(f"no SDK for this checkout at {sdk.root}; run `mise run setup`")
+    return sdk
+
+
+def git(*args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True)
+    if result.returncode:
+        raise SdkError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def worktree_files() -> list[str]:
+    """Every file Git tracks or would add (not ignored) that exists in the working tree."""
+    names = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+    return sorted({n for n in names if n and os.path.lexists(REPO / n)})
+
+
+def own_sources(files: list[str], suffixes: tuple[str, ...] = SOURCE_SUFFIXES) -> list[str]:
+    return [f for f in files if f.endswith(suffixes) and not f.startswith(NOT_OURS)]
+
+
+# Steps ---------------------------------------------------------------------------------
+
+
+def check_format(sdk: sdklib.Sdk) -> bool:
+    files = own_sources(worktree_files())
+    if not files:
+        log("no C++ or CUDA sources")
+        return True
+    ok = True
+    for at in range(0, len(files), 200):
+        ok = run([sdk.root / "bin" / "clang-format", "--dry-run", "--Werror", *files[at:at + 200]]) == 0 and ok
+    log(f"clang-format checked {len(files)} files: " + ("clean" if ok else "reformat those reported above"))
+    return ok
+
+
+def tidy_units(ours: set[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    """(preset, source) pairs to lint, and the problems finding them."""
+    units, seen, problems = [], set(), []
+    for preset, arch in TIDY_DATABASES.items():
+        database = REPO / "build" / preset / "compile_commands.json"
+        try:
+            entries = json.loads(database.read_text())
+        except (OSError, ValueError) as e:
+            problems.append(f"cannot read {database.relative_to(REPO)} ({e}); did the {preset} build fail?")
+            continue
+        for entry in entries:
+            path = pathlib.Path(entry["directory"], entry["file"]).resolve()
+            try:
+                name = path.relative_to(REPO).as_posix()
+            except ValueError:
+                continue
+            if name in ours and (arch, name) not in seen:
+                seen.add((arch, name))
+                units.append((preset, name))
+    compiled = {name for _, name in units}
+    problems += [f"{name} is in no checked compile database, so clang-tidy cannot check it"
+                 for name in sorted(ours - compiled)]
+    return units, problems
+
+
+def check_tidy(sdk: sdklib.Sdk) -> bool:
+    units, problems = tidy_units(set(own_sources(worktree_files(), TIDY_SUFFIXES)))
+    tidy = sdk.root / "bin" / "clang-tidy"
+
+    def lint(unit: tuple[str, str]) -> tuple[str, str, subprocess.CompletedProcess]:
+        preset, name = unit
+        cmd = [str(tidy), "-p", str(REPO / "build" / preset), "--quiet", name]
+        return preset, name, subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+        for preset, name, result in pool.map(lint, units):
+            if result.returncode:
+                problems.append(f"{name} ({preset}):\n{(result.stdout + result.stderr).strip()}")
+    for problem in problems:
+        log(problem)
+    log(f"clang-tidy checked {len(units)} translation units; {len(problems)} problem(s)")
+    return not problems
+
+
+def tools_tests() -> bool:
+    return run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tools/tests"]) == 0
+
+
+def build_and_test(preset: str, host: str | None = None) -> bool:
+    # Afresh: a cache entry set in build/<preset> (flags, a sanitizer, a
+    # launcher) would otherwise stay in the check's build. Objects are reused.
+    return run([sys.executable, BUILD, "test", "--locked", "--fresh", preset,
+                *(["--host", host] if host else [])]) == 0
+
+
+def prepared_problems(lock_path: pathlib.Path, cache: pathlib.Path, sources: pathlib.Path) -> list[str]:
+    """What an empty-cache preparation fetched or unpacked beyond the core profile's closure (D-002, D-057)."""
+    lock = srclib.load_lock(lock_path, modules=[])
+    components = lock["components"]
+    selected = srclib.select(lock, [])
+    want_archives = {components[c]["archive"]["sha256"]: c for c in selected}
+    want_trees = {srclib.prepared_dir(sources, c, components[c]).name: c for c in selected}
+    downloads = cache / "downloads"
+    have_archives = {p.name for p in downloads.iterdir()} if downloads.is_dir() else set()
+    have_trees = {p.name for p in sources.iterdir() if not p.name.startswith(".")} if sources.is_dir() else set()
+    problems = [f"{downloads / a} is not an archive of the core profile"
+                for a in sorted(have_archives - set(want_archives))]
+    problems += [f"{sources / t} is not a tree of the core profile" for t in sorted(have_trees - set(want_trees))]
+    problems += [f"{want_archives[a]}'s archive was not fetched" for a in sorted(set(want_archives) - have_archives)]
+    problems += [f"{want_trees[t]} was not prepared" for t in sorted(set(want_trees) - have_trees)]
+    return problems
+
+
+class Reference:
+    """The offline, copyleft-disabled build in the reference container (D-057, D-061).
+
+    A fresh volume gets a copy of the working tree (what Git tracks or would
+    add), so nothing ignored or already built is reused. The SDK is
+    provisioned in the container by the workstation's own tools/setup-toolchain,
+    which is a no-op once present. The core profile's sources are then
+    prepared from an empty download cache, and the native, CPU-only and cross
+    presets are configured, built and tested with no network.
+    """
+
+    def __init__(self):
+        self.token = f"{os.getpid()}-{secrets.token_hex(4)}"
+        self.volume = f"jitllm-check-{self.token}"
+        self.containers: list[str] = []
+
+    def docker(self, command: list[str], *, network: bool = True, sdk_writable: bool = False,
+               sdk_cache: bool = False, stdin=None, workdir: str = CONTAINER_REPO) -> list[str]:
+        name = f"jitllm-check-{self.token}-{len(self.containers)}"
+        self.containers.append(name)
+        sdk = SDK_VOLUME if sdk_writable else SDK_VOLUME + ":ro"
+        args = ["docker", "run", "--rm", "--name", name, "--platform", PLATFORM,
+                "-v", f"{self.volume}:{WORKSPACE}", "-v", sdk, "-w", workdir]
+        if sdk_cache:
+            args += ["-v", SDK_CACHE_VOLUME]
+        if not network:
+            args += ["--network", "none"]
+        if stdin:
+            args.append("-i")
+        return [*args, IMAGE, *command]
+
+    def copy_worktree(self) -> bool:
+        files = worktree_files()
+        # Docker would create a missing working directory as root, so this one starts above it.
+        cmd = self.docker(["sh", "-c", f"mkdir {CONTAINER_REPO} && tar -x -C {CONTAINER_REPO}"],
+                          network=False, stdin=True, workdir=WORKSPACE)
+        log(f"$ {shlex.join(cmd)} < ({len(files)} files from the working tree)")
+        # Unbuffered, so closing the pipe never flushes into a container that stopped reading.
+        with subprocess.Popen(cmd, cwd=REPO, stdin=subprocess.PIPE, bufsize=0) as proc:
+            try:
+                with tarfile.open(fileobj=proc.stdin, mode="w|") as tar:
+                    for name in files:
+                        tar.add(REPO / name, arcname=name, recursive=False)
+            except BrokenPipeError:
+                pass  # the container's exit status says why it stopped reading
+        return proc.returncode == 0
+
+    def __call__(self) -> bool:
+        if shutil.which("docker") is None:
+            log("the reference build needs docker (D-061)")
+            return False
+        if run(["docker", "build", "--platform", PLATFORM, "-f", ".devcontainer/Dockerfile", "-t", IMAGE, "."]):
+            return False
+        if run(["docker", "volume", "create", self.volume], stdout=subprocess.DEVNULL):
+            return False
+        try:
+            return (self.copy_worktree()
+                    and run(self.docker(["python3", "tools/setup-toolchain"], sdk_writable=True,
+                                        sdk_cache=True)) == 0
+                    and run(self.docker(["python3", "tools/prepare-sources", "--cache", CONTAINER_CACHE])) == 0
+                    and run(self.docker(["python3", "tools/check", "--prepared", CONTAINER_CACHE],
+                                        network=False)) == 0
+                    and run(self.docker(["sh", "-c", f"{NO_NETWORK} && exec python3 tools/build test --locked "
+                                         "native cpu cross"], network=False)) == 0)
+        finally:
+            for name in self.containers:  # left running only by an interrupt
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+            if subprocess.run(["docker", "volume", "rm", "-f", self.volume], capture_output=True).returncode:
+                log(f"could not remove the docker volume {self.volume}; run `docker volume rm {self.volume}`")
+
+
+# Tiers ---------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Step:
+    name: str
+    what: str
+    run: Callable[[], bool]
+
+
+def plan(tier: str, sdk: sdklib.Sdk | None, host: str | None = None) -> list[Step]:
+    if tier == "spark":
+        return [Step(f"{preset}@{host}", what, lambda p=preset: build_and_test(p, host)) for preset, what in (
+            ("cross", "the cross build's tests on the Spark, GPU tests included"),
+            ("cross-asan", "ASan, UBSan and LeakSanitizer on the Spark, GPU tests included"),
+            ("cross-tsan", "ThreadSanitizer on the Spark, GPU tests included"))]
+    steps = [
+        Step("format", "clang-format --dry-run --Werror on jitLLM's C++ and CUDA sources", lambda: check_format(sdk)),
+        Step("tools", "the tooling regression tests (tools/tests)", tools_tests),
+        Step("native", "x86-64 build and tests, GPU tests skipped", lambda: build_and_test("native")),
+        Step("cpu", "CPU-only build and tests, no CUDA toolkit (D-026)", lambda: build_and_test("cpu")),
+        Step("cross", "AArch64 cross build, its CPU tests under qemu-user", lambda: build_and_test("cross")),
+        Step("tidy", "clang-tidy on each C++ unit, for x86-64 and AArch64", lambda: check_tidy(sdk)),
+    ]
+    if tier == "full":
+        steps += [
+            Step("cpu-asan", "ASan, UBSan and LeakSanitizer, x86-64 CPU-only", lambda: build_and_test("cpu-asan")),
+            Step("cross-asan", "ASan and UBSan under qemu-user, leak detection off (RE-014)",
+                 lambda: build_and_test("cross-asan")),
+            Step("reference", "offline, copyleft-disabled build from empty caches in the reference container",
+                 lambda: Reference()()),
+        ]
+    return steps
+
+
+def target_identity(host: str) -> str:
+    query = "uname -nr && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader"
+    result = subprocess.run(["ssh", "-o", "BatchMode=yes", "--", host, query], capture_output=True, text=True)
+    return ", ".join(result.stdout.split("\n")).strip(", ") if result.returncode == 0 else "unreachable"
+
+
+def provenance(tier: str, sdk: sdklib.Sdk, host: str | None) -> str:
+    try:
+        commit = git("rev-parse", "--short=12", "HEAD").strip()
+        if git("status", "--porcelain"):
+            commit += " with uncommitted changes"
+    except SdkError:
+        commit = "unknown"
+    text = f"tier {tier} on {platform.node()} ({sdk.arch}), commit {commit}, SDK {sdk.identity}"
+    return text + (f"; target {host}: {target_identity(host)}" if host else "")
+
+
+def interrupted(signum, frame):
+    raise KeyboardInterrupt
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("tier", nargs="?", default="check", choices=("check", "full", "spark"))
+    parser.add_argument("--host", help="the Spark that `spark` runs on (required there, never implied)")
+    parser.add_argument("--list", action="store_true", help="list the tier's steps and exit")
+    parser.add_argument("--prepared", type=pathlib.Path, metavar="CACHE", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    if args.prepared:  # run by the reference build, inside the container
+        problems = prepared_problems(srclib.LOCK, args.prepared, srclib.SOURCES_DIR)
+        for problem in problems:
+            log(problem)
+        log("the empty-cache preparation fetched and unpacked " +
+            ("more or less than the core profile" if problems else "the core profile's closure only"))
+        return 1 if problems else 0
+    if (args.tier == "spark") != bool(args.host):
+        parser.error("`spark` needs --host HOST" if args.tier == "spark" else "--host is for the `spark` tier")
+    if args.host and args.host.startswith("-"):
+        parser.error(f"--host {args.host!r} is not a host name")
+    if args.list:
+        for step in plan(args.tier, None, args.host):
+            log(f"{step.name:<20} {step.what}")
+        return 0
+
+    sdk = ready_sdk()
+    ignored = isolate_environment()
+    # A terminal closing or a kill unwinds like Ctrl-C, through the reference
+    # build's cleanup; a signal the caller ignores (nohup) stays ignored.
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(signum) == signal.SIG_DFL:
+            signal.signal(signum, interrupted)
+    header = provenance(args.tier, sdk, args.host)
+    log(f"check: {header}")
+    if ignored:
+        log(f"check: the steps ignore {', '.join(ignored)} from this environment")
+    results = []
+    for step in plan(args.tier, sdk, args.host):
+        log(f"\n=== {step.name}: {step.what}")
+        start = time.monotonic()
+        try:
+            ok = step.run()
+        except (OSError, SdkError, srclib.SourceError) as e:
+            log(f"{step.name}: {e}")
+            ok = False
+        results.append((step.name, ok, time.monotonic() - start))
+    log(f"\ncheck summary: {header}")
+    for name, ok, seconds in results:
+        log(f"  {'passed' if ok else 'FAILED':<7} {name:<20} {seconds:7.1f} s")
+    failed = [name for name, ok, _ in results if not ok]
+    log(f"{len(results) - len(failed)} of {len(results)} steps passed"
+        + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SdkError as e:
+        print(f"check: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
