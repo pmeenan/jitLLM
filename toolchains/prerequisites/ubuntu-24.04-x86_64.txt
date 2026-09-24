@@ -44,6 +44,7 @@ zlib1g
 qemu-user-static
 
 # The check gate: REUSE lint's python-magic loads libmagic, and the gate and
-# REUSE list the working tree with git (D-071).
+# REUSE list the working tree with git (D-071). A checkout's version comes
+# from git too (D-062, cmake/version/derive.cmake).
 libmagic1t64
 git

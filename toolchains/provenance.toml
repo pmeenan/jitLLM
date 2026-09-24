@@ -189,7 +189,7 @@ packages = ["git"]
 category = "tool"
 license = "GPL-2.0-only"
 ships = false
-enters = "Nothing: the check gate and REUSE lint list the working tree with it."
+enters = "Nothing: the build derives a checkout's version with it (D-062), and the check gate and REUSE lint list the working tree with it."
 notices = []
 
 [units.mise-python]

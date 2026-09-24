@@ -132,12 +132,15 @@ affected docs. Until then, these govern.
 | `docs/` | Vision, plan, architecture, decisions, features, rough edges, workflow |
 | `docs/ideation.md` | The kickoff design brief (2026-09-20). Frozen origin document with source links; the living docs above supersede it where they differ |
 | `LICENSE`, `LICENSES/`, `NOTICE` | Apache-2.0, the license for all jitLLM-authored code (D-003; dependency policy in D-017); the text of every license a file declares; the attribution notice. Every file carries SPDX tags in its header, or in a `.license` sidecar if it cannot hold a comment (D-029, D-071) |
+| `CHANGELOG.md` | Keep a Changelog; a change with user-visible effect adds its line (D-062) |
 | `mise.toml`, `mise.lock` | mise tasks (`setup`, `prepare`, `doctor`, `build`, `test`, `deploy`) and the pinned Python that runs `tools/` (D-070) |
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057) |
-| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); outputs and the build receipt go to the ignored `build/<preset>/` |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
+| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions) and `cli/` (the `jitllm` command) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
+| `tests/unit/`, `tests/version/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test and deploy tasks), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
@@ -216,11 +219,12 @@ criteria are in place; M0's spikes and reference runs are summarized in
 `docs/experiments/`. **M1 (Bootstrap) is in progress**: the pinned SDK
 (`mise run setup` and `doctor`, D-070), the build (`mise run build`,
 `test` and `deploy` over CMake presets, sanitizer presets included), the
-source lock (`mise run prepare`, GoogleTest, the build receipt, D-057) and
+source lock (`mise run prepare`, GoogleTest, the build receipt, D-057),
 the local check gate (`mise run check`, `check:full` and `check:spark`,
-D-061) and license and provenance (REUSE lint, the header check, `NOTICE`
-and the toolchain's provenance records, D-071) have landed. Next:
-versioning, the smoke binary and package, node configuration and the
-confined-job proof ([docs/plan.md](docs/plan.md)). No application code
-exists yet. Keep this paragraph short and current when plan.md milestone
-status changes (rule 4).
+D-061), license and provenance (REUSE lint, the header check, `NOTICE`
+and the toolchain's provenance records, D-071) and versioning (the
+`jitllm --version` command, the receipt's version and `CHANGELOG.md`,
+D-062) have landed. Next: the smoke binary and package, node configuration
+and the confined-job proof ([docs/plan.md](docs/plan.md)). The only
+application code is that `--version`. Keep this paragraph short and current
+when plan.md milestone status changes (rule 4).

@@ -49,11 +49,12 @@ the work, reviews it, and is the sole committer.
 
 ## Status
 
-**Pre-code. M0 (plan the plan) is done; M1 (bootstrap) is in progress.** The
-design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
-feature matrix, architecture, and decision log are in `docs/`. No application
-code exists yet. Planned distribution is a signed apt repository for DGX
-Spark.
+**Pre-release. M0 (plan the plan) is done; M1 (bootstrap) is in progress.**
+The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
+feature matrix, architecture, and decision log are in `docs/`. The only
+application code so far is a `jitllm` command that reports its version.
+Planned distribution is a signed apt repository for DGX Spark; changes are
+recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The first useful product target is M4: chat with A, switch to B under memory
 pressure, then resume A with retained state, through an unmodified client.
@@ -118,6 +119,40 @@ To run CMake by hand, point `JITLLM_SDK` at the SDK and use its `cmake`:
 export JITLLM_SDK=$(tools/setup-toolchain --print-root)
 "$JITLLM_SDK/bin/cmake" --preset native && "$JITLLM_SDK/bin/cmake" --build --preset native
 ```
+
+## Versions
+
+jitLLM uses [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html) and stays at
+0.x until 1.0 (D-062). `project(VERSION)` in [CMakeLists.txt](CMakeLists.txt)
+holds the next release, and every build derives the version it reports from
+it and Git:
+
+| Checkout | Version |
+| --- | --- |
+| A clean checkout of the release tag `vX.Y.Z` | `X.Y.Z` |
+| Anything else | `X.Y.Z-dev.N+g<commit>`: N commits since the last release tag (since the root before the first release), and `.dirty` after the commit when tracked files differ or untracked files Git does not ignore exist |
+| A tree without Git metadata, such as the reference build's copy | `X.Y.Z-dev+unknown` |
+
+A release tag is an annotated tag `vX.Y.Z` on a commit HEAD contains; the
+owner creates and signs them, never an agent. Lightweight and other tags are
+ignored. After the release commit, configure and build stop when
+`project(VERSION)` is not above the last release tag (the first commit after
+a release raises it). A clean release checkout must match its tag; an
+uncommitted edit may raise the version so it can be checked before commit,
+but cannot lower it. Shallow clones and Git errors also stop the build.
+A clone fetched without its tags cannot be told apart
+from one with no release yet, so it counts N from the root: fetch the tags
+before building. Every build derives the version again, so a commit or an
+edit needs no fresh configure.
+
+`jitllm --version` prints the version, commit, license profile, SDK and
+target. The build receipt, `build/<preset>/jitllm-receipt.json`, records the
+same information: its `version` object holds the product and Debian
+versions, commit, modified state and origin, while the license profile, SDK
+and target are top-level fields. The Debian package version maps
+`-` to `~` so that a dev build sorts before its release
+(`X.Y.Z~dev.N+g<commit>-1`). A change with user-visible effect adds its line
+to [CHANGELOG.md](CHANGELOG.md) in the same change (D-062).
 
 ## Checks
 

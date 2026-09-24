@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# jitLLM (D-010, D-011, D-057, D-058, D-059, D-060, D-066). Configure through
+# jitLLM (D-010, D-011, D-057, D-058, D-059, D-060, D-062, D-066). Configure through
 # a preset in CMakePresets.json, which selects a toolchain file in
 # cmake/toolchains/; `mise run build` does that with the pinned SDK. Third-party
 # sources come prepared from third_party/sources.lock.json (`mise run prepare`).
@@ -11,7 +11,10 @@ if(NOT CMAKE_VERSION VERSION_EQUAL "4.4.3")
                       "Use `mise run build`, or run $JITLLM_SDK/bin/cmake.")
 endif()
 
-project(jitllm LANGUAGES CXX)
+# The next release's version (D-062). Builds report it with their distance
+# from the last release tag (cmake/JitllmVersion.cmake); the first commit
+# after a release raises it.
+project(jitllm VERSION 0.1.0 LANGUAGES CXX)
 
 if(NOT JITLLM_PROFILE)
   message(FATAL_ERROR "Configure with a preset from CMakePresets.json (`mise run build` does); "
@@ -20,6 +23,7 @@ endif()
 # A change to the SDK's inputs reruns configure, which then checks the SDK again.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${JITLLM_SDK_INPUT_FILES})
 message(STATUS "jitLLM profile ${JITLLM_PROFILE}, SDK ${JITLLM_SDK_IDENTITY}, CUDA ${JITLLM_CUDA}")
+include(cmake/JitllmVersion.cmake)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -126,9 +130,13 @@ function(jitllm_gtest target)
   gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
 endfunction()
 
+add_subdirectory(src)
+
 enable_testing()
 add_subdirectory(tests/toolchain)
 add_subdirectory(tests/sources)
+add_subdirectory(tests/version)
+add_subdirectory(tests/unit)
 
 # Last: checks what the whole configure looked up, then writes the receipt.
-jitllm_sources_finalize()
+jitllm_sources_finalize(VERSION "${JITLLM_BUILD_JSON}")

@@ -202,11 +202,27 @@ gate in force and the first `jitllm` binary running on a Spark.
       `check:full` on the workstation, including the offline reference build
       with the new SDK. *Moved to the Package item:* the SBOM and the
       package's third-party notices, since no binary ships before it.
-- [ ] **Versioning** (D-062): `project(VERSION)`, the dev-version
+- [x] **Versioning** (D-062): `project(VERSION)`, the dev-version
       derivation and its Debian `~` mapping, `jitllm --version` and the
       receipt (version, commit, license profile, SDK identity), a root
       `CHANGELOG.md`, and the version of D-047's opaque reasoning-signature
       representation.
+      *Landed:* `project(VERSION 0.1.0)` and `cmake/JitllmVersion.cmake`,
+      which derives the version at configure and again on every build
+      (`cmake/version/`), so a commit needs no fresh configure; the rules
+      and their refusals are in [README.md](../README.md#versions). Release
+      tags are annotated `vX.Y.Z` tags HEAD contains; a tree without Git
+      metadata, such as the reference build's copy, reports
+      `X.Y.Z-dev+unknown`, and a shallow clone is refused. The receipt
+      gains a `version` object (product and Debian versions, commit,
+      modified state); the first `jitllm` binary (`src/cli/`) has
+      `--version` and `--help`; `CHANGELOG.md` is seeded; the reasoning
+      signature's representation is version 1
+      (`src/base/surface_versions.h`), whose contents M3 fixes. `git`
+      joins the AArch64 host prerequisites. Tests: `version.derive` on
+      synthetic repositories, `version.jitllm` (`--version` against the
+      receipt and the checkout now) and the binary's link contract, and
+      the CLI unit tests.
 - [ ] **Smoke binary and capability probe** (D-026): a `jitllm` binary,
       from the cross build and from the native Spark fallback, that runs on
       `spark` over SSH, with a first-cut `doctor` reporting VMM granularity,

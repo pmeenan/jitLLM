@@ -6,9 +6,10 @@
 #   jitllm_sources_add([LOCK <file>])  selects the profile's closure from the
 #       lock, checks every selected component's prepared tree against the
 #       lock, then adds each as a SYSTEM, EXCLUDE_FROM_ALL subproject.
-#   jitllm_sources_finalize()  after everything else: rejects undeclared
-#       package lookups and FetchContent use, then writes the build receipt,
-#       jitllm-receipt.json in the build directory.
+#   jitllm_sources_finalize([VERSION <json>])  after everything else: rejects
+#       undeclared package lookups and FetchContent use, then writes the build
+#       receipt, jitllm-receipt.json in the build directory, with VERSION as
+#       its `version` object (D-062) if given.
 #
 # Configure never fetches: tools/prepare-sources (`mise run prepare`) fetches,
 # verifies and unpacks the sources into JITLLM_SOURCES_DIR, and a missing or
@@ -514,6 +515,7 @@ function(jitllm_sources_add)
 endfunction()
 
 function(jitllm_sources_finalize)
+  cmake_parse_arguments(PARSE_ARGV 0 arg "" "VERSION" "")
   get_property(ordered GLOBAL PROPERTY JITLLM_SOURCES_ORDERED)
   get_property(entries GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
   get_property(allowed GLOBAL PROPERTY JITLLM_SOURCES_PACKAGES)
@@ -562,6 +564,10 @@ function(jitllm_sources_finalize)
   else()
     set(cuda false)
   endif()
+  set(version_line "")
+  if(DEFINED arg_VERSION)
+    set(version_line "  \"version\": ${arg_VERSION},")
+  endif()
   string(JOIN "\n" receipt
     "{"
     "  \"schema\": 1,"
@@ -570,6 +576,7 @@ function(jitllm_sources_finalize)
     "  \"cuda\": ${cuda},"
     "  \"build_type\": ${json_CMAKE_BUILD_TYPE},"
     "  \"sdk\": ${json_JITLLM_SDK_IDENTITY},"
+    ${version_line}
     "  \"license_profile\": ${json_profile},"
     "  \"modules\": ${modules_json},"
     "  \"official\": ${official},"

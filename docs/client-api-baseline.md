@@ -92,7 +92,11 @@ an HTTP-shaped response alone does not prove tool use. Reasoning output on
 this route uses `reasoning` for both current vLLM and OpenRouter; only a
 pinned legacy profile may use `reasoning_content`. OpenRouter also uses
 `reasoning_details`, with jitLLM-signed blocks carrying `format: "unknown"`
-and jitLLM identity/version inside their opaque signatures (D-047). D-043
+and jitLLM identity/version inside their opaque signatures (D-047). The
+version is that of the signature's representation, an integer independent
+of the product version (D-062; version 1, `src/base/surface_versions.h`),
+whose contents M3 fixes. A signature of a version the runtime does not
+implement is one it cannot verify. D-043
 owns the contract; D-046 adds the `reasoning` request object and
 `cached_tokens`/`cache_write_tokens` usage reporting. OpenRouter's
 `transforms`, `plugins` and routing suffixes are rejected explicitly, never

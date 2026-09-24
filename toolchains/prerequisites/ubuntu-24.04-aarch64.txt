@@ -37,3 +37,6 @@ libffi8
 libxml2
 libzstd1
 zlib1g
+
+# A checkout's version comes from Git (D-062, cmake/version/derive.cmake).
+git
