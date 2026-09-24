@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# Project tools and tasks (D-012, D-049, D-070). mise pins only the Python that
-# runs tools/; the compilers, CUDA, CMake and Ninja come from the pinned SDK
-# that `mise run setup` provisions from toolchains/. Nothing here changes
+# Project tools and tasks (D-012, D-049, D-057, D-070). mise pins only the
+# Python that runs tools/; the compilers, CUDA, CMake and Ninja come from the
+# pinned SDK that `mise run setup` provisions from toolchains/, and the
+# third-party sources from third_party/sources.lock.json. Nothing here changes
 # global compilers or shell startup files. The first time, run `mise trust`.
 # Arguments after the task name go to the tool, for example
 # `mise run test -- cross` or `mise run test -- cross --host <spark>`.
@@ -18,8 +19,12 @@ lockfile_platforms = ["linux-x64", "linux-arm64"]
 python = "3.14.7"
 
 [tasks.setup]
-description = "Provision the pinned SDK for this host (idempotent; --dry-run previews)"
-run = "python3 tools/setup-toolchain"
+description = "Provision the pinned SDK for this host, then prepare the locked sources (idempotent; --dry-run previews)"
+run = "python3 tools/setup"
+
+[tasks.prepare]
+description = "Fetch, verify and unpack the locked sources into build/sources (--modules adds optional ones; --check validates the lock)"
+run = "python3 tools/prepare-sources"
 
 [tasks.doctor]
 description = "Check the SDK and host prerequisites and report toolchain, driver and SDK identities"

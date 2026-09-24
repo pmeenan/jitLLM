@@ -119,12 +119,40 @@ gate in force and the first `jitllm` binary running on a Spark.
       CUDA test ran cross-built and natively built. NVCC's host pass uses
       D-059's warnings less `-Wold-style-cast`, which CUDA's own headers trip. GoogleTest under
       `-fno-exceptions` is proven with the Source dependencies item.
-- [ ] **Source dependencies** (D-057): the source lock, a preparation step
+- [x] **Source dependencies** (D-057): the source lock, a preparation step
       separate from SDK setup, lock validation and the build receipt, proven
       on GoogleTest 1.18.0 with gMock through every
       [M1 gate](source-dependencies.md#upgrades-packaging-and-m1-gates).
       Kernel closures (the GGML subset and the ExLlamaV3 files) enter
       through this mechanism at M2's P0 stage, not here.
+      *Landed:* [third_party/sources.lock.json](../third_party/README.md) with
+      GoogleTest 1.18.0 (BSD-3-Clause, core, test-only, every option locked);
+      `mise run prepare` (tools/prepare-sources, also run by `setup`), which
+      validates the lock, selects the profile's closure before fetching,
+      refuses archives with links or special files, and unpacks through
+      FetchContent's script mode with exact patches and a tree digest; and
+      `cmake/JitllmSources.cmake`, which validates the lock again, checks each
+      tree before any third-party CMake runs and on every build, rejects
+      unrecorded overrides, dependency providers, declared FetchContent
+      population, reserved option names and undeclared `find_package()`
+      lookups, refuses a profile without an optional module in a directory
+      that built it, and writes `jitllm-receipt.json`. GoogleTest and gMock
+      build and pass with `-fno-exceptions` (D-066); `sources.closure` checks
+      the compile and link inputs Ninja recorded against the receipt, accepts
+      build-tree files only from current build rules and selected components,
+      and checks every C++ compile's exception flags and every compiled or
+      linked object outside the SDK for exception support, and
+      `sources.mechanism` runs the gates on a synthetic lock with an optional
+      module. *Verified 2026-09-24:* `native`, `cpu` and `cross` (qemu-user)
+      on the workstation and offline in the reference container (`--network
+      none`) after preparation from an empty cache; `cross` on `spark` over
+      SSH and `spark-native` on `spark`. Owned elsewhere: the package half of
+      the last gate (package inventory, NOTICE and SBOM) with the License and
+      provenance and Package items; running the network-denied build, the only
+      stop for downloads a component's own scripts attempt, as part of
+      `check:full` with the Local check gate; vendored units with M2's first
+      adapted kernel; build-host tools, which the lock refuses until the first
+      generator needs them.
 - [ ] **Local check gate** (D-061): the `check`, `check:full` and
       `check:spark` tasks with D-061's contents. Benchmarks join the gate as
       regressions when their harnesses and baselines exist (the EXL3 kernel

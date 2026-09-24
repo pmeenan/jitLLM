@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Fetches, verifies and unpacks the locked third-party sources (D-017, D-057).
+
+    tools/prepare-sources [--modules M[,M...]] [--dry-run]
+    tools/prepare-sources --check
+
+Reads third_party/sources.lock.json, validates it, and selects the closure
+of the requested profile before acquiring anything: the core components
+plus those of the named optional modules (default none, the
+copyleft-disabled core profile). Each selected archive is downloaded into the
+persistent cache (by SHA-256, re-verified on every use), unpacked with the
+SDK's CMake through FetchContent's script mode, patched as recorded, and
+checked against the lock's tree digest before it appears in build/sources/.
+Existing prepared trees are checked, not rebuilt; a modified one is an error.
+`--check` only validates the lock. Configure and build never fetch; they
+consume what this prepared (cmake/JitllmSources.cmake).
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import contextlib
+import fcntl
+import os
+import pathlib
+import shutil
+import signal
+import subprocess
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_sdk as sdklib  # noqa: E402
+import jitllm_sources as srclib  # noqa: E402
+from jitllm_sdk import SdkError  # noqa: E402
+from jitllm_sources import SourceError  # noqa: E402
+
+POPULATE = srclib.REPO / "cmake" / "sources" / "populate.cmake"
+# CMake's script-mode population needs no tools from the caller's environment.
+SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+_spawning_extractor = False
+_pending_stop = None
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def sdk_cmake() -> pathlib.Path:
+    """The CMake of the SDK this checkout's inputs describe; it must be set up."""
+    sdk = sdklib.load()
+    receipt = sdklib.read_receipt(sdk.root)
+    if not receipt or receipt.get("identity") != sdk.identity or receipt.get("inputs") != sdk.inputs:
+        raise SourceError(f"no SDK for this checkout at {sdk.root}; run `mise run setup`")
+    return sdk.root / "bin" / "cmake"
+
+
+def default_cache() -> pathlib.Path:
+    return sdklib.resolve_root(sdklib.load().manifest["sdk"]["cache"])
+
+
+def check_prepared(path: pathlib.Path, cid: str, comp: dict) -> bool:
+    """True when path holds cid's prepared tree; False when absent. A mismatch is an error."""
+    if not path.exists() and not path.is_symlink():
+        return False
+    if path.is_symlink() or not path.is_dir():
+        raise SourceError(f"{path} is not a prepared directory; remove it and run this again")
+    digest = srclib.tree_digest(path)
+    if digest != comp["tree_sha256"]:
+        raise SourceError(f"the prepared {cid} source at {path} was modified (tree {digest}, locked "
+                          f"{comp['tree_sha256']}); remove it and run this again. For deliberate local edits, "
+                          "build a copy with JITLLM_SOURCE_OVERRIDE_<ID> instead (D-057)")
+    return True
+
+
+def run_extractor(cmd: list[str], *, cwd: pathlib.Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Retires the entire extraction process group before its staging tree is removed."""
+    global _spawning_extractor, _pending_stop
+    proc = None
+    try:
+        # A signal may arrive after the child starts but before Popen returns.
+        # Defer handler unwinding until we own its handle; do not block signals
+        # with a mask that the child would inherit across exec.
+        _spawning_extractor = True
+        try:
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, start_new_session=True)
+        finally:
+            _spawning_extractor = False
+        if _pending_stop is not None:
+            signum, _pending_stop = _pending_stop, None
+            _stop(signum, None)
+        stdout, stderr = proc.communicate()
+    except BaseException:
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate()
+        raise
+    finally:
+        _pending_stop = None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def prepare(cid: str, comp: dict, lock_dir: pathlib.Path, dest: pathlib.Path, cache: pathlib.Path,
+            cmake: pathlib.Path) -> None:
+    """Unpacks, patches and checks one component in a staging directory, then publishes it."""
+    archive = srclib.fetch(cache, cid, comp["archive"], log)
+    srclib.check_archive(archive)
+    staging = dest / f".staging-{cid}-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    try:
+        tree = staging / "src"
+        env = {"PATH": SYSTEM_PATH, "HOME": os.environ.get("HOME", "/"), "LC_ALL": "C"}
+        result = run_extractor(
+            [str(cmake), f"-DNAME={cid}", f"-DARCHIVE={archive}", f"-DSHA256={comp['archive']['sha256']}",
+             f"-DSOURCE_DIR={tree}", f"-DWORK_DIR={staging / 'work'}", "-P", str(POPULATE)],
+            cwd=staging, env=env)
+        if result.returncode:
+            raise SourceError(f"unpacking {cid} failed:\n{(result.stdout + result.stderr).strip()}")
+        for patch in comp["patches"]:
+            data = (lock_dir / patch["path"]).read_bytes()
+            if srclib.hashlib.sha256(data).hexdigest() != patch["sha256"]:
+                raise SourceError(f"{cid}: patch {patch['path']} does not match its recorded sha256")
+            try:
+                srclib.apply_patch(tree, data.decode("utf-8"))
+            except (SourceError, UnicodeError) as e:
+                raise SourceError(f"{cid}: patch {patch['path']}: {e}") from None
+            log(f"  applied {patch['path']}")
+        digest = srclib.tree_digest(tree)
+        if digest != comp["tree_sha256"]:
+            raise SourceError(f"the prepared {cid} tree is {digest}, but the lock records {comp['tree_sha256']}. "
+                              "If you are updating the lock, review this tree and record its digest")
+        tree.rename(srclib.prepared_dir(dest, cid, comp))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def dest_lock(dest: pathlib.Path):
+    dest.mkdir(parents=True, exist_ok=True)
+    with open(dest / ".prepare.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--modules", default="", help="comma-separated optional modules to prepare as well")
+    parser.add_argument("--check", action="store_true", help="validate the lock and exit")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan and change nothing")
+    parser.add_argument("--lock", type=pathlib.Path, default=srclib.LOCK, help=argparse.SUPPRESS)
+    parser.add_argument("--dest", type=pathlib.Path, default=srclib.SOURCES_DIR, help=argparse.SUPPRESS)
+    parser.add_argument("--cache", type=pathlib.Path, help=argparse.SUPPRESS)
+    parser.add_argument("--cmake", type=pathlib.Path, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    for name in ("lock", "dest", "cache", "cmake"):
+        value = getattr(args, name)
+        if value is not None and not value.is_absolute():
+            setattr(args, name, value.resolve())
+
+    modules = [m for m in args.modules.split(",") if m]
+    lock = srclib.load_lock(args.lock, modules=None if args.check else modules)
+    if args.check:
+        log(f"{args.lock}: valid, {len(lock['components'])} component(s), "
+            f"{len(lock.get('modules', {}))} optional module(s)")
+        return 0
+    selected = srclib.select(lock, modules)
+    components = lock["components"]
+    pending = [cid for cid in selected
+               if not check_prepared(srclib.prepared_dir(args.dest, cid, components[cid]), cid, components[cid])]
+    log(f"{srclib.license_profile(modules)} profile: {', '.join(selected) or 'no components'}")
+    for cid in selected:
+        state = "prepare" if cid in pending else "ready"
+        log(f"  {cid:<16} {components[cid]['version']:<10} {state:<8} "
+            f"{srclib.prepared_dir(args.dest, cid, components[cid])}")
+    if args.dry_run or not pending:
+        return 0
+
+    cmake = args.cmake or sdk_cmake()
+    cache = args.cache or default_cache()
+    with dest_lock(args.dest):
+        for stale in args.dest.glob(".staging-*"):  # left by an interrupted run
+            shutil.rmtree(stale, ignore_errors=True)
+        for cid in pending:
+            comp = components[cid]
+            if check_prepared(srclib.prepared_dir(args.dest, cid, comp), cid, comp):
+                continue  # another run prepared it meanwhile
+            log(f"preparing {cid} {comp['version']}")
+            prepare(cid, comp, args.lock.parent, args.dest, cache, cmake)
+    log(f"sources ready in {args.dest}")
+    return 0
+
+
+def _stop(signum, frame):
+    global _pending_stop
+    if _spawning_extractor:
+        if _pending_stop is None:
+            _pending_stop = signum
+        return
+    # The extractor is in its own session; unwinding stops it before releasing
+    # the preparation lock. Ignore repeated signals so cleanup can finish.
+    for s in STOP_SIGNALS:
+        signal.signal(s, signal.SIG_IGN)
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
+    raise SystemExit(128 + signum)
+
+
+if __name__ == "__main__":
+    for s in STOP_SIGNALS:
+        signal.signal(s, _stop)
+    try:
+        sys.exit(main())
+    except (SourceError, SdkError) as e:
+        print(f"prepare-sources: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

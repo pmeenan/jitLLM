@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Read-only source validation shared by preparation, configure and build."""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import pathlib
+
+from jitllm_sources import SourceError, load_lock, select, tree_digest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--lock", type=pathlib.Path)
+    mode.add_argument("--tree", type=pathlib.Path)
+    parser.add_argument("--modules", default="")
+    args = parser.parse_args()
+    if args.tree is not None:
+        print(tree_digest(args.tree))
+    else:
+        modules = [m for m in args.modules.split(",") if m]
+        select(load_lock(args.lock, modules=modules), modules)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (SourceError, OSError) as error:
+        print(f"inspect-sources: {error}", file=sys.stderr)
+        sys.exit(1)

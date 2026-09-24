@@ -1,0 +1,58 @@
+{
+  "$comment": [
+    "jitLLM's source lock (D-017, D-057): every third-party source component a build may use, with its exact bytes, license classification and build options. third_party/README.md describes the schema and how to change it.",
+    "`mise run prepare` fetches and unpacks the selected components into build/sources; configure (cmake/JitllmSources.cmake) only consumes those trees and writes the build receipt."
+  ],
+  "schema": 1,
+  "modules": {},
+  "components": {
+    "googletest": {
+      "version": "1.18.0",
+      "kind": "archive",
+      "category": "implementation",
+      "tier": "core",
+      "use": "test",
+      "machine": "target",
+      "upstream": {
+        "repository": "https://github.com/google/googletest",
+        "release": "https://github.com/google/googletest/releases/tag/v1.18.0",
+        "tag": "v1.18.0",
+        "commit": "063de7e9578f82b369302001269680b4b1553359"
+      },
+      "archive": {
+        "file": "googletest-1.18.0.tar.gz",
+        "urls": ["https://github.com/google/googletest/releases/download/v1.18.0/googletest-1.18.0.tar.gz"],
+        "sha256": "6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5",
+        "size": 894741
+      },
+      "patches": [],
+      "tree_sha256": "5f495c6c7b90afbc0bea9947f0f5eddef4ae35fb288196e3989601c939e47fb2",
+      "depends": [],
+      "cmake": {
+        "subdirectory": "",
+        "options": {
+          "BUILD_GMOCK": "ON",
+          "INSTALL_GTEST": "OFF",
+          "GTEST_HAS_ABSL": "OFF",
+          "gtest_build_tests": "OFF",
+          "gtest_build_samples": "OFF",
+          "gtest_disable_pthreads": "OFF",
+          "gtest_force_shared_crt": "OFF",
+          "gtest_hide_internal_symbols": "OFF",
+          "gmock_build_tests": "OFF"
+        },
+        "platform_packages": ["Threads"],
+        "targets": ["GTest::gtest", "GTest::gtest_main", "GTest::gmock", "GTest::gmock_main"]
+      },
+      "license": {
+        "expression": "BSD-3-Clause",
+        "files": ["LICENSE"],
+        "notices": [],
+        "scope": "Compiled: googletest/src/gtest-all.cc and gtest_main.cc, googlemock/src/gmock-all.cc and gmock_main.cc, the .cc and .h files they include, and googletest/include and googlemock/include. Executed at configure: CMakeLists.txt, googletest/CMakeLists.txt, googlemock/CMakeLists.txt and googletest/cmake/internal_utils.cmake. With these options no template is configured and no other file is used.",
+        "evidence": "Root LICENSE (SHA-256 9702de7e4117a8e2b20dafab11ffda58c198aede066406496bef670d40a22138) is BSD-3-Clause, Copyright 2008 Google Inc. Every compiled or included file carries Google's BSD-3-Clause header except gmock-pp.h and gmock-generated-actions.h, which have none and fall under the root LICENSE, as do the CMake scripts. No other copyright holder or license terms appear in that scope (checked 2026-09-24, as in D-059's M0 audit).",
+        "obligations": "Linked into test executables only, which are never shipped. Shipping a binary that links it would require its notice."
+      },
+      "verification": "The release asset's SHA-256 and size match D-059's pin (docs/experiments/dev-tools/pins.json). Its extracted tree is identical to GitHub's archive of the v1.18.0 tag's commit 063de7e9 (checked 2026-09-24). tree_sha256 is the FetchContent-unpacked tree, computed by the shared tools/jitllm_sources.py validator during preparation, configure and build."
+    }
+  }
+}

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Sets up a checkout: the pinned SDK, then the locked sources (D-049, D-057).
+
+`mise run setup` runs this. The two steps stay separate programs:
+tools/setup-toolchain provisions the SDK and receives every argument, then
+tools/prepare-sources prepares the core profile's sources. `--dry-run`
+previews both; `--print-root`, `--list` and `--prune` concern the SDK only.
+Optional modules are prepared with `mise run prepare -- --modules ...`.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import pathlib
+import signal
+import subprocess
+
+TOOLS = pathlib.Path(__file__).resolve().parent
+SDK_ONLY = ("--print-root", "--list", "--prune", "-h", "--help")
+
+
+def run(cmd: list[str]) -> int:
+    """Runs a step to completion, letting it handle interruption itself.
+
+    Ctrl-C reaches the step directly (the terminal signals the whole process
+    group); this process only waits, so the step's own cleanup, such as
+    setup-toolchain stopping a GCC build, is never cut short. A SIGTERM or
+    SIGHUP sent to this process alone is passed on.
+    """
+    proc = subprocess.Popen(cmd)
+
+    def forward(signum, frame):
+        if signum != signal.SIGINT:
+            proc.send_signal(signum)
+
+    previous = {s: signal.signal(s, forward) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        code = proc.wait()
+    finally:
+        for s, handler in previous.items():
+            signal.signal(s, handler)
+    return 128 - code if code < 0 else code
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    code = run([sys.executable, str(TOOLS / "setup-toolchain"), *args])
+    if code or any(a in SDK_ONLY for a in args):
+        return code
+    return run([sys.executable, str(TOOLS / "prepare-sources"), *(["--dry-run"] if "--dry-run" in args else [])])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

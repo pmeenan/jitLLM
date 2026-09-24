@@ -16,9 +16,11 @@ packages or changes system defaults.
 | [artifacts.lock.json](artifacts.lock.json) | Every downloaded byte: URLs, SHA-256 and size, and under `sources` how each was verified when pinned |
 | [prerequisites/](prerequisites/) | The Ubuntu 24.04 packages each build host needs, checked by `mise run doctor` |
 
-`mise run setup` ([tools/setup-toolchain](../tools/setup-toolchain)) provisions
-the SDK; `mise run doctor` ([tools/check-toolchain](../tools/check-toolchain))
-verifies it and reports its identity; `mise run doctor --deep` also checks
+`mise run setup` provisions the SDK with
+[tools/setup-toolchain](../tools/setup-toolchain), then prepares the locked
+third-party sources ([third_party/](../third_party/README.md));
+`mise run doctor` ([tools/check-toolchain](../tools/check-toolchain))
+verifies the SDK and reports its identity; `mise run doctor --deep` also checks
 every SDK file against its recorded digest. `--dry-run` previews setup (or
 `--prune`) without changing files, and setup exits early when the SDK already exists.
 The build's toolchain files ([cmake/toolchains/](../cmake/toolchains/)) use

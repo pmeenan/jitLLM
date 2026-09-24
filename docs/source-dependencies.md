@@ -51,7 +51,9 @@ and [CMP0168](https://cmake.org/cmake/help/v4.4/policy/CMP0168.html).
 ## One source lock, two acquisition forms
 
 M1 adds one authoritative, machine-readable lock for the selected source
-graph. Its file/schema spelling is an implementation detail. It records:
+graph: [third_party/sources.lock.json](../third_party/sources.lock.json), whose
+schema and workflow are in [third_party/README.md](../third_party/README.md).
+It records:
 
 - A stable component ID, upstream location, exact release identity and full
   commit where available; immutable archive SHA-256 or vendored file hashes.

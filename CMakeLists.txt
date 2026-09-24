@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# jitLLM (D-010, D-011, D-058, D-059, D-060, D-066). Configure through a
-# preset in CMakePresets.json, which selects a toolchain file in
-# cmake/toolchains/; `mise run build` does that with the pinned SDK.
+# jitLLM (D-010, D-011, D-057, D-058, D-059, D-060, D-066). Configure through
+# a preset in CMakePresets.json, which selects a toolchain file in
+# cmake/toolchains/; `mise run build` does that with the pinned SDK. Third-party
+# sources come prepared from third_party/sources.lock.json (`mise run prepare`).
 cmake_minimum_required(VERSION 4.4.3)
 if(NOT CMAKE_VERSION VERSION_EQUAL "4.4.3")
   message(FATAL_ERROR "jitLLM builds with the SDK's CMake 4.4.3 (D-058), not ${CMAKE_VERSION}. "
@@ -83,5 +84,25 @@ function(jitllm_test_executable target)
   endif()
 endfunction()
 
+# Third-party sources: the profile's closure from the source lock, checked
+# against it before any of their CMake code runs (D-057). After the flags
+# above, so they build under the same toolchain and without exceptions.
+include(cmake/JitllmSources.cmake)
+jitllm_sources_add()
+
+# A GoogleTest (with gMock) test executable (D-059). CTest lists its tests
+# when it runs them (PRE_TEST), so a cross build never runs target code at
+# build time; ARGN goes to gtest_discover_tests().
+include(GoogleTest)
+function(jitllm_gtest target)
+  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_warnings)
+  jitllm_test_executable(${target})
+  gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
+endfunction()
+
 enable_testing()
 add_subdirectory(tests/toolchain)
+add_subdirectory(tests/sources)
+
+# Last: checks what the whole configure looked up, then writes the receipt.
+jitllm_sources_finalize()

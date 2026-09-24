@@ -141,8 +141,9 @@
 - **Source dependencies.** D-057 selects [locked CMake FetchContent acquisition
   and curated vendoring](source-dependencies.md) for adapted source units,
   separate from the SDK. Select the audited profile closure before fetching;
-  configure/build uses verified local inputs. M1 owes native/cross, offline
-  and disabled-module exclusion checks; source adoption gates remain open.
+  configure/build uses verified local inputs. The lock, preparation, the
+  configure checks and the build receipt are in [third_party/](../third_party/README.md);
+  source adoption gates remain open.
 - **First model/reference.** D-051 selects the official Qwen2.5-0.5B-Instruct
   FP16 GGUF and pinned llama.cpp CUDA reference on Spark, with CPU diagnostics;
   [identities and numerical contract](first-slice.md). GGML supplies operations,

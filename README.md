@@ -71,7 +71,10 @@ directory. Setup changes no system compilers, packages or shell files.
    downloads the artifacts pinned in
    [toolchains/artifacts.lock.json](toolchains/artifacts.lock.json),
    checking each SHA-256, builds the GCC 16.2 runtimes and assembles the
-   SDK. Later runs return at once.
+   SDK. It then prepares the third-party sources pinned in
+   [third_party/sources.lock.json](third_party/sources.lock.json) into
+   `build/sources/` (`mise run prepare` does that step alone). Later runs
+   return at once.
 3. `mise run doctor` checks the SDK and reports the host, driver and
    toolchain identities.
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The toolchain contract, tested in what each profile produces (D-011, D-026,
-# D-032, D-059, D-060, D-066). Every test carries the `toolchain` label; `gpu`
+# D-032, D-057, D-059, D-060, D-066). Every test carries the `toolchain` label; `gpu`
 # marks those that need a GB10, which run only on a Spark.
 
 string(REGEX MATCH "^[^-]+" target_arch "${JITLLM_TARGET_TRIPLE}")
@@ -29,6 +29,22 @@ endfunction()
 add_executable(toolchain_contract_test toolchain_contract_test.cc)
 target_compile_definitions(toolchain_contract_test PRIVATE JITLLM_TEST_TARGET_${target_arch})
 jitllm_toolchain_test(toolchain_contract_test)
+
+# GoogleTest and gMock from the source lock, without exceptions (D-057,
+# D-059, D-066), plus a negative control that must fail the run.
+add_executable(gtest_contract_test gtest_contract_test.cc)
+jitllm_gtest(gtest_contract_test TEST_PREFIX toolchain.gtest. TEST_FILTER -NegativeControl.*
+             PROPERTIES LABELS toolchain)
+add_test(NAME toolchain.gtest_contract_test.binary
+         COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DARCH=${target_arch}
+                 -DGLIBC_MAX=${glibc_max} -DBINARY=$<TARGET_FILE:gtest_contract_test>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/check_binary.cmake)
+add_test(NAME toolchain.gtest_negative_control
+         COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:gtest_contract_test>
+                 "-DEMULATOR=$<JOIN:$<TARGET_PROPERTY:gtest_contract_test,CROSSCOMPILING_EMULATOR>,|>"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/check_gtest_failure.cmake)
+set_tests_properties(toolchain.gtest_contract_test.binary toolchain.gtest_negative_control
+                     PROPERTIES LABELS toolchain)
 
 # Exercise compiler discovery with a legal SDK path that needs shell quoting.
 # This configures another CPU-only tree but never runs its nested tests.
