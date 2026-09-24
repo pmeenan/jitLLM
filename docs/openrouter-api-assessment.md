@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # OpenRouter API compatibility assessment
 
 Checked 2026-09-22 against OpenRouter's live documentation, at the owner's

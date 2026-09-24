@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 # Native Spark build using extracted dependencies; no package installation.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"

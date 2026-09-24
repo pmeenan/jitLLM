@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Client API baseline
 
 Documentation check: 2026-09-22. Decisions: D-040 (routes and client subset)

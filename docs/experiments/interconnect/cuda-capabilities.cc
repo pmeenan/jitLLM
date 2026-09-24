@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
 // Read-only capability probe for the interconnect experiment.
 #include <cuda.h>
 #include <cstdio>

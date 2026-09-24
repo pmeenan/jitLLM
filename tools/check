@@ -9,9 +9,9 @@
     tools/check TIER --list          the tier's steps, without running them
 
 `mise run check`, `mise run check:full` and `mise run check:spark -- --host
-HOST` run these. `check` checks formatting, runs the tooling tests, builds
-and tests the native, CPU-only and cross presets (cross under qemu-user),
-then runs clang-tidy. `full` adds the sanitizer builds and the offline,
+HOST` run these. `check` checks formatting, REUSE compliance and embedded
+license headers, runs the tooling tests, builds and tests the native,
+CPU-only and cross presets (cross under qemu-user), then runs clang-tidy. `full` adds the sanitizer builds and the offline,
 copyleft-disabled build in the reference container. `spark` deploys the
 cross, cross-asan and cross-tsan builds to HOST and runs their tests there,
 GPU tests and leak detection included. Every build is --locked (tools/build),
@@ -44,6 +44,7 @@ import time
 from collections.abc import Callable
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_headers as headers  # noqa: E402
 import jitllm_sdk as sdklib  # noqa: E402
 import jitllm_sources as srclib  # noqa: E402
 from jitllm_sdk import SdkError  # noqa: E402
@@ -145,6 +146,29 @@ def check_format(sdk: sdklib.Sdk) -> bool:
         ok = run([sdk.root / "bin" / "clang-format", "--dry-run", "--Werror", *files[at:at + 200]]) == 0 and ok
     log(f"clang-format checked {len(files)} files: " + ("clean" if ok else "reformat those reported above"))
     return ok
+
+
+def check_reuse(sdk: sdklib.Sdk) -> bool:
+    # REUSE lint covers what Git does not ignore, like worktree_files().
+    return run([*sdk.python_tool("reuse"), "--root", REPO, "lint"]) == 0
+
+
+def check_headers(sdk: sdklib.Sdk) -> bool:
+    # REUSE's own report says where it finds each file's license; the check
+    # compares that with the file's header or sidecar.
+    cmd = [*sdk.python_tool("reuse"), "--root", str(REPO), "lint", "--json"]
+    log("$ " + shlex.join(cmd))
+    result = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        log(f"reuse lint --json printed no report (exit {result.returncode}): {result.stderr.strip()}")
+        return False
+    checked, problems = headers.check(REPO, worktree_files(), report)
+    for problem in problems:
+        log(problem)
+    log(f"header check: {checked} files, {len(problems)} problem(s)")
+    return not problems
 
 
 def tidy_units(ours: set[str]) -> tuple[list[tuple[str, str]], list[str]]:
@@ -309,6 +333,10 @@ def plan(tier: str, sdk: sdklib.Sdk | None, host: str | None = None) -> list[Ste
             ("cross-tsan", "ThreadSanitizer on the Spark, GPU tests included"))]
     steps = [
         Step("format", "clang-format --dry-run --Werror on jitLLM's C++ and CUDA sources", lambda: check_format(sdk)),
+        Step("reuse", "REUSE lint: copyright and license information for every file (D-029)",
+             lambda: check_reuse(sdk)),
+        Step("headers", "embedded license headers wherever a file can hold a comment, as REUSE reads them (D-029)",
+             lambda: check_headers(sdk)),
         Step("tools", "the tooling regression tests (tools/tests)", tools_tests),
         Step("native", "x86-64 build and tests, GPU tests skipped", lambda: build_and_test("native")),
         Step("cpu", "CPU-only build and tests, no CUDA toolkit (D-026)", lambda: build_and_test("cpu")),

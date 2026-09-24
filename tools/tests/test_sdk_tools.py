@@ -13,12 +13,15 @@ import json
 import os
 import pathlib
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tomllib
 import unittest
+import zipfile
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -60,6 +63,56 @@ class ManifestAndLock(unittest.TestCase):
     def test_bin_links_avoid_nvcc(self):
         # NVCC finds nvcc.profile beside its invocation path, so a bin/ link breaks it.
         self.assertNotIn("nvcc", sdklib.load("x86_64").manifest["bin"])
+
+    def test_python_tools_are_pinned_for_the_check_gates_host(self):
+        sdk = sdklib.load("x86_64")
+        wheels = {name: comp for name, comp in sdk.components() if comp["kind"] == "wheels"}
+        self.assertEqual(list(wheels), ["reuse"])  # the check gate runs on x86-64 hosts only (D-061)
+        for name, comp in wheels.items():
+            self.assertIn(name, sdk.manifest["versions"])
+            self.assertEqual(sdk.artifact(f"wheel/{name}")["version"], sdk.manifest["versions"][name])
+            self.assertEqual(len(comp["packages"]), len(set(comp["packages"])))
+            self.assertTrue(comp["module"])
+        self.assertIn("libmagic1t64", [n for n, _, _ in sdklib.prerequisites(sdk)])  # python-magic
+
+
+class Provenance(unittest.TestCase):
+    """Every SDK component and host prerequisite has a D-017 provenance record (D-071)."""
+
+    def setUp(self):
+        self.records = tomllib.loads((sdklib.TOOLCHAINS / "provenance.toml").read_text())
+        self.units = self.records["units"]
+
+    def recorded(self, field: str) -> set[str]:
+        return {item for unit in self.units.values() for item in unit.get(field, [])}
+
+    def test_every_artifact_prerequisite_and_mise_tool_is_recorded(self):
+        def unarched(key: str) -> str:  # deb/<package>/<arch> and archive/<name>/<arch>
+            return key.rsplit("/", 1)[0] if key.startswith(("deb/", "archive/")) else key
+        hosts = sdklib.load("x86_64").manifest["hosts"]
+        artifacts = {unarched(k) for arch in hosts for k in setup.artifact_keys(sdklib.load(arch))}
+        packages = {name for arch in hosts for name, _, _ in sdklib.prerequisites(sdklib.load(arch))}
+        tools = {"mise", *tomllib.loads((sdklib.REPO / "mise.toml").read_text())["tools"]}
+        self.assertEqual(self.recorded("artifacts"), artifacts)
+        self.assertEqual(self.recorded("packages"), packages)
+        self.assertEqual(self.recorded("tools"), tools)
+
+    def test_records_are_complete(self):
+        self.assertEqual(self.records["schema"], 1)
+        for name, unit in self.units.items():
+            with self.subTest(unit=name):
+                self.assertTrue(unit.keys() & {"artifacts", "packages", "tools"})
+                self.assertIn(unit["category"], ("tool", "platform"))
+                self.assertTrue(unit["license"] and unit["enters"])
+                self.assertIsInstance(unit["ships"], bool)
+                self.assertLessEqual(set(unit["notices"]), set(self.records["notices"]))
+                if not unit["ships"]:
+                    self.assertEqual(unit["notices"], [])
+        referenced = {n for unit in self.units.values() for n in unit["notices"]}
+        self.assertEqual(referenced, set(self.records["notices"]))
+        for name, notice in self.records["notices"].items():
+            with self.subTest(notice=name):
+                self.assertEqual(set(notice), {"text", "source", "when"})
 
 
 class Roots(unittest.TestCase):
@@ -193,6 +246,108 @@ class Fetch(unittest.TestCase):
             self.assertIsNone(data)
             self.assertIn("attempt 1", error)
             self.assertNotIn("attempt 2", error)
+
+
+class Wheels(unittest.TestCase):
+    """Wheels unpack into one importable directory; anything else a wheel can carry is refused."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.lock = {"artifacts": {}}
+        self.sdk = sdklib.Sdk(manifest={}, lock=self.lock, arch="x86_64", identity="x86_64-test", inputs={},
+                              home=self.tmp / "home", cache=self.tmp / "cache")
+
+    def wheel(self, name: str, members: dict[str, bytes], links: tuple[str, ...] = ()) -> None:
+        path = self.tmp / f"{name}-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(path, "w") as z:
+            for member, data in members.items():
+                z.writestr(member, data)
+            for member in links:
+                info = zipfile.ZipInfo(member)
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                z.writestr(info, "elsewhere")
+        data = path.read_bytes()
+        self.lock["artifacts"][f"wheel/{name}"] = {"urls": [path.as_uri()], "size": len(data),
+                                                   "sha256": hashlib.sha256(data).hexdigest()}
+
+    def install(self, *names: str) -> pathlib.Path:
+        staging = self.tmp / "staging"
+        staging.mkdir(exist_ok=True)
+        comp = {"kind": "wheels", "dest": "python/t", "module": "t", "packages": list(names)}
+        self.assertEqual(setup.install_wheels(self.sdk, comp, staging), {"artifacts": [f"wheel/{n}" for n in names]})
+        return staging / "python/t"
+
+    def test_wheels_unpack_into_one_directory_with_fixed_modes(self):
+        self.wheel("t", {"t/__init__.py": b"", "t/__main__.py": b"print(1)", "t-1.0.dist-info/RECORD": b""})
+        self.wheel("dep", {"dep.py": b"X = 1"})
+        dest = self.install("t", "dep")
+        self.assertEqual(sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()),
+                         ["dep.py", "t-1.0.dist-info/RECORD", "t/__init__.py", "t/__main__.py"])
+        self.assertEqual({p.stat().st_mode & 0o777 for p in dest.rglob("*") if p.is_file()}, {0o644})
+
+    def test_unsafe_members_are_refused(self):
+        for members, links, reason in (({"../evil.py": b""}, (), "unsafe path"),
+                                       ({"/abs.py": b""}, (), "unsafe path"),
+                                       ({"t//x.py": b""}, (), "unsafe path"),
+                                       ({"t/./x.py": b""}, (), "unsafe path"),
+                                       ({"C:/x.py": b""}, (), "unsafe path"),
+                                       ({"t\\x.py": b""}, (), "unsafe path"),
+                                       ({"t-1.0.data/scripts/t": b""}, (), ".data tree"),
+                                       ({"t/__pycache__/x.cpython-314.pyc": b""}, (), "bytecode"),
+                                       ({"t/x.pyc": b""}, (), "bytecode"),
+                                       ({"t/x": b"", "t/x/y.py": b""}, (), "collides"),
+                                       ({}, ("t/link.py",), "symbolic link")):
+            with self.subTest(reason=reason, members=list(members)):
+                self.wheel("t", members, links)
+                with self.assertRaisesRegex(sdklib.SdkError, reason):
+                    self.install("t")
+
+    def test_two_wheels_may_not_provide_one_file(self):
+        self.wheel("a", {"shared/x.py": b"a"})
+        self.wheel("b", {"shared/x.py": b"b"})
+        with self.assertRaisesRegex(sdklib.SdkError, "shared/x.py is also in wheel/a"):
+            self.install("a", "b")
+
+
+class PythonTools(unittest.TestCase):
+    """A wheels component's tool runs with only the standard library and its own directory importable."""
+
+    MAIN = ("import sys, json, importlib.util, shadowed\n"
+            "print(json.dumps([shadowed.WHERE, sys.argv, importlib.util.find_spec('outside') is not None,\n"
+            "                  sys.flags.isolated, sys.flags.no_site, sys.flags.dont_write_bytecode]))")
+
+    def test_only_the_standard_library_and_the_component_are_importable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            manifest = {"components": {"t": {"kind": "wheels", "dest": "python/t", "module": "probe_tool"}}}
+            sdk = dataclasses.replace(sdklib.load(), manifest=manifest, home=tmp)
+            tool = sdk.root / "python/t"
+            (tool / "probe_tool").mkdir(parents=True)
+            (tool / "probe_tool/__main__.py").write_text(self.MAIN)
+            (tool / "shadowed.py").write_text("WHERE = 'sdk'")
+            (tmp / "elsewhere").mkdir()
+            (tmp / "elsewhere/shadowed.py").write_text("WHERE = 'PYTHONPATH'")
+            (tmp / "elsewhere/outside.py").write_text("")  # on PYTHONPATH and in the working directory only
+            env = {**os.environ, "PYTHONPATH": str(tmp / "elsewhere")}
+            out = subprocess.run([*sdk.python_tool("t"), "lint", "--x"], capture_output=True, text=True, env=env,
+                                 cwd=tmp / "elsewhere", check=True)
+            where, argv, outside, isolated, no_site, no_bytecode = json.loads(out.stdout)
+            self.assertEqual((where, argv[1:]), ("sdk", ["lint", "--x"]))
+            self.assertEqual(argv[0], str(tool / "probe_tool/__main__.py"))  # as `python -m` sets it
+            self.assertEqual((outside, isolated, no_site, no_bytecode), (False, 1, 1, True))
+            # Bytecode in the SDK would change the tree digest that `doctor --deep` checks.
+            self.assertEqual(list(tool.rglob("__pycache__")), [])
+
+    def test_doctor_checks_each_python_tools_version(self):
+        manifest = {"versions": {"t": "1.0"}, "hosts": {"x86_64": {"components": ["t"]}},
+                    "components": {"t": {"kind": "wheels", "dest": "python/t", "module": "t"}}}
+        sdk = dataclasses.replace(sdklib.load("x86_64"), manifest=manifest)
+        for stdout, problems in (("t, version 1.0\n", 0), ("t, version 2.0\n", 1), ("", 1)):
+            r = check.Report()
+            done = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+            with mock.patch.object(check, "capture", return_value=done):
+                check.check_python_tools(sdk, r)
+            self.assertEqual(len(r.problems), problems, stdout)
 
 
 class Binfmt(unittest.TestCase):

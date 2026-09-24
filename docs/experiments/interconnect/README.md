@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Spark direct-link baseline — 2026-09-21
 
 M0 experiment on the owner's two-node `sparky` cluster, after NVIDIA Sync

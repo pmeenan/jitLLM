@@ -1,13 +1,172 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Licensing and reference provenance
+# Licensing and provenance
 
 jitLLM-authored code is Apache-2.0. [D-002, D-003 and D-017](decisions.md)
 govern incorporation, optional modules, tools and platform dependencies.
-This M0 inventory, checked on **2026-09-22**, is evidence for the first dense
-slice, early EXL3 proof and later optional-backend design, not approval to import these repositories or a
-license audit of their built containers. No implementation was incorporated.
+The first three sections record how the repository declares licenses and
+what the pinned toolchain puts into a jitLLM binary (M1, checked
+**2026-09-24**; D-071). The rest is the M0 reference inventory, checked on
+**2026-09-22**: evidence for the first dense slice, early EXL3 proof and
+later optional-backend design, not approval to import these repositories or
+a license audit of their built containers. No implementation was
+incorporated.
+
+## Repository license metadata
+
+Every file follows the [REUSE specification 3.3](https://reuse.software/spec-3.3/)
+(D-029, D-071):
+
+- A file whose format has comments starts with `SPDX-FileCopyrightText` and
+  `SPDX-License-Identifier` tags in a header comment. jitLLM's own files say
+  `2026 jitLLM contributors` and `Apache-2.0`; third-party material names its
+  holders and actual license, as the two experiment patches with MIT
+  upstream context do.
+- A file that cannot hold a comment (JSON, a patch, plain text, `NOTICE`, or
+  `mise.lock`, which mise rewrites) has a `.license` sidecar with the same
+  tags. There is no `REUSE.toml`: it could override a file's own header.
+- [LICENSES/](../LICENSES/) holds the text of every license a file declares:
+  Apache-2.0 (the same bytes as the root `LICENSE`) and MIT (SPDX License
+  List 3.29.0).
+- [NOTICE](../NOTICE) carries jitLLM's attribution and names the
+  third-party material in the repository.
+
+`mise run check` enforces this with two steps. `reuse` runs REUSE lint 6.2.0
+from the SDK. `headers` ([tools/jitllm_headers.py](../tools/jitllm_headers.py))
+checks what REUSE lint accepts but D-029 does not, against REUSE's own JSON
+report. Each commentable file must carry its own header rather than a
+sidecar, and REUSE must read exactly that header's license from the file
+itself. A license or copyright tag anywhere in a file or its sidecar, read
+as a person would see it, must repeat an expression and a holder REUSE
+reads for that file, so no tag can show a reader a license REUSE skipped.
+Every sidecar must have a file, REUSE must cover every file the check does,
+and no file type may go unclassified.
+
+## What builds jitLLM
+
+[toolchains/provenance.toml](../toolchains/provenance.toml) records every
+locked SDK artifact, host prerequisite and mise tool with its D-017
+category, license, what of it reaches a binary and the notices that follow;
+a test fails when any of them lacks a record. Third-party source code is
+recorded in the [source lock](../third_party/README.md) instead; its only
+component, GoogleTest, links into tests alone.
+
+| Unit (version) | Category | License | In a packaged binary |
+| --- | --- | --- | --- |
+| CMake 4.4.3, Ninja 1.13.2 | tool | BSD-3-Clause; Apache-2.0 | Nothing |
+| Clang, LLD and the LLVM tools 22.1.8 | tool | Apache-2.0 WITH LLVM-exception (libz3: MIT) | Generated code |
+| Clang's resource headers | platform (compiler support) | Apache-2.0 WITH LLVM-exception; `arm_neon.h` and `arm_fp16.h` carry an MIT text | Inline code and macros |
+| compiler-rt | platform | Apache-2.0 WITH LLVM-exception | Nothing: sanitizer builds only; executables link libgcc, not its builtins |
+| GCC 16.2.0 runtime (D-060) | platform | GPL-3.0-or-later WITH GCC-exception-3.1, with embedded code below | Every executable: libstdc++, libgcc, libgcc_eh, crtbeginS/crtendS. Not libatomic, which is not on the link line |
+| glibc 2.39-0ubuntu8.9 (sysroot) | platform | LGPL-2.1-or-later | Start files and `libc_nonshared.a` members, under a linking exception; libc, libm and the loader stay dynamic |
+| Linux UAPI headers 6.8.0-142.142 | platform | GPL-2.0-only WITH Linux-syscall-note | Constants and macros |
+| CUDA 13.4.92 runtime and headers | platform | NVIDIA CUDA EULA | CUDA builds: `libcudart_static.a`, NVCC's host stubs and registration code, device code |
+| CCCL 13.3.4.3.1 (libcu++, `nv/`) | platform | Apache-2.0 WITH LLVM-exception | Through CUDA headers such as `cuda_fp16.h` |
+| NVCC, libNVVM, ptxas and the other CUDA tools | tool | NVIDIA CUDA EULA (internal use) | Generated code |
+| REUSE lint 6.2.0 and nine wheels | tool | GPL-3.0-or-later and others (provenance.toml) | Nothing |
+| GMP, MPFR, MPC, ISL and gettext (GCC's build inputs) | tool | LGPL-3.0-or-later (GMP also GPL-2.0-or-later), MIT, GPL-3.0-or-later | Nothing: none of their symbols are in the runtime |
+| Host prerequisites, mise, Python | tool; host glibc is platform | Ubuntu package terms; MIT; PSF-2.0 | Nothing in a cross-built binary |
+
+Embedded code in the static GCC runtime, as link maps show it (this
+corrects and extends the [GCC 16.2 report](experiments/gcc16-static/README.md#provenance-and-use)):
+
+- **Linked routinely.** HP and SGI STL code (headers, and `tree.o`,
+  `list.o`); Ryu (Apache-2.0 OR BSL-1.0, taken under BSL-1.0) with *any*
+  `<format>` or `<print>` use, not only floating point; libiberty's
+  `cp-demangle.o` (GPL-2.0-or-later WITH GCC-exception-2.0) through the
+  default terminate handler; glibc soft-fp comparison objects (LGPL-2.1 with
+  a linking exception) on AArch64; and `<format>`'s tables generated from
+  Unicode data.
+- **Linked only when used.** fast_float (MIT) with floating-point
+  `std::from_chars`; the tz database (public domain) with chrono time zones;
+  IBM-HRL code with `ext/pb_ds`; Jeremy Siek's concept checks; `<barrier>`
+  (Apache-2.0 WITH LLVM-exception). PSTL headers arrive through
+  `<algorithm>`, `<memory>` and `<numeric>` but contribute code only with
+  `<execution>`. libbacktrace never: the SDK has no `libstdc++exp.a`.
+
+## What a packaged binary carries
+
+For a CUDA-enabled arm64 `jitllm`, cross-built by the SDK:
+
+- **Always:** jitLLM's `LICENSE` and `NOTICE`; the HP and SGI permission
+  notices, which ask to appear in supporting documentation; a statement that
+  the CUDA runtime and NVCC-generated code are under the NVIDIA CUDA EULA,
+  not Apache-2.0; and the CUDA headers' Disclaimer and U.S. Government End
+  Users Notice, which their text requires in user documentation. The SBOM
+  must also identify the GCC 16.2.0 runtime and glibc.
+- **When the code is used:** the Unicode notice (any `<format>` or `<print>`;
+  shipped by default unless the owner decides otherwise), fast_float's MIT
+  notice, Norbert Juffa's and SoftFloat's notices for CUDA device math, the
+  MIT text of Clang's NEON headers, the IBM-HRL and Siek notices, and
+  glibc's 4.4BSD notice for BSD header macros.
+- **Not needed:** Ryu, cp-demangle, soft-fp, the glibc start files and
+  `libc_nonshared.a`, the tz database, PSTL, `<barrier>`, libcu++, Clang's
+  other headers and the kernel headers. Their exceptions or terms ask
+  nothing of object code.
+
+No source offer is owed for such a binary. The EULA lists
+`libcudart_static.a` as redistributable (Attachment A) inside an
+application with material additional functionality. `cudart_static.o`'s
+`.comment` names GCC 8.3.0, and it references no C++ runtime, consistent with
+the GCC exception's eligible compilation process. NVIDIA's build process
+itself is unverified.
+
+Three constraints follow:
+
+- **Never publish the SDK**, its caches or a reference image populated with
+  it. The CUDA tools are for internal use only under the EULA, the runtime
+  archives would owe GPL and LGPL source, and `cmake-gui` statically links
+  LGPL-3.0 Qt.
+- **Release packages come from the `cross` profile.** `spark-native` links
+  the Spark's own, unpinned `libc6-dev` and GNU linker.
+- **Don't adopt CUB or Thrust directly without a D-017 decision.** Used
+  directly they are incorporated implementation, and Thrust includes
+  BSL-1.0 files, which the core allowlist does not name.
+
+**Open decisions, before the first package ships** (the Package item):
+
+1. Whether jitLLM's CUDA sources carry the CUDA header notice. The headers
+   ask for it "in the user documentation and internal comments to the
+   code"; the documentation part is planned above.
+2. The package's copyright stanza for NVIDIA code, and whether to ship the
+   EULA text or its URL. The reading that static linking and stripping do
+   not "modify" the runtime object code (EULA §2.3) is an interpretation,
+   not confirmed with NVIDIA.
+3. Confirm the LGPL-2.1 §5 reading for glibc. The start files and
+   `libc_nonshared.a` carry the linking exception. `csu/init.c` has none but
+   contributes one constant, `_IO_stdin_used`. A §6 reading would clash with
+   the EULA's ban on reverse engineering the embedded runtime.
+4. Whether to ship the Unicode notice (recommended). The
+   [first dense slice](#first-dense-slice-d-051) already treats Unicode-derived
+   tables as needing an owner decision.
+5. Confirm that Clang's resource headers and CCCL reached through CUDA
+   headers belong to D-017's platform family, as recorded, although D-017
+   does not name compiler headers or `Apache-2.0 WITH LLVM-exception`.
+6. Accept the evidence above that `libcudart_static.a` meets the GCC
+   exception's eligibility test, as D-060 asks.
+7. The basis for shipping code compiled from CUDA headers that Attachment A
+   does not list. Their own notice prohibits reproducing or disclosing them
+   to third parties "notwithstanding" the EULA, and Attachment A names only
+   some headers (the fp16, bf16 and fp8 family, `cuda_occupancy.h` and the
+   runtime-compilation set). The inline code of `cuda_runtime.h`, the
+   host-stub headers NVCC uses and the device math headers reach the binary
+   only as object code. The reading that EULA §1.1.1's "as incorporated in
+   object code format" covers that is not confirmed with NVIDIA.
+
+**Method.** Link probes cross-built with the SDK's `cross` flags (`base`
+using `<vector>`, `<algorithm>`, `<memory>`, `<string>`, `<format>`,
+`<print>`, `<expected>`, `<span>`, `<atomic>`, `<thread>`, `<mutex>` and
+`<chrono>`; `double` printing; floating-point `from_chars`; time zones), plus
+a relink of the cross-built CUDA contract test with the build's own link
+line, all with lld link maps and `--why-extract`. License texts come from
+the SDK's packages and files, from glibc's sources at `glibc-2.39` (Ubuntu's
+`libc6` copyright file is stale at 2.23 and omits the start files'
+exception), from the GCC 16.2.0 tarball, from the CUDA EULA (updated
+2026-01-26; the packaged copy matches NVIDIA's page) and from SPDX License
+List 3.29.0. The HP and SGI notices match `HPND-sell-variant` by manual
+comparison; the IBM-HRL and Siek notices match no SPDX identifier. The
+probes and maps stay outside the repository.
 
 ## First dense slice (D-051)
 
@@ -184,7 +343,7 @@ these categories.
 
 | Repository and paths | Evidence and classification |
 | --- | --- |
-| GLM `overlay/ablit_runtime.py` | File starts with `SPDX-License-Identifier: MIT`. Explicit MIT candidate; this does not cover its checkpoint inputs or the surrounding importer/launcher |
+| GLM `overlay/ablit_runtime.py` | File starts with an MIT SPDX license identifier. Explicit MIT candidate; this does not cover its checkpoint inputs or the surrounding importer/launcher |
 | GLM `overlay/exl3.py`, `overlay/dflash2_speculator.py`, `overlay/qwen3_dflash2.py` | File headers declare Apache-2.0; do not label these MIT merely because they integrate EXL3 |
 | GLM `overlay/tp3/vllm/model_executor/parameter.py`, `overlay/tp3/vllm/model_executor/layers/vocab_parallel_embedding.py`, `overlay/tp3/vllm/model_executor/model_loader/weight_utils.py`, `overlay/tp3/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py` | Apache-2.0 headers with vLLM attribution; modified overlay provenance still needs review before adoption |
 | GLM `tests/fixtures/flashinfer_mla_sparse_sm120-487ecf187.py.txt`, `tests/fixtures/kda-487ecf187.py.txt` | Apache-2.0 file headers; fixtures are also incorporated source if copied |

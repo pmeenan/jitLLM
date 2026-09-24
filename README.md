@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # jitLLM
 
 Just-in-time LLM inference engine with intelligent SSD paging.
@@ -124,7 +127,7 @@ commit and SDK they ran with:
 
 | Task | When | Runs |
 | --- | --- | --- |
-| `mise run check` | Every change | clang-format, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
+| `mise run check` | Every change | clang-format, REUSE lint, the embedded-header check, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
 | `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`, and the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network. Needs Docker |
 | `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests and leak detection included |
 
@@ -136,16 +139,34 @@ like; `tools/check` lists them). The reference build provisions its SDK inside t
 container, into the `jitllm-sdk` and `jitllm-cache` volumes the dev
 container also uses. The first run takes as long as `mise run setup`.
 
+Every file carries its copyright and license as SPDX tags
+([REUSE](https://reuse.software/spec-3.3/)): in a header comment wherever the
+format allows one, otherwise in a `.license` sidecar beside it (`data.json`
+and `data.json.license`). A new file copies the header of its neighbours:
+
+```text
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+```
+
+with the file's own comment syntax (`//` in C++ and CUDA, `<!-- -->` in
+Markdown). The header check fails on a file type it does not know yet; add
+the type to [tools/jitllm_headers.py](tools/jitllm_headers.py).
+
 ## License
 
-jitLLM's own code is Apache-2.0 (see [LICENSE](LICENSE)). Incorporated core
+jitLLM's own code is Apache-2.0 (see [LICENSE](LICENSE) and [NOTICE](NOTICE));
+[LICENSES/](LICENSES/) holds the text of every license a file in this
+repository declares. Incorporated core
 implementation dependencies use Apache-2.0, BSD, MIT, or MPL-2.0. Build tools
 and declared platform dependencies, including system libraries and CUDA,
 retain their separate terms and are included in the dependency audit.
 AGPL-licensed kernels or importers live only in optional modules you choose
 to enable at build time; those builds must report and satisfy the applicable
 license, notice, and source obligations. See D-003 and D-017 in
-[docs/decisions.md](docs/decisions.md).
+[docs/decisions.md](docs/decisions.md), and
+[docs/licensing.md](docs/licensing.md) for what each dependency and tool
+contributes to a build and what its notices require.
 
 ## Start here
 

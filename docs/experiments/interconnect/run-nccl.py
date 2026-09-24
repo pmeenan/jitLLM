@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 """Run pinned native nccl-tests on two configured Spark nodes over SSH."""
 import argparse
 import json

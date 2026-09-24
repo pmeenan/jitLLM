@@ -1,0 +1,19 @@
+jitLLM
+Copyright 2026 jitLLM contributors
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+
+The source repository also holds third-party material under its own terms,
+recorded in each file's SPDX header or .license sidecar. Two experiment
+patches, which no jitLLM build uses, contain upstream context under the
+MIT License:
+
+- docs/experiments/exl3-reference/arm-reference.patch, from ExLlamaV3,
+  Copyright (c) 2025 Turboderp;
+- docs/experiments/fused-routes/route-outputs.patch, from llama.cpp,
+  Copyright (c) 2023-2026 The ggml authors.
+
+Each retains its upstream notice in the UPSTREAM-NOTICE.txt beside it.
+
+Binary packages also carry the notices of the third-party components their
+build incorporates, recorded in docs/licensing.md.

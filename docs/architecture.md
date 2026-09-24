@@ -1699,8 +1699,8 @@ receipt carry the product version, commit, license profile and SDK identity
 
 ```text
 CMakeLists.txt  CMakePresets.json  mise.toml  mise.lock  .devcontainer/
-LICENSE  LICENSES/  NOTICE  REUSE.toml  CHANGELOG.md
-toolchains/{manifest.toml, artifacts.lock.json}   cmake/toolchains/
+LICENSE  LICENSES/  NOTICE  CHANGELOG.md
+toolchains/{manifest.toml, artifacts.lock.json, provenance.toml}   cmake/toolchains/
 src/base/  src/platform/  src/providers/{fake,cuda}/
 src/catalog/  src/memory/  src/retention/  src/scheduler/
 src/artifact/  src/model/  src/execution/  src/kernels/{ggml,exl3}/
@@ -1713,7 +1713,8 @@ tests/{toolchain,unit,simulation,cuda,model,distributed,packaging}/   benchmarks
 dashboard/ (M8)   docs/
 ```
 
-The toolchain file set was confirmed on 2026-09-21. The source directories
+The toolchain file set was confirmed on 2026-09-21. File metadata uses
+embedded headers and `.license` sidecars, not REUSE.toml (D-071). The source directories
 follow the [layers](#layers-and-dependency-rules), and M1 may rename them.
 There is no public `include/` tree (D-064). `docs/` keeps this scaffold's
 single-file decision and findings logs rather than §20's `docs/decisions/`

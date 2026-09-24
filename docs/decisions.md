@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Decision log
 
 Newest first. Every entry: what was decided, why, and what would reopen it.
@@ -29,6 +32,124 @@ the owner's M0 triage answers and review fixes (2026-09-20) and the
 feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
+
+## D-071: REUSE lint from a pinned SDK tool, embedded headers enforced, sidecars instead of REUSE.toml, and provenance records for the toolchain  (2026-09-24, status: accepted; implements D-029's M1 checks and NOTICE and D-017's records for tools and platform dependencies; corrects D-060's list of embedded runtime code)
+
+**Decision.** How M1's License and provenance item meets D-017 and D-029
+([licensing.md](licensing.md#repository-license-metadata)):
+
+- **REUSE lint.** `reuse` **6.2.0**, the newest release on 2026-09-24
+  (published 2025-10-27), runs in the `check` tier over what Git tracks or
+  would add. The x86-64 SDK holds it and its nine dependencies as
+  hash-pinned PyPI wheels (Jinja2 3.1.6, MarkupSafe 3.0.3,
+  license-expression 30.4.4, boolean.py 5.0, python-debian 1.1.1, tomlkit
+  0.15.1, attrs 26.1.0, click 8.5.0, python-magic 0.4.27), unpacked into one
+  directory rather than installed; setup refuses links, escaping paths,
+  `.data` trees and bytecode in them. `python3 -B -I -S` runs it: nothing but
+  the standard library and those wheels is importable, and no bytecode is
+  written into the SDK, whose tree digest `doctor --deep` checks.
+  `libmagic1t64` (for python-magic) and `git` become x86-64 prerequisites.
+  Only x86-64 SDKs get the tool, because only the workstation and the
+  reference container run the check gate (D-061).
+- **Where metadata lives.** A file whose format has comments carries both
+  tags in a header comment within its first ten lines and has no sidecar.
+  Everything else (JSON, patches, plain text, `NOTICE`, and `mise.lock`,
+  which mise rewrites) has a `.license` sidecar. There is no `REUSE.toml`
+  or `.reuse/dep5`: either can override a file's own header, which is what
+  D-029's separate header check exists to prevent. The check
+  (`tools/jitllm_headers.py`) reads the report of `reuse lint --json` and
+  requires that REUSE takes each file's license from the file's own header
+  or sidecar and nothing else, with a commentable file's REUSE license equal
+  to its header's. Any license or copyright tag anywhere in a file or its
+  sidecar, read as a person would see it (Unicode-normalized, without
+  invisible characters, in any case, and in Markdown without escapes or
+  markup), must repeat a whole license expression and a holder that REUSE
+  reads for that file. REUSE's ignore markers are not used, every file is
+  UTF-8 without control characters, and REUSE must cover exactly the files
+  the check does. The check fails
+  on a file type it does not classify, on a sidecar beside a commentable
+  file or without one, on anything but a plain-text or Markdown license text
+  named like one, on anything in `LICENSES/` but `<id>.txt`, and on a
+  tracked `REUSE.toml` or `.reuse` anywhere or an untracked one at the root.
+  REUSE snippet tags with other licenses are not supported yet.
+- **License texts and NOTICE.** `LICENSES/` holds every license a file
+  declares: Apache-2.0, identical to the root `LICENSE`, and MIT from SPDX
+  License List 3.29.0. The root `NOTICE` carries jitLLM's attribution and
+  names the third-party material in the repository. A package adds the
+  notices of what its build incorporates.
+- **Provenance records.** `toolchains/provenance.toml` records by unit
+  every locked SDK artifact (each package, archive, source and wheel), host
+  prerequisite and mise tool: its D-017 category, SPDX license, whether and
+  how it can enter a packaged binary, and the notices that follow, with each
+  notice's text source and condition. A test fails when any of them has no
+  record. The file is not
+  an SDK identity input, because it changes no SDK bytes.
+- **Classification, pending the owner.** The records place Clang's
+  resource headers and compiler-rt in D-017's compiler-support platform
+  family, and CCCL's libcu++ and `nv/` headers, reached through CUDA's own
+  headers, in the CUDA family. D-017 names neither compiler headers nor
+  `Apache-2.0 WITH LLVM-exception`, so this stays a proposal until the
+  owner settles it (open decision 5 in licensing.md). compiler-rt enters
+  only sanitizer builds. CUB and Thrust used directly would be incorporated
+  implementation and need their own decision.
+- **SBOM.** The SBOM, and the package's generated third-party notices, move
+  to the Package item. There is no shipped binary to describe before it.
+  They are generated from the build receipt, the SDK receipt and these
+  records, and are checked against the package inventory in `check:full`
+  (D-061).
+
+**Context.** The plan's M1 item asks for `LICENSES/`, REUSE metadata and
+lint, the embedded-header check, a root `NOTICE`, and an audit of the
+notices of what ships and what builds it. Before this change, 28 files
+lacked metadata. REUSE lint also flagged a prose mention of an SPDX tag as
+an invalid expression, and nothing enforced D-029's header rule.
+The PyPI wheels of `reuse` 5.1.1, 6.1.2 and 6.2.0 are pure Python but
+tagged `manylinux_2_41`, newer than Ubuntu 24.04's glibc 2.39, so pip would
+refuse them. The sdist's build step (poetry-core) only compiles message
+catalogs, so unpacking the pinned wheels is the smaller, fully pinned path. D-049 puts
+every tool at its pin in the SDK, and D-060 asks for the newest compatible
+release.
+
+**Evidence.** On the workstation, 2026-09-24:
+
+- **The pins.** Each wheel's SHA-256 and size match PyPI's JSON API and were
+  recomputed after download. None of these files has a PEP 740 attestation.
+- **The SDK.** `mise run setup` assembled the new SDK, and `doctor` reported
+  `reuse 6.2.0` run the way the check gate runs it. REUSE lint then passed on
+  every file, and so did the header check. `mise run check` and
+  `check:full` passed.
+- **The audit.** Link maps from probe binaries, cross-built with the SDK's
+  flags, show what actually links. Normal executables link neither
+  compiler-rt nor `libatomic.a`. `cp-demangle.o` links through the terminate
+  handler, and Ryu links with any `<format>` use, not only floating-point
+  formatting as D-060 says.
+- **CUDA.** The CUDA EULA's Attachment A lists `libcudart_static.a` as
+  redistributable. The CUDA headers require their Disclaimer and U.S.
+  Government End Users Notice in user documentation.
+
+[licensing.md](licensing.md#what-a-packaged-binary-carries) has the method,
+the full inventory and the notice list.
+
+**Consequences.**
+- `check` gains the `reuse` and `headers` steps. A new file copies its
+  neighbours' header, and a new file type is classified in
+  `tools/jitllm_headers.py`.
+- The SDK identity changes, so every host runs `mise run setup` once.
+- A packaged binary always carries the HP and SGI STL notices and, in a
+  CUDA build, the NVIDIA EULA statement and the CUDA headers' notice, plus
+  the conditional notices in `provenance.toml`. Seven owner decisions,
+  listed in licensing.md, must be settled before the first package ships.
+- The SDK, its caches and a reference image populated with it are never
+  published: the CUDA tools are internal-use only under the EULA, and
+  distributing the runtime archives would owe GPL and LGPL source. Release
+  packages come from the `cross` profile, not `spark-native`.
+- Vendored units (M2) keep their upstream bytes, so the header check will
+  need a rule for them. It fails on them rather than silently accepting them.
+
+**Reopen if.** A newer `reuse` or a REUSE specification change; vendored
+upstream files need metadata that neither headers nor sidecars fit; hosted
+CI (which must not cache or publish the SDK); or a component's terms change
+what a binary must carry.
 
 ## D-070: Provision the SDK from pinned inputs alone: a package-built Spark sysroot, a cross-built AArch64 GCC runtime and a mise-pinned Python  (2026-09-23, status: accepted; replaces D-032's sysroot snapshot; amends D-060 for the cross build's AArch64 runtime; implements D-012 and D-049)
 
@@ -1167,7 +1288,7 @@ emulation (RE-014).
 need third-party-verifiable builds; or the tiers take too long to run for
 every change.
 
-## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family; the cross build's AArch64 runtime is cross-built per D-070)
+## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family; the cross build's AArch64 runtime is cross-built per D-070; its list of embedded runtime code, including when Ryu links, corrected by D-071)
 
 **Decision.** The owner asked on 2026-09-23 for GCC 16.2, static linking
 wherever possible, and the newest version of every component that is still
@@ -3190,7 +3311,7 @@ A→B→A may run through any named client.
 or maintaining two formats measurably delays M3, in which case the Messages
 format drops back to an M7 extension.
 
-## D-029: Contributions under DCO; REUSE-style SPDX headers and a NOTICE file from M1; SBOM with packaging  (2026-09-21, status: accepted; "CI" checks run in D-061's local gate, and external PRs wait for hosted CI)
+## D-029: Contributions under DCO; REUSE-style SPDX headers and a NOTICE file from M1; SBOM with packaging  (2026-09-21, status: accepted; "CI" checks run in D-061's local gate, and external PRs wait for hosted CI; lint tool, header rules and sidecars instead of REUSE.toml in D-071)
 
 **Decision.** External pull requests are accepted and must carry a Developer
 Certificate of Origin sign-off (`Signed-off-by`); there is no CLA. Every

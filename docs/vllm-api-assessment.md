@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # vLLM API gap assessment
 
 Checked 2026-09-22 against official vLLM `latest` documentation. This is a

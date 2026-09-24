@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Rough edges — findings log
 
 CUDA driver, DGX Spark platform, toolchain, and library bugs, quirks,

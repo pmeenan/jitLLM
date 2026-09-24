@@ -1,0 +1,261 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Provenance records for what builds jitLLM (D-017, D-071): the SDK's
+# components and the declared host prerequisites. Third-party source code is
+# recorded in third_party/sources.lock.json instead. docs/licensing.md
+# summarizes the audit behind these records (checked 2026-09-24); the Package
+# item generates the package's third-party notices and SBOM from them and the
+# build receipt. Versions and artifact hashes are in manifest.toml and
+# artifacts.lock.json. This file changes no SDK bytes, so it is not an SDK
+# identity input.
+#
+# Each [units.<id>] record covers SDK `artifacts` (lock keys without the
+# architecture: deb/<package>, archive/<name>, source/..., wheel/<name>),
+# host prerequisite `packages` or the `tools` mise.toml pins (plus mise
+# itself). Every locked artifact for either build host, every prerequisite
+# and every mise tool belongs to a unit, and an artifact may belong to more
+# than one (tools/tests/test_sdk_tools.py).
+#   category  D-017's: "tool" (runs during the build or its checks; nothing
+#             of it enters a binary but generated code) or "platform" (the
+#             declared platform family: the C library, the C++ and compiler
+#             support runtime, the CUDA SDK's runtime and interface headers)
+#   license   SPDX expression of the unit's terms
+#   ships     whether any of it can enter a packaged jitLLM binary
+#   enters    what of it reaches a jitLLM binary, and when
+#   notices   [notices] a packaged binary carries when this unit contributes
+
+schema = 1
+
+# SDK components ------------------------------------------------------------------
+
+[units.cmake]
+artifacts = ["archive/cmake"]
+category = "tool"
+license = "BSD-3-Clause AND BSD-2-Clause AND 0BSD AND MIT AND curl AND Zlib AND Apache-2.0 AND LGPL-3.0-only"
+ships = false
+enters = "Nothing. Compiler identification sources run only in try_compile. CMake is BSD-3-Clause; the license expression adds the headline terms of what it bundles (curl, libarchive, liblzma, librhash, libuv, nghttp2, cppdap, zlib, zstd, not audited file by file) and of Qt 5.12, which cmake-gui (not in the SDK's bin/) links statically."
+notices = []
+
+[units.ninja]
+artifacts = ["archive/ninja"]
+category = "tool"
+license = "Apache-2.0"
+ships = false
+enters = "Nothing."
+notices = []
+
+[units.llvm-tools]
+artifacts = ["deb/clang-22", "deb/clang-format-22", "deb/clang-tidy-22", "deb/clang-tools-22", "deb/clangd-22",
+             "deb/libclang-cpp22", "deb/libclang1-22", "deb/libllvm22", "deb/lld-22", "deb/llvm-22",
+             "deb/llvm-22-linker-tools", "deb/llvm-22-runtime", "deb/libz3-4"]
+category = "tool"
+license = "Apache-2.0 WITH LLVM-exception AND MIT"
+ships = false
+enters = "Generated code only: Clang compiles and LLD links every jitLLM binary. libz3 (MIT) serves the static analyzer."
+notices = []
+
+[units.clang-resource-headers]
+# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+artifacts = ["deb/libclang-common-22-dev"]
+category = "platform"
+license = "Apache-2.0 WITH LLVM-exception AND MIT"
+ships = true
+enters = "The compiler's own headers (lib/clang/22/include: stddef.h, stdarg.h, limits.h and the like) in every unit; arm_neon.h and arm_fp16.h, which carry a legacy MIT permission text and no copyright line, only where NEON intrinsics are used. A few x86 intrinsic headers carry MIT text too, which matters only if an x86-64 binary ever ships. The LLVM exception covers embedded code."
+notices = ["arm-neon"]
+
+[units.compiler-rt]
+# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+artifacts = ["deb/libclang-rt-22-dev"]
+category = "platform"
+license = "Apache-2.0 WITH LLVM-exception"
+ships = false
+enters = "Sanitizer runtimes, linked only into sanitizer builds, which never ship. Normal executables link libgcc, not compiler-rt's builtins."
+notices = []
+
+[units.cuda-tools]
+artifacts = ["deb/cuda-nvcc-13-4", "deb/libnvvm-13-4", "deb/libnvptxcompiler-13-4"]
+category = "tool"
+license = "LicenseRef-NVIDIA-CUDA-EULA"
+ships = false
+enters = "Generated code: NVCC, cudafe++, ptxas, fatbinary, libNVVM and libnvptxcompiler compile the .cu units. The EULA makes these tools internal-use only, so neither they nor an SDK or image holding them is ever published."
+notices = []
+
+[units.cuda-runtime]
+artifacts = ["deb/cuda-crt-13-4", "deb/cuda-cudart-13-4", "deb/cuda-cudart-dev-13-4", "deb/cuda-nvcc-13-4",
+             "deb/libnvvm-13-4"]
+category = "platform"
+license = "LicenseRef-NVIDIA-CUDA-EULA"
+ships = true
+enters = "CUDA builds: libcudart_static.a (cudart_static.o, redistributable under the EULA's Attachment A), NVCC's host stubs and fatbinary registration code (crt/host_runtime.h, fatbinary_section.h), device code built from the CUDA headers and, where device math is used, libNVVM's libdevice. libcudadevrt.a is on the link line but contributes nothing without relocatable device code. libcuda (the driver) is loaded at run time and never shipped."
+notices = ["nvidia-cuda-eula", "nvidia-header-notice", "nvidia-math-juffa", "nvidia-softfloat"]
+
+[units.cccl]
+# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+artifacts = ["deb/cccl-13-4"]
+category = "platform"
+license = "Apache-2.0 WITH LLVM-exception"
+ships = true
+enters = "libcu++ and nv/ headers that the CUDA headers include (cuda_fp16.h, cooperative_groups.h). Including CUB (BSD-3-Clause) or Thrust (Apache-2.0 AND BSL-1.0 AND BSD-2-Clause) directly would make them incorporated implementation, which needs its own D-017 decision first."
+notices = []
+
+[units.gcc-runtime]
+artifacts = ["source/gcc"]
+category = "platform"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+ships = true
+enters = "Every executable (D-060): the C++ headers, libstdc++.a (which contains libsupc++), libgcc.a, libgcc_eh.a and crtbeginS.o/crtendS.o. Embedded code linked routinely: HP and SGI STL code, Ryu (taken under BSL-1.0) with any <format> or <print>, libiberty's cp-demangle (GPL-2.0-or-later WITH GCC-exception-2.0) through the terminate handler, glibc soft-fp comparisons (LGPL-2.1-or-later with a linking exception) and Unicode-derived <format> tables. Only when used: fast_float (MIT) with floating-point std::from_chars, the tz database (public domain) with chrono time zones, IBM-HRL and Siek code with ext/pb_ds or concept checks. libatomic.a is not on the link line."
+notices = ["hp-sgi-stl", "unicode", "fast-float", "ibm-hrl", "siek"]
+
+[units.gcc-build-inputs]
+artifacts = ["source/gcc-prerequisite/gettext", "source/gcc-prerequisite/gmp", "source/gcc-prerequisite/isl",
+             "source/gcc-prerequisite/mpc", "source/gcc-prerequisite/mpfr"]
+category = "tool"
+license = "(LGPL-3.0-or-later OR GPL-2.0-or-later) AND LGPL-3.0-or-later AND MIT AND GPL-3.0-or-later AND LGPL-2.1-or-later"
+ships = false
+enters = "Nothing: GMP, MPFR, MPC, ISL (MIT) and gettext (GPL-3.0-or-later; its libintl LGPL-2.1-or-later) build GCC's own compiler, in-tree as contrib/download_prerequisites does. libstdc++.a and libgcc.a contain none of their symbols."
+notices = []
+
+[units.glibc]
+artifacts = ["deb/libc6", "deb/libc6-dev"]
+category = "platform"
+license = "LGPL-2.1-or-later"
+ships = true
+enters = "Every Spark executable: Scrt1.o, crti.o and crtn.o, and libc_nonshared.a members on demand (atexit.oS in CUDA binaries), all under the start files' linking exception (GCC-exception-2.0-note); csu/init.c's one constant and header code under LGPL-2.1 section 5. libc, libm and the loader stay dynamic and are not shipped."
+notices = ["glibc-bsd-headers"]
+
+[units.linux-uapi-headers]
+artifacts = ["deb/linux-libc-dev"]
+category = "platform"
+license = "GPL-2.0-only WITH Linux-syscall-note"
+ships = true
+enters = "Constants and macros (errno values, limits); the syscall note keeps programs using them outside the kernel's license. Most headers are GPL-2.0-only WITH Linux-syscall-note; others are GPL-2.0-or-later or LGPL-2.1-or-later WITH the note, or BSD-3-Clause (the virtio headers)."
+notices = []
+
+[units.reuse]
+artifacts = ["wheel/reuse", "wheel/attrs", "wheel/boolean-py", "wheel/click", "wheel/jinja2", "wheel/license-expression",
+             "wheel/markupsafe", "wheel/python-debian", "wheel/python-magic", "wheel/tomlkit"]
+category = "tool"
+license = "Apache-2.0 AND CC0-1.0 AND CC-BY-SA-4.0 AND GPL-3.0-or-later AND GPL-2.0-or-later AND BSD-3-Clause AND BSD-2-Clause AND MIT AND CC-BY-4.0"
+ships = false
+enters = "Nothing: the check gate's REUSE lint. reuse (GPL-3.0-or-later with CC0 and CC-BY-SA data), Jinja2, MarkupSafe and click (BSD-3-Clause), license-expression (Apache-2.0, bundling CC-BY-4.0 license data), boolean.py (BSD-2-Clause), python-debian (GPL-2.0-or-later and GPL-3.0-or-later files), tomlkit, attrs and python-magic (MIT)."
+notices = []
+
+# Host prerequisites (toolchains/prerequisites/) and the tools mise pins ----------
+
+[units.host-glibc]
+packages = ["libc6", "libc6-dev"]
+category = "platform"
+license = "LGPL-2.1-or-later"
+ships = false
+enters = "The host C library runs the SDK's tools. The native x86-64 and spark-native presets link the host's start files, as the glibc unit describes; neither is a release profile."
+notices = []
+
+[units.host-fetch-tools]
+packages = ["ca-certificates", "dpkg", "tar", "xz-utils", "bzip2", "gzip"]
+category = "tool"
+license = "LicenseRef-Ubuntu-package-terms"
+ships = false
+enters = "Nothing: they fetch and unpack the pinned artifacts. Each package's terms are in its /usr/share/doc/<package>/copyright."
+notices = []
+
+[units.host-build-tools]
+packages = ["gcc", "g++", "make", "m4", "binutils", "binutils-aarch64-linux-gnu"]
+category = "tool"
+license = "GPL-3.0-or-later"
+ships = false
+enters = "Nothing: they build the GCC 16.2 runtimes from source, whose own compiler then compiles the runtime libraries. On a Spark, binutils' GNU ld links the spark-native preset (D-032)."
+notices = []
+
+[units.host-tool-libraries]
+packages = ["libcurl4t64", "libgcc-s1", "libstdc++6", "libedit2", "libffi8", "libxml2", "libzstd1", "zlib1g",
+            "libmagic1t64"]
+category = "tool"
+license = "LicenseRef-Ubuntu-package-terms"
+ships = false
+enters = "Nothing: shared libraries that the SDK's LLVM tools and the REUSE tool's python-magic load. Each package's terms are in its /usr/share/doc/<package>/copyright."
+notices = []
+
+[units.host-emulation]
+packages = ["qemu-user-static"]
+category = "tool"
+license = "GPL-2.0-only"
+ships = false
+enters = "Nothing: runs cross-built tests under qemu-user (D-061)."
+notices = []
+
+[units.host-vcs]
+packages = ["git"]
+category = "tool"
+license = "GPL-2.0-only"
+ships = false
+enters = "Nothing: the check gate and REUSE lint list the working tree with it."
+notices = []
+
+[units.mise-python]
+tools = ["mise", "python"]
+category = "tool"
+license = "MIT AND PSF-2.0"
+ships = false
+enters = "Nothing: mise pins the Python (python-build-standalone) that runs tools/. The libraries that Python build bundles (OpenSSL, SQLite and others) are not audited; the expression covers mise and Python itself."
+notices = []
+
+# Notices -------------------------------------------------------------------------
+# What a packaged binary carries when a unit above contributes. `source` says
+# where the text comes from (SDK-relative paths use the target's copy);
+# `when` says when it applies.
+
+[notices.hp-sgi-stl]
+text = "The Hewlett-Packard (1994) and Silicon Graphics (1996-1999) STL copyright and permission notices (HPND-sell-variant), which ask to appear in supporting documentation"
+source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/stl_vector.h, lines 27-48; the SGI years vary across headers from 1996 to 1999"
+when = "Always: <vector>, <algorithm>, <memory>, std::map and std::list code carry them"
+
+[notices.unicode]
+text = "The Unicode License V3 notice for the Unicode-derived tables in libstdc++'s <format>"
+source = "https://www.unicode.org/license.txt (not GCC's contrib/unicode/unicode-license.txt, which is the older data files and software agreement)"
+when = "Any <format> or <print> use; recommended, pending the owner's decision (docs/licensing.md)"
+
+[notices.fast-float]
+text = "fast_float's MIT copyright and permission notice"
+source = "libstdc++-v3/src/c++17/fast_float/fast_float.h, lines 11-38, in the GCC 16.2 source (not in the SDK)"
+when = "When libstdc++'s floating_from_chars.o is linked (floating-point std::from_chars)"
+
+[notices.ibm-hrl]
+text = "IBM Haifa Research Laboratories' permission notice"
+source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/ext/typelist.h, lines 25-33"
+when = "When ext/pb_ds, ext/typelist.h or ext/throw_allocator.h is used"
+
+[notices.siek]
+text = "Jeremy Siek's permission notice"
+source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/boost_concept_check.h, lines 25-29"
+when = "When _GLIBCXX_CONCEPT_CHECKS is defined"
+
+[notices.arm-neon]
+text = "The MIT permission text of Clang's generated NEON headers"
+source = "llvm/lib/clang/22/include/arm_neon.h, lines 3-19"
+when = "When NEON intrinsic headers are used"
+
+[notices.glibc-bsd-headers]
+text = "The University of California 4.4BSD notice from glibc's copyright file"
+source = "sysroot/aarch64-linux-gnu/usr/share/doc/libc6/copyright, the stanza on code incorporated from 4.4 BSD"
+when = "When BSD-licensed glibc header macros are expanded (sys/queue.h, for example)"
+
+[notices.nvidia-cuda-eula]
+text = "A statement that the NVIDIA CUDA runtime object code and NVCC-generated code in the binary are under the NVIDIA CUDA EULA, not Apache-2.0, with the EULA's text or URL"
+source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright (the EULA, last updated 2026-01-26)"
+when = "CUDA builds"
+
+[notices.nvidia-header-notice]
+text = "The CUDA headers' Disclaimer and U.S. Government End Users Notice, which their text requires in user documentation"
+source = "cuda/targets/sbsa-linux/include/cuda_runtime.h, lines 19-42"
+when = "CUDA builds"
+
+[notices.nvidia-math-juffa]
+text = "Norbert Juffa's notice for the CUDA math library routines (EULA Attachment B)"
+source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright, Attachment B"
+when = "CUDA builds whose device code calls CUDA math library routines"
+
+[notices.nvidia-softfloat]
+text = "The SoftFloat notice for 128-bit floating-point device math (EULA Attachment B)"
+source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright, Attachment B"
+when = "CUDA builds whose device code uses 128-bit floating-point math"

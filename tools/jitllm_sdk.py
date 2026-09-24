@@ -18,6 +18,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -27,6 +28,10 @@ LOCK = TOOLCHAINS / "artifacts.lock.json"
 # Every file whose bytes determine what setup produces.
 IDENTITY_INPUTS = (MANIFEST, LOCK, REPO / "tools" / "setup-toolchain", REPO / "tools" / "jitllm_sdk.py")
 RECEIPT = "sdk.json"
+# Runs a module from one directory, searched after the standard library, as
+# `python -m` would: argv is [-c, directory, module, tool arguments...].
+_RUN_MODULE = ("import runpy, sys; sys.path.append(sys.argv[1]); module = sys.argv[2]; del sys.argv[1:3]; "
+               "runpy.run_module(module, run_name='__main__', alter_sys=True)")
 
 
 class SdkError(Exception):
@@ -86,6 +91,19 @@ class Sdk:
 
     def components(self) -> list[tuple[str, dict]]:
         return [(name, self.manifest["components"][name]) for name in self.host["components"]]
+
+    def python_tool(self, name: str) -> list[str]:
+        """The command that runs a `wheels` component's tool with this Python.
+
+        -I ignores PYTHON* variables, the working directory and user
+        site-packages and -S skips site-packages, so only the standard library
+        and the component's unpacked wheels are importable, never a different
+        copy of a dependency. -B keeps bytecode out of the SDK, whose tree
+        digest `doctor --deep` checks (-I also ignores PYTHONDONTWRITEBYTECODE).
+        """
+        comp = self.manifest["components"][name]
+        return [sys.executable, "-B", "-I", "-S", "-c", _RUN_MODULE, str(self.root / comp["dest"]),
+                comp["module"]]
 
     def artifact(self, key: str) -> dict:
         try:

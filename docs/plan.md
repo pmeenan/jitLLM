@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Plan
 
 **This is a living document.** Milestones will be re-scoped, re-ordered, split,
@@ -147,8 +150,8 @@ gate in force and the first `jitllm` binary running on a Spark.
       on the workstation and offline in the reference container (`--network
       none`) after preparation from an empty cache; `cross` on `spark` over
       SSH and `spark-native` on `spark`. Owned elsewhere: the package half of
-      the last gate (package inventory, NOTICE and SBOM) with the License and
-      provenance and Package items; running the network-denied build, the only
+      the last gate (package inventory, NOTICE and SBOM) with the Package
+      item; running the network-denied build, the only
       stop for downloads a component's own scripts attempt, as part of
       `check:full` with the Local check gate; vendored units with M2's first
       adapted kernel; build-host tools, which the lock refuses until the first
@@ -171,17 +174,34 @@ gate in force and the first `jitllm` binary running on a Spark.
       build checks the core closure from an empty source download cache and
       runs with no network; its provisioned SDK persists separately.
       *Verified 2026-09-24:* `check:full` (including `check`) on the workstation; `check:spark` on `spark` (GB10, driver 580.178.04).
-      *Owned elsewhere:* REUSE lint and the embedded-header check join
-      `check` with License and provenance. The `.deb`, its install test and
+      REUSE lint and the embedded-header check joined `check` with License
+      and provenance. *Owned elsewhere:* the `.deb`, its install test and
       the package inventory against the receipt, NOTICE and SBOM join
       `check:full` with the Package item. `jitllm doctor` joins `check:spark`
       with the Smoke binary item. The GPU, VMM, I/O and ARM stress suites
       join it in M2.
-- [ ] **License and provenance** (D-017, D-029): `LICENSES/`, REUSE
+- [x] **License and provenance** (D-017, D-029): `LICENSES/`, REUSE
       metadata and lint, the embedded-header check, a root `NOTICE`, and an
       SBOM generated with the package. Audit the notices of what ships and
       what builds it: CMake, Ninja, LLVM, glibc, the CUDA runtime, and the
       static GCC runtime with its embedded components.
+      *Landed (D-071):* `LICENSES/` (Apache-2.0, MIT), SPDX metadata on
+      every file (headers where the format allows, `.license` sidecars
+      otherwise, no `REUSE.toml`) and the root `NOTICE`. `check` gains
+      `reuse`, REUSE lint 6.2.0 from hash-pinned wheels in the x86-64 SDK,
+      and `headers` (`tools/jitllm_headers.py`). `headers` checks REUSE's
+      JSON report against each file's own header or sidecar. It fails on a
+      commentable file without its own header, on metadata REUSE takes
+      from anywhere else, on a misplaced or orphaned sidecar, on a file REUSE
+      skips, and on an unclassified file type. The audit is in
+      [licensing.md](licensing.md#what-builds-jitllm), with every locked SDK
+      artifact, host prerequisite and mise tool recorded in
+      `toolchains/provenance.toml` (category, license, what enters a binary,
+      the notices that follow), which a test keeps complete. It corrects
+      D-060's list of embedded runtime code. *Verified 2026-09-24:*
+      `check:full` on the workstation, including the offline reference build
+      with the new SDK. *Moved to the Package item:* the SBOM and the
+      package's third-party notices, since no binary ships before it.
 - [ ] **Versioning** (D-062): `project(VERSION)`, the dev-version
       derivation and its Debian `~` mapping, `jitllm --version` and the
       receipt (version, commit, license profile, SDK identity), a root
@@ -203,7 +223,12 @@ gate in force and the first `jitllm` binary running on a Spark.
       with their modes. It depends on `libc6` (`GLIBC_2.38`) and a versioned
       `libcuda.so.1` floored at NVIDIA's minimum driver for the pinned
       toolkit. The install test runs in an arm64 container; M1 decides
-      whether it also starts the unit.
+      whether it also starts the unit. The package ships `LICENSE`,
+      `NOTICE`, a third-party notices file and an SBOM, generated from the
+      build receipt, the SDK receipt and `toolchains/provenance.toml`, and
+      is built from the `cross` profile (D-071). The seven owner decisions in
+      [licensing.md](licensing.md#what-a-packaged-binary-carries) are
+      settled first.
 - [ ] **Node configuration** (D-063): a strict TOML 1.0 parser (toml++ is
       the candidate under D-017, D-057 and D-066) and D-063's node-local
       keys, `[storage]` included, validated fail-closed with exhaustive

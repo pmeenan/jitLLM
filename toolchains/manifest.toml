@@ -27,15 +27,17 @@ ninja = "1.13.2"         # D-059
 gcc_runtime = "16.2.0"   # D-060, source-built and linked statically
 glibc = "2.39"           # target floor: sysroot and host libc6-dev (D-070)
 mise = "2026.9.12"       # D-070; mise.toml's min_version
+reuse = "6.2.0"          # D-071, the check gate's REUSE lint
 
 # Build hosts. A component listed for a host is installed into that host's SDK.
-# x86_64: the workstation and the reference container (native and cross).
+# x86_64: the workstation and the reference container (native and cross),
+# which also run the check gate.
 # aarch64: the native Spark fallback (D-032).
 [hosts.x86_64]
 triple = "x86_64-linux-gnu"
 deb_arch = "amd64"
 components = ["llvm", "llvm-aarch64-runtimes", "cuda", "cuda-sbsa-target", "cmake", "ninja",
-              "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64"]
+              "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64", "reuse"]
 prerequisites = "prerequisites/ubuntu-24.04-x86_64.txt"
 
 [hosts.aarch64]
@@ -46,7 +48,7 @@ prerequisites = "prerequisites/ubuntu-24.04-aarch64.txt"
 
 # Components. `kind` selects the recipe in tools/setup-toolchain. Paths are
 # relative to the SDK root. Lock keys are deb/<package>/<deb arch>,
-# archive/<name>/<host arch> and source/<name>.
+# archive/<name>/<host arch>, source/<name> and wheel/<name>.
 
 [components.llvm]
 # Clang/LLD, compiler-rt sanitizer runtimes and the developer tools from one
@@ -121,6 +123,20 @@ kind = "gcc"
 target = "aarch64-linux-gnu"
 sysroot = "sysroot/aarch64-linux-gnu"
 dest = "sysroot/aarch64-linux-gnu/opt/gcc"
+
+[components.reuse]
+# The REUSE lint tool and its Python dependencies (D-071), for the check
+# gate. The wheels are unpacked, not installed: `python3 -I -S` runs the tool
+# with only the standard library and this directory on its path
+# (jitllm_sdk.python_tool). reuse's wheel is pure Python despite its
+# manylinux_2_41 tag; MarkupSafe's is CPython 3.14's x86-64 build, whose
+# optional speedups module falls back to pure Python under another Python.
+# python-magic loads the host's libmagic (a prerequisite).
+kind = "wheels"
+dest = "python/reuse"
+module = "reuse"
+packages = ["reuse", "attrs", "boolean-py", "click", "jinja2", "license-expression", "markupsafe",
+            "python-debian", "python-magic", "tomlkit"]
 
 [gcc]
 # Inputs: source/gcc and the source/gcc-prerequisite/* archives, unpacked

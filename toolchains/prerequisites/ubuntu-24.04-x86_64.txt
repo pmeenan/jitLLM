@@ -42,3 +42,8 @@ zlib1g
 
 # AArch64 CPU tests under qemu-user; binfmt registration is checked too (D-061).
 qemu-user-static
+
+# The check gate: REUSE lint's python-magic loads libmagic, and the gate and
+# REUSE list the working tree with git (D-071).
+libmagic1t64
+git

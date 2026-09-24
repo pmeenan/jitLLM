@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # API capability assessment: Ollama, lifecycle and cluster sharing
 
 Owner-requested assessment, 2026-09-22, building on the

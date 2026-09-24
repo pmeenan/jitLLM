@@ -67,6 +67,11 @@
     },
     "github:ninja-build/ninja": {
       "verified": "GitHub release asset digest, recomputed (D-059)"
+    },
+    "pypi": {
+      "kind": "pypi",
+      "index": "https://pypi.org/pypi/<project>/<version>/json",
+      "verified": "SHA-256 and size from PyPI's JSON API on 2026-09-24, recomputed from the download; none of these files has a PEP 740 attestation"
     }
   },
   "artifacts": {
@@ -686,6 +691,116 @@
       "sha512": "0176e50808dcc07afbf5bc3e38bf9b7b21918e5f194aa0bfd860d99b00c470630aef149776c4be814a61c44269c3a5b9a4b0b1c0fcd4c9feb1459d8466452da8",
       "size": 1753999,
       "source": "gcc-infrastructure"
+    },
+    "wheel/attrs": {
+      "package": "attrs",
+      "version": "26.1.0",
+      "file": "attrs-26.1.0-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl"
+      ],
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "size": 67548,
+      "source": "pypi"
+    },
+    "wheel/boolean-py": {
+      "package": "boolean.py",
+      "version": "5.0",
+      "file": "boolean_py-5.0-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/e5/ca/78d423b324b8d77900030fa59c4aa9054261ef0925631cd2501dd015b7b7/boolean_py-5.0-py3-none-any.whl"
+      ],
+      "sha256": "ef28a70bd43115208441b53a045d1549e2f0ec6e3d08a9d142cbc41c1938e8d9",
+      "size": 26577,
+      "source": "pypi"
+    },
+    "wheel/click": {
+      "package": "click",
+      "version": "8.5.0",
+      "file": "click-8.5.0-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl"
+      ],
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360",
+      "size": 125251,
+      "source": "pypi"
+    },
+    "wheel/jinja2": {
+      "package": "Jinja2",
+      "version": "3.1.6",
+      "file": "jinja2-3.1.6-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl"
+      ],
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "size": 134899,
+      "source": "pypi"
+    },
+    "wheel/license-expression": {
+      "package": "license-expression",
+      "version": "30.4.4",
+      "file": "license_expression-30.4.4-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/af/40/791891d4c0c4dab4c5e187c17261cedc26285fd41541577f900470a45a4d/license_expression-30.4.4-py3-none-any.whl"
+      ],
+      "sha256": "421788fdcadb41f049d2dc934ce666626265aeccefddd25e162a26f23bcbf8a4",
+      "size": 120615,
+      "source": "pypi"
+    },
+    "wheel/markupsafe": {
+      "package": "MarkupSafe",
+      "version": "3.0.3",
+      "file": "markupsafe-3.0.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/41/3c/a36c2450754618e62008bf7435ccb0f88053e07592e6028a34776213d877/markupsafe-3.0.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+      ],
+      "sha256": "457a69a9577064c05a97c41f4e65148652db078a3a509039e64d3467b9e7ef97",
+      "size": 23005,
+      "source": "pypi"
+    },
+    "wheel/python-debian": {
+      "package": "python-debian",
+      "version": "1.1.1",
+      "file": "python_debian-1.1.1-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/6e/47/e184f0004e63dbc49c4bad5e811218f66bece1b519f80b06a619b42e6ec3/python_debian-1.1.1-py3-none-any.whl"
+      ],
+      "sha256": "f98ae013e8e5310e49041cc3860a7105df73af73d4ff1d8afb474770d328a6ad",
+      "size": 138101,
+      "source": "pypi"
+    },
+    "wheel/python-magic": {
+      "package": "python-magic",
+      "version": "0.4.27",
+      "file": "python_magic-0.4.27-py2.py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/6c/73/9f872cb81fc5c3bb48f7227872c28975f998f3e7c2b1c16e95e6432bbb90/python_magic-0.4.27-py2.py3-none-any.whl"
+      ],
+      "sha256": "c212960ad306f700aa0d01e5d7a325d20548ff97eb9920dcd29513174f0294d3",
+      "size": 13840,
+      "source": "pypi"
+    },
+    "wheel/reuse": {
+      "package": "reuse",
+      "version": "6.2.0",
+      "file": "reuse-6.2.0-cp310-cp310-manylinux_2_41_x86_64.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/b3/f5/7ed954c7a56ef50dba65a422f6dba08f45f7de59c43a7e5ba1333ad81916/reuse-6.2.0-cp310-cp310-manylinux_2_41_x86_64.whl"
+      ],
+      "sha256": "12b68549bb9d5f4957f06d726a83a9780628810008fb732bb0d0f21607f8c6d6",
+      "size": 269991,
+      "source": "pypi"
+    },
+    "wheel/tomlkit": {
+      "package": "tomlkit",
+      "version": "0.15.1",
+      "file": "tomlkit-0.15.1-py3-none-any.whl",
+      "urls": [
+        "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl"
+      ],
+      "sha256": "177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304",
+      "size": 49449,
+      "source": "pypi"
     }
   }
 }

@@ -38,7 +38,8 @@ class Tiers(unittest.TestCase):
         return [step.name for step in check.plan(tier, None, host)]
 
     def test_check_formats_builds_every_workstation_profile_and_lints(self):
-        self.assertEqual(self.names("check"), ["format", "tools", "native", "cpu", "cross", "tidy"])
+        self.assertEqual(self.names("check"),
+                         ["format", "reuse", "headers", "tools", "native", "cpu", "cross", "tidy"])
 
     def test_full_adds_the_sanitizers_and_the_reference_build(self):
         self.assertEqual(self.names("full"), [*self.names("check"), "cpu-asan", "cross-asan", "reference"])
@@ -63,6 +64,40 @@ class Tiers(unittest.TestCase):
         self.assertEqual(tasks["check"]["run"], "python3 tools/check")
         self.assertEqual(tasks["check:full"]["run"], "python3 tools/check full")
         self.assertEqual(tasks["check:spark"]["run"], "python3 tools/check spark")
+
+
+class Licensing(unittest.TestCase):
+    def test_reuse_lints_the_checkout_with_the_sdks_isolated_tool(self):
+        sdk = mock.Mock()
+        sdk.python_tool.return_value = ["python3", "-I", "-S", "-c", "...", "/sdk/python/reuse", "reuse"]
+        with mock.patch.object(check, "run", return_value=1) as run:
+            self.assertFalse(check.check_reuse(sdk))
+        sdk.python_tool.assert_called_once_with("reuse")
+        self.assertEqual([str(a) for a in run.call_args.args[0]],
+                         [*sdk.python_tool.return_value, "--root", str(check.REPO), "lint"])
+
+    def test_headers_checks_the_working_tree_against_reuses_report(self):
+        sdk = mock.Mock()
+        sdk.python_tool.return_value = ["python3", "reuse"]
+        report = {"files": [{"path": "a.py"}]}
+        done = types.SimpleNamespace(returncode=1, stdout=json.dumps(report), stderr="")
+        with (mock.patch.object(check, "worktree_files", return_value=["a.py"]),
+              mock.patch.object(check.subprocess, "run", return_value=done) as run,
+              mock.patch.object(check.headers, "check", return_value=(1, ["a.py: no tag"])) as headers,
+              mock.patch.object(check, "log") as log):
+            self.assertFalse(check.check_headers(sdk))
+        self.assertEqual(run.call_args.args[0], ["python3", "reuse", "--root", str(check.REPO), "lint", "--json"])
+        headers.assert_called_once_with(check.REPO, ["a.py"], report)
+        self.assertIn(mock.call("a.py: no tag"), log.call_args_list)
+
+    def test_headers_fails_without_a_report(self):
+        sdk = mock.Mock()
+        sdk.python_tool.return_value = ["python3", "reuse"]
+        done = types.SimpleNamespace(returncode=2, stdout="", stderr="crashed")
+        with (mock.patch.object(check.subprocess, "run", return_value=done),
+              mock.patch.object(check.headers, "check") as headers, mock.patch.object(check, "log")):
+            self.assertFalse(check.check_headers(sdk))
+        headers.assert_not_called()
 
 
 class Arguments(unittest.TestCase):

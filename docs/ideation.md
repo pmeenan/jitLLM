@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # jitLLM — Project Ideation and Bootstrap Design
 
 **Working tagline:** Just-in-time memory for LLMs.  

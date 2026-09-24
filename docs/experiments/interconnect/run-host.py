@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 """Bounded, two-node host-buffer RDMA baseline. Raw outputs stay outside Git."""
 import argparse
 import concurrent.futures

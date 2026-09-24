@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 # Source this file on either node; all dependencies stay in the experiment directory.
 export JITLLM_NET_ROOT=/home/pmeenan/.local/share/jitllm/interconnect
 export OPAL_PREFIX="$JITLLM_NET_ROOT/mpi-root/usr"

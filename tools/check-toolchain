@@ -4,8 +4,8 @@
 """Verifies this host's pinned SDK and prerequisites and reports their identities (D-012, D-049).
 
 Checks the host prerequisites, the SDK's receipt against the current inputs,
-each tool's version against the manifest, and that every SDK tool's shared
-libraries resolve. A C++ probe is compiled, linked and run natively and, on
+each tool's version against the manifest (the Python tools run as the check
+gate runs them), and that every SDK tool's shared libraries resolve. A C++ probe is compiled, linked and run natively and, on
 x86-64 hosts, cross-built and run under qemu-user; a CUDA probe is compiled
 and linked (not run) for the same targets. It reports the host, driver, GPU
 and tool identities. Exits nonzero on any problem. `mise run doctor` runs it.
@@ -248,6 +248,24 @@ def check_tools(sdk: sdklib.Sdk, r: Report) -> None:
             r.problem(f"{link.name}: unresolved shared libraries {', '.join(missing_libraries)}")
 
 
+def check_python_tools(sdk: sdklib.Sdk, r: Report) -> None:
+    """Runs each unpacked Python tool (a `wheels` component) the way the check gate does."""
+    versions = sdk.manifest["versions"]
+    for name, comp in sdk.components():
+        if comp["kind"] != "wheels":
+            continue
+        try:
+            out = capture([*sdk.python_tool(name), "--version"])
+        except SdkError as e:
+            r.problem(str(e))
+            continue
+        match = re.search(r"version (\S+)", out.stdout)
+        found = match.group(1) if match else None
+        r.add("tools", name, found)
+        if out.returncode or found != versions[name]:
+            r.problem(f"{name}: expected {versions[name]}, got {found or first_line(out.stderr) or '?'}")
+
+
 def needed(sdk: sdklib.Sdk, binary: pathlib.Path) -> list[str]:
     out = capture([sdk.root / "bin" / "llvm-readelf", "--dynamic", binary])
     if out.returncode:
@@ -376,6 +394,7 @@ def main() -> int:
     if check_receipt(sdk, r, args.deep):
         r.add("sdk", "versions", ", ".join(f"{k} {v}" for k, v in sdk.manifest["versions"].items()))
         check_tools(sdk, r)
+        check_python_tools(sdk, r)
         with tempfile.TemporaryDirectory(prefix="jitllm-check-") as tmp:
             tmp = pathlib.Path(tmp)
             for cross in ([False, True] if sdk.arch == "x86_64" else [False]):

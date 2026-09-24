@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 """Download hashed MPI/build dependencies and extract them without installation."""
 import argparse
 import hashlib

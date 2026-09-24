@@ -30,6 +30,7 @@ import os
 import pathlib
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import urllib.error
@@ -104,6 +105,8 @@ def artifact_keys(sdk: sdklib.Sdk) -> list[str]:
         elif kind == "gcc":
             keys += ["source/gcc"] + sorted(k for k in sdk.lock["artifacts"]
                                             if k.startswith("source/gcc-prerequisite/"))
+        elif kind == "wheels":
+            keys += [f"wheel/{p}" for p in comp["packages"]]
         else:
             raise SdkError(f"component {name}: unknown kind {kind!r}")
     for key in keys:
@@ -291,6 +294,46 @@ def install_archive(sdk: sdklib.Sdk, comp: dict, staging: pathlib.Path) -> dict:
         run(["tar", "-xf", path, "-C", dest, f"--strip-components={comp.get('strip', 0)}",
              "--no-same-owner"])
     return {"artifacts": [key]}
+
+
+def install_wheels(sdk: sdklib.Sdk, comp: dict, staging: pathlib.Path) -> dict:
+    """Unpacks the component's wheels into one directory, the layout an installer
+    gives pure-Python packages. Refuses what that layout cannot hold: links,
+    absolute or escaping paths, a wheel's .data tree (scripts, headers, data),
+    a file that two wheels provide, and bytecode, which Python would load in
+    place of the source beside it."""
+    dest = staging / comp["dest"]
+    dest.mkdir(parents=True, exist_ok=True)
+    keys = [f"wheel/{p}" for p in comp["packages"]]
+    owners = {}
+    for key in keys:
+        with zipfile.ZipFile(fetch(sdk, key)) as z:
+            for info in z.infolist():
+                name = info.filename
+                segments = name.removesuffix("/").split("/")
+                if ("\\" in name or ":" in name or name.startswith("/")
+                        or any(segment in ("", ".", "..") for segment in segments)):
+                    raise SdkError(f"{key}: unsafe path {name!r}")
+                if segments[0].endswith(".data"):
+                    raise SdkError(f"{key}: {name} is in the wheel's .data tree, which the SDK does not install")
+                if "__pycache__" in segments or name.endswith((".pyc", ".pyo")):
+                    raise SdkError(f"{key}: {name} is bytecode, which the SDK does not install")
+                if stat.S_ISLNK(info.external_attr >> 16):
+                    raise SdkError(f"{key}: {name} is a symbolic link")
+                if info.is_dir():
+                    continue
+                if name in owners:
+                    raise SdkError(f"{key}: {name} is also in {owners[name]}")
+                owners[name] = key
+                target = dest / name
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(info) as src, open(target, "xb") as out:
+                        shutil.copyfileobj(src, out)
+                except (FileExistsError, NotADirectoryError, IsADirectoryError) as e:
+                    raise SdkError(f"{key}: {name} collides with another member ({e.strerror})") from None
+                target.chmod(0o644)
+    return {"artifacts": keys}
 
 
 # GCC runtime --------------------------------------------------------------------
@@ -496,6 +539,8 @@ def assemble(sdk: sdklib.Sdk, jobs: int, keep: bool) -> None:
                 record[name] = install_archive(sdk, comp, staging)
             elif kind == "gcc":
                 record[name] = install_gcc(sdk, comp, staging, jobs, keep)
+            elif kind == "wheels":
+                record[name] = install_wheels(sdk, comp, staging)
             for link, target in comp.get("link", {}).items():
                 relative_link(staging / link, staging / target)
         for name, target in sdk.manifest["bin"].items():

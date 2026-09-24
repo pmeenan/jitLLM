@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
 """Verify channel logs, mapped host buffers and HCA counters for every NCCL run."""
 import argparse
 import json

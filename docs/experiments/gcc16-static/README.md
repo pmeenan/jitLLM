@@ -192,6 +192,13 @@ licenses. Whether a notice ships depends on what a binary incorporates:
 M1's notices and SBOM must record the static runtimes, these embedded
 components and the GCC source identity, and audit the exact used or shipped
 header set; these examples are not an exhaustive header-license inventory.
+*Corrected 2026-09-24 by M1's audit* ([licensing.md](../../licensing.md#what-builds-jitllm),
+D-071): Ryu links with any `<format>` or `<print>` use, not only floating
+point; `cp-demangle.o` (GPL-2.0-or-later WITH GCC-exception-2.0) is always
+linked; the AArch64 soft-fp objects that link are the TF comparisons;
+PSTL headers arrive through `<algorithm>`, `<memory>` and `<numeric>`; and
+the tz database, `<format>`'s Unicode-derived tables, `<barrier>` and the
+compiled HP/SGI objects (`tree.o`, `list.o`) belong on this list.
 GCC's compiler binaries and the
 in-tree GMP, MPFR, MPC, ISL and gettext are build tools only; nothing from
 them links into jitLLM.

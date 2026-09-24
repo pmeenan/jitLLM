@@ -6,7 +6,8 @@
 jitLLM builds with a pinned, project-provisioned SDK (D-012, D-049, D-070):
 Clang/LLD and the LLVM developer tools 22.1.8, CUDA 13.4.92, CMake 4.4.3,
 Ninja 1.13.2, the source-built GCC 16.2 C++ runtime that executables link
-statically (D-060) and, on x86-64 hosts, the Spark target sysroot. System
+statically (D-060) and, on x86-64 hosts, the Spark target sysroot and the
+REUSE lint tool 6.2.0 that the check gate runs (D-071). System
 packages supply only the declared host prerequisites; setup never installs
 packages or changes system defaults.
 
@@ -15,6 +16,7 @@ packages or changes system defaults.
 | [manifest.toml](manifest.toml) | What each build host's SDK contains: components, the GCC configure flags and used outputs, and the tools linked into `bin/` |
 | [artifacts.lock.json](artifacts.lock.json) | Every downloaded byte: URLs, SHA-256 and size, and under `sources` how each was verified when pinned |
 | [prerequisites/](prerequisites/) | The Ubuntu 24.04 packages each build host needs, checked by `mise run doctor` |
+| [provenance.toml](provenance.toml) | The D-017 provenance record of every locked artifact, prerequisite and mise tool: category, license, what enters a jitLLM binary and the notices that follow (D-071; [licensing.md](../docs/licensing.md#what-builds-jitllm)). Not an identity input |
 
 `mise run setup` provisions the SDK with
 [tools/setup-toolchain](../tools/setup-toolchain), then prepares the locked
@@ -44,6 +46,7 @@ the root for the current checkout.
 | `gcc/<triple>/` | The host's GCC 16.2 runtime: `include/c++/16`, `lib64/{libstdc++,libsupc++,libatomic}.a` and `lib/gcc/<triple>/16/{crt*.o,libgcc.a,libgcc_eh.a}`. Select it with `--gcc-install-dir=<root>/gcc/<triple>/lib/gcc/<triple>/16` |
 | `sysroot/aarch64-linux-gnu/` | x86-64 hosts only: the Spark sysroot (glibc 2.39 and kernel headers from pinned Ubuntu arm64 packages) with the cross-built GCC runtime at `opt/gcc`, in the same layout |
 | `pkgs/` | The unpacked package trees behind `llvm/` and `cuda/`, including their copyright files |
+| `python/reuse/` | x86-64 hosts only: the `reuse` wheel and its dependencies' wheels, unpacked. `python3 -B -I -S` runs it with nothing else importable and writes no bytecode here (`Sdk.python_tool` in [jitllm_sdk.py](../tools/jitllm_sdk.py)); `doctor` checks its version |
 | `sdk.json` | The receipt: identity, input digests, versions, each component's artifacts and GCC build inputs, and a digest of the whole tree |
 
 Nothing in the SDK needs `LD_LIBRARY_PATH`. The tools' remaining shared
@@ -76,5 +79,6 @@ The tooling regression tests run without downloads or an installed SDK:
 2. Update `manifest.toml` and the lock entries, with URLs, SHA-256 and sizes
    taken from a verified source, and record the verification in `sources`.
 3. A new or changed pin of a load-bearing component gets a decision entry
-   (AGENTS.md rule 1).
+   (AGENTS.md rule 1). A new artifact, prerequisite or mise tool also gets
+   a record in `provenance.toml`; a test fails without one.
 4. Run `mise run setup` and `mise run doctor` on each build host.
