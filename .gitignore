@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
+# Build directories (CMakePresets.json).
+/build/
+
 # Experiment reports and reproduction tools belong in Git; run output does not.
 /docs/experiments/**/results/
 /docs/experiments/**/raw/

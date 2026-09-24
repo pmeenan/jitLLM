@@ -129,9 +129,12 @@ affected docs. Until then, these govern.
 | `docs/` | Vision, plan, architecture, decisions, features, rough edges, workflow |
 | `docs/ideation.md` | The kickoff design brief (2026-09-20). Frozen origin document with source links; the living docs above supersede it where they differ |
 | `LICENSE` | Apache-2.0, the license for all jitLLM-authored code (D-003; dependency policy in D-017) |
-| `mise.toml`, `mise.lock` | mise tasks (`setup`, `doctor`) and the pinned Python that runs `tools/` (D-070) |
+| `mise.toml`, `mise.lock` | mise tasks (`setup`, `doctor`, `build`, `test`, `deploy`) and the pinned Python that runs `tools/` (D-070) |
 | `toolchains/` | The SDK manifest, artifact lock and host prerequisite lists ([README](toolchains/README.md); D-049, D-070) |
-| `tools/` | `setup-toolchain` and `check-toolchain`, which provision and verify the SDK |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/toolchains/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark); outputs go to the ignored `build/<preset>/` |
+| `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
+| `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes), tested in each profile's binaries |
+| `tools/` | `setup-toolchain` and `check-toolchain` (the SDK), `build` (the build, test and deploy tasks) and `run-target` (runs cross-built tests under qemu-user or over SSH) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
 The rest of the application scaffolding lands in M1 — update this table as it does.
@@ -206,7 +209,9 @@ architecture, decisions D-001–D-069 and the M1–M8 milestone ladder with exit
 criteria are in place; M0's spikes and reference runs are summarized in
 [docs/m0-record.md](docs/m0-record.md) with their reports under
 `docs/experiments/`. **M1 (Bootstrap) is in progress**: the pinned SDK
-(`mise run setup` and `doctor`, D-070) has landed. Next: builds, the local
-check gate, the package skeleton and the confined-job proof
-([docs/plan.md](docs/plan.md)). No application code exists yet. Keep this
-paragraph short and current when plan.md milestone status changes (rule 4).
+(`mise run setup` and `doctor`, D-070) and the build (`mise run build`,
+`test` and `deploy` over four CMake presets) have landed. Next: source
+dependencies with GoogleTest, the local check gate, the package skeleton and
+the confined-job proof ([docs/plan.md](docs/plan.md)). No application code
+exists yet. Keep this paragraph short and current when plan.md milestone
+status changes (rule 4).

@@ -1,0 +1,215 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Unit tests for tools/build, tools/run-target and the presets they rely on (no SDK needed)."""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import pathlib
+import shlex
+import subprocess
+import sys
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+sys.dont_write_bytecode = True
+TOOLS = pathlib.Path(__file__).resolve().parent.parent
+REPO = TOOLS.parent
+
+
+def load_script(name: str):
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(TOOLS / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+build = load_script("build")
+run_target = load_script("run-target")
+PRESETS = json.loads((REPO / "CMakePresets.json").read_text())
+
+
+class Presets(unittest.TestCase):
+    def test_driver_names_existing_presets(self):
+        configure = {p["name"] for p in PRESETS["configurePresets"]}
+        tests = {p["name"]: p for p in PRESETS["testPresets"]}
+        self.assertEqual(set(build.configure_presets()), {"native", "cpu", "cross", "spark-native"})
+        self.assertLessEqual(set(build.DEFAULT_PRESET.values()), configure)
+        for preset, remote in build.REMOTE_TEST_PRESET.items():
+            self.assertIn(preset, configure)
+            self.assertEqual(tests[remote]["configurePreset"], preset)
+
+    def test_every_visible_preset_has_a_toolchain_file_and_build_and_test_presets(self):
+        builds = {p["name"] for p in PRESETS["buildPresets"]}
+        tests = {p["name"] for p in PRESETS["testPresets"]}
+        for preset in PRESETS["configurePresets"]:
+            if preset.get("hidden"):
+                continue
+            toolchain = preset["toolchainFile"].replace("${sourceDir}", str(REPO))
+            self.assertTrue(pathlib.Path(toolchain).is_file(), toolchain)
+            self.assertIn(preset["name"], builds)
+            self.assertIn(preset["name"], tests)
+
+    def test_build_dir_matches_the_presets_binary_dir(self):
+        base = next(p for p in PRESETS["configurePresets"] if p["name"] == "base")
+        self.assertEqual(base["binaryDir"], "${sourceDir}/build/${presetName}")
+        self.assertEqual(build.build_dir("cross"), REPO / "build" / "cross")
+
+    def test_only_presets_with_a_gb10_run_gpu_tests(self):
+        tests = {p["name"]: p for p in PRESETS["testPresets"]}
+
+        def excludes_gpu(name):
+            preset = tests[name]
+            while True:
+                if preset.get("filter", {}).get("exclude", {}).get("label") == "gpu":
+                    return True
+                if "inherits" not in preset:
+                    return False
+                preset = tests[preset["inherits"]]
+
+        self.assertEqual({n for n in tests if not tests[n].get("hidden") and not excludes_gpu(n)},
+                         {"cross-remote", "spark-native"})
+
+
+class ConfiguredSdk(unittest.TestCase):
+    def test_reads_the_cached_sdk_and_tolerates_a_missing_cache(self):
+        tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        original = build.build_dir
+        self.addCleanup(setattr, build, "build_dir", original)
+        build.build_dir = lambda preset: tmp / preset
+        self.assertIsNone(build.configured_sdk("native"))
+        (tmp / "native").mkdir()
+        (tmp / "native" / "CMakeCache.txt").write_text("X:BOOL=ON\nJITLLM_SDK:PATH=/sdk/a\n")
+        self.assertEqual(build.configured_sdk("native"), "/sdk/a")
+
+
+class CtestArgs(unittest.TestCase):
+    def test_arguments_after_the_separator_go_to_ctest(self):
+        self.assertEqual(build.split_ctest_args(["test", "cross", "--", "-R", "x"]),
+                         (["test", "cross"], ["-R", "x"]))
+        self.assertEqual(build.split_ctest_args(["test"]), (["test"], []))
+
+
+class TestDriverEnvironment(unittest.TestCase):
+    def run_driver(self, *args):
+        sdk = types.SimpleNamespace(root=pathlib.Path("/sdk"), arch="x86_64")
+        ambient = {"JITLLM_TARGET_HOST": "stale-host", "JITLLM_TARGET_DIR": "/stale/build",
+                   "JITLLM_TARGET_SSH_CONTROL": "/stale/socket", "GTEST_FILTER": "Example.*"}
+        with mock.patch.dict(os.environ, ambient), \
+                mock.patch.object(sys, "argv", ["build", "test", "cross", *args]), \
+                mock.patch.object(build, "ready_sdk", return_value=sdk), \
+                mock.patch.object(build, "configured_sdk", return_value=None), \
+                mock.patch.object(build, "deploy", return_value="/new/build") as deploy, \
+                mock.patch.object(build, "ssh_control_path", return_value=None), \
+                mock.patch.object(build, "run") as run:
+            self.assertEqual(build.main(), 0)
+        return run.call_args_list, deploy
+
+    def test_local_run_ignores_inherited_remote_controls(self):
+        calls, deploy = self.run_driver()
+        deploy.assert_not_called()
+        self.assertEqual(calls[-1].args[0][1:3], ["--preset", "cross"])
+        for call in calls:
+            env = call.args[1]
+            self.assertFalse(any(k.startswith("JITLLM_TARGET_") for k in env))
+            self.assertEqual(env["GTEST_FILTER"], "Example.*")
+
+    def test_explicit_host_uses_only_the_new_deployment(self):
+        calls, deploy = self.run_driver("--host", "new-host")
+        self.assertEqual(deploy.call_args.args[2:], ("new-host", None))
+        self.assertEqual(calls[-1].args[0][1:3], ["--preset", "cross-remote"])
+        env = calls[-1].args[1]
+        self.assertEqual(env["JITLLM_TARGET_HOST"], "new-host")
+        self.assertEqual(env["JITLLM_TARGET_DIR"], "/new/build")
+        self.assertNotIn("JITLLM_TARGET_SSH_CONTROL", env)
+        for call in calls[:-1]:
+            self.assertNotIn("JITLLM_TARGET_HOST", call.args[1])
+
+
+class PathMapping(unittest.TestCase):
+    B, R = "/work/build/cross", "/home/u/.cache/jitllm/deploy/cross-1"
+
+    def test_prefixes_map_and_lookalikes_do_not(self):
+        m = lambda v: run_target.map_path(v, self.B, self.R)  # noqa: E731
+        self.assertEqual(m(self.B), self.R)
+        self.assertEqual(m(self.B + "/tests/t"), self.R + "/tests/t")
+        self.assertEqual(m("--gtest_output=xml:" + self.B + "/out.xml"), "--gtest_output=xml:" + self.R + "/out.xml")
+        self.assertEqual(m("/work/build/cross2/t"), "/work/build/cross2/t")
+        self.assertEqual(m("/other/work/build/cross/t"), "/other/work/build/cross/t")
+        self.assertEqual(m("-x"), "-x")
+
+    def test_remote_command_maps_cwd_and_forwards_test_variables_only(self):
+        env = {"GTEST_FILTER": "A.*", "ASAN_OPTIONS": "a=1", "HOME": "/home/me", "JITLLM_TEST_X": "it's"}
+        cmd = run_target.remote_command(self.B, self.R, self.B + "/tests", [self.B + "/tests/t", "--flag"], env)
+        self.assertEqual(shlex.split(cmd), [
+            "cd", self.R + "/tests", "&&", "exec", "env", "ASAN_OPTIONS=a=1", "GTEST_FILTER=A.*",
+            "JITLLM_TEST_X=it's", self.R + "/tests/t", "--flag"])
+
+    def test_a_cwd_outside_the_build_dir_starts_at_the_remote_root(self):
+        cmd = run_target.remote_command(self.B, self.R, "/tmp", [self.B + "/t"], {})
+        self.assertTrue(cmd.startswith(f"cd {self.R} && "))
+
+    def test_paths_in_forwarded_environment_values_map_to_the_deployment(self):
+        env = {"GTEST_OUTPUT": f"xml:{self.B}/results.xml",
+               "ASAN_OPTIONS": f"suppressions={self.B}/suppressions:detect_leaks=1",
+               "JITLLM_TEST_DATA": f"{self.B}/data with spaces"}
+        command = shlex.split(run_target.remote_command(self.B, self.R, self.B, [self.B + "/t"], env))
+        self.assertIn(f"GTEST_OUTPUT=xml:{self.R}/results.xml", command)
+        self.assertIn(f"ASAN_OPTIONS=suppressions={self.R}/suppressions:detect_leaks=1", command)
+        self.assertIn(f"JITLLM_TEST_DATA={self.R}/data with spaces", command)
+
+    def test_ssh_shares_a_connection_only_when_asked(self):
+        self.assertEqual(run_target.ssh_command("h", "c", None), ["ssh", "-o", "BatchMode=yes", "--", "h", "c"])
+        self.assertIn("ControlPath=/run/x-%C", run_target.ssh_command("h", "c", "/run/x-%C"))
+
+
+class RunTargetProcess(unittest.TestCase):
+    """Runs tools/run-target with stand-ins for qemu and ssh on PATH."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.log = self.tmp / "log.json"
+        for name, status in (("fake-qemu", 0), ("ssh", 7)):
+            tool = self.bin / name
+            tool.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                            f"json.dump({{'argv': sys.argv[1:], 'ld': os.environ.get('QEMU_LD_PREFIX')}}, "
+                            f"open({str(self.log)!r}, 'w'))\nsys.exit({status})\n")
+            tool.chmod(0o755)
+        self.build_dir = self.tmp / "build"
+        (self.build_dir / "tests").mkdir(parents=True)
+
+    def run_target(self, env: dict, *argv: str) -> subprocess.CompletedProcess:
+        env = {"PATH": f"{self.bin}:{os.environ['PATH']}", **env}
+        return subprocess.run([sys.executable, TOOLS / "run-target", "--build-dir", self.build_dir, "--sysroot",
+                               "/sys/root", "--qemu", "fake-qemu", "--", *argv],
+                              env=env, cwd=self.build_dir / "tests", capture_output=True, text=True)
+
+    def test_local_runs_under_qemu_with_the_sysroot_loader(self):
+        result = self.run_target({}, str(self.build_dir / "tests" / "t"), "-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.log.read_text()),
+                         {"argv": [str(self.build_dir / "tests" / "t"), "-a"], "ld": "/sys/root"})
+
+    def test_remote_needs_the_deployed_directory(self):
+        result = self.run_target({"JITLLM_TARGET_HOST": "spark"}, "t")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("JITLLM_TARGET_DIR", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_remote_runs_over_ssh_and_returns_its_status(self):
+        result = self.run_target({"JITLLM_TARGET_HOST": "spark", "JITLLM_TARGET_DIR": "/r/x"},
+                                 str(self.build_dir / "tests" / "t"))
+        self.assertEqual(result.returncode, 7)
+        argv = json.loads(self.log.read_text())["argv"]
+        self.assertEqual(argv[:4], ["-o", "BatchMode=yes", "--", "spark"])
+        self.assertEqual(argv[4], "cd /r/x/tests && exec env /r/x/tests/t")
+
+
+if __name__ == "__main__":
+    unittest.main()

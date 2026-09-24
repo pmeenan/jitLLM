@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+# jitLLM's C++ and CUDA style (D-059): Google style, 100 columns.
+---
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+...

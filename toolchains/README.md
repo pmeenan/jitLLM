@@ -21,6 +21,10 @@ the SDK; `mise run doctor` ([tools/check-toolchain](../tools/check-toolchain))
 verifies it and reports its identity; `mise run doctor --deep` also checks
 every SDK file against its recorded digest. `--dry-run` previews setup (or
 `--prune`) without changing files, and setup exits early when the SDK already exists.
+The build's toolchain files ([cmake/toolchains/](../cmake/toolchains/)) use
+the SDK that `JITLLM_SDK` names, and refuse one whose receipt doesn't match
+the checkout's inputs. The native Spark profile also uses the host's
+declared GNU linker.
 
 ## Layout
 

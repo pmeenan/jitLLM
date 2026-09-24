@@ -79,7 +79,7 @@ gate in force and the first `jitllm` binary running on a Spark.
 
 **Scope:**
 
-- [ ] **SDK provisioning** (D-012, D-049): `mise.toml`/`mise.lock`,
+- [x] **SDK provisioning** (D-012, D-049): `mise.toml`/`mise.lock`,
       `toolchains/manifest.toml`, `toolchains/artifacts.lock.json`,
       `tools/setup-toolchain`, `tools/check-toolchain`, and the
       digest-pinned reference container (`.devcontainer/`) built from the
@@ -96,8 +96,8 @@ gate in force and the first `jitllm` binary running on a Spark.
       `doctor` tasks and reference container, with the sysroot built from
       pinned Ubuntu packages and the AArch64 GCC runtime cross-built. Setup
       passed on the workstation, on `spark` and in a clean reference
-      container. `build`, `test` and `deploy` arrive with the Build item.
-- [ ] **Build** (D-010, D-011): `CMakePresets.json` and `cmake/toolchains/`
+      container. `build`, `test` and `deploy` landed with the Build item.
+- [x] **Build** (D-010, D-011): `CMakePresets.json` and `cmake/toolchains/`
       for native x86-64, the AArch64 cross build (CPU, and CUDA for
       `sm_121`), the native-Spark fallback, and a CPU-only configuration
       with no CUDA toolkit visible (D-026). C++23 for `.cc` and `.cu`;
@@ -106,6 +106,19 @@ gate in force and the first `jitllm` binary running on a Spark.
       errors), D-059's warning set with `-Werror`,
       `CMAKE_CXX_SCAN_FOR_MODULES OFF` and `-fno-exceptions`, tests
       included (D-066).
+      *Landed:* presets `native`, `cpu`, `cross` and `spark-native`, whose
+      toolchain files use the SDK (plus the host GNU linker on Spark) and
+      check its receipt against the checkout; `tools/build` behind
+      `mise run build`, `test` and `deploy`; and `tools/run-target`, which
+      runs cross-built tests under qemu-user or, with `--host`, on a Spark over SSH. The
+      `tests/toolchain/` contract tests (C++23 with the GCC 16.2 library, no
+      exceptions and an aborting throw path, the explicit CPU baseline,
+      glibc-only dynamic dependencies, no symbol version above 2.39 for Spark
+      binaries, no RPATH, and a CPU-only build that never sees CUDA) passed
+      in every preset, cross under qemu-user and on `spark`; there the sm_121
+      CUDA test ran cross-built and natively built. NVCC's host pass uses
+      D-059's warnings less `-Wold-style-cast`, which CUDA's own headers trip. GoogleTest under
+      `-fno-exceptions` is proven with the Source dependencies item.
 - [ ] **Source dependencies** (D-057): the source lock, a preparation step
       separate from SDK setup, lock validation and the build receipt, proven
       on GoogleTest 1.18.0 with gMock through every

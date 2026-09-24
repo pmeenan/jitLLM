@@ -1,0 +1,70 @@
+{
+  "version": 10,
+  "$comment": [
+    "Build profiles (D-011, D-026, D-032). Every preset needs JITLLM_SDK, the pinned SDK's root, and that SDK's cmake; `mise run build`, `test` and `deploy` (tools/build) supply both.",
+    "Test presets skip the `gpu` label except where a GB10 is present: spark-native, and cross-remote, with which `mise run test -- cross --host HOST` runs the deployed cross build's tests on a Spark over SSH."
+  ],
+  "cmakeMinimumRequired": {"major": 4, "minor": 4, "patch": 3},
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}
+    },
+    {
+      "name": "native",
+      "inherits": "base",
+      "displayName": "x86-64 native, CUDA for sm_121",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-linux-gnu-native.cmake",
+      "cacheVariables": {"JITLLM_CUDA": "ON"}
+    },
+    {
+      "name": "cpu",
+      "inherits": "base",
+      "displayName": "x86-64 native, CPU only (no CUDA toolkit)",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-linux-gnu-native.cmake",
+      "cacheVariables": {"JITLLM_CUDA": "OFF"}
+    },
+    {
+      "name": "cross",
+      "inherits": "base",
+      "displayName": "AArch64 cross build for DGX Spark, CUDA for sm_121",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-cross.cmake",
+      "cacheVariables": {"JITLLM_CUDA": "ON"}
+    },
+    {
+      "name": "spark-native",
+      "inherits": "base",
+      "displayName": "Native build on a DGX Spark (diagnostic fallback)",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-native.cmake",
+      "cacheVariables": {"JITLLM_CUDA": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "native", "configurePreset": "native"},
+    {"name": "cpu", "configurePreset": "cpu"},
+    {"name": "cross", "configurePreset": "cross"},
+    {"name": "spark-native", "configurePreset": "spark-native"}
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": {"outputOnFailure": true},
+      "execution": {"noTestsAction": "error"}
+    },
+    {
+      "name": "no-gpu",
+      "hidden": true,
+      "inherits": "base",
+      "filter": {"exclude": {"label": "gpu"}}
+    },
+    {"name": "native", "inherits": "no-gpu", "configurePreset": "native"},
+    {"name": "cpu", "inherits": "no-gpu", "configurePreset": "cpu"},
+    {"name": "cross", "inherits": "no-gpu", "configurePreset": "cross"},
+    {"name": "cross-remote", "inherits": "base", "configurePreset": "cross"},
+    {"name": "spark-native", "inherits": "base", "configurePreset": "spark-native"}
+  ]
+}

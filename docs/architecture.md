@@ -1708,7 +1708,7 @@ modules/      optional implementation modules, each under its own license
 third_party/  curated vendored sources and patches with provenance (D-057)
 packaging/    Debian package, systemd units, sysusers and tmpfiles (D-063)
 tools/        setup, check, doctor and build-time tooling
-tests/{unit,simulation,cuda,model,distributed,packaging}/   benchmarks/
+tests/{toolchain,unit,simulation,cuda,model,distributed,packaging}/   benchmarks/
 dashboard/ (M8)   docs/
 ```
 

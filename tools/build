@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Configures, builds, tests and deploys jitLLM with the pinned SDK (D-011, D-012, D-061).
+
+    tools/build build [PRESET...] [--fresh]
+    tools/build test [PRESET...] [--host HOST] [-- CTEST_ARGS...]
+    tools/build deploy --host HOST [PRESET]
+
+`mise run build`, `mise run test` and `mise run deploy` run these. PRESET
+names a configure preset in CMakePresets.json; the default is this host's
+native one (`native` on x86-64, `spark-native` on a Spark). Each runs the
+SDK's CMake with JITLLM_SDK set to the SDK this checkout's inputs describe,
+into build/<PRESET>.
+
+`test` builds, then runs CTest with the preset's test preset: GPU tests are
+skipped except on a Spark, and cross-built tests run under qemu-user. With
+--host, the cross build is deployed to HOST and its tests, GPU tests
+included, run there over SSH. `deploy` copies the cross build's executables
+and test files to HOST under ~/.cache/jitllm/deploy/. Remote hosts are never
+implied (D-012): name one.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import shlex
+import shutil
+import subprocess
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_sdk as sdklib  # noqa: E402
+from jitllm_sdk import SdkError  # noqa: E402
+
+PRESETS_FILE = sdklib.REPO / "CMakePresets.json"
+DEFAULT_PRESET = {"x86_64": "native", "aarch64": "spark-native"}
+# Presets whose tests can run on a remote host, and the test preset that
+# does so (CMakePresets.json).
+REMOTE_TEST_PRESET = {"cross": "cross-remote"}
+# Build-tree files a remote run never needs.
+DEPLOY_EXCLUDES = ("CMakeFiles/", "*.o", "*.a", "/.ninja_*", "/build.ninja", "/CMakeCache.txt",
+                   "/compile_commands.json", "/Testing/", "/toolchain/")
+# Parallel remote tests share one SSH connection; sshd allows 10 sessions on it by default.
+REMOTE_TEST_JOBS = 8
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def configure_presets() -> list[str]:
+    presets = json.loads(PRESETS_FILE.read_text())["configurePresets"]
+    return [p["name"] for p in presets if not p.get("hidden")]
+
+
+def build_dir(preset: str) -> pathlib.Path:
+    return sdklib.REPO / "build" / preset  # CMakePresets.json's binaryDir
+
+
+def ready_sdk() -> sdklib.Sdk:
+    """The SDK this checkout's inputs describe; it must be set up."""
+    sdk = sdklib.load()
+    receipt = sdklib.read_receipt(sdk.root)
+    if not receipt or receipt.get("identity") != sdk.identity or receipt.get("inputs") != sdk.inputs:
+        raise SdkError(f"no SDK for this checkout at {sdk.root}; run `mise run setup`")
+    return sdk
+
+
+def run(cmd: list, env: dict | None = None) -> None:
+    log("$ " + shlex.join(str(c) for c in cmd))
+    result = subprocess.run([str(c) for c in cmd], cwd=sdklib.REPO, env=env)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+
+
+def sdk_env(sdk: sdklib.Sdk) -> dict:
+    env = dict(os.environ, JITLLM_SDK=str(sdk.root))
+    # Only --host may select a remote run. Inherited runner controls could
+    # otherwise test stale deployed binaries after building new local ones.
+    for name in ("JITLLM_TARGET_HOST", "JITLLM_TARGET_DIR", "JITLLM_TARGET_SSH_CONTROL"):
+        env.pop(name, None)
+    return env
+
+
+def configured_sdk(preset: str) -> str | None:
+    """The SDK root a build directory was configured with, if any."""
+    try:
+        for line in (build_dir(preset) / "CMakeCache.txt").read_text().splitlines():
+            if line.startswith("JITLLM_SDK:PATH="):
+                return line.split("=", 1)[1]
+    except OSError:
+        pass
+    return None
+
+
+def build(sdk: sdklib.Sdk, preset: str, fresh: bool) -> None:
+    cmake = sdk.root / "bin" / "cmake"
+    previous = configured_sdk(preset)
+    if previous and os.path.normpath(previous) != os.path.normpath(sdk.root):
+        # A build directory keeps its first compilers; another SDK needs a new cache.
+        log(f"build/{preset} was configured with {previous}; configuring it afresh")
+        fresh = True
+    run([cmake, "--preset", preset, f"-DJITLLM_SDK={sdk.root}", *(["--fresh"] if fresh else [])], sdk_env(sdk))
+    run([cmake, "--build", "--preset", preset], sdk_env(sdk))
+
+
+def ssh_control_path() -> str | None:
+    """A connection-sharing socket for the deploy and its remote tests, if there is a private runtime dir."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    return f"{runtime}/jitllm-ssh-%C" if runtime and os.path.isdir(runtime) else None
+
+
+def ssh_base(control: str | None) -> list[str]:
+    ssh = ["ssh", "-o", "BatchMode=yes"]
+    if control:
+        ssh += ["-o", "ControlMaster=auto", "-o", f"ControlPath={control}", "-o", "ControlPersist=120"]
+    return ssh
+
+
+def deploy(sdk: sdklib.Sdk, preset: str, host: str, control: str | None) -> str:
+    """Copies the preset's build tree (less objects and CMake state) to host; returns the remote directory."""
+    for tool in ("ssh", "rsync"):
+        if shutil.which(tool) is None:
+            raise SdkError(f"deploy needs {tool} on this host")
+    local = build_dir(preset)
+    tag = hashlib.sha256(str(local).encode()).hexdigest()[:16]
+    remote = f".cache/jitllm/deploy/{preset}-{tag}"
+    # One command creates the directory, reports its absolute path and checks for rsync there.
+    script = f'mkdir -p "$HOME"/{remote} && command -v rsync >/dev/null && printf "%s\\n" "$HOME"/{remote}'
+    result = subprocess.run([*ssh_base(control), "--", host, script], capture_output=True, text=True)
+    if result.returncode or not result.stdout.strip().startswith("/"):
+        raise SdkError(f"cannot prepare {host}:~/{remote} (is rsync installed there?): "
+                       f"{(result.stderr or result.stdout).strip()}")
+    remote_dir = result.stdout.strip().splitlines()[-1]
+    excludes = [f"--exclude={pattern}" for pattern in DEPLOY_EXCLUDES]
+    run(["rsync", "-a", "--delete", "-e", shlex.join(ssh_base(control)), *excludes,
+         f"{local}/", f"{host}:{remote_dir}/"])
+    log(f"deployed {local} to {host}:{remote_dir}")
+    return remote_dir
+
+
+def split_ctest_args(argv: list[str]) -> tuple[list[str], list[str]]:
+    if "--" in argv:
+        at = argv.index("--")
+        return argv[:at], argv[at + 1:]
+    return argv, []
+
+
+def main() -> int:
+    argv, ctest_args = split_ctest_args(sys.argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name, text in (("build", "configure and build"), ("test", "build, then run the tests")):
+        sub = commands.add_parser(name, help=text)
+        sub.add_argument("presets", nargs="*", metavar="PRESET")
+        sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
+        if name == "test":
+            sub.add_argument("--host", help="run the cross build's tests on this host over SSH")
+    sub = commands.add_parser("deploy", help="build, then copy the cross build to a host")
+    sub.add_argument("preset", nargs="?", default="cross", metavar="PRESET")
+    sub.add_argument("--host", required=True, help="the SSH host to copy to")
+    sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
+    args = parser.parse_args(argv)
+    if ctest_args and args.command != "test":
+        parser.error("arguments after `--` go to CTest, for `test` only")
+
+    sdk = ready_sdk()
+    presets = args.presets if args.command != "deploy" else [args.preset]
+    presets = presets or [DEFAULT_PRESET[sdk.arch]]
+    known = configure_presets()
+    for preset in presets:
+        if preset not in known:
+            parser.error(f"unknown preset {preset!r}; CMakePresets.json has {', '.join(known)}")
+    remote = args.command == "deploy" or getattr(args, "host", None)
+    if remote and args.host.startswith("-"):
+        parser.error(f"--host {args.host!r} is not a host name")
+    if remote:
+        for preset in presets:
+            if preset not in REMOTE_TEST_PRESET:
+                parser.error(f"only a cross build runs on another host ({', '.join(REMOTE_TEST_PRESET)}), "
+                             f"not {preset}; build spark-native on the Spark itself")
+
+    control = ssh_control_path() if remote else None
+    for preset in presets:
+        build(sdk, preset, args.fresh)
+        if args.command == "deploy":
+            deploy(sdk, preset, args.host, control)
+        elif args.command == "test":
+            ctest = sdk.root / "bin" / "ctest"
+            if args.host:
+                remote_dir = deploy(sdk, preset, args.host, control)
+                env = sdk_env(sdk) | {"JITLLM_TARGET_HOST": args.host, "JITLLM_TARGET_DIR": remote_dir}
+                if control:
+                    env["JITLLM_TARGET_SSH_CONTROL"] = control
+                run([ctest, "--preset", REMOTE_TEST_PRESET[preset], "--parallel", REMOTE_TEST_JOBS,
+                     *ctest_args], env)
+            else:
+                run([ctest, "--preset", preset, "--parallel", os.cpu_count() or 1, *ctest_args], sdk_env(sdk))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SdkError as e:
+        print(f"build: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

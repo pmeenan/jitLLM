@@ -5,6 +5,8 @@
 # runs tools/; the compilers, CUDA, CMake and Ninja come from the pinned SDK
 # that `mise run setup` provisions from toolchains/. Nothing here changes
 # global compilers or shell startup files. The first time, run `mise trust`.
+# Arguments after the task name go to the tool, for example
+# `mise run test -- cross` or `mise run test -- cross --host <spark>`.
 
 min_version = "2026.9.12"
 
@@ -22,3 +24,15 @@ run = "python3 tools/setup-toolchain"
 [tasks.doctor]
 description = "Check the SDK and host prerequisites and report toolchain, driver and SDK identities"
 run = "python3 tools/check-toolchain"
+
+[tasks.build]
+description = "Configure and build CMake presets with the SDK (default: this host's native preset)"
+run = "python3 tools/build build"
+
+[tasks.test]
+description = "Build presets and run their tests; --host runs the cross build's tests on a Spark over SSH"
+run = "python3 tools/build test"
+
+[tasks.deploy]
+description = "Build the cross preset and copy it to a Spark over SSH (--host is required)"
+run = "python3 tools/build deploy"

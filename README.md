@@ -46,7 +46,7 @@ the work, reviews it, and is the sole committer.
 
 ## Status
 
-**Pre-code. M0 (plan the plan) is done; M1 (bootstrap) is next.** The
+**Pre-code. M0 (plan the plan) is done; M1 (bootstrap) is in progress.** The
 design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
 feature matrix, architecture, and decision log are in `docs/`. No application
 code exists yet. Planned distribution is a signed apt repository for DGX
@@ -78,6 +78,37 @@ directory. Setup changes no system compilers, packages or shell files.
 [toolchains/README.md](toolchains/README.md) describes the SDK. The
 reference container in [.devcontainer/](.devcontainer/) runs the same setup
 on a clean Ubuntu image.
+
+## Building and testing
+
+`mise run build` configures and builds with the SDK's CMake, Clang and
+Ninja; `mise run test` builds and runs the tests. Both take CMake preset
+names after `--` (default: `native` on x86-64, `spark-native` on a Spark),
+and write to `build/<preset>/`:
+
+| Preset | Builds | Tests run |
+| --- | --- | --- |
+| `native` | x86-64, CUDA for `sm_121` | On the workstation, GPU tests skipped |
+| `cpu` | x86-64 with no CUDA toolkit | On the workstation |
+| `cross` | AArch64 for DGX Spark, CUDA for `sm_121` | Under qemu-user, GPU tests skipped; or on a Spark with `--host` |
+| `spark-native` | AArch64, built on a Spark (a diagnostic fallback) | On that Spark |
+
+For example, `mise run test -- native cpu cross` runs every workstation
+profile, and arguments after a second `--` go to CTest
+(`mise run test -- cpu -- -R contract`). `mise run test -- cross --host
+<spark>` copies the cross build to the named SSH host, under
+`~/.cache/jitllm/deploy/`, and runs its CPU and GPU executables there; build
+and binary inspections stay on the workstation. `mise run deploy --
+--host <spark>` builds and copies without running tests. Neither ever picks
+a host for you. Deploying needs `ssh` and `rsync` on the workstation and
+`rsync` on the Spark.
+
+To run CMake by hand, point `JITLLM_SDK` at the SDK and use its `cmake`:
+
+```bash
+export JITLLM_SDK=$(tools/setup-toolchain --print-root)
+"$JITLLM_SDK/bin/cmake" --preset native && "$JITLLM_SDK/bin/cmake" --build --preset native
+```
 
 ## License
 
