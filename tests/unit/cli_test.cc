@@ -8,13 +8,17 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -25,6 +29,7 @@
 
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::MatchesRegex;
 using ::testing::Not;
@@ -109,7 +114,8 @@ TEST(Cli, Help) {
   for (const std::string_view option : {"--help", "-h"}) {
     const Result result = RunWith({option});
     EXPECT_EQ(result.status, jitllm::cli::kExitOk) << option;
-    EXPECT_THAT(result.out, StartsWith("Usage: jitllm doctor\n       jitllm --version\n"))
+    EXPECT_THAT(result.out,
+                StartsWith("Usage: jitllm doctor [--config FILE]\n       jitllm --version\n"))
         << option;
     EXPECT_THAT(result.out, HasSubstr("\n  doctor ")) << option;
     EXPECT_EQ(result.err, "") << option;
@@ -125,13 +131,18 @@ TEST(Cli, UsageErrors) {
       {{"--version", "--help"}, "jitllm: unexpected argument '--help' after --version\n"},
       {{"--help", "x"}, "jitllm: unexpected argument 'x' after --help\n"},
       {{"doctor", "--help"}, "jitllm: unexpected argument '--help' after doctor\n"},
+      {{"doctor", "--config"}, "jitllm: --config needs a file\n"},
+      {{"doctor", "--config", ""}, "jitllm: --config needs a file\n"},
+      {{"doctor", "--config", "a.toml", "x"}, "jitllm: unexpected argument 'x' after doctor\n"},
+      {{"--version", "--config", "a.toml"},
+       "jitllm: unexpected argument '--config' after --version\n"},
   };
   for (const auto& [args, message] : cases) {
     const Result result = RunWith(args);
     EXPECT_EQ(result.status, jitllm::cli::kExitUsage) << message;
     EXPECT_EQ(result.out, "") << message;
     EXPECT_THAT(result.err, StartsWith(message));
-    EXPECT_THAT(result.err, HasSubstr("Usage: jitllm doctor\n")) << message;
+    EXPECT_THAT(result.err, HasSubstr("Usage: jitllm doctor [--config FILE]\n")) << message;
   }
 }
 
@@ -215,7 +226,8 @@ TEST(Doctor, ControlCharactersAreEscaped) {
 TEST(Doctor, WritesInStages) {
   std::vector<std::string> parts;
   jitllm::base::Report report;
-  ASSERT_TRUE(jitllm::cli::Doctor("/nonexistent", report, [&](std::string_view text) {
+  const jitllm::cli::DoctorOptions options{.config = "/nonexistent/jitllm.toml"};
+  ASSERT_TRUE(jitllm::cli::Doctor("/nonexistent", options, report, [&](std::string_view text) {
     parts.emplace_back(text);
     return true;
   }));
@@ -223,18 +235,84 @@ TEST(Doctor, WritesInStages) {
   EXPECT_THAT(parts[0], StartsWith("build\n"));
   EXPECT_THAT(parts[0], HasSubstr("\nhost\n"));
   EXPECT_THAT(parts[0], HasSubstr("\nRDMA\n"));
+  EXPECT_THAT(parts[0], HasSubstr("\nconfiguration\n"));
   EXPECT_THAT(parts[0], Not(HasSubstr("doctor: ")));
   EXPECT_THAT(parts[1], HasSubstr("\ndoctor: "));
   EXPECT_EQ(parts[0] + parts[1], jitllm::cli::DoctorText(report));
 
   jitllm::base::Report stopped;
   int calls = 0;
-  EXPECT_FALSE(jitllm::cli::Doctor("/nonexistent", stopped, [&](std::string_view) {
+  EXPECT_FALSE(jitllm::cli::Doctor("/nonexistent", options, stopped, [&](std::string_view) {
     ++calls;
     return false;
   }));
   EXPECT_EQ(calls, 1);
-  EXPECT_EQ(stopped.sections.size(), 3U);  // build, host, RDMA: no device probe
+  // build, host, RDMA, configuration (which failed): no device probe
+  EXPECT_EQ(stopped.sections.size(), 4U);
+}
+
+// Scratch trees in the build tree (JITLLM_TEST_SCRATCH), whose parents no
+// other user shares.
+class Scratch {
+ public:
+  Scratch() {
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path parent = base != nullptr ? base : ::testing::TempDir();
+    std::error_code error;
+    std::filesystem::create_directories(parent, error);
+    std::string pattern = (parent / "cli-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      path_ = pattern;
+    } else {
+      ADD_FAILURE() << "cannot create a directory from " << pattern;
+    }
+  }
+  Scratch(const Scratch&) = delete;
+  Scratch& operator=(const Scratch&) = delete;
+  Scratch(Scratch&&) = delete;
+  Scratch& operator=(Scratch&&) = delete;
+  ~Scratch() {
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+  }
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
+
+TEST(Doctor, ReportsTheConfigurationAndStorage) {
+  const Scratch scratch;
+  const std::filesystem::path config = scratch.path() / "jitllm.toml";
+  std::ofstream(config) << std::format("schema_version = 2\n[storage]\ndata_dir = \"{}\"\n",
+                                       (scratch.path() / "data").string());
+  std::filesystem::create_directories(scratch.path() / "data/models");
+  jitllm::base::Report report;
+  jitllm::cli::DescribeConfiguration({.config = config}, report);
+  const std::string text = jitllm::cli::DoctorText(report);
+  EXPECT_THAT(text, HasSubstr("configuration\n  runtime's user: uid "));
+  EXPECT_THAT(text, HasSubstr("\n  file: " + config.string() + "\n  node: standalone\n"));
+  EXPECT_THAT(text,
+              HasSubstr("\nstorage\n  data_dir: " + (scratch.path() / "data").string() + "\n"));
+  EXPECT_THAT(text, HasSubstr("  installed: " + (scratch.path() / "data/models").string() +
+                              ", owner uid "));
+  EXPECT_THAT(text, HasSubstr("  spill: " + (scratch.path() / "data/spill").string() +
+                              ", not created yet"));
+  EXPECT_THAT(text, HasSubstr("  checkpoints: " + (scratch.path() / "data/checkpoints").string() +
+                              " (job processes only; not examined)"));
+}
+
+TEST(Doctor, AnInvalidConfigurationIsAProblem) {
+  const Scratch scratch;
+  const std::filesystem::path config = scratch.path() / "jitllm.toml";
+  std::ofstream(config) << "schema_version = 2\nstorage.spil = 1\n";
+  jitllm::base::Report report;
+  jitllm::cli::DescribeConfiguration({.config = config}, report);
+  EXPECT_THAT(report.problems,
+              ElementsAre("configuration: " + config.string() + ":2:16: unknown key storage.spil"));
+  jitllm::base::Report missing;
+  jitllm::cli::DescribeConfiguration({.config = scratch.path() / "other.toml"}, missing);
+  EXPECT_THAT(missing.problems, ElementsAre(HasSubstr("other.toml: does not exist")));
 }
 
 TEST(Doctor, Text) {

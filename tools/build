@@ -6,6 +6,7 @@
     tools/build build [PRESET...] [--fresh] [--locked]
     tools/build test [PRESET...] [--host HOST] [--fresh] [--locked] [-- CTEST_ARGS...]
     tools/build deploy --host HOST [PRESET] [--fresh] [--locked]
+    tools/build package [--fresh]
 
 `mise run build`, `mise run test` and `mise run deploy` run these. PRESET
 names a configure preset in CMakePresets.json; the default is this host's
@@ -20,6 +21,11 @@ HOST and its tests, GPU tests included, run there over SSH; `cross-tsan`
 runs only that way. `deploy` copies a cross build's executables and test
 files to HOST under ~/.cache/jitllm/deploy/. Remote hosts are never implied
 (D-012): name one.
+
+`package` builds the `cross` preset --locked and makes the arm64 Debian
+package from it (D-063, D-074): tools/jitllm_package.py writes its copyright
+file, third-party notices, SBOM and control facts into build/cross/package/doc,
+then CPack writes build/cross/package/jitllm_<version>_arm64.deb.
 
 --locked configures as the check gate and release builds do (D-057, D-061):
 the core profile, with no optional module, and no source override. Without
@@ -40,6 +46,7 @@ import shutil
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_package as packagelib  # noqa: E402
 import jitllm_sdk as sdklib  # noqa: E402
 from jitllm_sdk import SdkError  # noqa: E402
 
@@ -51,7 +58,7 @@ REMOTE_TEST_PRESET = {"cross": "cross-remote", "cross-asan": "cross-asan-remote"
                       "cross-tsan": "cross-tsan-remote"}
 # Build-tree files a remote run never needs.
 DEPLOY_EXCLUDES = ("CMakeFiles/", "*.o", "*.a", "/.ninja_*", "/build.ninja", "/CMakeCache.txt",
-                   "/compile_commands.json", "/Testing/", "/toolchain/", "/cuda-stub/")
+                   "/compile_commands.json", "/Testing/", "/toolchain/", "/cuda-stub/", "/package/")
 # Parallel remote tests share one SSH connection; sshd allows 10 sessions on it by default.
 REMOTE_TEST_JOBS = 8
 
@@ -166,6 +173,24 @@ def deploy(sdk: sdklib.Sdk, preset: str, host: str, control: str | None) -> str:
     return remote_dir
 
 
+def package(sdk: sdklib.Sdk, fresh: bool) -> pathlib.Path:
+    """Builds the release profile and its Debian package; returns the package's path."""
+    preset = "cross"  # release packages come from the cross profile (D-071)
+    build(sdk, preset, fresh, locked=True)
+    out = build_dir(preset) / "package"
+    shutil.rmtree(out, ignore_errors=True)
+    try:
+        control = packagelib.generate(build_dir(preset), sdk, out / "doc")
+    except packagelib.PackageError as e:
+        raise SdkError(str(e)) from None
+    run([sdk.root / "bin" / "cpack", "--config", build_dir(preset) / "CPackConfig.cmake"], sdk_env(sdk))
+    debs = sorted(out.glob("*.deb"))
+    if len(debs) != 1:
+        raise SdkError(f"cpack wrote {len(debs)} packages to {out}, not one")
+    log(f"package: {debs[0]} ({control['version']}, {control['architecture']}; depends {control['depends']})")
+    return debs[0]
+
+
 def split_ctest_args(argv: list[str]) -> tuple[list[str], list[str]]:
     if "--" in argv:
         at = argv.index("--")
@@ -189,11 +214,16 @@ def main() -> int:
     sub.add_argument("--host", required=True, help="the SSH host to copy to")
     sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
     sub.add_argument("--locked", action="store_true", help="the core profile from locked sources only")
+    sub = commands.add_parser("package", help="build the cross preset --locked and its arm64 Debian package")
+    sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
     args = parser.parse_args(argv)
     if ctest_args and args.command != "test":
         parser.error("arguments after `--` go to CTest, for `test` only")
 
     sdk = ready_sdk()
+    if args.command == "package":
+        package(sdk, args.fresh)
+        return 0
     presets = args.presets if args.command != "deploy" else [args.preset]
     presets = presets or [DEFAULT_PRESET[sdk.arch]]
     known = configure_presets()

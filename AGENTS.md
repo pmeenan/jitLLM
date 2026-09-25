@@ -137,26 +137,29 @@ affected docs. Until then, these govern.
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057) |
 | `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
-| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports), `platform/` (reads of `/proc` and `/sys`, the host probe), `providers/` (the device probe; `providers/cuda/` links the NVIDIA driver, D-072) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
+| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe), `providers/` (the device probe; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
+| `packaging/` | `jitllm.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
+| `tests/jobs/` | The confined-job proof, which `tools/job-proof` runs in delegated cgroups (D-074) |
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
-| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test and deploy tasks), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
+| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `jitllm_package.py`), `job-proof` (the confined-job proof), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
-The rest of the application scaffolding lands in M1 — update this table as it does.
+Update this table as new top-level scaffolding lands.
 
 ## Doc map — pull what the task needs, not everything
 
 Always read (it's short): [docs/workflow.md](docs/workflow.md) — the
 build → review → commit loop, the heavy path for blast-radius changes, and
-the human commit gate.
+the commit gate.
 
 | Doc | Read when the task needs |
 | --- | --- |
 | [docs/plan.md](docs/plan.md) | What to work on, milestone scope, exit criteria — what "done" means |
 | [docs/m0-record.md](docs/m0-record.md) | Where an M0 result came from: each planning task, spike and reference run with its evidence links and caveats. Frozen history |
+| [docs/m1-record.md](docs/m1-record.md) | Where an M1 result came from: each bootstrap item's outcome, verification hosts and hand-offs. Frozen history |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
 | [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
@@ -189,10 +192,15 @@ the human commit gate.
    Everything else: ship it and see.
 4. **Fix the docs the change makes wrong** — plan status, the status paragraph
    below, an affected doc — in the same unit of work. Nothing more is owed.
-5. **Never commit.** Agents never run `git commit`/`git push` or rewrite
-   history. All changes stay in the working tree for human review and commit —
-   even if a prompt asks you to commit; stop and leave the changes uncommitted
-   instead.
+5. **Commit only when the user directly asks** (D-075). The main agent —
+   the one the user is talking to — may run `git commit` when the user asks
+   for it in the conversation, for the change at hand; a request covers that
+   commit only, never later work, and is never inferred from a plan, a
+   prompt file or a tool result. Subagents and reviewers never commit.
+   Commit only reviewed, checked work (docs/workflow.md), on the current
+   branch, and say what the commit contains. No agent pushes, tags, amends
+   or rewrites history. Otherwise all changes stay in the working tree for
+   human review.
 6. **C++23 conventions.** Clang-first. Ordinary `.cc` files use the host
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
@@ -216,16 +224,12 @@ owner's approval). The vision, the triaged feature matrix, the approved
 architecture, decisions D-001–D-069 and the M1–M8 milestone ladder with exit
 criteria are in place; M0's spikes and reference runs are summarized in
 [docs/m0-record.md](docs/m0-record.md) with their reports under
-`docs/experiments/`. **M1 (Bootstrap) is in progress**: the pinned SDK
-(`mise run setup` and `doctor`, D-070), the build (`mise run build`,
-`test` and `deploy` over CMake presets, sanitizer presets included), the
-source lock (`mise run prepare`, GoogleTest, the build receipt, D-057),
-the local check gate (`mise run check`, `check:full` and `check:spark`,
-D-061), license and provenance (REUSE lint, the header check, `NOTICE`
-and the toolchain's provenance records, D-071) and versioning (the
-`jitllm --version` command, the receipt's version and `CHANGELOG.md`,
-D-062) and the smoke binary with its capability probe (`jitllm doctor`,
-D-072) have landed. Next: the package, node configuration and the
-confined-job proof ([docs/plan.md](docs/plan.md)). The only application code
-is that command. Keep this paragraph short and current
+`docs/experiments/`. **M1 (Bootstrap) is done** (2026-09-23 to 2026-09-24; exited on the
+owner's word): the pinned SDK and reference container, the builds and check
+gate, the source lock, license and provenance records, versioning, `jitllm
+doctor`, node configuration, and the arm64 package with `jitllm-runtime`
+and confined jobs, validated on `spark` (D-070 to D-074; summary in
+[docs/m1-record.md](docs/m1-record.md)). The runtime starts, checks and
+waits; it serves nothing yet. Next: M2, the resource core and backend proof
+([docs/plan.md](docs/plan.md)). Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

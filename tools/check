@@ -11,8 +11,9 @@
 `mise run check`, `mise run check:full` and `mise run check:spark -- --host
 HOST` run these. `check` checks formatting, REUSE compliance and embedded
 license headers, runs the tooling tests, builds and tests the native,
-CPU-only and cross presets (cross under qemu-user), then runs clang-tidy. `full` adds the sanitizer builds and the offline,
-copyleft-disabled build in the reference container. `spark` deploys the
+CPU-only and cross presets (cross under qemu-user), then runs clang-tidy. `full` adds the sanitizer builds, the offline,
+copyleft-disabled build in the reference container, the arm64 package with
+its inventory and install test, and the confined-job proof. `spark` deploys the
 cross, cross-asan and cross-tsan builds to HOST and runs their tests there,
 GPU tests and leak detection included. Every build is --locked (tools/build),
 the core profile from locked sources only, and configured afresh, so nothing
@@ -40,11 +41,13 @@ import shutil
 import signal
 import subprocess
 import tarfile
+import tempfile
 import time
 from collections.abc import Callable
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import jitllm_headers as headers  # noqa: E402
+import jitllm_package as packagelib  # noqa: E402
 import jitllm_sdk as sdklib  # noqa: E402
 import jitllm_sources as srclib  # noqa: E402
 from jitllm_sdk import SdkError  # noqa: E402
@@ -315,6 +318,42 @@ class Reference:
                 log(f"could not remove the docker volume {self.volume}; run `docker volume rm {self.volume}`")
 
 
+INSTALL_TEST_IMAGE = "jitllm-install-test:check"
+
+
+def package_and_install_test() -> bool:
+    """The arm64 package from the cross profile, its inventory, then its install test (D-074)."""
+    if run([sys.executable, BUILD, "package"]):
+        return False
+    build = REPO / "build" / "cross"
+    debs = sorted((build / "package").glob("*.deb"))
+    if len(debs) != 1:
+        log(f"expected one package in {build / 'package'}, found {len(debs)}")
+        return False
+    problems = packagelib.check_package(debs[0], build, sdklib.load())
+    for problem in problems:
+        log(f"package: {problem}")
+    log(f"package inventory: {debs[0].name}: " + (f"{len(problems)} problem(s)" if problems else "as the receipt says"))
+    if shutil.which("docker") is None:
+        log("the install test needs docker (D-061)")
+        return False
+    if run(["docker", "build", "--platform", "linux/arm64", "-f", "packaging/install-test/Dockerfile",
+            "-t", INSTALL_TEST_IMAGE, "packaging/install-test"]):
+        return False
+    receipt = json.loads((build / "jitllm-receipt.json").read_text())
+    with tempfile.TemporaryDirectory() as scratch:
+        inputs = pathlib.Path(scratch)
+        shutil.copy(debs[0], inputs)
+        shutil.copy(build / "cuda-stub" / "libcuda.so.1", inputs)
+        (inputs / "version").write_text(receipt["version"]["product"] + "\n")
+        os.chmod(scratch, 0o755)
+        tested = run(["docker", "run", "--rm", "--platform", "linux/arm64", "--network", "none",
+                      "--mount", "type=volume,dst=/var/lib/jitllm", "-v", f"{inputs}:/in:ro",
+                      "-v", f"{REPO / 'packaging/install-test/install-test.sh'}:/install-test.sh:ro",
+                      INSTALL_TEST_IMAGE, "/install-test.sh"]) == 0
+    return not problems and tested
+
+
 # Tiers ---------------------------------------------------------------------------------
 
 
@@ -350,6 +389,10 @@ def plan(tier: str, sdk: sdklib.Sdk | None, host: str | None = None) -> list[Ste
                  lambda: build_and_test("cross-asan")),
             Step("reference", "offline, copyleft-disabled build from empty caches in the reference container",
                  lambda: Reference()()),
+            Step("package", "the arm64 .deb from the cross profile, its inventory, and its install test "
+                 "in an arm64 container", package_and_install_test),
+            Step("jobs", "the confined-job proof in delegated cgroups of this user's systemd manager",
+                 lambda: run([sys.executable, REPO / "tools" / "job-proof"]) == 0),
         ]
     return steps
 

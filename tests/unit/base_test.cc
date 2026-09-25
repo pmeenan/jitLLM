@@ -52,4 +52,27 @@ TEST(Report, SectionsKeepTheirOrder) {
   EXPECT_EQ(report.sections[1].lines[1].value, "3");
 }
 
+TEST(Printable, EscapesWhatCouldForgeOrHideText) {
+  using jitllm::base::Printable;
+  EXPECT_EQ(Printable("plain caf\xc3\xa9"), "plain caf\xc3\xa9");
+  EXPECT_EQ(Printable("a\nb\tc\x7f"), "a\\x0ab\\x09c\\x7f");
+  EXPECT_EQ(Printable("\xc2\x9b"
+                      "31m"),
+            "\\u009b31m");  // C1 CSI
+  // NOLINTNEXTLINE(misc-misleading-bidirectional): the override is the input
+  EXPECT_EQ(Printable("x\xe2\x80\xae"
+                      "y"),
+            "x\\u202ey");                                   // right-to-left override
+  EXPECT_EQ(Printable("\xff\xc3"), "\\xff\\xc3");           // not UTF-8
+  EXPECT_EQ(Printable("\xe0\x80\x80"), "\\xe0\\x80\\x80");  // overlong
+}
+
+TEST(Printable, EscapesSeparatorsAndTags) {
+  using jitllm::base::Printable;
+  EXPECT_EQ(Printable("a\xe2\x80\xa8"
+                      "b"),
+            "a\\u2028b");                                // line separator
+  EXPECT_EQ(Printable("\xf3\xa0\x80\x81"), "\\ue0001");  // a tag character
+}
+
 }  // namespace

@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# An annotated jitLLM node configuration (D-063, D-073). The package ships
+# no configuration: with none, the runtime is a standalone node with the
+# defaults shown commented out below. To change one, put the key in
+# /etc/jitllm/jitllm.toml or in a fragment /etc/jitllm/jitllm.d/NAME.toml,
+# owned by root and writable by nobody else, then restart the service. Each
+# key may be set in one file only, and every file starts with
+# schema_version. Unknown keys are errors; `jitllm doctor` reports every
+# problem with its file, line and column.
+
+schema_version = 2
+
+[storage]
+# The base for relative role paths.
+# data_dir = "/var/lib/jitllm"
+
+# Installed artifacts: a local ext4, XFS or Btrfs filesystem with direct I/O.
+# installed = "models"
+# Conversation state set aside under memory pressure; 0700, local.
+# spill = "spill"
+# The runtime's durable records; 0700, local.
+# state = "state"
+# Downloaded checkpoints awaiting import; anyone may add files (1777).
+# checkpoints = "checkpoints"
+
+# An optional long-term store (a NAS or USB disk) that only import, install
+# and archive jobs open; it must not hold installed, spill or state.
+# long_term = "/mnt/nas/jitllm"
+# Archived artifacts, inside long_term (a relative path is relative to it).
+# archive = "archive"
+
+# A role outside /var/lib/jitllm also needs the service's sandbox opened
+# for it: `systemctl edit jitllm`, then under [Service] add
+# ReadWritePaths=/that/path.
+
+[limits]
+# The v2 bounds (docs/cluster-design.md); the only profile.
+# profile = "initial-v2"
+
+# A cluster member's keys (cluster_file, node_id, [credentials], [control])
+# are written by cluster enrollment, which arrives in M4a; this build
+# refuses to run as a member.

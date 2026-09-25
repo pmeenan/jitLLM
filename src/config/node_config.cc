@@ -1,0 +1,1031 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "config/node_config.h"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// toml++ in its TOML 1.0.0 mode, without exceptions (D-066) or formatters;
+// only this translation unit includes it (target compile definitions).
+#include <dirent.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <filesystem>
+#include <format>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <span>
+#include <string>
+#include <string_view>
+#include <toml++/toml.hpp>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include "base/report.h"
+#include "platform/path_trust.h"
+
+namespace jitllm::config {
+namespace {
+
+namespace fs = std::filesystem;
+
+using KeyPath = std::vector<std::string>;
+
+std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
+
+// A key path as TOML would write it: bare parts as they are, others quoted.
+std::string KeyText(const KeyPath& path) {
+  std::string text;
+  for (const std::string& part : path) {
+    if (!text.empty()) {
+      text += '.';
+    }
+    const bool bare = !part.empty() && std::ranges::all_of(part, [](char c) {
+      return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+             c == '_' || c == '-';
+    });
+    if (bare) {
+      text += part;
+    } else {
+      text += '"';
+      for (const char c : part) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+          text += '\\';
+          text += c;
+        } else if (byte < 0x20 || byte == 0x7F) {
+          text += std::format("\\u{:04X}", byte);
+        } else {
+          text += c;
+        }
+      }
+      text += '"';
+    }
+  }
+  return text;
+}
+
+bool IsPrefix(const KeyPath& prefix, const KeyPath& path) {
+  return prefix.size() <= path.size() && std::equal(prefix.begin(), prefix.end(), path.begin());
+}
+
+// A value or a table as one file wrote it.
+struct Entry {
+  KeyPath path;
+  const toml::node* node = nullptr;
+  std::size_t file = 0;
+};
+
+class Collector {
+ public:
+  explicit Collector(std::span<const SourceText> files) : files_(files) {}
+
+  void At(std::size_t file, const toml::node& node, std::string message) {
+    const toml::source_position begin = node.source().begin;
+    diagnostics_.push_back({.file = files_[file].name,
+                            .line = begin.line,
+                            .column = begin.column,
+                            .message = std::move(message)});
+  }
+  void At(const Entry& entry, std::string message) {
+    At(entry.file, *entry.node, std::move(message));
+  }
+  void Position(std::size_t file, const toml::source_position& at, std::string message) {
+    diagnostics_.push_back({.file = files_[file].name,
+                            .line = at.line,
+                            .column = at.column,
+                            .message = std::move(message)});
+  }
+  void Document(std::string message) {
+    diagnostics_.push_back({.file = {}, .message = std::move(message)});
+  }
+  void File(std::size_t file, std::string message) {
+    diagnostics_.push_back({.file = files_[file].name, .message = std::move(message)});
+  }
+
+  bool empty() const { return diagnostics_.empty(); }
+  std::vector<Diagnostic> Take() { return std::move(diagnostics_); }
+  const std::string& Name(std::size_t file) const { return files_[file].name; }
+
+ private:
+  std::span<const SourceText> files_;
+  std::vector<Diagnostic> diagnostics_;
+};
+
+// What the schema knows (cluster-design.md, D-063, D-073).
+enum class Kind : std::uint8_t {
+  kAbsolutePath,  // an absolute path in normal form
+  kRolePath,      // a path in normal form, absolute or relative
+  kUuid,
+  kPort,
+  kInterfaces,
+  kPeerScopes,
+  kProfile,
+};
+
+struct KeySpec {
+  KeyPath path;
+  Kind kind;
+  bool member;  // one of the keys only a cluster member has
+};
+
+const std::vector<KeySpec>& Schema() {
+  static const std::vector<KeySpec> schema = {
+      {.path = {"cluster_file"}, .kind = Kind::kAbsolutePath, .member = true},
+      {.path = {"node_id"}, .kind = Kind::kUuid, .member = true},
+      {.path = {"credentials", "ca_file"}, .kind = Kind::kAbsolutePath, .member = true},
+      {.path = {"credentials", "certificate_file"}, .kind = Kind::kAbsolutePath, .member = true},
+      {.path = {"credentials", "private_key_file"}, .kind = Kind::kAbsolutePath, .member = true},
+      {.path = {"control", "port"}, .kind = Kind::kPort, .member = true},
+      {.path = {"control", "interfaces"}, .kind = Kind::kInterfaces, .member = true},
+      {.path = {"control", "peer_scopes"}, .kind = Kind::kPeerScopes, .member = true},
+      {.path = {"limits", "profile"}, .kind = Kind::kProfile, .member = false},
+      {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
+      {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
+      {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
+      {.path = {"storage", "state"}, .kind = Kind::kRolePath, .member = false},
+      {.path = {"storage", "checkpoints"}, .kind = Kind::kRolePath, .member = false},
+      {.path = {"storage", "long_term"}, .kind = Kind::kAbsolutePath, .member = false},
+      {.path = {"storage", "archive"}, .kind = Kind::kRolePath, .member = false},
+  };
+  return schema;
+}
+
+const KeySpec* FindSpec(const KeyPath& path) {
+  for (const KeySpec& spec : Schema()) {
+    if (spec.path == path) {
+      return &spec;
+    }
+  }
+  return nullptr;
+}
+
+// Whether path names a table the schema has keys in.
+bool IsSchemaTable(const KeyPath& path) {
+  return std::ranges::any_of(Schema(), [&](const KeySpec& spec) {
+    return spec.path.size() > path.size() && IsPrefix(path, spec.path);
+  });
+}
+
+// Adds a file's values (leaves: everything but a table defined by a header
+// or dotted keys, so an inline table or an array is one value) and its
+// tables to the lists. It descends only into tables the schema has keys in,
+// so a table it does not know is one entry however deep it goes.
+void Flatten(const toml::table& table, KeyPath& path, std::size_t file, std::vector<Entry>& leaves,
+             std::vector<Entry>& tables) {
+  for (const auto& [key, node] : table) {
+    path.emplace_back(key.str());
+    const toml::table* child = node.as_table();
+    if (child != nullptr && !child->is_inline()) {
+      tables.push_back({.path = path, .node = &node, .file = file});
+      if (IsSchemaTable(path) || path == KeyPath{"control", "peer_scopes"}) {
+        Flatten(*child, path, file, leaves, tables);
+      }
+    } else {
+      leaves.push_back({.path = path, .node = &node, .file = file});
+    }
+    path.pop_back();
+  }
+}
+
+const char* TypeName(const toml::node& node) {
+  switch (node.type()) {
+    case toml::node_type::table:
+      return "a table";
+    case toml::node_type::array:
+      return "an array";
+    case toml::node_type::string:
+      return "a string";
+    case toml::node_type::integer:
+      return "an integer";
+    case toml::node_type::floating_point:
+      return "a float";
+    case toml::node_type::boolean:
+      return "a boolean";
+    case toml::node_type::date:
+    case toml::node_type::time:
+    case toml::node_type::date_time:
+      return "a date or time";
+    case toml::node_type::none:
+      break;
+  }
+  return "nothing";
+}
+
+// A path value's problem, if any: the text must be a path in normal form
+// (no empty, "." or ".." component, no trailing "/") without control
+// characters, and absolute where required.
+std::optional<std::string> PathProblem(std::string_view text, bool absolute) {
+  if (text.empty()) {
+    return "must not be empty";
+  }
+  if (text.size() >= 4096) {
+    return "is longer than 4095 bytes";
+  }
+  if (std::ranges::any_of(text, [](char c) {
+        const auto byte = static_cast<unsigned char>(c);
+        return byte < 0x20 || byte == 0x7F;
+      })) {
+    return "must not contain control characters";
+  }
+  if (base::Printable(text) != text) {
+    return "must not contain control or invisible formatting characters";
+  }
+  if (absolute && text.front() != '/') {
+    return "must be an absolute path";
+  }
+  if (text != "/" && text.back() == '/') {
+    return "must not end in '/'";
+  }
+  std::string_view rest = text.front() == '/' ? text.substr(1) : text;
+  while (!rest.empty() || text == "/") {
+    if (text == "/") {
+      break;
+    }
+    const std::size_t slash = rest.find('/');
+    const std::string_view part = rest.substr(0, slash);
+    if (part.empty() || part == "." || part == "..") {
+      return "must be in normal form, without empty, '.' or '..' components";
+    }
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    rest = rest.substr(slash + 1);
+  }
+  return std::nullopt;
+}
+
+bool IsUuid(std::string_view text) {
+  if (text.size() != 36) {
+    return false;
+  }
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (c != '-') {
+        return false;
+      }
+    } else if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// cluster-design.md's local selectors: "ifname:<exact-name>", with the
+// kernel's own rules for interface names, or
+// "port:<phys_switch_id>/<phys_port_name>".
+std::optional<std::string> SelectorProblem(std::string_view text) {
+  const auto printable = [](std::string_view s, bool slash_ok) {
+    return std::ranges::all_of(s, [slash_ok](char c) {
+      return c > ' ' && c < 0x7F && c != ':' && (slash_ok || c != '/');
+    });
+  };
+  if (text.starts_with("ifname:")) {
+    const std::string_view name = text.substr(7);
+    if (name.empty() || name.size() > 15 || name == "." || name == ".." ||
+        !printable(name, false)) {
+      return "names an invalid interface: an interface name is 1-15 printable characters without "
+             "'/', ':' or "
+             "spaces, and not '.' or '..'";
+    }
+    return std::nullopt;
+  }
+  if (text.starts_with("port:")) {
+    const std::string_view rest = text.substr(5);
+    const std::size_t slash = rest.find('/');
+    const std::string_view id = rest.substr(0, slash);
+    const std::string_view port =
+        slash == std::string_view::npos ? std::string_view() : rest.substr(slash + 1);
+    const bool hex_id = !id.empty() && id.size() <= 64 && std::ranges::all_of(id, [](char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+    if (!hex_id || port.empty() || port.size() > 64 || !printable(port, false)) {
+      return "names an invalid port: write port:<phys_switch_id>/<phys_port_name>, with the switch "
+             "ID in "
+             "lowercase hex";
+    }
+    return std::nullopt;
+  }
+  return R"(must be "ifname:<name>" or "port:<phys_switch_id>/<phys_port_name>")";
+}
+
+// Whether b is a or lies inside it (both absolute, in normal form).
+bool Within(const fs::path& a, const fs::path& b) {
+  return std::ranges::mismatch(a, b).in1 == a.end();
+}
+
+// Where the values found by the schema pass came from, for later checks.
+struct Found {
+  std::map<KeyPath, const Entry*> entries;
+
+  const Entry* Get(const KeyPath& path) const {
+    const auto it = entries.find(path);
+    return it == entries.end() ? nullptr : it->second;
+  }
+};
+
+class Validator {
+ public:
+  Validator(Collector& out, fs::path anchor) : out_(out), anchor_(std::move(anchor)) {}
+
+  NodeConfig Run(const std::vector<Entry>& leaves, const std::vector<Entry>& tables) {
+    for (const Entry& table : tables) {
+      if (table.path.front() == "control" || table.path.front() == "credentials") {
+        member_ = true;  // even an empty [control] or [credentials] (D-073)
+      }
+      if (const KeySpec* spec = FindSpec(table.path)) {
+        if (spec->kind == Kind::kPeerScopes) {
+          continue;  // written as a table: its entries are its keys
+        }
+        out_.At(table, std::format("{} must be {}, not a table", KeyText(table.path),
+                                   Expected(spec->kind)));
+      } else if (IsPeerScopeEntry(table.path)) {
+        out_.At(table,
+                std::format("{} must be a string selector, not a table", KeyText(table.path)));
+      } else if (!IsSchemaTable(table.path)) {
+        out_.At(table, std::format("unknown table {}", KeyText(table.path)));
+      }
+    }
+    for (const Entry& leaf : leaves) {
+      Leaf(leaf);
+    }
+    return Build();
+  }
+
+ private:
+  static bool IsPeerScopeEntry(const KeyPath& path) {
+    return path.size() == 3 && path[0] == "control" && path[1] == "peer_scopes";
+  }
+
+  static const char* Expected(Kind kind) {
+    switch (kind) {
+      case Kind::kAbsolutePath:
+        return "an absolute path";
+      case Kind::kRolePath:
+        return "a path";
+      case Kind::kUuid:
+        return "a UUID string";
+      case Kind::kPort:
+        return "an integer port";
+      case Kind::kInterfaces:
+        return "\"auto\" or an array of selectors";
+      case Kind::kPeerScopes:
+        return "a table of member UUIDs to selectors";
+      case Kind::kProfile:
+        return "\"initial-v2\"";
+    }
+    return "";
+  }
+
+  void Leaf(const Entry& leaf) {
+    const std::string key = KeyText(leaf.path);
+    if (IsPeerScopeEntry(leaf.path)) {
+      PeerScope(leaf, leaf.path[2], *leaf.node);
+      return;
+    }
+    const KeySpec* spec = FindSpec(leaf.path);
+    if (spec == nullptr && IsSchemaTable(leaf.path) && leaf.node->is_table()) {
+      // An inline table, owned whole by its file: its keys are checked as
+      // if written under a header.
+      if (leaf.path.front() == "control" || leaf.path.front() == "credentials") {
+        member_ = true;
+      }
+      for (const auto& [name, value] : *leaf.node->as_table()) {
+        KeyPath path = leaf.path;
+        path.emplace_back(name.str());
+        inline_entries_.push_back(std::make_unique<Entry>(
+            Entry{.path = std::move(path), .node = &value, .file = leaf.file}));
+        Leaf(*inline_entries_.back());
+      }
+      return;
+    }
+    if (spec == nullptr) {
+      if (IsSchemaTable(leaf.path)) {
+        out_.At(leaf, std::format("{} must be a table, not {}", key, TypeName(*leaf.node)));
+      } else {
+        out_.At(leaf, std::format("unknown key {}", key));
+      }
+      return;
+    }
+    if (spec->member) {
+      member_ = true;
+    }
+    found_.entries[leaf.path] = &leaf;
+    const toml::node& node = *leaf.node;
+    switch (spec->kind) {
+      case Kind::kAbsolutePath:
+      case Kind::kRolePath: {
+        const auto* text = node.as_string();
+        if (text == nullptr) {
+          out_.At(leaf, std::format("{} must be a string path, not {}", key, TypeName(node)));
+          break;
+        }
+        if (auto problem = PathProblem(text->get(), spec->kind == Kind::kAbsolutePath)) {
+          out_.At(leaf, std::format("{} {}", key, *problem));
+          break;
+        }
+        paths_[leaf.path] = fs::path(text->get());
+        break;
+      }
+      case Kind::kUuid: {
+        const auto* text = node.as_string();
+        if (text == nullptr || !IsUuid(text->get())) {
+          out_.At(leaf, std::format("{} must be a canonical lowercase UUID string", key));
+          break;
+        }
+        node_id_ = text->get();
+        break;
+      }
+      case Kind::kPort: {
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (value->get() < 1 || value->get() > 65535) {
+          out_.At(leaf, std::format("{} must be from 1 to 65535, not {}", key, value->get()));
+        } else {
+          port_ = static_cast<std::uint16_t>(value->get());
+        }
+        break;
+      }
+      case Kind::kInterfaces:
+        Interfaces(leaf);
+        break;
+      case Kind::kPeerScopes: {
+        const auto* table = node.as_table();
+        if (table == nullptr) {
+          out_.At(leaf, std::format("{} must be a table of member UUIDs to selectors, not {}", key,
+                                    TypeName(node)));
+          break;
+        }
+        for (const auto& [id, value] : *table) {
+          PeerScope(leaf, std::string(id.str()), value);
+        }
+        break;
+      }
+      case Kind::kProfile: {
+        const auto* text = node.as_string();
+        if (text == nullptr || text->get() != kLimitsProfile) {
+          out_.At(leaf,
+                  std::format("{} must be \"{}\", the only limits profile of schema version {}",
+                              key, kLimitsProfile, kSchemaVersion));
+        }
+        break;
+      }
+    }
+  }
+
+  void Interfaces(const Entry& leaf) {
+    const std::string key = KeyText(leaf.path);
+    const toml::node& node = *leaf.node;
+    if (const auto* text = node.as_string()) {
+      if (text->get() != "auto") {
+        out_.At(leaf, std::format(R"({} must be "auto" or an array of selectors, not "{}")", key,
+                                  text->get()));
+      }
+      return;
+    }
+    const auto* array = node.as_array();
+    if (array == nullptr) {
+      out_.At(leaf, std::format("{} must be \"auto\" or an array of selectors, not {}", key,
+                                TypeName(node)));
+      return;
+    }
+    if (array->empty()) {
+      out_.At(leaf,
+              std::format(
+                  "{} must not be an empty array; write \"auto\" for the validated interconnects",
+                  key));
+      return;
+    }
+    std::set<std::string> seen;
+    for (const toml::node& item : *array) {
+      const auto* text = item.as_string();
+      if (text == nullptr) {
+        out_.At(leaf.file, item,
+                std::format("{} holds {}, not a selector string", key, TypeName(item)));
+        continue;
+      }
+      if (auto problem = SelectorProblem(text->get())) {
+        out_.At(leaf.file, item, std::format("{} entry \"{}\" {}", key, text->get(), *problem));
+        continue;
+      }
+      if (!seen.insert(text->get()).second) {
+        out_.At(leaf.file, item, std::format("{} lists \"{}\" twice", key, text->get()));
+        continue;
+      }
+      interfaces_.push_back(text->get());
+    }
+  }
+
+  void PeerScope(const Entry& leaf, const std::string& id, const toml::node& value) {
+    member_ = true;
+    const std::string key = KeyText({"control", "peer_scopes", id});
+    if (!IsUuid(id)) {
+      out_.At(leaf.file, value,
+              std::format("{}: the key must be a member's canonical lowercase UUID", key));
+      return;
+    }
+    const auto* text = value.as_string();
+    if (text == nullptr) {
+      out_.At(leaf.file, value,
+              std::format("{} must be a selector string, not {}", key, TypeName(value)));
+      return;
+    }
+    if (auto problem = SelectorProblem(text->get())) {
+      out_.At(leaf.file, value, std::format("{} \"{}\" {}", key, text->get(), *problem));
+      return;
+    }
+    peer_scopes_[id] = text->get();
+  }
+
+  // Reports a problem with a key, where it was set if it was.
+  void KeyProblem(const KeyPath& path, const std::string& message) {
+    if (const Entry* entry = found_.Get(path)) {
+      out_.At(*entry, message);
+    } else {
+      out_.Document(message);
+    }
+  }
+
+  std::optional<fs::path> PathValue(const KeyPath& path) const {
+    const auto it = paths_.find(path);
+    return it == paths_.end() ? std::nullopt : std::optional<fs::path>(it->second);
+  }
+
+  NodeConfig Build() {
+    NodeConfig config;
+    if (member_) {
+      Membership membership;
+      const auto require = [&](const KeyPath& path) {
+        if (found_.Get(path) == nullptr) {
+          out_.Document(
+              std::format("{} is required: a cluster member (a node with cluster_file, node_id, "
+                          "credentials or control set) needs all of cluster_file, node_id, "
+                          "credentials.ca_file, credentials.certificate_file, "
+                          "credentials.private_key_file and control.port",
+                          KeyText(path)));
+        }
+      };
+      for (const KeyPath& path :
+           {KeyPath{"cluster_file"}, KeyPath{"node_id"}, KeyPath{"credentials", "ca_file"},
+            KeyPath{"credentials", "certificate_file"}, KeyPath{"credentials", "private_key_file"},
+            KeyPath{"control", "port"}}) {
+        require(path);
+      }
+      membership.cluster_file = PathValue({"cluster_file"}).value_or(fs::path());
+      membership.node_id = node_id_;
+      membership.credentials.ca_file = PathValue({"credentials", "ca_file"}).value_or(fs::path());
+      membership.credentials.certificate_file =
+          PathValue({"credentials", "certificate_file"}).value_or(fs::path());
+      membership.credentials.private_key_file =
+          PathValue({"credentials", "private_key_file"}).value_or(fs::path());
+      membership.control.port = port_;
+      membership.control.interfaces = interfaces_;
+      membership.control.peer_scopes = peer_scopes_;
+      config.membership = std::move(membership);
+    }
+    config.storage = Roles();
+    if (config.membership && config.storage.long_term) {
+      for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
+                                  KeyPath{"credentials", "certificate_file"},
+                                  KeyPath{"credentials", "private_key_file"}}) {
+        const auto value = PathValue(path);
+        if (value && Within(*config.storage.long_term, *value)) {
+          KeyProblem(path, std::format("{} must not lie inside storage.long_term ({})",
+                                       KeyText(path), config.storage.long_term->string()));
+        }
+      }
+    }
+    return config;
+  }
+
+  Storage Roles() {
+    Storage storage;
+    storage.data_dir = PathValue({"storage", "data_dir"}).value_or(fs::path(kDefaultDataDir));
+    const auto resolve = [&](std::string_view name, std::string_view fallback) {
+      const fs::path value = PathValue({"storage", std::string(name)}).value_or(fs::path(fallback));
+      return value.is_absolute() ? value : storage.data_dir / value;
+    };
+    storage.installed = resolve("installed", "models");
+    storage.spill = resolve("spill", "spill");
+    storage.state = resolve("state", "state");
+    storage.checkpoints = resolve("checkpoints", "checkpoints");
+    storage.long_term = PathValue({"storage", "long_term"});
+    const auto archive = PathValue({"storage", "archive"});
+    if (storage.long_term) {
+      const fs::path value = archive.value_or(fs::path("archive"));
+      storage.archive = value.is_absolute() ? value : *storage.long_term / value;
+      if (*storage.archive == *storage.long_term || !Within(*storage.long_term, *storage.archive)) {
+        KeyProblem({"storage", "archive"},
+                   std::format("storage.archive ({}) must lie inside storage.long_term ({})",
+                               storage.archive->string(), storage.long_term->string()));
+      }
+    } else if (archive) {
+      KeyProblem({"storage", "archive"},
+                 "storage.archive requires storage.long_term, which it lies inside");
+    }
+
+    struct Role {
+      std::string_view name;
+      const fs::path* path;
+    };
+    std::vector<Role> roles = {{.name = "installed", .path = &storage.installed},
+                               {.name = "spill", .path = &storage.spill},
+                               {.name = "state", .path = &storage.state},
+                               {.name = "checkpoints", .path = &storage.checkpoints}};
+    if (storage.archive) {
+      roles.push_back({.name = "archive", .path = &*storage.archive});
+    }
+    for (std::size_t i = 0; i < roles.size(); ++i) {
+      for (std::size_t j = i + 1; j < roles.size(); ++j) {
+        const Role& a = roles[i];
+        const Role& b = roles[j];
+        if (*a.path == *b.path) {
+          KeyProblem({"storage", std::string(b.name)},
+                     std::format("storage.{} and storage.{} are the same directory, {}", a.name,
+                                 b.name, a.path->string()));
+        } else if (Within(*a.path, *b.path) || Within(*b.path, *a.path)) {
+          const bool b_inside = Within(*a.path, *b.path);
+          const Role& inner = b_inside ? b : a;
+          const Role& outer = b_inside ? a : b;
+          KeyProblem({"storage", std::string(inner.name)},
+                     std::format(
+                         "storage.{} ({}) lies inside storage.{} ({}); no role may contain another",
+                         inner.name, inner.path->string(), outer.name, outer.path->string()));
+        }
+      }
+    }
+    if (storage.long_term) {
+      for (const Role& role : roles) {
+        if (role.name == "checkpoints" || role.name == "archive") {
+          continue;  // job-only roles, which may live in the long-term store
+        }
+        if (Within(*storage.long_term, *role.path) || Within(*role.path, *storage.long_term)) {
+          KeyProblem(
+              {"storage", "long_term"},
+              std::format(
+                  "storage.long_term ({}) must not equal, contain or lie inside storage.{} ({})",
+                  storage.long_term->string(), role.name, role.path->string()));
+        }
+      }
+    }
+    for (const Role& role : roles) {
+      if (Within(anchor_, *role.path) || Within(*role.path, anchor_)) {
+        KeyProblem(
+            {"storage", std::string(role.name)},
+            std::format(
+                "storage.{} ({}) must not equal, contain or lie inside the enrollment anchor {}",
+                role.name, role.path->string(), anchor_.string()));
+      }
+    }
+    return storage;
+  }
+
+  Collector& out_;
+  fs::path anchor_;
+  // The entries of inline tables, which found_ points into.
+  std::vector<std::unique_ptr<Entry>> inline_entries_;
+  Found found_;
+  bool member_ = false;
+  std::map<KeyPath, fs::path> paths_;
+  std::string node_id_;
+  std::uint16_t port_ = 0;
+  std::vector<std::string> interfaces_;
+  std::map<std::string, std::string> peer_scopes_;
+};
+
+}  // namespace
+
+std::string FormatDiagnostic(const Diagnostic& diagnostic) {
+  // Values from the files reach logs and terminals: nothing in them may
+  // forge a line or change how it reads.
+  const std::string file = base::Printable(diagnostic.file);
+  std::string message = base::Printable(diagnostic.message);
+  if (file.empty()) {
+    return message;
+  }
+  if (diagnostic.line == 0) {
+    return std::format("{}: {}", file, message);
+  }
+  return std::format("{}:{}:{}: {}", file, diagnostic.line, diagnostic.column, message);
+}
+
+std::expected<NodeConfig, std::vector<Diagnostic>> ParseNodeConfig(
+    std::span<const SourceText> files, const fs::path& anchor) {
+  Collector out(files);
+  std::size_t total = 0;
+  for (const SourceText& file : files) {
+    total += file.text.size();
+  }
+  if (total > kDocumentLimit) {
+    out.Document(std::format("the configuration is {} bytes, more than the {}-byte limit", total,
+                             kDocumentLimit));
+    return std::unexpected(out.Take());
+  }
+
+  // Each file parses on its own; its tables live as long as the entries
+  // that point into them.
+  std::vector<toml::table> documents;
+  documents.reserve(files.size());
+  std::vector<std::size_t> parsed;  // file index of each document
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    toml::parse_result result =
+        toml::parse(std::string_view(files[i].text), std::string_view(files[i].name));
+    if (!result) {
+      const toml::parse_error& error = result.error();
+      out.Position(i, error.source().begin, std::string(error.description()));
+      continue;
+    }
+    documents.push_back(std::move(result).table());
+    parsed.push_back(i);
+  }
+
+  std::vector<Entry> leaves;
+  std::vector<Entry> tables;
+  for (std::size_t d = 0; d < documents.size(); ++d) {
+    const std::size_t file = parsed[d];
+    const toml::table& document = documents[d];
+    // Every file states the schema version, and they agree (D-063).
+    const toml::node* version = document.get("schema_version");
+    if (version == nullptr) {
+      out.File(file,
+               std::format("schema_version is missing; every file of the configuration starts with "
+                           "schema_version = {}",
+                           kSchemaVersion));
+    } else if (const auto* number = version->as_integer(); number == nullptr) {
+      out.At(file, *version,
+             std::format("schema_version must be an integer, not {}", TypeName(*version)));
+    } else if (number->get() != kSchemaVersion) {
+      out.At(file, *version,
+             std::format("schema_version {} is not supported; this build reads version {}",
+                         number->get(), kSchemaVersion));
+    }
+    KeyPath path;
+    std::vector<Entry> file_leaves;
+    Flatten(document, path, file, file_leaves, tables);
+    for (Entry& leaf : file_leaves) {
+      if (leaf.path != KeyPath{"schema_version"}) {
+        leaves.push_back(std::move(leaf));
+      }
+    }
+  }
+
+  // Every key has one owning file: a value set in two files, or a table
+  // one file writes whole (inline) while another adds to it, is fatal.
+  std::vector<Entry> merged;
+  std::map<KeyPath, const Entry*> owners;
+  // The owned key that clashes with path: path itself, a key above it, or
+  // one below it (which sorts right after it).
+  const auto clash = [&owners](const KeyPath& path) -> const Entry* {
+    for (std::size_t n = 1; n <= path.size(); ++n) {
+      const auto it =
+          owners.find(KeyPath(path.begin(), path.begin() + static_cast<std::ptrdiff_t>(n)));
+      if (it != owners.end()) {
+        return it->second;
+      }
+    }
+    const auto below = owners.lower_bound(path);
+    return below != owners.end() && IsPrefix(path, below->first) ? below->second : nullptr;
+  };
+  for (const Entry& leaf : leaves) {
+    if (const Entry* other = clash(leaf.path)) {
+      out.At(leaf, std::format("{} is also set in {} (as {}); each key belongs to exactly one file",
+                               KeyText(leaf.path), out.Name(other->file), KeyText(other->path)));
+      continue;
+    }
+    owners[leaf.path] = &leaf;
+    merged.push_back(leaf);
+  }
+  for (const Entry& table : tables) {
+    for (std::size_t n = 1; n <= table.path.size(); ++n) {
+      const auto it = owners.find(
+          KeyPath(table.path.begin(), table.path.begin() + static_cast<std::ptrdiff_t>(n)));
+      if (it != owners.end() && it->second->file != table.file) {
+        out.At(table,
+               std::format("{} is a table here, but {} sets {} as one value", KeyText(table.path),
+                           out.Name(it->second->file), KeyText(it->first)));
+        break;
+      }
+    }
+  }
+
+  Validator validator(out, anchor);
+  NodeConfig config = validator.Run(merged, tables);
+  if (!out.empty()) {
+    // In reading order: by file, then position; the document's own last.
+    std::vector<Diagnostic> diagnostics = out.Take();
+    std::map<std::string_view, std::size_t> order;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+      order.emplace(files[i].name, i);
+    }
+    const auto rank = [&order, &files](const Diagnostic& d) {
+      const auto it = order.find(d.file);
+      return std::tuple(it == order.end() ? files.size() : it->second, d.line, d.column);
+    };
+    std::ranges::stable_sort(diagnostics, [&rank](const Diagnostic& a, const Diagnostic& b) {
+      return rank(a) < rank(b);
+    });
+    if (diagnostics.size() > kDiagnosticLimit) {
+      const std::size_t more = diagnostics.size() - kDiagnosticLimit;
+      diagnostics.resize(kDiagnosticLimit);
+      diagnostics.push_back({.file = {}, .message = std::format("and {} more problems", more)});
+    }
+    return std::unexpected(std::move(diagnostics));
+  }
+  for (const SourceText& file : files) {
+    config.files.emplace_back(file.name);
+  }
+  return config;
+}
+
+namespace {
+
+// A configuration file after the walk approved its path: opened without
+// following a link, it must be the same regular file, owned by root or
+// the trusted user and writable by nobody else.
+std::expected<std::string, std::string> ReadTrusted(int dir, const std::string& name,
+                                                    const struct stat* expected, uid_t trusted,
+                                                    std::size_t limit) {
+  const int fd =
+      ::openat(dir, name.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+  if (fd < 0) {
+    const int error = errno;
+    return std::unexpected(error == ELOOP ? "is a symbolic link"
+                                          : "cannot be opened: " + Errno(error));
+  }
+  struct stat status{};
+  std::string text;
+  std::string problem;
+  if (::fstat(fd, &status) != 0) {
+    problem = "cannot be examined: " + Errno(errno);
+  } else if (!S_ISREG(status.st_mode)) {
+    problem = "is not a regular file";
+  } else if (expected != nullptr &&
+             (status.st_dev != expected->st_dev || status.st_ino != expected->st_ino)) {
+    problem = "changed while it was being checked";
+  } else if (status.st_nlink != 1) {
+    // Another name for it could sit in a directory someone else can write.
+    problem = std::format("has {} hard links; a configuration file must have one", status.st_nlink);
+  } else if (status.st_uid != 0 && status.st_uid != trusted) {
+    problem = std::format("is owned by uid {}, not root{}", status.st_uid,
+                          trusted == 0 ? std::string() : std::format(" or uid {}", trusted));
+  } else if (platform::OthersCanWrite(status, trusted, fd)) {
+    problem = std::format("can be written by users other than root and its owner (mode {})",
+                          platform::OctalMode(status.st_mode));
+  } else {
+    // Room for what fstat reports (never more than the limit allows) and
+    // one byte to see past the limit; it grows only if the file does.
+    text.resize(std::min(static_cast<std::size_t>(std::max<off_t>(status.st_size, 0)), limit) + 1);
+    std::size_t size = 0;
+    while (size < text.size()) {
+      const ssize_t got = ::read(fd, text.data() + size, text.size() - size);
+      if (got < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        problem = "cannot be read: " + Errno(errno);
+        break;
+      }
+      if (got == 0) {
+        break;
+      }
+      size += static_cast<std::size_t>(got);
+      if (size == text.size() && size <= limit) {
+        text.resize(std::min(text.size() * 2, limit + 1));
+      }
+    }
+    if (problem.empty() && size > limit) {
+      problem =
+          std::format("would take the configuration past its {}-byte limit ({} bytes were left)",
+                      kDocumentLimit, limit);
+    }
+    text.resize(size);
+    text.shrink_to_fit();
+  }
+  (void)::close(fd);  // read-only
+  if (!problem.empty()) {
+    return std::unexpected(problem);
+  }
+  return text;
+}
+
+}  // namespace
+
+std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOptions& options) {
+  std::vector<Diagnostic> problems;
+  const auto fail = [&](const fs::path& file, std::string message) {
+    problems.push_back({.file = file.string(), .message = std::move(message)});
+  };
+  std::error_code error;
+  const fs::path main = fs::absolute(options.main_file, error).lexically_normal();
+  if (error || main.extension() != ".toml" || main.filename() == ".toml") {
+    fail(options.main_file, "the configuration file's name must end in .toml");
+    return std::unexpected(problems);
+  }
+  fs::path dropins = main;
+  dropins.replace_extension(".d");
+
+  std::vector<SourceText> files;
+  std::size_t total = 0;
+  const auto read = [&](int dir, const std::string& name, const fs::path& shown,
+                        const struct stat* status) {
+    // Each file may use what the document's limit has left.
+    const std::size_t budget = total < kDocumentLimit ? kDocumentLimit - total : 0;
+    auto text = ReadTrusted(dir, name, status, options.trusted_uid, budget);
+    if (!text) {
+      fail(shown, text.error());
+      return;
+    }
+    total += text->size();
+    files.push_back({.name = shown.string(), .text = std::move(*text)});
+  };
+
+  auto walked = platform::WalkTrusted(main, options.trusted_uid, false);
+  if (!walked) {
+    fail(main, walked.error());
+  } else if (!walked->exists) {
+    if (!options.main_file_optional) {
+      fail(main, "does not exist");
+    }
+  } else {
+    read(AT_FDCWD, walked->resolved.string(), main, &walked->status);
+  }
+
+  auto dir_walk = platform::WalkTrusted(dropins, options.trusted_uid, false);
+  if (!dir_walk) {
+    fail(dropins, dir_walk.error());
+  } else if (dir_walk->exists) {
+    const int dir =
+        ::open(dir_walk->resolved.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat status{};
+    if (dir < 0 || ::fstat(dir, &status) != 0) {
+      fail(dropins, dir < 0 && errno == ENOTDIR ? "is not a directory"
+                                                : "cannot be opened: " + Errno(errno));
+    } else if (status.st_dev != dir_walk->status.st_dev ||
+               status.st_ino != dir_walk->status.st_ino) {
+      fail(dropins, "changed while it was being checked");
+    } else if (auto private_dir =
+                   platform::CheckPrivateDirectory(dropins, status, options.trusted_uid);
+               !private_dir) {
+      fail(dropins, private_dir.error());
+    } else {
+      // Regular "*.toml" files, not dotfiles, in bytewise order; other
+      // names (such as ".dpkg-old" leftovers) are skipped.
+      std::vector<std::string> names;
+      const int listing = ::dup(dir);
+      DIR* stream = listing < 0 ? nullptr : ::fdopendir(listing);
+      if (stream == nullptr) {
+        if (listing >= 0) {
+          (void)::close(listing);
+        }
+        fail(dropins, "cannot be listed: " + Errno(errno));
+      } else {
+        errno = 0;
+        while (const dirent* entry =
+                   ::readdir(stream)) {  // NOLINT(concurrency-mt-unsafe): one reader
+          const std::string name = entry->d_name;
+          if (!name.starts_with('.') && name.size() > 5 && name.ends_with(".toml")) {
+            names.push_back(name);
+          }
+        }
+        if (errno != 0) {
+          fail(dropins, "cannot be listed: " + Errno(errno));
+        }
+        (void)::closedir(stream);
+      }
+      std::ranges::sort(names);
+      if (names.size() > kDropInLimit) {
+        fail(dropins, std::format("holds {} fragments; the configuration takes at most {}",
+                                  names.size(), kDropInLimit));
+        names.clear();
+      }
+      for (const std::string& name : names) {
+        if (total > kDocumentLimit) {
+          break;
+        }
+        read(dir, name, dropins / name, nullptr);
+      }
+    }
+    if (dir >= 0) {
+      (void)::close(dir);
+    }
+  }
+  if (!problems.empty()) {
+    return std::unexpected(problems);
+  }
+  return ParseNodeConfig(files, options.anchor);
+}
+
+}  // namespace jitllm::config

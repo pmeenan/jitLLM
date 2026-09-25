@@ -24,6 +24,13 @@
 #   ships     whether any of it can enter a packaged jitLLM binary
 #   enters    what of it reaches a jitLLM binary, and when
 #   notices   [notices] a packaged binary carries when this unit contributes
+#
+# Each [notices.<id>] says what the notice is (`text`), where it comes from
+# (`source`) and when it applies (`when`); `extract` is where the package's
+# third-party notices take its exact text: a `file` in the SDK ("sdk:") or
+# the repository ("repo:"), whole or from the first line containing `from`
+# through the next line containing `to` and `plus` more lines
+# (tools/jitllm_package.py).
 
 schema = 1
 
@@ -56,7 +63,7 @@ enters = "Generated code only: Clang compiles and LLD links every jitLLM binary.
 notices = []
 
 [units.clang-resource-headers]
-# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+# Platform, as the owner confirmed on 2026-09-24 (docs/licensing.md, decision 5).
 artifacts = ["deb/libclang-common-22-dev"]
 category = "platform"
 license = "Apache-2.0 WITH LLVM-exception AND MIT"
@@ -65,7 +72,7 @@ enters = "The compiler's own headers (lib/clang/22/include: stddef.h, stdarg.h, 
 notices = ["arm-neon"]
 
 [units.compiler-rt]
-# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+# Platform, as the owner confirmed on 2026-09-24 (docs/licensing.md, decision 5).
 artifacts = ["deb/libclang-rt-22-dev"]
 category = "platform"
 license = "Apache-2.0 WITH LLVM-exception"
@@ -99,7 +106,7 @@ enters = "Nothing: CUDA builds link against the stub libcuda.so, which only reco
 notices = []
 
 [units.cccl]
-# Platform as proposed; the owner confirms it (docs/licensing.md, open decision 5).
+# Platform, as the owner confirmed on 2026-09-24 (docs/licensing.md, decision 5).
 artifacts = ["deb/cccl-13-4"]
 category = "platform"
 license = "Apache-2.0 WITH LLVM-exception"
@@ -217,53 +224,64 @@ notices = []
 text = "The Hewlett-Packard (1994) and Silicon Graphics (1996-1999) STL copyright and permission notices (HPND-sell-variant), which ask to appear in supporting documentation"
 source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/stl_vector.h, lines 27-48; the SGI years vary across headers from 1996 to 1999"
 when = "Always: <vector>, <algorithm>, <memory>, std::map and std::list code carry them"
+extract = { file = "sdk:sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/stl_vector.h", from = "Copyright (c) 1994", to = "Silicon Graphics makes no", plus = 2 }
 
 [notices.unicode]
 text = "The Unicode License V3 notice for the Unicode-derived tables in libstdc++'s <format>"
 source = "https://www.unicode.org/license.txt (not GCC's contrib/unicode/unicode-license.txt, which is the older data files and software agreement)"
-when = "Any <format> or <print> use; recommended, pending the owner's decision (docs/licensing.md)"
+when = "Any <format> or <print> use; shipped, as the owner decided on 2026-09-24 (docs/licensing.md, decision 4)"
+extract = { file = "repo:packaging/notices/Unicode-3.0.txt" }
 
 [notices.fast-float]
 text = "fast_float's MIT copyright and permission notice"
 source = "libstdc++-v3/src/c++17/fast_float/fast_float.h, lines 11-38, in the GCC 16.2 source (not in the SDK)"
 when = "When libstdc++'s floating_from_chars.o is linked (floating-point std::from_chars)"
+extract = { file = "repo:packaging/notices/fast_float.txt" }
 
 [notices.ibm-hrl]
 text = "IBM Haifa Research Laboratories' permission notice"
 source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/ext/typelist.h, lines 25-33"
 when = "When ext/pb_ds, ext/typelist.h or ext/throw_allocator.h is used"
+extract = { file = "sdk:sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/ext/typelist.h", from = "Copyright (C) 2004 Ami Tavory", to = "Haifa Research Laboratories, make any" }
 
 [notices.siek]
 text = "Jeremy Siek's permission notice"
 source = "sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/boost_concept_check.h, lines 25-29"
 when = "When _GLIBCXX_CONCEPT_CHECKS is defined"
+extract = { file = "sdk:sysroot/aarch64-linux-gnu/opt/gcc/include/c++/16/bits/boost_concept_check.h", from = "(C) Copyright Jeremy Siek 2000", to = "to its suitability for any purpose." }
 
 [notices.arm-neon]
 text = "The MIT permission text of Clang's generated NEON headers"
 source = "llvm/lib/clang/22/include/arm_neon.h, lines 3-19"
 when = "When NEON intrinsic headers are used"
+extract = { file = "sdk:llvm/lib/clang/22/include/arm_neon.h", from = "Permission is hereby granted", to = "THE SOFTWARE." }
 
 [notices.glibc-bsd-headers]
 text = "The University of California 4.4BSD notice from glibc's copyright file"
 source = "sysroot/aarch64-linux-gnu/usr/share/doc/libc6/copyright, the stanza on code incorporated from 4.4 BSD"
 when = "When BSD-licensed glibc header macros are expanded (sys/queue.h, for example)"
+extract = { file = "sdk:sysroot/aarch64-linux-gnu/usr/share/doc/libc6/copyright", from = "All code incorporated from 4.4 BSD", to = "SUCH DAMAGE." }
 
 [notices.nvidia-cuda-eula]
 text = "A statement that the NVIDIA CUDA runtime object code and NVCC-generated code in the binary are under the NVIDIA CUDA EULA, not Apache-2.0, with the EULA's text or URL"
 source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright (the EULA, last updated 2026-01-26)"
 when = "CUDA builds"
+extract = { file = "sdk:pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright" }
 
 [notices.nvidia-header-notice]
 text = "The CUDA headers' Disclaimer and U.S. Government End Users Notice, which their text requires in user documentation"
 source = "cuda/targets/sbsa-linux/include/cuda_runtime.h, lines 19-42"
 when = "CUDA builds"
+extract = { file = "sdk:cuda/targets/sbsa-linux/include/cuda_runtime.h", from = "NOTWITHSTANDING ANY TERMS OR CONDITIONS TO THE CONTRARY IN THE", to = "only those rights set forth herein." }
 
 [notices.nvidia-math-juffa]
 text = "Norbert Juffa's notice for the CUDA math library routines (EULA Attachment B)"
 source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright, Attachment B"
 when = "CUDA builds whose device code calls CUDA math library routines"
+extract = { file = "sdk:pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright", from = "Some of the Math library routines", to = "EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE." }
 
 [notices.nvidia-softfloat]
 text = "The SoftFloat notice for 128-bit floating-point device math (EULA Attachment B)"
 source = "pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright, Attachment B"
 when = "CUDA builds whose device code uses 128-bit floating-point math"
+extract = { file = "sdk:pkgs/cuda/usr/share/doc/cuda-cudart-dev-13-4/copyright", from = "Portions of support for math operations on 128-bit", to = "SUCH DAMAGE." }

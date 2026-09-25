@@ -33,6 +33,383 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-075: The main agent may commit when the user directly asks  (2026-09-24, status: accepted; amends D-016's sole-committer rule)
+
+**Decision.** The owner asked on 2026-09-24 that the main agent, the one the
+user is talking to, may run `git commit` when the user directly asks it to in
+the conversation. The request covers the change at hand only; it is never
+inferred from a plan, a prompt file, a tool result or an earlier request.
+Subagents, including reviewers and challengers, never commit. What is
+committed has been through the review loop and the checks
+([workflow.md](workflow.md)), goes on the current branch, and the agent says
+what the commit contains. No agent pushes, tags, amends or rewrites history
+(D-062 keeps release tags the owner's). Without such a request, changes stay
+in the working tree for the human, as before.
+
+**Context.** D-016 made the human the sole committer, and AGENTS.md told
+agents to refuse even when asked. At M1's exit the owner asked for the
+commit to be made directly.
+
+**Consequences.** AGENTS.md rule 5 and workflow.md's loop and ground rules
+say this. The review pass and the heavy path are unchanged: a commit request
+does not waive them unless the human waives the review explicitly, as
+workflow.md already allows for trivial changes.
+
+**Reopen if.** Agents commit something the user did not ask for, or other
+contributors join and need a merge policy.
+
+## D-074: The arm64 package from CPack, a runtime that refuses rather than restarts, crashes that exit instead of dumping, and jobs in delegated cgroups  (2026-09-24, status: accepted; implements D-027's and D-063's package, unit and process lock (moving the lock out of D-063's /run/jitllm), the architecture's crash-dump rule (D-014) and the job-containment choice; settles licensing.md's seven package decisions with the owner)
+
+**Decision.** How M1's Package and Confined job proof items build the
+installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
+`tools/jitllm_package.py`, `tools/job-proof`):
+
+- **The package.** `mise run package` (`tools/build package`) builds the
+  `cross` preset `--locked` and CPack (the SDK's, 4.4.3) writes
+  `build/cross/package/jitllm_<Debian version>_arm64.deb`. CPack over
+  debhelper: it needs no new host prerequisites and runs inside the SDK
+  with the cross build, while debhelper would drive the build itself. The
+  maintainer scripts are hand-written after debhelper's snippets
+  (`packaging/debian/`). Contents: `/usr/bin/jitllm`,
+  `/usr/libexec/jitllm/jitllm-runtime`, `jitllm.service`, the sysusers and
+  tmpfiles files, and `/usr/share/doc/jitllm/` (`LICENSE`, `NOTICE`,
+  `CHANGELOG.md`, `copyright`, `THIRD-PARTY-NOTICES`, `jitllm.spdx.json`,
+  `examples/jitllm.toml`); no configuration file.
+- **Dependencies** come from the binaries: `libc6 (>=` the highest
+  `GLIBC_` version they import`)`, 2.38 today; `libcuda.so.1 (>= 580)`,
+  NVIDIA's minimum driver for CUDA 13.x minor-version compatibility (CUDA
+  Toolkit release notes, table 3, checked 2026-09-24; the build carries
+  SASS only); and `systemd`, whose `systemd-sysusers` and
+  `systemd-tmpfiles` the scripts run.
+- **Install, upgrade, removal.** postinst creates the user and the data
+  directory, then enables and starts the service on first install and
+  restarts it on upgrade (drain-before-restart upgrades stay M8's).
+  Removing stops it. Removing or purging keeps `/var/lib/jitllm`,
+  `/etc/jitllm` and the `jitllm` user: models, records and configuration
+  are the owner's to delete.
+- **The package's documents** are generated from the build receipt, the
+  source lock, `toolchains/provenance.toml` and the SDK:
+  `THIRD-PARTY-NOTICES` reproduces each product component's notices (the
+  lock's `license.notices`, now with optional `path:FIRST-LAST` line
+  ranges) and every notice of every shipped platform unit, whose text
+  provenance.toml's new `extract` field locates; notices are included
+  whether or not this build's code reaches what they cover. `copyright`
+  follows Debian's machine-readable format, and the SBOM is SPDX 2.3.
+  `check_package` compares the `.deb` with the receipt, the repository and
+  these documents: the exact file list, owners and modes, md5sums, the
+  control fields, the binaries' needed libraries and symbol versions
+  against the dependencies, and every component and notice.
+- **The install test** runs in an arm64 Ubuntu 24.04 container (qemu-user,
+  no network, `/var/lib/jitllm` on a volume, since the runtime refuses
+  overlayfs) over a stand-in package that provides `libcuda.so.1` with
+  NVIDIA's stub. It checks the user, directories, modes and enablement,
+  `systemd-analyze verify`, `jitllm --version`, `jitllm doctor`, the
+  runtime run as `jitllm` (it makes its roles, then refuses the host at
+  its platform step), a reinstall, removal and purge. It does not start the
+  unit: the container has no service manager and no GPU. The unit itself
+  is validated on a Spark. `check:full` runs the package, its inventory
+  and the install test.
+- **The runtime process**, `jitllm-runtime [--config FILE] [--anchor
+  PATH]`, runs the architecture's startup order as far as M1 has steps:
+  the anchor (refused while it exists: no cluster support), the
+  configuration (a member's is refused), the process lock, the storage
+  roles, becoming the subreaper of its jobs and finding their cgroup, the
+  host and device probes (a host with doctor's problems is refused), an
+  open of each RDMA device node, and readiness (`sd_notify`); then it waits
+  for SIGTERM, reaping orphans on SIGCHLD. Exit statuses: 0 stopped, 1
+  failure, 2 usage, 75 (EX_TEMPFAIL) when the host cannot run the build now
+  (the driver or its devices, perhaps not ready at boot), 78 (EX_CONFIG)
+  when a restart would only repeat the refusal (the configuration, the
+  anchor, the storage roles, the process lock). Where it cannot become a
+  subreaper or has no delegated cgroup (qemu-user, a development run), it
+  warns that jobs cannot run and carries on.
+- **The per-node process lock** is `<anchor>.lock`,
+  `/var/lib/jitllm/enrollment.lock` when packaged: a fixed path that
+  neither configuration nor `/run/jitllm`'s removal at stop affects, and
+  that development runs name through their anchor. The runtime holds an
+  exclusive `flock` on it, close-on-exec; the path must pass the trust
+  walk, and the file must be the runtime user's, mode 0600, so no other
+  user can take it first.
+- **Crashes exit instead of dumping.** First thing in `main`, the runtime
+  handles every core-dumping signal on an alternate stack by writing one
+  bounded line and calling `_exit(128 + signal)`, so for those the kernel
+  never starts a core dump and apport, which the hosts pipe dumps to
+  regardless of `RLIMIT_CORE`, never sees one. As defence in depth, a
+  constructor that runs before any other initializer clears its core-dump
+  filter and marks it non-dumpable, and the unit sets `LimitCORE=0`. The
+  handler cannot cover a fault before `main`, a fault inside itself, a
+  hardware fault a thread has blocked, or a stack overflow on a thread
+  without its own alternate stack, so every thread jitLLM starts installs
+  one first (`InstallThreadSignalStack`); in those cases the process is
+  already non-dumpable, which the workstation's kernel honors even with
+  `fs.suid_dumpable=2` (this change's challenge pass), and a dump would
+  hold registers and file names but no memory. There is no debug-core
+  opt-in yet.
+- **The unit.** `Type=notify`, ordered after `nvidia-persistenced.service`
+  (which DGX OS runs); `Restart=on-failure` after 5 s, exit 75 included,
+  but not after exit 78 (`RestartPreventExitStatus=`), since that refusal
+  would only repeat; `KillMode=control-group`; the three `*Directory=jitllm`
+  settings; `UMask=0077`; `LimitMEMLOCK=infinity`; `Delegate=memory pids
+  cpu io` with `DelegateSubgroup=runtime`; and sandboxing:
+  `ProtectSystem=strict` (only `/var/lib/jitllm` and `/run/jitllm` are
+  writable; a role elsewhere needs `ReadWritePaths=`, which doctor
+  reports), `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, no
+  capabilities, the kernel, clock, hostname and `/proc` protections,
+  `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`,
+  `LockPersonality`, `RemoveIPC`, `RestrictAddressFamilies=AF_UNIX
+  AF_INET AF_INET6 AF_NETLINK`, and `DevicePolicy=closed` with the GPU
+  (`char-nvidia`, `char-nvidia-uvm`, `char-nvidia-caps` read-only) and RDMA
+  (`char-infiniband_verbs`, `/dev/infiniband/rdma_cm`) device nodes. No
+  system-call filter yet: `@system-service` lacks io_uring, which M2 adds
+  (checked on `spark`, systemd 255, 2026-09-24).
+- **Jobs run in delegated cgroups**, the architecture's first option,
+  over a subreaper alone: a cgroup holds every process a job starts,
+  through `setsid` and double forks, and can be killed whole
+  (`cgroup.kill`). The runtime makes `<unit cgroup>/jobs/<id>` beside its
+  own, locks the job record's file, and forks the job, which joins its
+  cgroup, restores the default signal mask and SIGPIPE disposition (the
+  runtime blocks its stop signals and ignores SIGPIPE), clears
+  close-on-exec on its lock descriptor only (`JITLLM_JOB_LOCK_FD` names
+  it) and execs. A close-on-exec pipe returns
+  from `StartJob` only once the job has exec'd inside its cgroup (or
+  failed), so a kill right after cannot miss it; the runtime keeps no
+  descriptor for the lock, and no other job inherits it. The runtime is
+  also the child subreaper, so it reaps its jobs' orphans. A job has ended
+  when its cgroup is gone or empty and its lock free. The runtime makes
+  job cgroups only when it runs in a cgroup named `runtime`, where the
+  unit put it. When the runtime dies under systemd, the unit's stop kills
+  its whole cgroup, jobs included; a runtime that dies otherwise leaves its
+  jobs to its successor, which finds their locks held, kills their cgroups
+  and settles them (their orphans re-parent to whichever ancestor
+  subreaper or init reaps them). This contains ordinary process trees: an
+  unconfined hostile process running as `jitllm` could move itself to
+  another cgroup of the delegated tree, which is one reason stages that
+  parse untrusted input also confine themselves.
+- **Stages that parse untrusted input confine themselves** with what an
+  unprivileged process can apply to itself, since the hosts block
+  unprivileged namespaces (RE-013): a Landlock ruleset (ABI 6, Linux
+  6.12; both hosts run 7.0 with Landlock enabled) that allows reading and
+  executing only the stage's inputs and writing only its staging
+  directory, handles TCP bind and connect with no rule allowing them, and
+  scopes abstract unix sockets and signals to the stage's own domain; and
+  a seccomp filter under which `socket`, `socketpair` and io_uring (whose
+  operations create sockets without the system call) fail, and x32 or
+  foreign-architecture calls kill. Both are irreversible and inherited
+  (`src/platform/confine.*`). Landlock does not cover file metadata
+  (chmod, chown, times, extended attributes) of what a stage can reach, or
+  descriptors it inherits: a job starts a stage with only the descriptors
+  it needs. The unit's `NoNewPrivileges=` allows both.
+
+**Context.** The plan's Package item left CPack or debhelper, the unit's
+sandboxing and restart policy, the process lock and whether the install
+test starts the unit to M1, and D-063 left the lock's holder and place and
+the job mechanism. The hosts pipe core dumps to apport with
+`fs.suid_dumpable=2` (environment.md), under which a non-dumpable process
+is still dumped to the pipe, so only never dumping meets the
+architecture's rule. Ubuntu's snapshot service has no ports archive
+(RE-016), so the install-test image takes systemd from the live archive.
+
+**Evidence.** On the workstation (2026-09-24): the package built, its
+inventory check found nothing, and the install test passed in the arm64
+container with systemd 255.4-1ubuntu8.17. The crash-policy unit tests
+(every core-dumping signal, `abort`, a stack overflow) exit with
+128 + signal and no core in the `native`, `cpu` and `cross` (qemu-user)
+builds. The job proof (`tools/job-proof`: an outliving daemonized child,
+the lock across exec, no inheritance between jobs, a restarted runtime,
+and a unit restart) passed five times in transient units of the
+workstation user's systemd manager (systemd 255, kernel 7.0), and a
+confined stage read its input and wrote its staging directory but could not
+read another directory or `/etc`, change its input, create a file elsewhere,
+create a socket or socket pair, set up io_uring or signal its parent.
+
+On `spark` (GB10, driver 580.178.04, systemd 255, kernel 7.0; installed
+with the owner's approval on 2026-09-24, then purged): the package
+installed through apt over `libnvidia-compute-580`, created the user and
+directories, and started the service, which reached readiness under the
+full sandbox, with the GPU probe passing, all four RDMA verbs nodes and
+`rdma_cm` opened read-write, and its jobs cgroup created. The process had
+no capabilities, `NoNewPrivs` and a zeroed core-dump filter, and `jitllm
+doctor` reported no problems. `systemctl kill -s ABRT` ended it with exit
+134 and a restart, and left no core file and no apport report. A reinstall
+restarted it, and a stop exited 0. `tools/job-proof --host spark` passed as
+`jitllm` with the service's sandbox settings, and `check:spark` passed.
+There, a non-dumpable process that segfaults starts no dump (`WCOREDUMP`
+false) while a dumpable one does, so being non-dumpable already keeps
+apport out; the handler adds the log line and the exit status. The first
+start left a CUDA JIT cache in `/var/lib/jitllm/.nv` (the service user's
+home); the runtime now sets `CUDA_CACHE_DISABLE`, as doctor does, and the
+reinstalled runtime wrote none.
+
+**Consequences.**
+- Owner's answers on 2026-09-24: enable and start the service on
+  install; the maintainer is `Patrick Meenan <pmeenan@jitllm.dev>`; and
+  the seven licensing decisions of
+  [licensing.md](licensing.md#what-a-packaged-binary-carries): the CUDA
+  header notice in documentation only, the EULA's full text, the Unicode
+  notice, and readings 3, 5, 6 and 7 accepted as recorded.
+- Limits the challenge pass left, by design: shared libraries' initializers
+  (the driver's) and the loader run before the runtime is non-dumpable; a
+  job program is dumpable again after exec until it marks itself (confined
+  stages do); a stage handed an open socket could still send UDP, so jobs
+  pass stages only the descriptors they need; and the runtime's SIGCHLD
+  reaping and `StartJob`'s own waits must share one reaper, or use pidfds,
+  before M2 starts jobs from another thread. A host that stays unready is
+  given up on after ten starts in five minutes (`StartLimitBurst=`).
+- The package is built on the workstation from locked, verified sources;
+  the reference build proves the same sources build with no network. A
+  network-denied package build waits for hosted CI.
+- A system-call filter, and io_uring's place in it, come with M2's storage
+  lane; drain-before-restart upgrades with M8.
+
+**Reopen if.** debhelper becomes necessary (lintian, a Debian upload);
+apport or the kernel dumps a process that exits from a signal handler; a
+job must survive the runtime's unit restart; or DGX OS moves off cgroup v2
+or loses `DelegateSubgroup=` (systemd 254+).
+
+## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces)
+
+**Decision.** How M1's Node configuration item reads and checks the node's
+configuration (`src/config/`, `src/platform/path_trust.*`,
+`src/platform/direct_io.*`):
+
+- **Parser.** [toml++](https://github.com/marzer/tomlplusplus) (MIT; core,
+  product) at commit `1e8829b` (2026-07-21), 50 commits after v3.4.0
+  (2023-10-13), the last tag, because those commits fix input-reachable
+  stack overflows and a precondition violation
+  ([lock entry](../third_party/sources.lock.json)). One translation unit
+  includes it, header-only, in TOML 1.0.0 mode without exceptions (D-066)
+  or formatters. Each file parses on its own.
+- **Keys** of `schema_version = 2` (a new surface version in
+  `src/base/surface_versions.h`; every file states it). A standalone node
+  may set only `schema_version`, `[limits] profile` (`"initial-v2"`, the
+  default) and `[storage]` (`data_dir`, `installed`, `spill`, `state`,
+  `checkpoints`, `long_term`, `archive`, with D-063's defaults). Any of
+  `cluster_file`, `node_id`, `[credentials]` or `[control]` makes the
+  configuration a member's, which then needs `cluster_file`, `node_id`,
+  the three credential paths and `control.port` (1–65535);
+  `control.interfaces` defaults to `"auto"`, and `control.peer_scopes`
+  maps member UUIDs to selectors. Values follow cluster-design.md: canonical
+  lowercase UUIDs, `ifname:<name>` selectors with the kernel's interface-name
+  rules, `port:<hex switch ID>/<port name>` selectors. The front door's
+  `[client]` keys and the TLS keys are unknown until M3 fixes them (D-069
+  adds switching policy in M4), so setting them now is fatal.
+- **Paths** are written in normal form: no empty, `.` or `..` component,
+  no trailing `/`, no control characters. `data_dir`, `long_term`,
+  `cluster_file` and the credential paths are absolute; the roles may be
+  relative (to `data_dir`, or to `long_term` for `archive`). The text
+  checks of D-063 run at load: no two roles equal or nested, `long_term`
+  clear of `installed`, `spill` and `state`, `archive` strictly inside
+  `long_term`, no role equal to, containing or inside the enrollment
+  anchor, and no member file inside `long_term`.
+- **Merging.** Files are read in order (main file, then drop-ins); every
+  key other than `schema_version` has one owning file. An inline table or
+  an array is one value, owned whole, so another file adding to it, or a
+  table header over it, is fatal; standard tables merge. An inline table
+  where the schema has a table (`storage = { spill = "s" }`) is checked
+  key by key like one written under a header, and an empty `[control]` or
+  `[credentials]` already makes the configuration a member's.
+- **Diagnostics.** Every problem is reported, as `file:line:column:
+  message` in reading order: one syntax error per file that does not parse
+  (the others are still checked), then every merge and schema problem, up
+  to 100 and then a count of the rest. Unknown keys and tables, wrong
+  types, out-of-range values and a document over 1 MiB are fatal. A table
+  the schema does not know is one problem however deep it goes: loading
+  never descends into it, which bounds the work a 1 MiB document can cause.
+  Control characters (C0, DEL, C1), bidirectional and other invisible
+  formatting characters and bytes that are not UTF-8 are escaped in every
+  diagnostic, doctor line and runtime log line (`base::Printable`), and
+  paths may not contain them.
+- **Which files are trusted.** Files are opened without following links
+  and must be regular files matching what the check saw. A trust walk
+  resolves every component itself: each directory passed through must be
+  owned by root or the runtime's user and writable by nobody else, unless
+  it is sticky (like `/tmp`); every entry taken from a directory, links
+  included, must be owned by root or the runtime's user, and nothing on the
+  way may be on FUSE, whose mounter reports the owners. Group write counts
+  as another user's write, except through the runtime user's private group
+  (its own primary group, with no other member listed and no other account
+  enumerated with it; the Ubuntu default makes `~/src` 0775) on a path
+  without an access ACL, whose mask the group bits then are. A link target
+  that goes on with `..` after a missing component is refused. The drop-in
+  directory must not let anyone else add files, even if sticky, and holds
+  at most 256 fragments; each file is read within what the 1 MiB document
+  limit has left. A configuration file must have one hard link. `--config
+  FILE` must end in `.toml`; only the default main file may be absent.
+- **Storage roles at runtime start** (`PrepareRuntimeRoles`, called by the
+  runtime). Every check that needs no role to exist runs first, on where
+  each role is or would be once links are resolved: the trust walk (a role
+  may not itself be a link), no two roles the same directory (by path, and
+  by device and inode where both exist) or nested, none equal to, containing
+  or inside the resolved enrollment anchor, and the job-only paths compared
+  by text with the resolved roles. Only then are missing roles created
+  (parents 0755; `installed` 0755, `spill` and `state` 0700, exactly, not
+  through the umask) and walked again. Each must be a directory owned by
+  the runtime's user with exactly 0700 (`spill`, `state`) or writable by
+  nobody else (`installed`), with no default ACL for what it later creates
+  to inherit. An enrollment anchor whose own path fails the trust walk is
+  refused too. Each role must be on
+  ext4, XFS or Btrfs (by `statfs` magic; anything else, such as NFS, FUSE,
+  overlay or tmpfs, is refused) and writable. `installed` and `spill` pass
+  D-034's probe: an unnamed `O_TMPFILE|O_DIRECT` file, `statx`'s direct-I/O
+  alignment at most 4 KiB (D-056's alignment), and a 4 KiB direct write and
+  read that must round-trip. An empty `spill` gets the marker
+  `.jitllm-spill` (text `jitllm spill directory, version 1`); a non-empty
+  one without it, or with a marker holding anything else, is refused and
+  left alone, as is one that cannot be listed to the end.
+- **`jitllm doctor [--config FILE]`.** doctor gains an optional
+  `--config`; without it, it reads the packaged default and judges
+  ownership against the `jitllm` account if one exists. It adds
+  `configuration` (the files, standalone or member, the enrollment anchor)
+  and `storage` (each role's path, owner, mode and filesystem) sections.
+  Problems: an invalid configuration, a member configuration or a present
+  anchor (this build has no cluster support, so the runtime refuses both),
+  and an existing runtime role on a refused or read-only filesystem.
+  Warnings: a role not created yet whose parent is on such a filesystem,
+  and, when packaged, a role outside `/var/lib/jitllm`, the only place the
+  unit's sandbox lets the runtime write, which then needs `ReadWritePaths=`
+  in a drop-in (the read-only data-role report D-072 deferred). doctor does
+  not run the direct-I/O probe, since it writes (D-072); the runtime runs
+  it at every start.
+
+**Context.** D-063 fixed the layout, the drop-in rules and the storage
+keys, and left the parser, the full key spellings and the diagnostics to
+M1; cluster-design.md fixed the node-local fields. The toml++ pin was
+checked on 2026-09-24 against duplicate keys, redefined tables, 64-bit
+overflow, leading zeros, unescaped control characters and invalid UTF-8,
+with `-fno-exceptions`. The filesystem allowlist implements D-054's "local
+block-device filesystem": `spark`'s roles are on ext4 (D-034's
+measurements), the workstation's on Btrfs.
+
+**Consequences.**
+- A configuration file's surface version is `schema_version`; a breaking
+  change bumps it with a CHANGELOG line (D-062). Adding M3's and M4's keys
+  is compatible, since they are unknown today.
+- Owned elsewhere: checking the credential files and `cluster_file` on the
+  filesystem (link, owner, readable by others) waits for M4a, which reads
+  them; the runtime refuses a member configuration until then. The check
+  that `state` holds no enrollment or epoch records waits for their format
+  (M4a); until then the runtime refuses to start while the anchor exists.
+  Deleting runtime-named spill files waits for M3's spill file names.
+- Tests: `unit.NodeConfigTest.*` and `unit.LoadNodeConfigTest.*` (the
+  parser's strictness, schema, merging, bounded and escaped diagnostics,
+  file trust, ACLs where `setfacl` exists), `unit.Roles.*` (role creation,
+  modes, marker, links, aliasing and the anchor; skipped where the build
+  tree's filesystem is refused), `unit.WalkTrusted.*`, `unit.DirectIo.*`,
+  `unit.Printable.*` and the doctor tests in `cli_test`.
+
+- Known limits, from this change's challenge pass: a private group counts
+  as private only as far as the account database enumerates (with LDAP or
+  SSSD enumeration off, an account sharing the runtime user's primary
+  group is invisible); nesting through a bind mount is not detected, only
+  two roles being one directory (making one needs root); and only the
+  `installed` directory itself is checked, not the artifact directories
+  inside it, which the artifact reader checks in M2 and M3.
+
+**Reopen if.** A deployment needs a role on another local filesystem
+(f2fs, bcachefs, ZFS), or on one whose direct-I/O alignment exceeds 4 KiB;
+TOML 1.1 or a toml++ release is adopted; or a user needs to share a
+configuration directory with a group.
+
 ## D-072: `jitllm doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries)
 
 **Decision.** Owner's answers on 2026-09-24 settled the driver binding, what
@@ -155,7 +532,7 @@ AMD or Apple silicon); binaries must start without the driver; a driver
 function jitLLM needs is reachable only through `cuGetProcAddress`; or
 automation needs capabilities before a typed report exists.
 
-## D-071: REUSE lint from a pinned SDK tool, embedded headers enforced, sidecars instead of REUSE.toml, and provenance records for the toolchain  (2026-09-24, status: accepted; implements D-029's M1 checks and NOTICE and D-017's records for tools and platform dependencies; corrects D-060's list of embedded runtime code)
+## D-071: REUSE lint from a pinned SDK tool, embedded headers enforced, sidecars instead of REUSE.toml, and provenance records for the toolchain  (2026-09-24, status: accepted; implements D-029's M1 checks and NOTICE and D-017's records for tools and platform dependencies; corrects D-060's list of embedded runtime code; the classification it proposed and the seven licensing decisions were settled on 2026-09-24, see D-074 and licensing.md)
 
 **Decision.** How M1's License and provenance item meets D-017 and D-029
 ([licensing.md](licensing.md#repository-license-metadata)):
@@ -3881,7 +4258,7 @@ not approve incorporation or change this policy.
 **Reopen if.** A selected component's actual terms cannot be met, or the core
 allowlist or declared platform dependency families need to change.
 
-## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062)
+## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062; its sole-committer rule amended by D-075)
 
 **Decision.** jitLLM is a single-developer project intended for external
 consumption, so the process is heavier than the lean personal-project default.

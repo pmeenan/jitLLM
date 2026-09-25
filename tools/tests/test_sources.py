@@ -72,8 +72,8 @@ class CheckedInLock(unittest.TestCase):
             for url in comp["archive"]["urls"]:
                 self.assertTrue(url.startswith("https://"), f"{cid}: {url}")
 
-    def test_core_selection_is_googletest(self):
-        self.assertEqual(srclib.select(srclib.load_lock(), []), ["googletest"])
+    def test_core_selection(self):
+        self.assertEqual(srclib.select(srclib.load_lock(), []), ["googletest", "tomlplusplus"])
 
     def test_mise_tasks(self):
         tasks = tomllib.loads((REPO / "mise.toml").read_text())["tasks"]

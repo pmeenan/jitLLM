@@ -6,4 +6,6 @@
 add_subdirectory(base)
 add_subdirectory(platform)
 add_subdirectory(providers)
+add_subdirectory(config)
 add_subdirectory(cli)
+add_subdirectory(runtime)

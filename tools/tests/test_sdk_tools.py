@@ -112,7 +112,9 @@ class Provenance(unittest.TestCase):
         self.assertEqual(referenced, set(self.records["notices"]))
         for name, notice in self.records["notices"].items():
             with self.subTest(notice=name):
-                self.assertEqual(set(notice), {"text", "source", "when"})
+                self.assertEqual(set(notice), {"text", "source", "when", "extract"})
+                self.assertLessEqual(set(notice["extract"]), {"file", "from", "to", "plus"})
+                self.assertRegex(notice["extract"]["file"], r"^(sdk|repo):[^/]")
 
 
 class Roots(unittest.TestCase):

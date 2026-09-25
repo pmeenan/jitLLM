@@ -4,12 +4,14 @@
 # Development workflow
 
 How AI agents and the human developer collaborate on this repository.
-Complements the root `AGENTS.md` rules (especially: agents never commit).
+Complements the root `AGENTS.md` rules (especially: agents commit only when
+the user directly asks).
 
 jitLLM is a single-developer project that is meant to be consumed externally
 (D-016). The process is sized for that: heavier than a personal project,
 lighter than a team with maintainers. The default path from idea to commit is
-**one agent builds, a second agent reviews, the human commits**.
+**one agent builds, a second agent reviews, the human commits** (or asks
+the main agent to).
 
 ## The loop
 
@@ -29,7 +31,8 @@ lighter than a team with maintainers. The default path from idea to commit is
    reports a review note the same way. A clean review is a valid result and
    is stated as such.
 3. **Commit.** The human reads both notes and the diff at whatever depth the
-   change warrants, and commits. Agents never commit.
+   change warrants, and commits, or directly asks the main agent to commit
+   it (D-075). No agent commits otherwise.
 
 The human may explicitly waive step 2 for a specific trivial change (a typo, a
 doc-only status update). Agents never waive it themselves.
@@ -57,8 +60,10 @@ downgrade a heavy-path change to the light loop on their own.
 
 ## Ground rules
 
-- **Agents never commit** — even if a prompt asks. The working tree is the
-  handoff.
+- **Commits happen only on the user's direct request** (D-075): only the
+  main agent commits, only what the user asked it to, and only reviewed,
+  checked work. Subagents never commit, and no agent pushes, tags, amends or
+  rewrites history. Otherwise the working tree is the handoff.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.

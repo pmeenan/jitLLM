@@ -131,6 +131,7 @@ function(jitllm_gtest target)
 endfunction()
 
 add_subdirectory(src)
+add_subdirectory(packaging)
 
 enable_testing()
 add_subdirectory(tests/toolchain)
@@ -138,6 +139,7 @@ add_subdirectory(tests/sources)
 add_subdirectory(tests/version)
 add_subdirectory(tests/unit)
 add_subdirectory(tests/smoke)
+add_subdirectory(tests/jobs)
 
 # Last: checks what the whole configure looked up, then writes the receipt.
 jitllm_sources_finalize(VERSION "${JITLLM_BUILD_JSON}")

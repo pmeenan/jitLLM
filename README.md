@@ -49,12 +49,15 @@ the work, reviews it, and is the sole committer.
 
 ## Status
 
-**Pre-release. M0 (plan the plan) is done; M1 (bootstrap) is in progress.**
+**Pre-release. M0 (plan the plan) and M1 (bootstrap) are done; M2 (the
+resource core) is next.**
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
-feature matrix, architecture, and decision log are in `docs/`. The only
-application code so far is a `jitllm` command that reports its version and,
-with `jitllm doctor`, what a host offers it: driver, GPUs, VMM granularity
-and RDMA.
+feature matrix, architecture, and decision log are in `docs/`. The application
+so far is a node runtime that reads its configuration, prepares its storage,
+checks the host and waits (it serves nothing yet), packaged as an arm64
+`.deb` with its systemd unit, and a `jitllm` command that reports its version
+and, with `jitllm doctor`, what a host offers it: configuration and storage,
+driver, GPUs, VMM granularity and RDMA.
 Planned distribution is a signed apt repository for DGX Spark; changes are
 recorded in [CHANGELOG.md](CHANGELOG.md).
 
@@ -127,6 +130,37 @@ offers that build: the driver, each GPU's compute capability, VMM support and
 backing granularity, and RDMA ports. It exits 1 when the host cannot run the
 build: anything but a GB10 with VMM and host-backed VMM (D-072).
 
+## The package and the runtime
+
+`mise run package` builds the `cross` preset from locked sources and makes
+the arm64 Debian package, `build/cross/package/jitllm_<version>_arm64.deb`
+(D-063, D-074). It installs `/usr/bin/jitllm`, the node runtime
+`/usr/libexec/jitllm/jitllm-runtime` and `jitllm.service`, creates the
+`jitllm` user and `/var/lib/jitllm`, and enables and starts the service.
+The package depends on `libc6` and on the NVIDIA driver's `libcuda.so.1`
+580 or newer. Its documentation in `/usr/share/doc/jitllm/` holds the
+license, the notices of everything the binaries carry
+(`THIRD-PARTY-NOTICES`), a Debian `copyright` file, an SPDX SBOM and an
+annotated example configuration. The package ships no configuration: with
+none, the runtime is a standalone node with the defaults. Removing or
+purging the package keeps `/var/lib/jitllm`, `/etc/jitllm` and the user.
+
+The runtime reads `/etc/jitllm/jitllm.toml` and the fragments in
+`/etc/jitllm/jitllm.d/` (D-073), prepares its storage roles, checks the host
+as `jitllm doctor` does, reports readiness and waits; the front door arrives
+in M3. A refusal at startup exits 78, which the unit does not restart after;
+`journalctl -u jitllm` and `jitllm doctor` say why. For a development run,
+name the configuration and the enrollment anchor (the process lock is
+`<anchor>.lock`):
+
+```bash
+build/cpu/src/runtime/jitllm-runtime --config ~/jitllm-dev/jitllm.toml --anchor ~/jitllm-dev/enrollment
+```
+
+`tools/job-proof` runs the confined-job proof (D-074) in delegated cgroups of
+your own systemd manager, and `tools/job-proof --host <spark>` runs it there
+as `jitllm` under the service's sandbox, which needs the package installed.
+
 To run CMake by hand, point `JITLLM_SDK` at the SDK and use its `cmake`:
 
 ```bash
@@ -177,7 +211,7 @@ commit and SDK they ran with:
 | Task | When | Runs |
 | --- | --- | --- |
 | `mise run check` | Every change | clang-format, REUSE lint, the embedded-header check, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
-| `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`, and the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network. Needs Docker |
+| `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`; the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network; the arm64 package, its inventory against the build receipt, `NOTICE` and the SBOM, and its install test in an arm64 container with no network; and the confined-job proof in your systemd user manager. Needs Docker |
 | `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests (`jitllm doctor` on the GB10 among them) and leak detection included |
 
 Check builds configure afresh with the build tool's `--locked`: the core
@@ -224,5 +258,6 @@ contributes to a build and what its notices require.
 - [docs/features.md](docs/features.md) — confirmed / proposed / open questions
 - [docs/plan.md](docs/plan.md) — the M1–M8 milestone ladder with exit criteria
 - [docs/m0-record.md](docs/m0-record.md) — what M0's planning, spikes and reference runs did, with evidence links
+- [docs/m1-record.md](docs/m1-record.md) — what M1's bootstrap items built and where each was verified
 - [docs/workflow.md](docs/workflow.md) — how agents and the human collaborate
 - [docs/rough-edges.md](docs/rough-edges.md) — findings log

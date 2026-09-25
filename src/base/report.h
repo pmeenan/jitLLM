@@ -44,6 +44,14 @@ struct Report {
   }
 };
 
+// text safe to print as one line of a report or log: control characters
+// (C0, DEL and C1), line and paragraph separators, the bidirectional and
+// other invisible formatting characters, fillers, variation selectors and
+// tag characters that could make text read differently than it is, and bytes
+// that are not UTF-8 are escaped (\xNN, \uNNNN); other text, UTF-8
+// included, passes through.
+std::string Printable(std::string_view text);
+
 // A byte count for people: whole binary units where exact ("2 MiB"),
 // otherwise one decimal place ("121.7 GiB"), and plain bytes below 1 KiB.
 std::string FormatBytes(std::uint64_t bytes);

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -20,12 +21,15 @@
 #include <tuple>
 
 #include "base/report.h"
+#include "platform/direct_io.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
+#include "platform/path_trust.h"
 
 namespace {
 
 namespace fs = std::filesystem;
+using ::testing::AnyOf;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
@@ -273,6 +277,146 @@ TEST(DescribeHost, InaccessibleVerbs) {
             "Permission denied");
   ASSERT_EQ(report.warnings.size(), 1U);
   EXPECT_THAT(report.warnings[0], HasSubstr("RDMA device rocep1s0f1"));
+}
+
+// Scratch directories in the build tree (JITLLM_TEST_SCRATCH), whose
+// parents no other user shares, as they may /tmp's.
+class Scratch {
+ public:
+  Scratch() {
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const fs::path parent = base != nullptr ? fs::path(base) : fs::path(::testing::TempDir());
+    std::error_code error;
+    fs::create_directories(parent, error);
+    std::string pattern = (parent / "trust-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      path_ = pattern;
+    } else {
+      ADD_FAILURE() << "cannot create a directory from " << pattern;
+    }
+  }
+  Scratch(const Scratch&) = delete;
+  Scratch& operator=(const Scratch&) = delete;
+  Scratch(Scratch&&) = delete;
+  Scratch& operator=(Scratch&&) = delete;
+  ~Scratch() {
+    std::error_code error;
+    fs::permissions(path_, fs::perms::owner_all, error);
+    fs::remove_all(path_, error);
+  }
+  const fs::path& path() const { return path_; }
+
+ private:
+  fs::path path_;
+};
+
+TEST(WalkTrusted, ResolvesLinksAndMissingTails) {
+  const Scratch scratch;
+  const fs::path& root = scratch.path();
+  fs::create_directories(root / "real/sub");
+  fs::create_directory_symlink("real", root / "rel");
+  fs::create_directory_symlink(root / "real", root / "abs");
+  std::ofstream(root / "real/sub/file") << "x";
+  const uid_t me = ::geteuid();
+
+  auto walked = jitllm::platform::WalkTrusted(root / "rel/sub/file", me, false);
+  ASSERT_TRUE(walked.has_value()) << walked.error();
+  EXPECT_TRUE(walked->exists);
+  EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
+  EXPECT_TRUE(S_ISREG(walked->status.st_mode));
+
+  walked = jitllm::platform::WalkTrusted(root / "abs/sub/../missing/deeper", me, false);
+  ASSERT_TRUE(walked.has_value()) << walked.error();
+  EXPECT_FALSE(walked->exists);
+  EXPECT_EQ(walked->resolved, fs::canonical(root / "real") / "missing/deeper");
+  EXPECT_EQ(walked->existing, fs::canonical(root / "real"));
+
+  // A link as the last component is refused unless allowed.
+  fs::create_symlink("real/sub/file", root / "link");
+  walked = jitllm::platform::WalkTrusted(root / "link", me, false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("is a symbolic link"));
+  walked = jitllm::platform::WalkTrusted(root / "link", me, true);
+  ASSERT_TRUE(walked.has_value()) << walked.error();
+  EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
+}
+
+TEST(WalkTrusted, RefusesLoopsAndNonDirectories) {
+  const Scratch scratch;
+  const fs::path& root = scratch.path();
+  fs::create_symlink("b", root / "a");
+  fs::create_symlink("a", root / "b");
+  auto walked = jitllm::platform::WalkTrusted(root / "a/x", ::geteuid(), false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("too many symbolic links"));
+  std::ofstream(root / "file") << "x";
+  walked = jitllm::platform::WalkTrusted(root / "file/x", ::geteuid(), false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("file is not a directory"));
+  // ".." after a missing component: the kernel stops at the missing one.
+  fs::create_symlink("missing/../../x", root / "dotdot");
+  walked = jitllm::platform::WalkTrusted(root / "dotdot/y", ::geteuid(), false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("does not exist, and the path goes on to '..'"));
+  walked = jitllm::platform::WalkTrusted("relative/path", ::geteuid(), false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("not an absolute path"));
+}
+
+TEST(WalkTrusted, RefusesWhatOthersCanChange) {
+  const Scratch scratch;
+  const fs::path& root = scratch.path();
+  fs::create_directories(root / "open/inner");
+  const uid_t me = ::geteuid();
+  ASSERT_EQ(::chmod((root / "open").c_str(), 0757), 0);
+  auto walked = jitllm::platform::WalkTrusted(root / "open/inner", me, false);
+  ASSERT_FALSE(walked.has_value());
+  EXPECT_THAT(walked.error(), HasSubstr("open can be changed by users other than root and uid"));
+  // A sticky directory is passable: others cannot replace what it holds.
+  ASSERT_EQ(::chmod((root / "open").c_str(), 01777), 0);
+  walked = jitllm::platform::WalkTrusted(root / "open/inner", me, false);
+  EXPECT_TRUE(walked.has_value()) << walked.error();
+  // But not as a directory to add files to.
+  struct stat status{};
+  ASSERT_EQ(::stat((root / "open").c_str(), &status), 0);
+  const auto private_dir = jitllm::platform::CheckPrivateDirectory(root / "open", status, me);
+  ASSERT_FALSE(private_dir.has_value());
+  EXPECT_THAT(private_dir.error(), HasSubstr("can add files to"));
+  // Entries another user owns are untrusted: here, trusting root alone.
+  if (me != 0) {
+    walked = jitllm::platform::WalkTrusted(root / "open/inner", 0, false);
+    ASSERT_FALSE(walked.has_value());
+    // Under qemu-user, "/" is the sysroot, which this user owns: the walk
+    // stops there instead.
+    EXPECT_THAT(walked.error(),
+                AnyOf(HasSubstr(std::format("is owned by uid {}, not root", me)),
+                      HasSubstr(std::format("/ is not owned by root and private (uid {}", me))));
+  }
+}
+
+TEST(DirectIo, DescribesFilesystems) {
+  auto proc = jitllm::platform::DescribeFilesystem("/proc");
+  ASSERT_TRUE(proc.has_value()) << proc.error();
+  EXPECT_FALSE(proc->accepted);
+  EXPECT_FALSE(jitllm::platform::DescribeFilesystem("/nonexistent/jitllm").has_value());
+  auto refused = jitllm::platform::ProbeDirectIo("/proc");
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("not a local block-device filesystem"));
+}
+
+TEST(DirectIo, ProbesTheBuildTreesFilesystem) {
+  const Scratch scratch;
+  auto filesystem = jitllm::platform::DescribeFilesystem(scratch.path());
+  ASSERT_TRUE(filesystem.has_value()) << filesystem.error();
+  if (!filesystem->accepted) {
+    GTEST_SKIP() << "the build tree is on " << filesystem->type
+                 << ", which the storage roles refuse";
+  }
+  auto probe = jitllm::platform::ProbeDirectIo(scratch.path());
+  ASSERT_TRUE(probe.has_value()) << probe.error();
+  EXPECT_LE(probe->offset_alignment, jitllm::platform::kDirectIoAlignment);
+  // The probe's file had no name: nothing is left behind.
+  EXPECT_TRUE(fs::is_empty(scratch.path()));
 }
 
 }  // namespace

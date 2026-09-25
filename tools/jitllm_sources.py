@@ -126,6 +126,17 @@ def _patch_file_problems(cid: str, patches: list[dict], base: pathlib.Path) -> l
     return problems
 
 
+_NOTICE_RANGE = re.compile(r"^(.*):([1-9][0-9]*)-([1-9][0-9]*)$")
+
+
+def notice_range(notice: str) -> tuple[str, tuple[int, int] | None]:
+    """A license.notices entry: a path in the source tree, and the 1-based lines it names, if not the whole file."""
+    match = _NOTICE_RANGE.fullmatch(notice)
+    if not match or int(match[2]) > int(match[3]):
+        return notice, None
+    return match[1], (int(match[2]), int(match[3]))
+
+
 def _license_problems(where: str, tier: str, license_: object) -> list[str]:
     if not isinstance(license_, dict):
         return [f"{where}: license must be an object"]
@@ -144,8 +155,10 @@ def _license_problems(where: str, tier: str, license_: object) -> list[str]:
     if not isinstance(files, list) or not files or not all(_relative_path(f) for f in files):
         problems.append(f"{where}: license.files must list the license texts in the source")
     notices = license_.get("notices", [])
-    if not isinstance(notices, list) or not all(_relative_path(f) for f in notices):
-        problems.append(f"{where}: license.notices must list paths in the source")
+    if not isinstance(notices, list) or not all(isinstance(f, str) and _relative_path(notice_range(f)[0])
+                                                for f in notices):
+        problems.append(f"{where}: license.notices must list paths in the source, each with an optional "
+                        "':FIRST-LAST' line range")
     for key in ("evidence", "scope"):
         if not isinstance(license_.get(key), str) or not license_[key]:
             problems.append(f"{where}: license.{key} must record the audit")

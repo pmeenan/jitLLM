@@ -22,6 +22,12 @@ namespace jitllm::surface {
 // signature it cannot verify (docs/client-api-baseline.md).
 inline constexpr std::uint32_t kReasoningSignatureVersion = 1;
 
+// The configuration documents' schema_version: the node's jitllm.toml and
+// its fragments, and the shared cluster.toml (D-063, D-073,
+// docs/cluster-design.md). Every file states it, and a reader accepts only
+// this one.
+inline constexpr std::int64_t kConfigSchemaVersion = 2;
+
 }  // namespace jitllm::surface
 
 #endif  // JITLLM_BASE_SURFACE_VERSIONS_H_

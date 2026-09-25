@@ -30,6 +30,17 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
+
+`https://snapshot.ubuntu.com/ubuntu-ports/<timestamp>/` answers HTTP 401,
+while `https://snapshot.ubuntu.com/ubuntu/<timestamp>/` serves the amd64
+archive. With `APT::Snapshot` set in an arm64 Ubuntu 24.04 container, `apt-get
+update` still fetches the live `ports.ubuntu.com` indexes, and `apt-get
+install systemd` then fails with "Unable to locate package". So the arm64
+install-test image (`packaging/install-test/`) takes systemd from the live
+ports archive and the test prints the version it got. The SDK is unaffected:
+it pins each arm64 `.deb` by URL and SHA-256 (D-070).
+
 ## RE-015: A multi-arch image digest can run the wrong architecture from the local image store  (2026-09-23, status: worked-around)
 
 Workstation, Docker 29.8.1 with the containerd image store and qemu binfmt

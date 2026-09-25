@@ -76,7 +76,7 @@ output. So:
 | `tree_sha256` | The prepared tree's digest: SHA-256 over one `<sha256> <x or -> <path>` line per file, sorted by path, where `x` marks an owner-executable file. Symbolic links, special files and empty trees are refused |
 | `depends` | Other components that must be added first |
 | `cmake` | `subdirectory` holding the project, `options` set for it alone, the `platform_packages` it may look up with `find_package()` (D-017's declared platform), and the `targets` jitLLM links. Option values are plain words, never paths. Names may not start with `_`, `CMAKE_`, `JITLLM_` or `FETCHCONTENT_`, or be `BUILD_SHARED_LIBS` |
-| `license` | `expression` (SPDX identifiers joined by ` AND `), the license `files` in the tree, shipped `notices`, the audited `scope` (what is compiled and executed), the `evidence`, and the `obligations` |
+| `license` | `expression` (SPDX identifiers joined by ` AND `), the license `files` in the tree, shipped `notices` (paths in the tree, whole or `path:FIRST-LAST` lines, which the package's third-party notices reproduce), the audited `scope` (what is compiled and executed), the `evidence`, and the `obligations` |
 | `verification` | How the pin was checked |
 
 ## Adding or changing a component

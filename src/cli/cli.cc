@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <span>
 #include <string>
@@ -18,19 +19,22 @@ namespace jitllm::cli {
 namespace {
 
 constexpr std::string_view kUsage =
-    "Usage: jitllm doctor\n"
+    "Usage: jitllm doctor [--config FILE]\n"
     "       jitllm --version\n"
     "       jitllm --help\n";
 
 constexpr std::string_view kHelp =
-    "Usage: jitllm doctor\n"
+    "Usage: jitllm doctor [--config FILE]\n"
     "       jitllm --version\n"
     "       jitllm --help\n"
     "\n"
     "jitLLM, a just-in-time LLM inference engine.\n"
     "\n"
-    "  doctor     report this build, the host, the GPU driver and devices, and\n"
-    "             RDMA; exit 1 if this host cannot run this build\n"
+    "  doctor     report this build, the host, the node's configuration and\n"
+    "             storage, the GPU driver and devices, and RDMA; exit 1 if\n"
+    "             this host cannot run this build\n"
+    "    --config FILE  the node's configuration (default\n"
+    "             /etc/jitllm/jitllm.toml and /etc/jitllm/jitllm.d/)\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";
 
@@ -72,8 +76,17 @@ int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) 
   if (command != "doctor" && command != "--version" && command != "--help" && command != "-h") {
     return UsageError(err, std::format("unknown command or option '{}'", command));
   }
-  if (args.size() > 1) {
-    return UsageError(err, std::format("unexpected argument '{}' after {}", args[1], command));
+  DoctorOptions options;
+  std::size_t used = 1;
+  if (command == "doctor" && args.size() > 1 && args[1] == "--config") {
+    if (args.size() < 3 || args[2].empty()) {
+      return UsageError(err, "--config needs a file");
+    }
+    options.config = std::filesystem::path(args[2]);
+    used = 3;
+  }
+  if (args.size() > used) {
+    return UsageError(err, std::format("unexpected argument '{}' after {}", args[used], command));
   }
   if (command == "doctor") {
     // doctor compiles nothing, so the driver has no reason to write its JIT
@@ -81,7 +94,8 @@ int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) 
     // has started a thread yet.
     (void)::setenv("CUDA_CACHE_DISABLE", "1", 1);  // NOLINT(concurrency-mt-unsafe)
     base::Report report;
-    if (!Doctor("/", report, [out](std::string_view text) { return WriteAll(out, text); })) {
+    if (!Doctor("/", options, report,
+                [out](std::string_view text) { return WriteAll(out, text); })) {
       WriteAll(err, "jitllm: cannot write to standard output\n");
       return kExitFailure;
     }

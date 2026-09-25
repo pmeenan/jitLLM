@@ -41,8 +41,9 @@ class Tiers(unittest.TestCase):
         self.assertEqual(self.names("check"),
                          ["format", "reuse", "headers", "tools", "native", "cpu", "cross", "tidy"])
 
-    def test_full_adds_the_sanitizers_and_the_reference_build(self):
-        self.assertEqual(self.names("full"), [*self.names("check"), "cpu-asan", "cross-asan", "reference"])
+    def test_full_adds_the_sanitizers_the_reference_build_the_package_and_jobs(self):
+        self.assertEqual(self.names("full"),
+                         [*self.names("check"), "cpu-asan", "cross-asan", "reference", "package", "jobs"])
 
     def test_spark_runs_the_cross_builds_on_the_named_host_only(self):
         self.assertEqual(self.names("spark", "s1"), ["cross@s1", "cross-asan@s1", "cross-tsan@s1"])

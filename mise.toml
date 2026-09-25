@@ -43,6 +43,10 @@ run = "python3 tools/build test"
 description = "Build the cross preset and copy it to a Spark over SSH (--host is required)"
 run = "python3 tools/build deploy"
 
+[tasks.package]
+description = "Build the cross preset from locked sources and its arm64 Debian package (build/cross/package/)"
+run = "python3 tools/build package"
+
 [tasks.check]
 description = "The check gate for every change: formatting, clang-tidy, tooling tests, native, CPU-only and cross builds and tests"
 run = "python3 tools/check"

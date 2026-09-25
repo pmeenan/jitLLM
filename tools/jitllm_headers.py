@@ -58,7 +58,7 @@ STYLE_BY_NAME = {
     ".gitignore": HASH, ".dockerignore": HASH, ".clang-format": HASH, ".clang-tidy": HASH, ".clangd": HASH,
 }
 STYLE_BY_SUFFIX = {
-    **dict.fromkeys((".py", ".sh", ".cmake", ".toml", ".yml", ".yaml"), HASH),
+    **dict.fromkeys((".py", ".sh", ".cmake", ".toml", ".yml", ".yaml", ".service", ".sysusers", ".tmpfiles"), HASH),
     **dict.fromkeys((".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".cu", ".cuh"),
                     SLASH),
     **dict.fromkeys((".md", ".html", ".xml", ".svg"), HTML),

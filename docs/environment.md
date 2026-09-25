@@ -418,7 +418,10 @@ image (D-014). All three hosts set `kernel.core_pattern` to the apport pipe
 (`|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E`)
 and `fs.suid_dumpable` to 2. core(5) states that `RLIMIT_CORE` is ignored
 when core dumps are piped to a program, so a unit's `LimitCORE=0` alone
-does not stop one here. Whether apport keeps a report for a non-Ubuntu
-package, and how a process marked non-dumpable behaves under this
-configuration, were not tested; M1 verifies the chosen mechanism on these
-hosts.
+does not stop one here. Measured on `spark` on 2026-09-24 (D-074): a
+process that segfaults starts a dump (the wait status's core bit) and apport
+keeps a report when its executable belongs to a package, while the same
+process marked non-dumpable (`PR_SET_DUMPABLE` 0) starts no dump at all,
+`fs.suid_dumpable=2` notwithstanding; the workstation behaved the same. The
+installed runtime, killed with SIGABRT, left neither a core file nor an
+apport report.

@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// `jitllm doctor`: the capability probe (D-026, D-063). It reports what this
-// binary is, the host, the device driver and devices, and RDMA, and fails
-// if this host cannot run this build as designed. It only reads and
-// queries: it writes no file and allocates no device memory (the driver's
-// own initialization may load its kernel modules; cuda_probe.h).
+// `jitllm doctor`: the capability probe (D-026, D-063, D-072, D-073). It
+// reports what this binary is, the host, the node's configuration and
+// storage roles, the device driver and devices, and RDMA, and fails if
+// this host cannot run this build as designed. It only reads and queries:
+// it writes no file and allocates no device memory (the driver's own
+// initialization may load its kernel modules; cuda_probe.h). So it does not
+// run the direct-I/O probe, which writes; the runtime does, at every start.
 
 #ifndef JITLLM_CLI_DOCTOR_H_
 #define JITLLM_CLI_DOCTOR_H_
@@ -13,6 +15,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -25,11 +28,25 @@ namespace jitllm::cli {
 // target, and the compiler and C++ runtime that built this binary.
 void DescribeBuild(const base::BuildInfo& info, base::Report& report);
 
+struct DoctorOptions {
+  // The configuration's main file, as `--config` names it: a development
+  // run's, whose files and roles its invoking user owns. Without it,
+  // doctor reads the packaged default and judges ownership against the
+  // `jitllm` account (or the invoking user, if there is none).
+  std::optional<std::filesystem::path> config;
+};
+
+// Adds the `configuration` and `storage` sections: which files form the
+// node's configuration and whether it is valid, the enrollment anchor,
+// and the storage roles (config/storage_roles.h).
+void DescribeConfiguration(const DoctorOptions& options, base::Report& report);
+
 // Runs every probe into report, reading /proc, /sys and /dev beneath root
-// ("/"), and hands write() the report text in two parts: the build and
-// host sections before the device probe starts, so a driver that hangs
-// still leaves them, and then the rest. False if a write fails.
-bool Doctor(const std::filesystem::path& root, base::Report& report,
+// ("/"), and hands write() the report text in two parts: the build, host,
+// configuration and storage sections before the device probe starts, so a
+// driver that hangs still leaves them, and then the rest. False if a write
+// fails.
+bool Doctor(const std::filesystem::path& root, const DoctorOptions& options, base::Report& report,
             const std::function<bool(std::string_view)>& write);
 
 // The report as `jitllm doctor` prints it: each section's facts, then the

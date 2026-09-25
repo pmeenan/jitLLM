@@ -49,8 +49,10 @@ and no file type may go unclassified.
 locked SDK artifact, host prerequisite and mise tool with its D-017
 category, license, what of it reaches a binary and the notices that follow;
 a test fails when any of them lacks a record. Third-party source code is
-recorded in the [source lock](../third_party/README.md) instead; its only
-component, GoogleTest, links into tests alone.
+recorded in the [source lock](../third_party/README.md) instead: GoogleTest
+links into tests alone, and toml++ (MIT, D-073) into the shipped binaries,
+whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
+from its UTF-8 decoder.
 
 | Unit (version) | Category | License | In a packaged binary |
 | --- | --- | --- | --- |
@@ -125,35 +127,46 @@ Three constraints follow:
   directly they are incorporated implementation, and Thrust includes
   BSL-1.0 files, which the core allowlist does not name.
 
-**Open decisions, before the first package ships** (the Package item):
+**How the package carries them** (D-074): `tools/jitllm_package.py` writes
+`/usr/share/doc/jitllm/THIRD-PARTY-NOTICES` from the source lock's notices
+and the text that each shipped unit's notices locate in
+[provenance.toml](../toolchains/provenance.toml) (`extract`), including every
+"when the code is used" notice and the whole CUDA EULA, whether or not the
+build reaches the code; a Debian `copyright` file; and an SPDX 2.3 SBOM
+naming the GCC 16.2.0 runtime, glibc and every other shipped unit. The
+statement that NVIDIA code is under the EULA opens the notices.
 
-1. Whether jitLLM's CUDA sources carry the CUDA header notice. The headers
-   ask for it "in the user documentation and internal comments to the
-   code"; the documentation part is planned above.
-2. The package's copyright stanza for NVIDIA code, and whether to ship the
-   EULA text or its URL. The reading that static linking and stripping do
-   not "modify" the runtime object code (EULA §2.3) is an interpretation,
-   not confirmed with NVIDIA.
-3. Confirm the LGPL-2.1 §5 reading for glibc. The start files and
+**Decisions** (the owner's answers on 2026-09-24, for the Package item;
+D-074):
+
+1. jitLLM's CUDA sources do not carry the CUDA header notice; it ships in
+   the documentation (`THIRD-PARTY-NOTICES`), which the headers' text also
+   asks for. The headers ask for it "in the user documentation and internal
+   comments to the code", and jitLLM's `.cu` files are its own code.
+2. The package ships the CUDA EULA's full text, and its `copyright` file
+   names the NVIDIA code under `LicenseRef-NVIDIA-CUDA-EULA`. The reading
+   that static linking and stripping do not "modify" the runtime object
+   code (EULA §2.3) is an interpretation, not confirmed with NVIDIA.
+3. The LGPL-2.1 §5 reading for glibc stands. The start files and
    `libc_nonshared.a` carry the linking exception. `csu/init.c` has none but
    contributes one constant, `_IO_stdin_used`. A §6 reading would clash with
    the EULA's ban on reverse engineering the embedded runtime.
-4. Whether to ship the Unicode notice (recommended). The
-   [first dense slice](#first-dense-slice-d-051) already treats Unicode-derived
-   tables as needing an owner decision.
-5. Confirm that Clang's resource headers and CCCL reached through CUDA
-   headers belong to D-017's platform family, as recorded, although D-017
-   does not name compiler headers or `Apache-2.0 WITH LLVM-exception`.
-6. Accept the evidence above that `libcudart_static.a` meets the GCC
-   exception's eligibility test, as D-060 asks.
-7. The basis for shipping code compiled from CUDA headers that Attachment A
-   does not list. Their own notice prohibits reproducing or disclosing them
-   to third parties "notwithstanding" the EULA, and Attachment A names only
-   some headers (the fp16, bf16 and fp8 family, `cuda_occupancy.h` and the
+4. The Unicode notice ships. The [first dense slice](#first-dense-slice-d-051)
+   still treats Unicode-derived tables it would incorporate as needing their
+   own provenance.
+5. Clang's resource headers and CCCL reached through CUDA headers belong to
+   D-017's platform family, as recorded, although D-017 does not name
+   compiler headers or `Apache-2.0 WITH LLVM-exception`.
+6. The evidence above that `libcudart_static.a` meets the GCC exception's
+   eligibility test is accepted, as D-060 asked.
+7. Code compiled from CUDA headers that Attachment A does not list ships as
+   object code under EULA §1.1.1's "as incorporated in object code format".
+   Their own notice prohibits reproducing or disclosing them to third
+   parties "notwithstanding" the EULA, and Attachment A names only some
+   headers (the fp16, bf16 and fp8 family, `cuda_occupancy.h` and the
    runtime-compilation set). The inline code of `cuda_runtime.h`, the
    host-stub headers NVCC uses and the device math headers reach the binary
-   only as object code. The reading that EULA §1.1.1's "as incorporated in
-   object code format" covers that is not confirmed with NVIDIA.
+   only as object code. The reading is not confirmed with NVIDIA.
 
 **Method.** Link probes cross-built with the SDK's `cross` flags (`base`
 using `<vector>`, `<algorithm>`, `<memory>`, `<string>`, `<format>`,

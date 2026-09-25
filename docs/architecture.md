@@ -287,7 +287,7 @@ substitute a fake at any provider boundary.
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `artifact`, `model`, `execution` | The artifact reader and verifier; architecture and state adapters; the tokenizer, renderers and parsers; the operation contract, planner and dispatcher |
 | Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053) |
-| Services | `api`, `cluster`, `management`, `jobs` | Protocol adapters, conductor and sessions, the management API, job processes |
+| Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration and storage roles (D-073); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
 
 - The resource core and the model layer hold no vendor types. The CPU-only
@@ -920,9 +920,10 @@ runtime's back:
   unfinished job for the same model or artifact ID, or for any artifact
   that its manifest references or that references it, waits, and reports
   that it is waiting.
-- **Containment.** Each job runs in its own delegated cgroup or under a
-  subreaper (an M1 sandboxing choice); a process group alone does not
-  contain it. A job has ended only when every process it started has exited
+- **Containment.** Each job runs in its own cgroup, which
+  `jitllm.service` delegates to the runtime (`<unit>/jobs/<id>`, beside the
+  runtime's own), and the runtime is also the subreaper that reaps its
+  jobs' orphans (D-074); a process group alone does not contain it. A job has ended only when every process it started has exited
   and been reaped, and its record lock is free. Cancellation, a timeout or a
   missing report does not end it.
 - **Locks.** Each job record has its own lock file under `state`, never
@@ -955,12 +956,14 @@ that could write the copy has been reaped and before anything parses it,
 checking the manifest bytes against the identity held outside the source
 and every listed file's SHA-256 against the manifest. A verification stage
 then gets the copy read-only, and nothing that can write the staging
-directory runs between the hash check and the rename. The confinement
-mechanism is chosen in M1 with the unit's sandboxing, and M1 proves a
-minimal confined job under the `jitllm` account, including a child that
-outlives its job, inherited locks across exec and a runtime restart, before
-M3 builds the importer on it; RE-013 blocks
-unprivileged `unshare` and `bwrap` on these hosts.
+directory runs between the hash check and the rename. A confined stage
+applies a Landlock ruleset (read its inputs, write its staging directory,
+no TCP, no signals or abstract sockets outside itself) and a seccomp
+filter that refuses sockets and io_uring to itself, since RE-013 blocks
+unprivileged `unshare` and `bwrap` on these hosts (D-074). M1's job proof
+covers a child that outlives its job, inherited locks across exec, runtime
+and unit restarts and a confined stage (`tools/job-proof`), before M3
+builds the importer on it.
 
 - **Import:** stage the source locally, validate it as untrusted input, plan
   groups and chunks, write shards into `.staging`, verify the complete
@@ -1278,8 +1281,12 @@ does not stop a pipe handler such as the hosts' apport
 on each host that an abort writes neither a core file nor an apport report. A
 debug core is an explicit, documented owner opt-in. A restarted runtime has a
 new incarnation, so peers reject its predecessor's sessions and grants, and
-startup deletes spill. Whether and when systemd restarts the unit is M1
-packaging policy.
+startup deletes spill. The runtime handles every core-dumping signal by
+exiting (`_exit(128 + signal)`) rather than dumping, is non-dumpable from
+before `main` for the faults a handler cannot catch, and every thread it
+starts installs its own signal stack. The unit restarts it after a crash
+and after exit 75 (the host not ready yet), but not after exit 78, a
+refusal a restart would only repeat (D-074).
 
 **Startup** runs in this order; a failed step stops it:
 
@@ -1288,9 +1295,10 @@ packaging policy.
 2. Parse and validate the node document with its fragments, and the cluster
    document if enrolled, before opening any listener (D-063,
    [cluster-design.md](cluster-design.md#configuration-v2)).
-3. Take the per-node process lock. cluster-design.md makes it
-   supervisor-held; M1 settles who holds it and where it lives, since
-   systemd removes `/run/jitllm` when the unit stops.
+3. Take the per-node process lock: the runtime holds an exclusive lock on
+   `<anchor>.lock`, `/var/lib/jitllm/enrollment.lock` when packaged, which
+   no configuration moves and `/run/jitllm`'s removal at stop does not
+   touch (D-074).
 4. Resolve and check the runtime's own roles (`installed`, `spill`,
    `state`: ownership, modes, nesting), comparing the job-only paths by
    text alone so a hung mount cannot stall startup. Then check the anchor
@@ -1531,7 +1539,9 @@ read only at startup; certificate files are the exception and reload on
 change (D-065). Runtime policy changes, such as a budget reduction, go
 through the management API as scheduler requests. Membership and trust
 changes need cluster-design.md's coordinated restart. D-063 records the
-`[storage]` keys, and the remaining spellings are fixed in M1, M3 and M4.
+`[storage]` keys and D-073 the rest of M1's spellings, the one-owner merge,
+the trust checks on the files and roles, and the diagnostics; M3 adds the
+front door's and TLS keys and M4 the switching policy's.
 
 ## Observability and privacy
 
@@ -1738,14 +1748,13 @@ finalized after the M2 GGML and EXL3 proofs (D-052).
 
 ### Installed layout
 
-D-063 records the packaged layout; D-062 versions the configuration schema.
-Nothing below is implemented yet; M1 builds the package and M8 the
-repository.
+D-063 records the packaged layout, D-074 the package that implements it,
+and D-062 versions the configuration schema; M8 adds the repository.
 
 | Path | Owner / mode | Holds |
 | --- | --- | --- |
 | `/usr/bin/jitllm` | root | User-facing CLI |
-| `/usr/libexec/jitllm/` | root | Node runtime process, the import/install/archive job processes (D-005, D-054), and the certbot deploy hook and Tailscale certificate script (D-065) |
+| `/usr/libexec/jitllm/` | root | Node runtime process (`jitllm-runtime`, D-074), the import/install/archive job processes (D-005, D-054), and the certbot deploy hook and Tailscale certificate script (D-065) |
 | `/usr/lib/systemd/system/jitllm.service` | root | The runtime's one unit; runs it as `jitllm`. An optional, disabled-by-default Tailscale certificate timer and service ship alongside it (D-065) |
 | `/usr/lib/sysusers.d/jitllm.conf` | root | `jitllm` system user and group, no login shell |
 | `/usr/lib/tmpfiles.d/jitllm.conf` | root | `d` lines for `/var/lib/jitllm` (`jitllm` 0755) and the default `checkpoints` (`jitllm` 1777, applied only on creation); no age, so never cleaned |
@@ -1761,7 +1770,8 @@ repository.
 | `…/checkpoints/` | `jitllm` 1777 | `storage.checkpoints` (node-local default, created by the package's tmpfiles entry); anyone may add sources, which jobs treat as untrusted |
 | `…/spill/` | `jitllm` 0700 + marker | `storage.spill` (D-055) |
 | `…/state/` | `jitllm` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job records and their locks, install generations) and the disposable compact-index cache, plus the local CA's key and leaves (D-065) |
-| `/run/jitllm/` | `jitllm` | Runtime sockets and locks |
+| `/var/lib/jitllm/enrollment.lock` | `jitllm` 0600 | The per-node process lock, held by the runtime (D-074) |
+| `/run/jitllm/` | `jitllm` | Runtime sockets |
 | `/usr/share/doc/jitllm/` | root | `copyright`, `NOTICE`, changelog, SBOM (D-029) |
 
 The optional `storage.long_term` (unset by default) holds `archive`
@@ -1804,8 +1814,8 @@ evidence or a later choice:
 | Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | M2 measurement |
 | Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M4 |
 | State block sizes and KV layouts per state adapter | M2/M3 |
-| HTTP, TLS, JSON and TOML libraries | M1/M3, under D-017, D-057 and D-066 |
-| How jobs are launched, report back and are confined (a minimal confined job proven first); the peer-replication transfer mechanism | M1; M3; M4a |
+| HTTP, TLS and JSON libraries (TOML: toml++, D-073) | M3, under D-017, D-057 and D-066 |
+| How jobs are launched and report back (their containment and confinement are D-074's); the peer-replication transfer mechanism | M3; M4a |
 | Switching-policy default and tuning (minimum run, pause cap, deadline handling) | M4 comparison of the D-069 policies |
 | Whether a worker node serves its own loopback management listener for node-local operations | M4a |
 | Host versus device sampling | M3, measured against D-052's decode gates |
