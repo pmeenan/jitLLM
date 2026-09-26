@@ -33,3 +33,12 @@ list(JOIN CMAKE_CUDA_ARCHITECTURES "," architectures)
 target_compile_definitions(jitllm_cuda_probe PRIVATE "JITLLM_CUDA_ARCHITECTURES=\"${architectures}\"")
 target_link_libraries(jitllm_cuda_probe PUBLIC jitllm_cuda_facts jitllm_cuda_driver
                       PRIVATE jitllm_platform jitllm_warnings)
+
+# The device-memory and device-execution providers over the driver API
+# (cuda_device_memory.h, cuda_device_execution.h), sharing their error
+# mapping (cuda_errors.h).
+add_library(jitllm_cuda_device_memory STATIC cuda_device_memory.cc cuda_device_execution.cc cuda_errors.cc)
+target_include_directories(jitllm_cuda_device_memory SYSTEM PRIVATE
+                           "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+target_link_libraries(jitllm_cuda_device_memory PUBLIC jitllm_device_memory jitllm_cuda_driver
+                      PRIVATE jitllm_warnings)

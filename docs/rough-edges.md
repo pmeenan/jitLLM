@@ -30,6 +30,78 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-020: The reference container denies io_uring setup  (2026-09-26, status: worked-around)
+
+On the workstation, the three `unit.UringTest.*` tests pass, but the
+default reference container used by `check:full` returns `EPERM` from
+`io_uring_setup`, before any I/O. The tests now explicitly skip when setup
+is unavailable (`ENOSYS`, as under qemu-user) or denied (`EPERM`), while
+other setup errors still fail. Real I/O remains covered on the workstation
+and by `check:spark`; an offline-container pass does not claim that coverage.
+
+## RE-019: CUDA VMM backing escapes cgroup memory accounting on the Spark  (2026-09-25, status: open)
+
+Environment: `spark-c4e2`, GB10, driver 580.178.04, kernel
+7.0.0-1019-nvidia, cgroup v2; backing created with `cuMemCreate` through
+jitLLM's CUDA provider.
+
+Observed: 8 GiB of device-local or host-NUMA backing moved the process's
+cgroup `memory.current` by at most 40 MiB, while `MemAvailable` fell by the
+full 8 GiB at creation. Device backing never appears in the process's RSS;
+host backing appears there (as `RssFile`) only while mapped with access.
+The driver's per-extent bookkeeping (about 34 KiB of unreclaimable slab per
+2 MiB extent) is not charged to the cgroup either.
+
+Expected: memory a process pins to be charged to its cgroup.
+
+Impact: `MemoryMax=` on `jitllm.service` would not bound the runtime's
+backing, and an OOM decision based on the cgroup would not see it. The
+runtime's own budget `B`, checked on every materialization, is the bound;
+the memory breakdown reconciles against `MemAvailable`. Measurement:
+[vmm-counters](experiments/vmm-counters/README.md).
+
+## RE-018: Btrfs quietly serves misaligned or compressed direct I/O through the page cache  (2026-09-25, status: open)
+
+Environment: the workstation's build tree, btrfs mounted with
+`compress=zstd:1`, kernel 7.0.0-31-generic. A file opened with `O_DIRECT`
+and read at file offset 1, through io_uring or `preadv`, returned the data
+(4096 bytes) instead of `EINVAL`.
+
+Expected: a refusal, as ext4 and XFS give. Btrfs falls back to buffered I/O
+for direct I/O it cannot do in place (misaligned requests, and compressed
+extents), so the page cache fills and the caller cannot tell.
+
+Impact: a storage role on btrfs can pass D-034's direct-I/O probe
+(`platform/direct_io.h`, which accepts btrfs) yet page through the cache,
+against D-034's no-page-cache intent. Tests that expect the kernel to refuse
+misaligned direct I/O accept either outcome on btrfs
+(`unit.UringTest.*`). The Spark roles are ext4.
+
+## RE-017: A sleeping thread takes hundreds of microseconds to wake on the Spark  (2026-09-24, status: open)
+
+Environment: `spark-c4e2`, GB10 (Cortex-X925/A725), DGX OS 7.6.0, kernel
+7.0.0-1019-nvidia, cpuidle `acpi_idle` with the `menu` governor (LPI-0 to
+LPI-3, exit latencies 0/42/231/433 µs), cpufreq `performance`; jitLLM's
+`WakeFlag` (a mutex and condition variable) built with the pinned SDK.
+
+Observed: after a 100–400 µs idle gap, a thread sleeping on a condition
+variable took 207–283 µs at p50 and 451–485 µs at p99 to run after it was
+signalled (three runs of 5,000 samples; earlier runs gave p50 from 88 to
+370 µs). The workstation (i9-11900KF, `intel_idle`) took 2.7–72 µs at p50
+across all runs. Polling with `yield` woke in under
+1 µs on both, at a whole core's CPU.
+
+Expected: tens of microseconds, as on the workstation.
+
+Likely cause, not isolated: the governor choosing LPI-2 or LPI-3 for the
+idle gap. Disabling idle states to confirm it is a system change that needs
+the owner's approval.
+
+Impact: a scheduler that sleeps between a launch and its completion can add
+up to about half a millisecond per step at the tail. It should poll while a
+critical-path completion is imminent, and sleep only when idle. Measurement
+and harness: [task-lanes](experiments/task-lanes/README.md).
+
 ## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
 
 `https://snapshot.ubuntu.com/ubuntu-ports/<timestamp>/` answers HTTP 401,

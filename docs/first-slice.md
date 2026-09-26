@@ -144,8 +144,10 @@ jitLLM's operation contract. Adapt the selected Qwen2 graph/tensor semantics;
 do not adopt libllama's scheduler, weight loader, KV allocator or residency
 ownership. Backend workspace, hidden allocations, registration and captured
 pointers remain the M2 proof's responsibility. Sources follow D-057's
-[source-dependency mechanism](source-dependencies.md); the exact selected
-compiled closure is still M2 work (the backend proof's P0).
+[source-dependency mechanism](source-dependencies.md). The backend proof's P0
+recorded the bridge's executed CUDA closure
+([`fp16-plan.json`](experiments/backend-proof-p0/fp16-plan.json)). Admitting
+the selected GGML subset through D-057 is still M2 work.
 
 Native tokenizer incorporation has an explicit blocker: llama.cpp's Unicode
 tables are generated from inputs whose exact revisions are not recorded in

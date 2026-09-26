@@ -1,0 +1,497 @@
+{
+ "recorded_on": "2026-09-26",
+ "tool": "cublas_plan.py over CUBLASLT_LOG_LEVEL=5 and CUBLAS_LOGINFO_DBG logs of the EXL3-G reference (plan-* runs), PyTorch's cuBLAS 13.1.1 (131) and the SDK's 13.8.0.4 bind-mounted (138)",
+ "interpretation": "The reconstruction-path GEMMs (145 rows and more) and the algorithm cuBLASLt resolved for each, as its trace lines print them: only the non-default configuration fields appear (algoId, tile, stages, split-K and reduction when used, custom option). The complete nine-attribute configuration the native plan pins is in exl3-recon-pin.json. Tier E holds against the 138 arm.",
+ "plans": {
+  "4.0bpw": {
+   "131": {
+    "calls": [
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=128 cols=1023 ld=128] Ddesc=[type=R_16F rows=128 cols=1023 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=128 cols=1024 ld=128] Ddesc=[type=R_16F rows=128 cols=1024 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=128 cols=145 ld=128] Ddesc=[type=R_16F rows=128 cols=145 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x32 stages=MATMUL_STAGES_64xAUTO reductionScheme=REDUCTION_SCHEME_COMPUTE_TYPE numSplitsK=3 customOption=28] workSpaceSizeInBytes=222720 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=20864 cols=1023 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x256 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=20864 cols=1024 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x256 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=20864 cols=145 ld=151936] Ddesc=[type=R_16F rows=20864 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=32768 cols=1023 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=32768 cols=1024 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=32768 cols=145 ld=151936] Ddesc=[type=R_16F rows=32768 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=896 cols=1023 ld=896] Ddesc=[type=R_16F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=896 cols=1024 ld=896] Ddesc=[type=R_16F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=896 cols=145 ld=896] Ddesc=[type=R_16F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x80 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=4864 cols=1023 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1023 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=4864 cols=1024 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1024 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=4864 cols=145 ld=4864] Ddesc=[type=R_32F rows=4864 cols=145 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1023 ld=4864] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_32xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1024 ld=4864] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_32xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=145 ld=4864] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x80 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     }
+    ],
+    "heuristic_preferences": [],
+    "handle": {
+     "workspace_sizes": [
+      16777216,
+      33554432
+     ],
+     "math_modes": [
+      "CUBLAS_DEFAULT_MATH"
+     ]
+    }
+   },
+   "138": {
+    "calls": [
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=128 cols=1023 ld=128] Ddesc=[type=R_16F rows=128 cols=1023 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x48 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=128 cols=1024 ld=128] Ddesc=[type=R_16F rows=128 cols=1024 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x48 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=128 cols=145 ld=128] Ddesc=[type=R_16F rows=128 cols=145 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO customOption=105] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=20864 cols=1023 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=20864 cols=1024 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=20864 cols=145 ld=151936] Ddesc=[type=R_16F rows=20864 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=32768 cols=1023 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=32768 cols=1024 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=32768 cols=145 ld=151936] Ddesc=[type=R_16F rows=32768 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_32x6] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=896 cols=1023 ld=896] Ddesc=[type=R_16F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=896 cols=1024 ld=896] Ddesc=[type=R_16F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=896 cols=145 ld=896] Ddesc=[type=R_16F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_64xAUTO customOption=66] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=4864 cols=1023 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1023 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=4864 cols=1024 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1024 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=4864 cols=145 ld=4864] Ddesc=[type=R_32F rows=4864 cols=145 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x64 stages=MATMUL_STAGES_64xAUTO customOption=18] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1023 ld=4864] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x128 stages=MATMUL_STAGES_64xAUTO customOption=23] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1024 ld=4864] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x128 stages=MATMUL_STAGES_64xAUTO customOption=23] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=145 ld=4864] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_128xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_64xAUTO customOption=66] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     }
+    ],
+    "heuristic_preferences": [
+     {
+      "preference": "preference=[maxWavesCount=0.0 maxWorkspaceSizeinBytes=16777216 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319]",
+      "count": 2076
+     }
+    ],
+    "handle": {
+     "workspace_sizes": [
+      16777216,
+      33554432
+     ],
+     "math_modes": [
+      "CUBLAS_DEFAULT_MATH"
+     ]
+    }
+   }
+  },
+  "4.5bpw": {
+   "131": {
+    "calls": [
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=128 cols=1023 ld=128] Ddesc=[type=R_16F rows=128 cols=1023 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=128 cols=1024 ld=128] Ddesc=[type=R_16F rows=128 cols=1024 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=128 cols=145 ld=128] Ddesc=[type=R_16F rows=128 cols=145 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x32 stages=MATMUL_STAGES_64xAUTO reductionScheme=REDUCTION_SCHEME_COMPUTE_TYPE numSplitsK=3 customOption=28] workSpaceSizeInBytes=222720 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=20864 cols=1023 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x256 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=20864 cols=1024 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x256 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=20864 cols=145 ld=151936] Ddesc=[type=R_16F rows=20864 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=32768 cols=1023 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=32768 cols=1024 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=32768 cols=145 ld=151936] Ddesc=[type=R_16F rows=32768 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=896 cols=1023 ld=896] Ddesc=[type=R_16F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=896 cols=1024 ld=896] Ddesc=[type=R_16F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=896 cols=145 ld=896] Ddesc=[type=R_16F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x80 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=4864 cols=1023 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1023 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=4864 cols=1024 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1024 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=4864 cols=145 ld=4864] Ddesc=[type=R_32F rows=4864 cols=145 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1023 ld=4864] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_32xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1024 ld=4864] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_32xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=145 ld=4864] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_256x128 stages=MATMUL_STAGES_32x3] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x80 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     }
+    ],
+    "heuristic_preferences": [],
+    "handle": {
+     "workspace_sizes": [
+      16777216,
+      33554432
+     ],
+     "math_modes": [
+      "CUBLAS_DEFAULT_MATH"
+     ]
+    }
+   },
+   "138": {
+    "calls": [
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=128 cols=1023 ld=128] Ddesc=[type=R_16F rows=128 cols=1023 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x48 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=128 cols=1024 ld=128] Ddesc=[type=R_16F rows=128 cols=1024 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x48 stages=MATMUL_STAGES_64xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=128 cols=896 ld=128] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=128 cols=145 ld=128] Ddesc=[type=R_16F rows=128 cols=145 ld=128] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO customOption=105] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=20864 cols=1023 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=20864 cols=1024 ld=151936] Ddesc=[type=R_16F rows=20864 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=20864 cols=896 ld=20864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=20864 cols=145 ld=151936] Ddesc=[type=R_16F rows=20864 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 4
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=32768 cols=1023 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1023 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=32768 cols=1024 ld=151936] Ddesc=[type=R_16F rows=32768 cols=1024 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=32768 cols=896 ld=32768] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=32768 cols=145 ld=151936] Ddesc=[type=R_16F rows=32768 cols=145 ld=151936] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_64x64 stages=MATMUL_STAGES_32x6] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 16
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_16F rows=896 cols=1023 ld=896] Ddesc=[type=R_16F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_16F rows=896 cols=1024 ld=896] Ddesc=[type=R_16F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSHMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_16F rows=896 cols=145 ld=896] Ddesc=[type=R_16F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_64xAUTO customOption=66] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=4864 cols=1023 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1023 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=4864 cols=1024 ld=4864] Ddesc=[type=R_32F rows=4864 cols=1024 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_32x5] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=4864 cols=896 ld=4864] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=4864 cols=145 ld=4864] Ddesc=[type=R_32F rows=4864 cols=145 ld=4864] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x64 stages=MATMUL_STAGES_64xAUTO customOption=18] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 192
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1023 ld=4864] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x128 stages=MATMUL_STAGES_64xAUTO customOption=23] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=1024 ld=4864] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_160x128 stages=MATMUL_STAGES_64xAUTO customOption=23] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=4864 ld=896] Bdesc=[type=R_16F rows=4864 cols=145 ld=4864] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_128xAUTO customOption=29] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1023 ld=896] Cdesc=[type=R_32F rows=896 cols=1023 ld=896] Ddesc=[type=R_32F rows=896 cols=1023 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=1024 ld=896] Cdesc=[type=R_32F rows=896 cols=1024 ld=896] Ddesc=[type=R_32F rows=896 cols=1024 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_128x176 stages=MATMUL_STAGES_64xAUTO customOption=30] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     },
+     {
+      "function": "cublasLtHSSMatmul",
+      "call": "Adesc=[type=R_16F rows=896 cols=896 ld=896] Bdesc=[type=R_16F rows=896 cols=145 ld=896] Cdesc=[type=R_32F rows=896 cols=145 ld=896] Ddesc=[type=R_32F rows=896 cols=145 ld=896] computeDesc=[computeType=COMPUTE_32F scaleType=R_32F smCountTarget=48] algo=[algoId=67 tile=MATMUL_TILE_64x56 stages=MATMUL_STAGES_64xAUTO customOption=66] workSpaceSizeInBytes=0 beta=0 outOfPlace=0 stream=0X0",
+      "count": 96
+     }
+    ],
+    "heuristic_preferences": [
+     {
+      "preference": "preference=[maxWavesCount=0.0 maxWorkspaceSizeinBytes=16777216 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319]",
+      "count": 2076
+     }
+    ],
+    "handle": {
+     "workspace_sizes": [
+      16777216,
+      33554432
+     ],
+     "math_modes": [
+      "CUBLAS_DEFAULT_MATH"
+     ]
+    }
+   }
+  }
+ }
+}

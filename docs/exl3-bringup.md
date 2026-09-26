@@ -130,7 +130,8 @@ Quantization loss against source weights is a separate quality question;
 it cannot be used as tolerance for import, kernel or paging errors.
 
 Before native acceptance, record held-out fixed token IDs/positions/chunks
-(the report declares the first held-out trajectory; it is not yet executed),
+(the report declares the first held-out trajectory; the backend proof's
+[P0](experiments/backend-proof-p0/README.md) executed it),
 finite context/output bounds, numerical settings and cross-implementation
 tolerances from independent reference controls. Compare all raw logits and
 intermediate outputs around the first discrepancy; also compare individual

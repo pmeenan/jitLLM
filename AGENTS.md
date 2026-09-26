@@ -137,11 +137,12 @@ affected docs. Until then, these govern.
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057) |
 | `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
-| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe), `providers/` (the device probe; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
+| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe, a raw io_uring ring), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning) and `scheduler/` (admission and switching, the completion board, lanes, task trees) of the resource core, `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
 | `packaging/` | `jitllm.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
 | `tests/jobs/` | The confined-job proof, which `tools/job-proof` runs in delegated cgroups (D-074) |
+| `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/` |
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `jitllm_package.py`), `job-proof` (the confined-job proof), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
@@ -230,6 +231,13 @@ gate, the source lock, license and provenance records, versioning, `jitllm
 doctor`, node configuration, and the arm64 package with `jitllm-runtime`
 and confined jobs, validated on `spark` (D-070 to D-074; summary in
 [docs/m1-record.md](docs/m1-record.md)). The runtime starts, checks and
-waits; it serves nothing yet. Next: M2, the resource core and backend proof
-([docs/plan.md](docs/plan.md)). Keep this paragraph short and current
+waits; it serves nothing yet. **M2 (resource core and backend proof) is in
+progress**: the catalog and ledgers, admission, the task-lane primitives
+and the providers (fake and CUDA) have landed, with their measurements
+([docs/plan.md](docs/plan.md)). The backend proof's P0 is measured. The owner
+approved its profiles, the FP16 exactness gate and the EXL3 bounds (full
+model, reconstruction exactness, the operation plan and gate, the timing
+rule), so native FP16 work (P1, P2) can start. BP-F2's timing reference
+and the EXL3 phase memory limits wait for P3 entry. The retained-backing
+criteria are still drafts. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

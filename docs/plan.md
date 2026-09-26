@@ -90,7 +90,7 @@ started from other threads (M2); front-door, TLS and switching-policy keys
 (M3); cluster-member checks of credential files and enrollment records
 (M4a); drain-before-restart upgrades and the apt repository (M8).
 
-## M2 — Resource core and backend proof  `pending`
+## M2 — Resource core and backend proof  `in progress`
 
 Goal: the node-wide catalog, ledgers, reservation and lease state machine and
 D-048's task lanes, deterministic on a fake backend and real on a Spark.
@@ -106,26 +106,137 @@ reservation policy) were recorded in M0.
 
 **Scope:**
 
-- [ ] **Catalog and ledgers** (D-006, D-007): typed IDs and generations,
+- [x] **Catalog and ledgers** (D-006, D-007): typed IDs and generations,
       dependency closures, shared extents charged once, the memory-domain
       key, separate commitment and occupancy ledgers, unknown allocations
       non-evictable, and the deterministic LRU
       [victim-selection baseline](architecture.md#victim-selection-initial-baseline).
-- [ ] **Admission and leases:** D-050's guarantee for one active request at
+      *Landed:* `base/` gains generation-checked identities (`ids.h`),
+      checked byte counts (`bytes.h`) and fatal invariant checks
+      (`check.h`). `src/catalog/` holds extents with the architecture's
+      state machine: one load or eviction at a time, each named by a
+      ticket that alone can finish it (joining a load in progress is the
+      resource service's job); failed loads released or quarantined;
+      evictions that exclude new leases and can be cancelled or
+      quarantined. It also holds resources placed in byte ranges of one
+      domain's extents, closures that charge each extent once and record
+      its content generation, all-or-none leases refused for changed
+      contents, registrations, 64-bit backing and content generations, and
+      per-domain occupancy by state bucket and class. Descriptors are
+      range-checked and a domain's total size bounds every sum. Unknown
+      allocations must be pinned and are never evictable; only their owner
+      releases them. Recovery is fixed per extent: preserved state is
+      evictable only after it is deliberately invalidated, and only its
+      sole lease-holding writer, with no live registrations, replaces it.
+      Every load checks occupancy
+      against B. `src/memory/` holds the commitment ledger, keyed by domain
+      (D-050's inequality over the active cohort and any promised
+      resumption, with checked arithmetic, atomic envelope replacement,
+      retirement never refused, no budget below outstanding claims), the
+      deterministic LRU victim baseline (discarded contents first, then
+      least recent actual use, ties by content and identity, protected
+      extents never chosen, whole-extent credit), and materialization
+      planning (only the missing dependencies, victims only for the
+      shortfall against B). Tests: `unit.CatalogTest.*`,
+      `unit.CommitmentLedger.*`, `unit.VictimTest.*`,
+      `unit.MaterializeTest.*` and the base tests. Retained entries and
+      `M_state` join the victim order with the retention cache;
+      suballocation within extents comes with state blocks.
+- [x] **Admission and leases:** D-050's guarantee for one active request at
       a time (concurrency arrives in M4), with D-069's pause rules and
       guards.
+      *Landed:* `src/scheduler/admission` admits, queues or refuses each
+      request against one domain's ledger. It holds the execution slot
+      from a request's first phase to its retirement and admits joiners
+      only through the cohort check. D-069's three policies are there with
+      their guards:
+      - the minimum run, the pause cap, and one open pause with one
+        substitute;
+      - resume-next;
+      - the promised resumption, held in the ledger so that no change
+        breaks it: others' changes are deferred, the substitute's own are
+        refused;
+      - deadline checks that count the pause point;
+      - aging.
+      Queued requests that can no longer fit, have waited past the
+      configured limit, or would miss their deadline are refused
+      explicitly, and every capacity change drains the queue. Leases are
+      the catalog's (above). Tests: `unit.Admission.*`, including a
+      randomized progress check under all three policies. A pause with
+      several paused cohort peers waits for M4's concurrency.
 - [ ] **Task lanes** (D-048): scheduler, storage, device submission, device
       completion and CPU workers, with bounded queues; measure worker
       counts, queue sizes and wakeup and polling behavior. Real
       multithreaded lost-wakeup and memory-ordering tests, with ARM stress
       on a Spark; the deterministic simulator does not prove them
       ([async model](async-model.md)).
-- [ ] **Providers** (D-026): device-memory, device-execution and storage
+      *Partly landed:* the primitives. `base/` gains a bounded queue with a
+      cleanup reserve and a coalesced wake flag. `src/scheduler/` gains:
+      - the completion board: per-operation mailboxes with
+        generation-tagged acceptance and terminal words, closed only once
+        reconciled;
+      - lanes that drain on close;
+      - the task table, whose operations reserve task lifetime before
+        provider handoff and whose trees unwind only when drained, with
+        its ready queue.
+
+      Threaded tests (`unit.BoundedQueue.*`, `unit.WakeFlag.*`,
+      `unit.CompletionBoard.*`, `unit.Lane.*`) pass under ThreadSanitizer
+      on `spark` in `check:spark`, alongside `unit.BoardTest.*`,
+      `unit.TaskTable.*` and `unit.ReadyQueue.*`. The
+      [measurements](experiments/task-lanes/README.md) found two things
+      (RE-017):
+      - on the Spark, a sleeping owner takes hundreds of microseconds to
+        wake, so the scheduler polls while a critical-path completion is
+        imminent;
+      - a lane queue should have at most four workers.
+
+      Remaining: the scheduler thread's turn loop and storage and device
+      lanes wired to the providers, with an end-to-end cancellation test
+      through submission, completion and memory retirement.
+- [x] **Providers** (D-026): device-memory, device-execution and storage
       interfaces, each with a deterministic poison-filling fake; the CUDA VMM
       provider at D-033's 2 MiB extents; direct-I/O reads into host VMM
       (D-034) that handle short transfers, alignment, retries, cancellation
       and duplicate-load coalescing explicitly, with storage queue depths
       and run sizes measured (M4 tunes them against spill write-back).
+      *Landed:* `src/providers/` gains three interfaces.
+      - **Device memory** (`device_memory.h`): `VmmProvider` enforces the
+        rules every implementation shares. Backing is mapped whole into
+        holes, access is explicit and set per run of one backing kind,
+        release and free wait for unmap, and an unknown outcome leaves what
+        it touched undetermined, never retried.
+      - **Device execution** (`device_execution.h`): streams, copies, waits,
+        and fences queried without blocking. A fence is released only once
+        seen complete, and a stream is destroyed only when all its work is
+        fenced. It is safe for a submission lane and a completion lane
+        together.
+      - **Storage** (`storage.h`): submissions resolve as not started,
+        accepted or unknown, and cancellation never reports its own result.
+        Implemented over a raw io_uring ring (`platform/io_uring.h`, no
+        library).
+
+      `direct_reader.h` gives whole reads over storage: alignment checks,
+      short-transfer continuation, bounded retries, coalesced duplicate
+      reads with bounded waiters, and a last-waiter cancel that still
+      drains.
+
+      Every build has deterministic fakes (`providers/fake/`), poison-filled
+      memory where absent backing faults, and scripted completions and
+      failures. The CUDA implementations (`providers/cuda/`) use the
+      driver API, and only errors the driver reports before acting count as
+      known.
+
+      Tests: `unit.DeviceMemoryTest.*`, `unit.DeviceExecutionTest.*`,
+      `unit.ReaderTest.*` and `unit.UringTest.*`. On `spark` (`gpu`),
+      `unit.CudaDeviceMemory.*` and `unit.CudaDeviceExecution.*` cover io_uring
+      reads landing in host VMM backing and host-device-host copies on
+      jitLLM's streams.
+
+      The [storage measurement](experiments/storage-queue/README.md) reaches
+      about 14.9 GB/s with 8 MiB in flight as 2 MiB requests, without
+      registered buffers. The workstation's btrfs quietly buffers direct I/O
+      (RE-018).
 - [ ] **Backend integration proof** ([scope](backend-proof.md), stages
       P0–P6). The owner approves the frozen bounds and performance protocol
       at P0, before any native output is seen. The GGML subset and the
@@ -137,17 +248,65 @@ reservation policy) were recorded in M0.
       implementations of one operation by plan, and alternates FP16 and
       EXL3 in one process. The five-rung oracle ladder applies throughout. The plan stays GEMM-only until the
       GEMV provenance gate closes, and the gap to upstream is measured.
+
+      *P0 measured and partly approved:*
+      - Both toolchain bridges reproduce their references bit for bit.
+      - Every reference arm repeats and restores exactly.
+      - ExLlamaV3's tuned launch plans are decoded and frozen.
+      - A second pass, after review and challenge, added: every prefill
+        row, a cuBLAS 13.8 substitution arm, an FP64 oracle with per-layer
+        captures, the FP16 bridge's recorded executed plan and pool peaks,
+        and A/A timing controls
+        ([report](experiments/backend-proof-p0/README.md)).
+
+      The owner approved on 2026-09-26 the
+      [numerical profiles](backend-proof.md#p0-declarations) and the exact
+      tier FP16 work needs: the FP16 gate with its recorded-plan match,
+      rungs 4 and 5, and the EXL3 packed linears. Native FP16 work (P1, P2)
+      can start.
+
+      On 2026-09-26 the owner also approved the EXL3 parts:
+      - the Tier C bound, calibrated on 15 legitimate arms and 7 faults;
+      - reconstruction-GEMM exactness, through pinned cuBLASLt algorithms
+        that a probe shows bit-exact;
+      - the kernel-timing rule, validated on holdout sessions;
+      - the native EXL3 operation plan and its machine-checkable record
+        (GGML's F32 vector attention and F32 RoPE, from a measured
+        operation study);
+      - the operation-level gate;
+      - the persistent-workspace limit.
+
+      Deferred to P3 entry, once the ExLlamaV3 port exists: BP-F2's
+      reference arm (fused gate/up cases, ExLlamaV3's bias add, one
+      tuning cache, and a SASS-match check against the port), and the
+      EXL3 phase memory limits, tightened against native's buffer plan.
+
+      Still to come, each before the native output it governs: the FP16
+      memory limits, BP-F1's calibration, the declared-departure
+      contingency and the retained-backing criteria. cuBLAS links
+      dynamically from the SDK (D-076).
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
+      The criteria are [proposed](backend-proof.md#retained-backing-comparison)
+      (a second draft, not yet approvable), without the trace's identity.
 - [ ] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.
 - [ ] **Explainable plans:** plans expose their validated phase widths,
       envelopes and rejection reasons, and the proof records each phase
       kind's guaranteed bound against its observed peak.
-- [ ] Find which OS counters include VMM backing on the Spark driver, so
+- [x] Find which OS counters include VMM backing on the Spark driver, so
       the [memory breakdown](architecture.md#memory-breakdown) reconciles.
+      *Landed:* on `spark` (driver 580.178.04), device-local and host
+      backing both leave `MemAvailable` when created and return when
+      released, and the driver's free memory equals `MemAvailable`. Neither
+      is charged to the process's cgroup (RE-019). Device backing never
+      appears in RSS; host backing appears there only while mapped with
+      access. The driver's bookkeeping costs about 34 KiB of unreclaimable
+      slab per 2 MiB extent. The breakdown now reconciles against
+      `MemAvailable` and shows that bookkeeping as its own line
+      ([measurement](experiments/vmm-counters/README.md)).
 - [ ] Record the operation contract, registry, patch set, phase envelopes
       and `F` per profile in a decision entry, and the aggregate report in
       `experiments/backend-proof/`.

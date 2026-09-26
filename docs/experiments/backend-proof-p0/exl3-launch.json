@@ -1,0 +1,7773 @@
+{
+ "recorded_on": "2026-09-26",
+ "tool": "exl3_launch_record.py, EXL3-G settings, on ExLlamaV3's extension built with the SDK's NVCC 13.4.92 (the EXL3 bridge build) and the SDK's cuBLAS 13.8.0.4 bind-mounted, on the frozen tuning caches of timing session aa; SASS hashes merged by sass_hashes.py merge (the scripted path; identical to the first merge)",
+ "matching": "A native case matches when its ordered launches equal these: kernel name, grid, block, shared memory (static plus dynamic, as the PyTorch profiler reports it) and registers per thread; ExLlamaV3-derived kernels also by SASS hash (sass_sha256, from cuobjdump of the NVCC 13.4.92 extension, addresses stripped). cuBLAS kernels (nvjet_*, cutlass::*) are identified by name under the pinned cuBLAS 13.8.0.4. The bias add follows the native operation plan: ExLlamaV3's add_kernel_hhh on every path, not PyTorch's elementwise kernel.",
+ "interpretation": "Upstream's kernel launches per BP-F2 case, in launch order. Supersedes the records made under PyTorch's cuBLAS 13.1.1 and under the NVCC 13.0.88 extension.",
+ "sets": {
+  "real-40": {
+   "environment": {
+    "EXL3_GEMV": "0",
+    "EXL3_HGEMM_F16ACC": "0",
+    "EXLLAMAV3_TUNE_CACHE": "/p0/launch134/tune-g-real-40.bin"
+   },
+   "cublas_mapped": [
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13"
+   ],
+   "cublas_versions": {
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13": 130800,
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13": "13.8.0"
+   },
+   "extension": {
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so": "aa8b9f168bd55914b7ac3d8455b15dd7d650a7ef88d2a90c459793ad0e642f34"
+   },
+   "tune_cache_sha256": {
+    "before": "51a7c70c4a6b642d4cdcc6d39321290c862a4e81bf3c09818c69548a943b3d72",
+    "after": "51a7c70c4a6b642d4cdcc6d39321290c862a4e81bf3c09818c69548a943b3d72"
+   },
+   "cases": [
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        18,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        26,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        7,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        14,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        126,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x56x64_6_16x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 93184,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        254,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        1791,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        7,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        1792,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 124,
+       "sass_sha256": "22b58a8ba3ea2c5d04f13ed51d7776048e426777b05f996be400b227d04b2db4"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "ea22df5b9baed59619852943fa32f96d3a02b80e59f83f841dac10d542970a0f"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "ea22df5b9baed59619852943fa32f96d3a02b80e59f83f841dac10d542970a0f"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        2,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "ea22df5b9baed59619852943fa32f96d3a02b80e59f83f841dac10d542970a0f"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "ea22df5b9baed59619852943fa32f96d3a02b80e59f83f841dac10d542970a0f"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        18,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        1,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        20,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 82944,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        37,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        1,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x48x64_7_16x48x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 101376,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        1,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x48x64_7_16x48x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 101376,
+       "registers": 255
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "fcf7a998586c1d78863ccacffdda62a0537537ecfbdfc46ae873386a82b114a3"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        38,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x64x64_3_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        248,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        2,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        145,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        38,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        5,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        1023,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        38,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        5,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        34,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 126,
+       "sass_sha256": "008bd93f1a7bc57c61b6960eaf4fd5ab3a707ac93b3d60013dda91081514aace"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        304,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_64x56x128_3_16x56x128_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        24,
+        2,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 93184,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        304,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        64,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        2,
+        1
+       ],
+       "shared_memory": 74752,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        7,
+        38,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        64,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        2,
+        1
+       ],
+       "shared_memory": 74752,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "d5c7b91da50974a8aa7df8a5d3d2596de71028c1e6c3394604700e83cc889eab"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        163,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        16,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        1187,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        163,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        1187,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        163,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      }
+     ]
+    }
+   ]
+  },
+  "real-45": {
+   "environment": {
+    "EXL3_GEMV": "0",
+    "EXL3_HGEMM_F16ACC": "0",
+    "EXLLAMAV3_TUNE_CACHE": "/p0/launch134/tune-g-real-45.bin"
+   },
+   "cublas_mapped": [
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13"
+   ],
+   "cublas_versions": {
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13": 130800,
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13": "13.8.0"
+   },
+   "extension": {
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so": "aa8b9f168bd55914b7ac3d8455b15dd7d650a7ef88d2a90c459793ad0e642f34"
+   },
+   "tune_cache_sha256": {
+    "before": "e27cb9bf5d6e4606c5c826e8aad9c2d34c142464a7c22e6a513c3d07361960d1",
+    "after": "e27cb9bf5d6e4606c5c826e8aad9c2d34c142464a7c22e6a513c3d07361960d1"
+   },
+   "cases": [
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        7,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        14,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        14,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        14,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        14,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        126,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x56x64_6_16x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 93184,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        254,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        1791,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.q_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        7,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 45056,
+       "registers": 58,
+       "sass_sha256": "c6d4d9d75aecd2ae10ca6f24bda6c999f65a6e00af452a602150a972e78d61d2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        56,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        1792,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        1,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        2,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        4,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "3c966ad422f097061cad84a1dd0441d06062661bca3f1d3b3f93559557f11c05"
+      },
+      {
+       "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+       "grid": [
+        18,
+        1,
+        1
+       ],
+       "block": [
+        1024,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 22,
+       "sass_sha256": "b988f6e8f5c6b00dc4e874358324fe98fc43403ee1d9b1eec98b586ca797e521"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        1,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        20,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 82944,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        37,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        1,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x48x64_7_16x48x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 101376,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.self_attn.k_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        1,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 45056,
+       "registers": 58,
+       "sass_sha256": "c6d4d9d75aecd2ae10ca6f24bda6c999f65a6e00af452a602150a972e78d61d2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_64x48x64_7_16x48x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 101376,
+       "registers": 255
+      },
+      {
+       "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        38,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        38,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x64x64_3_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        248,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        2,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        145,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        38,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        5,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        1023,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.up_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        38,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 43008,
+       "registers": 58,
+       "sass_sha256": "7faee0ab58becd786b0056a10f16b58c04f16eaea7c857f132b49cc5ecb034ee"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        5,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        34,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        28,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "c9376680b254478ad6f536b02bd048e9343bad68f2f10fce37fc8deeb9515fcd"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        304,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_64x56x128_3_16x56x128_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        24,
+        2,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 93184,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        38,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        7,
+        304,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        64,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        2,
+        1
+       ],
+       "shared_memory": 74752,
+       "registers": 255
+      },
+      {
+       "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 26,
+       "sass_sha256": "71e5495d34d889e0b6209a6c2fdb2e2782074c94b602b9a22224181f1696ac11"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "model.layers.0.mlp.down_proj",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        7,
+        38,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 43008,
+       "registers": 58,
+       "sass_sha256": "7faee0ab58becd786b0056a10f16b58c04f16eaea7c857f132b49cc5ecb034ee"
+      },
+      {
+       "name": "nvjet_sm121_hss_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        64,
+        1,
+        1
+       ],
+       "block": [
+        128,
+        2,
+        1
+       ],
+       "shared_memory": 74752,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+       "grid": [
+        24,
+        64,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 96
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        163,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        16,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        1187,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        7,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        256,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        163,
+        56,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        1187,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "kernels",
+     "name": "lm_head",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        256,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        32,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        163,
+        7,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+       "grid": [
+        64,
+        21,
+        1
+       ],
+       "block": [
+        128,
+        1,
+        1
+       ],
+       "shared_memory": 81920,
+       "registers": 234
+      }
+     ]
+    }
+   ]
+  },
+  "synthetic": {
+   "environment": {
+    "EXL3_GEMV": "0",
+    "EXL3_HGEMM_F16ACC": "0",
+    "EXLLAMAV3_TUNE_CACHE": "/p0/launch134/tune-g-synthetic.bin"
+   },
+   "cublas_mapped": [
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13",
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13"
+   ],
+   "cublas_versions": {
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13": 130800,
+    "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13": "13.8.0"
+   },
+   "extension": {
+    "/p0/build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so": "aa8b9f168bd55914b7ac3d8455b15dd7d650a7ef88d2a90c459793ad0e642f34"
+   },
+   "tune_cache_sha256": {
+    "before": "2c1b1bb7647b2eef78a9f750fd29755cc35d75ccee7b803c8c276a78a021e736",
+    "after": "2c1b1bb7647b2eef78a9f750fd29755cc35d75ccee7b803c8c276a78a021e736"
+   },
+   "cases": [
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x64_2_48x80x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 70656,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K4",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x64_2_48x80x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 70656,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K5",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 43008,
+       "registers": 58,
+       "sass_sha256": "7faee0ab58becd786b0056a10f16b58c04f16eaea7c857f132b49cc5ecb034ee"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x64_2_48x80x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 70656,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K6",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 45056,
+       "registers": 58,
+       "sass_sha256": "c6d4d9d75aecd2ae10ca6f24bda6c999f65a6e00af452a602150a972e78d61d2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 125,
+       "sass_sha256": "863148b1592a3b2ecf211d5e0bbd8b61357608108ff11cf88490ee5a0567d283"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x64_2_48x80x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        4,
+        1
+       ],
+       "shared_memory": 70656,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-4096-K8",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 170,
+       "sass_sha256": "f5b74302df40b12849ca2193b4c17ffca4544c955e1211504a300dbba9fd9633"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 170,
+       "sass_sha256": "f5b74302df40b12849ca2193b4c17ffca4544c955e1211504a300dbba9fd9633"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 170,
+       "sass_sha256": "f5b74302df40b12849ca2193b4c17ffca4544c955e1211504a300dbba9fd9633"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 170,
+       "sass_sha256": "f5b74302df40b12849ca2193b4c17ffca4544c955e1211504a300dbba9fd9633"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 170,
+       "sass_sha256": "f5b74302df40b12849ca2193b4c17ffca4544c955e1211504a300dbba9fd9633"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_256x112x64_2_64x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        448,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 95232,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K4",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        112,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 172,
+       "sass_sha256": "70c096828ecde3354dc4aa10852f7701daa16ae627fd04c02b12b7b0224d4a9f"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 172,
+       "sass_sha256": "70c096828ecde3354dc4aa10852f7701daa16ae627fd04c02b12b7b0224d4a9f"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 172,
+       "sass_sha256": "70c096828ecde3354dc4aa10852f7701daa16ae627fd04c02b12b7b0224d4a9f"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 172,
+       "sass_sha256": "70c096828ecde3354dc4aa10852f7701daa16ae627fd04c02b12b7b0224d4a9f"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 16, 512, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 172,
+       "sass_sha256": "70c096828ecde3354dc4aa10852f7701daa16ae627fd04c02b12b7b0224d4a9f"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_256x112x64_2_64x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        448,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 95232,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K5",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        112,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 43008,
+       "registers": 58,
+       "sass_sha256": "7faee0ab58becd786b0056a10f16b58c04f16eaea7c857f132b49cc5ecb034ee"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_256x112x64_2_64x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        448,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 95232,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K6",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        112,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 45056,
+       "registers": 58,
+       "sass_sha256": "c6d4d9d75aecd2ae10ca6f24bda6c999f65a6e00af452a602150a972e78d61d2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_256x112x64_2_64x56x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        448,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 95232,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        112,
+        256,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-4096-14336-K8",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        112,
+        32,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        40,
+        14,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 87040,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "388cbdbb84ae81d5dedeba837d8ec9f6b5c7814055a6cdb02229c6ff6dd3aed1"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x32_5_32x80x32_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        6,
+        1
+       ],
+       "shared_memory": 88064,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5120,
+       "registers": 20,
+       "sass_sha256": "aaea3c1300b7c8fc651558a8f3f73d8d53e9b77c04ec9c56a2d0f6f365f8a107"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K4",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        112,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 40960,
+       "registers": 55,
+       "sass_sha256": "3ae9978e4346eb98f252a216a781a12e3b7983e0e77baba203360a0eab51df2c"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "cdc7f68fa18a420957067a6cf7c09ada4dba430f11561ec75519ebb8269b7c74"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x32_5_32x80x32_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        6,
+        1
+       ],
+       "shared_memory": 88064,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5376,
+       "registers": 24,
+       "sass_sha256": "c73269bd1775fd6665940ca2873cb1e6be0dec76f2ca4ad07904d95ed240aace"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K5",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        112,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 43008,
+       "registers": 58,
+       "sass_sha256": "7faee0ab58becd786b0056a10f16b58c04f16eaea7c857f132b49cc5ecb034ee"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "80d0f2e92939884094865b0e796f6d71f7c7bd08232f0d43f1982b7ffd25615c"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x32_5_32x80x32_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        6,
+        1
+       ],
+       "shared_memory": 88064,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 5632,
+       "registers": 24,
+       "sass_sha256": "3dd8e94f8142e2d584a5186d2e2dc46fd945b91d441a5181f74ee1c6ed120998"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K6",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        112,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 45056,
+       "registers": 58,
+       "sass_sha256": "c6d4d9d75aecd2ae10ca6f24bda6c999f65a6e00af452a602150a972e78d61d2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 1,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 8,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 16,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 32,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 144,
+     "launches": [
+      {
+       "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+       "grid": [
+        48,
+        1,
+        1
+       ],
+       "block": [
+        512,
+        1,
+        1
+       ],
+       "shared_memory": 92160,
+       "registers": 128,
+       "sass_sha256": "7dc482702e96e9ec2add05303bcee207ca1b713e93c5d5cadfcb89b56625f4c3"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 145,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_192x80x32_5_32x80x32_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        176,
+        1,
+        1
+       ],
+       "block": [
+        32,
+        6,
+        1
+       ],
+       "shared_memory": 88064,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        145,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 1023,
+     "launches": [
+      {
+       "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        112,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 21,
+       "sass_sha256": "57a2d8e74656260577b6301e936e311c5b2a9a17e06514ad23ce4400d97376c6"
+      },
+      {
+       "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+       "grid": [
+        32,
+        896,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 6144,
+       "registers": 22,
+       "sass_sha256": "3c292817932953085150b62bad90007cf70645f88b5f898bf1e198ad4bc82ffc"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      },
+      {
+       "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+       "grid": [
+        1023,
+        32,
+        1
+       ],
+       "block": [
+        32,
+        1,
+        1
+       ],
+       "shared_memory": 0,
+       "registers": 23,
+       "sass_sha256": "94afedd8ac4cbf5f29b74a78235e7811213e9e32d4d4652aff49a3f8f5a2f712"
+      }
+     ]
+    },
+    {
+     "set": "synthetic",
+     "name": "synthetic-14336-4096-K8",
+     "rows": 1024,
+     "launches": [
+      {
+       "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+       "grid": [
+        32,
+        112,
+        1
+       ],
+       "block": [
+        256,
+        1,
+        1
+       ],
+       "shared_memory": 49152,
+       "registers": 56,
+       "sass_sha256": "2c986b34638ca8d768d8ece9b8fe2951eff81335a16b04a2d65dcfdf02f441e2"
+      },
+      {
+       "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+       "grid": [
+        256,
+        1,
+        1
+       ],
+       "block": [
+        64,
+        4,
+        1
+       ],
+       "shared_memory": 78848,
+       "registers": 255
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

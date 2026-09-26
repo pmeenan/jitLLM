@@ -465,6 +465,50 @@
       "sha256": "4d86da9f20b56406b7d54f8791e0d43bc71381cd55acc6af1b627fc39a6064da",
       "size": 8354836
     },
+    "deb/libcublas-13-4/amd64": {
+      "package": "libcublas-13-4",
+      "version": "13.8.0.4-1",
+      "arch": "amd64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcublas-13-4_13.8.0.4-1_amd64.deb"
+      ],
+      "sha256": "57a23e176a8c23e22a2331c0167b2aeaa9c16739aa95c4ac347bad49d9e30f79",
+      "size": 407957770
+    },
+    "deb/libcublas-13-4/arm64": {
+      "package": "libcublas-13-4",
+      "version": "13.8.0.4-1",
+      "arch": "arm64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcublas-13-4_13.8.0.4-1_arm64.deb"
+      ],
+      "sha256": "2b34839f177e66be1298783f55455680383ce08cc73d547b7b08ee9d36c8e525",
+      "size": 521927862
+    },
+    "deb/libcublas-dev-13-4/amd64": {
+      "package": "libcublas-dev-13-4",
+      "version": "13.8.0.4-1",
+      "arch": "amd64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcublas-dev-13-4_13.8.0.4-1_amd64.deb"
+      ],
+      "sha256": "10a45099d90410e7ab1a899535be9a1b54f9f4e48bad20c7cce93a2250a4fda3",
+      "size": 469506902
+    },
+    "deb/libcublas-dev-13-4/arm64": {
+      "package": "libcublas-dev-13-4",
+      "version": "13.8.0.4-1",
+      "arch": "arm64",
+      "source": "nvidia",
+      "urls": [
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcublas-dev-13-4_13.8.0.4-1_arm64.deb"
+      ],
+      "sha256": "8ca101e1058d1c2e022d88376a8c8712655b4c4ec08c6723484a07d961a63591",
+      "size": 579480470
+    },
     "deb/libllvm22/amd64": {
       "package": "libllvm22",
       "version": "1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80",

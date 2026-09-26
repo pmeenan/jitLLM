@@ -36,14 +36,14 @@ reuse = "6.2.0"          # D-071, the check gate's REUSE lint
 [hosts.x86_64]
 triple = "x86_64-linux-gnu"
 deb_arch = "amd64"
-components = ["llvm", "llvm-aarch64-runtimes", "cuda", "cuda-sbsa-target", "cmake", "ninja",
-              "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64", "reuse"]
+components = ["llvm", "llvm-aarch64-runtimes", "cuda", "cuda-sbsa-target", "cublas", "cublas-sbsa-target",
+              "cmake", "ninja", "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64", "reuse"]
 prerequisites = "prerequisites/ubuntu-24.04-x86_64.txt"
 
 [hosts.aarch64]
 triple = "aarch64-linux-gnu"
 deb_arch = "arm64"
-components = ["llvm", "cuda", "cmake", "ninja", "gcc-runtime"]
+components = ["llvm", "cuda", "cublas", "cmake", "ninja", "gcc-runtime"]
 prerequisites = "prerequisites/ubuntu-24.04-aarch64.txt"
 
 # Components. `kind` selects the recipe in tools/setup-toolchain. Paths are
@@ -89,6 +89,27 @@ dest = "pkgs/cuda"
 packages = ["cuda-nvcc-13-4", "cuda-crt-13-4", "libnvvm-13-4", "libnvptxcompiler-13-4",
             "cuda-cudart-13-4", "cuda-cudart-dev-13-4", "cuda-driver-dev-13-4", "cccl-13-4"]
 select = ["usr/local/cuda-13.4/targets/sbsa-linux"]
+
+[components.cublas]
+# cuBLAS and cuBLASLt 13.8.0.4, the newest for CUDA 13.4 (D-076): the headers
+# and the shared libraries, which jitLLM links dynamically and the package
+# ships. The static archives are left out.
+kind = "debs"
+dest = "pkgs/cuda"
+packages = ["libcublas-13-4", "libcublas-dev-13-4"]
+select = ["usr/local/cuda-13.4/targets/*/include/cublas*.h",
+          "usr/local/cuda-13.4/targets/*/lib/libcublas.so*",
+          "usr/local/cuda-13.4/targets/*/lib/libcublasLt.so*"]
+
+[components.cublas-sbsa-target]
+# The same for the ARM (sbsa-linux) target, for cross builds.
+kind = "debs"
+arch = "arm64"
+dest = "pkgs/cuda"
+packages = ["libcublas-13-4", "libcublas-dev-13-4"]
+select = ["usr/local/cuda-13.4/targets/sbsa-linux/include/cublas*.h",
+          "usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so*",
+          "usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so*"]
 
 [components.cmake]
 kind = "archive"

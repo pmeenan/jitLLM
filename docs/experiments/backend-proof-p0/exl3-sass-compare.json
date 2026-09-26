@@ -1,0 +1,30 @@
+{
+ "recorded_on": "2026-09-26",
+ "tool": "sass_hashes.py hash (cuobjdump 13.0 -sass, addresses stripped, c++filt names) over each extension build, then sass_hashes.py compare",
+ "builds": {
+  "nvcc130": "build-cache/exllamav3_ext/exllamav3_ext.so, SHA-256 7c9d383f8671fb7c... (the container's NVCC 13.0.88)",
+  "nvcc134": "build-cache-nvcc134/exllamav3_ext/exllamav3_ext.so, SHA-256 aa8b9f168bd55914... (the SDK's NVCC 13.4.92)"
+ },
+ "kernels": 1506,
+ "common": 1506,
+ "identical_sass": 16,
+ "identical": [
+  "batched_conv_rewind_kernel(ConvRewindJobBatch)",
+  "batched_state_rewind_kernel(StateRewindJobBatch)",
+  "gumbel_noise_kernel_f32(float const*, float*, int, unsigned int)",
+  "gumbel_noise_kernel_log(float const*, float*, int, unsigned int)",
+  "moe_flag_write_kernel(unsigned int*, unsigned int)",
+  "moe_split_map_kernel(long*, long const*, float*, long*, int, int)",
+  "mul_sigmoid_kernel_h(__half*, __half const*, unsigned long)",
+  "softcap_kernel(float const*, float*, unsigned long, float)",
+  "void act_mul_kernel_f<0>(float const*, float const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_f<2>(float const*, float const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_f<3>(float const*, float const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_f<4>(float const*, float const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_h<0>(__half const*, __half const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_h<2>(__half const*, __half const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_h<3>(__half const*, __half const*, __half*, float, unsigned long)",
+  "void act_mul_kernel_h<4>(__half const*, __half const*, __half*, float, unsigned long)"
+ ],
+ "interpretation": "Only these kernels compile to identical SASS in both builds, so BP-F2's reference arm is the NVCC 13.4.92 build."
+}

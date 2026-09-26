@@ -131,6 +131,7 @@ function(jitllm_gtest target)
 endfunction()
 
 add_subdirectory(src)
+add_subdirectory(benchmarks)
 add_subdirectory(packaging)
 
 enable_testing()

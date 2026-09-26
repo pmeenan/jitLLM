@@ -33,6 +33,50 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-076: Link cuBLAS dynamically and ship its pinned shared libraries  (2026-09-25, status: accepted; amends D-060's "cuBLAS linked statically subject to its license and size review")
+
+**Decision.** jitLLM binaries that use cuBLAS link `libcublas.so.13` and
+`libcublasLt.so.13` dynamically. The SDK pins cuBLAS 13.8.0.4 (the newest
+for CUDA 13.4 in NVIDIA's repository on 2026-09-25): `libcublas-13-4` and
+`libcublas-dev-13-4` for both host architectures, of which setup extracts
+only the `cublas*.h` headers and the two shared libraries, never the static
+archives (`toolchains/manifest.toml` components `cublas` and
+`cublas-sbsa-target`; provenance unit `cublas`). The package ships those two
+libraries in a private directory that is not on the system linker path, so a
+system CUDA installation neither replaces nor conflicts with them; the
+directory and the binaries' RUNPATH are set when the first packaged binary
+links cuBLAS. The owner approved dynamic linking on 2026-09-25.
+
+**Context.** D-060 left cuBLAS to a license and size review. Linking
+cuBLAS statically into one FP16 `cublasGemmEx` probe for the Spark (built
+on 2026-09-25 with the SDK's Clang and NVCC 13.4 against the 13.8.0.4
+archives; the one-file probe was not kept) produced a 655,072,904-byte
+executable (618,575,720 stripped); the arm64 static archives
+are 931,324,242 (`libcublasLt_static.a`) and 143,485,500 bytes. Every
+executable that needs a GEMM would carry that. The arm64 shared libraries are
+648,206,104 (`libcublasLt.so.13`) and 71,959,256 bytes, paid once per
+package. NVIDIA's EULA (Attachment A) lists `libcublas.so` and
+`libcublasLt.so` as redistributable on Linux; section 2.3 allows
+redistributing Linux object code only unmodified, so jitLLM does not prune
+them (`nvprune`) without a license review. `libcublas.so.13` needs only
+glibc (`librt`, `libpthread`, `libdl`, `libm`, `libc`) and `libgcc_s.so.1`,
+not libstdc++, so it respects D-060's rule that no loaded library brings its
+own C++ runtime; jitLLM's own code still links libgcc statically.
+
+**Consequences.** The SDK identity changes, and every host runs `mise run
+setup` again. Until a binary links cuBLAS, the provenance unit does not ship
+and the package is unchanged; that change also allows the two libraries in
+the package's `NEEDED` check and RUNPATH rule, and keeps them unstripped
+(EULA section 2.3). The package grows by about 720 MB when it first ships cuBLAS
+and gains a `libgcc-s1` dependency (already present on every Ubuntu). The
+backend proof's GGML bridge links the same pinned libraries (P0,
+docs/experiments/backend-proof-p0/). Loading cuBLAS is part of the start-up
+or first-use cost the runtime measures.
+
+**Reopen if.** NVIDIA permits pruned redistribution or ships smaller
+per-architecture libraries; a cuBLAS release drops the shared libraries or
+adds a libstdc++ dependency; or jitLLM stops needing cuBLAS.
+
 ## D-075: The main agent may commit when the user directly asks  (2026-09-24, status: accepted; amends D-016's sole-committer rule)
 
 **Decision.** The owner asked on 2026-09-24 that the main agent, the one the
@@ -1787,7 +1831,7 @@ emulation (RE-014).
 need third-party-verifiable builds; or the tiers take too long to run for
 every change.
 
-## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family; the cross build's AArch64 runtime is cross-built per D-070; its list of embedded runtime code, including when Ryu links, corrected by D-071)
+## D-060: Link a source-built GCC 16.2 C++ runtime statically; keep LLVM 22.1.8  (2026-09-23, status: accepted; supersedes D-059's libstdc++ 14.2 pin; amends D-032; specializes D-017's platform-runtime family; the cross build's AArch64 runtime is cross-built per D-070; its list of embedded runtime code, including when Ryu links, corrected by D-071; its static-cuBLAS clause amended by D-076)
 
 **Decision.** The owner asked on 2026-09-23 for GCC 16.2, static linking
 wherever possible, and the newest version of every component that is still
@@ -1819,7 +1863,7 @@ compatible with the runtime.
   None of these links the C++ runtime. No library loaded into a jitLLM
   process may bring its own dynamic libstdc++. NCCL must therefore be linked
   statically or built with `-static-libstdc++`, and cuBLAS linked statically
-  subject to its license and size review. Both keep their own pin decisions.
+  subject to its license and size review (D-076 links it dynamically instead). Both keep their own pin decisions.
   A shared library built with `-static-libstdc++` must also hide its runtime
   symbols (for example `-Wl,--exclude-libs,ALL`) to prevent binding to the
   executable's copies, or use these same runtime artifacts so any such

@@ -4,7 +4,8 @@
 # Development SDK
 
 jitLLM builds with a pinned, project-provisioned SDK (D-012, D-049, D-070):
-Clang/LLD and the LLVM developer tools 22.1.8, CUDA 13.4.92, CMake 4.4.3,
+Clang/LLD and the LLVM developer tools 22.1.8, CUDA 13.4.92 with cuBLAS
+13.8.0.4's headers and shared libraries (D-076), CMake 4.4.3,
 Ninja 1.13.2, the source-built GCC 16.2 C++ runtime that executables link
 statically (D-060) and, on x86-64 hosts, the Spark target sysroot and the
 REUSE lint tool 6.2.0 that the check gate runs (D-071). System

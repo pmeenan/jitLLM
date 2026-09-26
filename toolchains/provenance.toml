@@ -97,6 +97,14 @@ ships = true
 enters = "CUDA builds: libcudart_static.a (cudart_static.o, redistributable under the EULA's Attachment A), NVCC's host stubs and fatbinary registration code (crt/host_runtime.h, fatbinary_section.h), device code built from the CUDA headers and, where device math is used, libNVVM's libdevice. libcudadevrt.a is on the link line but contributes nothing without relocatable device code. libcuda.so.1 (the driver) is a needed library that the driver's package supplies; it is never shipped."
 notices = ["nvidia-cuda-eula", "nvidia-header-notice", "nvidia-math-juffa", "nvidia-softfloat"]
 
+[units.cublas]
+artifacts = ["deb/libcublas-13-4", "deb/libcublas-dev-13-4"]
+category = "platform"
+license = "LicenseRef-NVIDIA-CUDA-EULA"
+ships = false
+enters = "Nothing yet. When a binary first uses cuBLAS, it links libcublas.so.13 and libcublasLt.so.13 dynamically (D-076), and the package ships those two libraries, unmodified and unstripped, in a private directory: both are redistributable under the EULA's Attachment A. That change sets ships = true, adds the nvidia-cuda-eula notice and adds the unit to the package's CUDA units. The headers only declare the API. The static archives are not extracted."
+notices = []
+
 [units.cuda-driver-stub]
 artifacts = ["deb/cuda-driver-dev-13-4"]
 category = "platform"

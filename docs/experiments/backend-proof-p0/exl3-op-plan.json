@@ -1,0 +1,3276 @@
+{
+ "recorded_on": "2026-09-26",
+ "tool": "exl3_op_plan.py probe and build (this file's generator); fp16_plan.py sass-hash",
+ "interpretation": "The native EXL3-G operation plan, as a record: per phase kind, every operation of the embedding, one decoder layer (the same for all 24) and the output, in order, with its owner, its GGML operation, the tensors it reads and writes, and the kernels it launches (grid, block, shared memory). It was run, not only read: a probe executed exactly this plan inside upstream ExLlamaV3 (the ggml_ops arm plus GGML's embedding and MLP residual add and ExLlamaV3's bias add on the reconstruction path) on both fixtures, and its logits equal the ggml_ops arm's (cuBLAS 13.8.0.4) bit for bit in every phase kind. Reference only.",
+ "matching_rule": ["Before any operation-level or model comparison, native's recorded executed plan must equal this record for every phase kind it runs: the same operations in the same order, each launching the same kernels in the same order with the same grid, block and shared memory; GGML kernels matched by mangled name (with NVCC's per-translation-unit _INTERNAL_<hash> prefix normalized, as in mangled_normalized: it differs between builds of the same source) and SASS encoding hash, ExLlamaV3 and cuBLAS kernels by demangled name (their builds are gated by exl3-launch.json and exl3-recon-pin.json). A phase is matched to the kind with its row count; a single-token step to the kind with its padded K length.", "Every tensor between operations has the dtype and shape in `tensors`. Each operation's recorded input must equal, byte for byte, the recorded output of the operation that produced it (`inputs` name the producer's tensor): a stale or mis-wired buffer fails even when every operation is individually exact.", "Only stream identity, device addresses, the launch API and the PDL attribute may differ. The probe's harness transfers (excluded_transfers: the shim's copies in and out of GGML buffers, its K/V staging and memsets, host uploads of IDs, positions and mask, PyTorch's bookkeeping copies) are not plan operations; native produces the declared input contents however it likes and records them.", "A change to any entry (kernel, launch, dtype, owner, order) needs a new record and approval."],
+ "pins": {
+  "ggml": "llama.cpp b29c606e28a01b1bc8c1351026a0fa6e616bf6c4, ggml/ subtree unmodified",
+  "exllamav3": "6b84a21b (M0 reference image jitllm-exl3-reference:20260922)",
+  "device": "NVIDIA GB10, 48 SMs",
+  "profile": "EXL3-G: EXL3_GEMV=0, EXL3_HGEMM_F16ACC=0, EXL3_BC_ATTN=0, frozen tune-40-gemvoff / tune-45-gemvoff (copies, unchanged)",
+  "cublas": "13.8.0.4, bind-mounted over PyTorch's (cuBLASLt 130800, the only one mapped)",
+  "ggml_build": "ggml_shim/build.sh cuda134: NVCC 13.4.92, sm_121a, -O3 -use_fast_math, GCC 13.3 host compiler, shared libraries, GGML_CUDA_GRAPHS=OFF; libggml-cuda.so.0.24.0 SHA-256 86ea9b4dcc51803089098e5436364e439f9ed43f468e17b2800e6a1b08534265"
+ },
+ "model": {
+  "hidden": 896,
+  "heads": 14,
+  "kv_heads": 2,
+  "head_dim": 64,
+  "intermediate": 4864,
+  "vocab": 151936,
+  "layers": 24,
+  "rms_norm_eps": 1e-06,
+  "rope_theta": 1000000.0
+ },
+ "provenance": {
+  "kernel_launches": "PyTorch profiler (Kineto/CUPTI) around one run of each phase kind; each GPU activity is attributed to the innermost labelled operation through the correlation id of the runtime call that launched it. `shared` is the profiler's shared memory per block: static plus dynamic. For GGML kernels `static_shared` comes from cuobjdump -res-usage (its SHARED minus the 1 KiB it reports as reserved when any is used; flash_attn_ext_vec<64, 2>: 5,632 - 1,024 = 4,608, the profiler's figure, with no dynamic shared memory, as launch_fattn passes 0).",
+  "sass": "cuobjdump 13.0.85 -sass on the cuda134 build's libggml-cuda.so.0.24.0, hashed as fp16_plan.py sass-hash does (text without offsets and encodings; the 128-bit encodings in order), names demangled with c++filt and matched to the profiler's. fp16_bridge_sass compares the encoding hash with fp16-plan.json's kernel of the same normalized mangled name (the FP16 bridge: the SDK's Clang host compiler, static libraries); absent means the bridge does not launch that kernel.",
+  "probes": {
+   "4.0bpw": {
+    "fixture": "blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw",
+    "weight_sha256": "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b",
+    "reference": "/p0/exl3/v3-40-ggml_ops_cublas138b",
+    "library_build": {
+     "nvcc": "13.4.92",
+     "cuda_archs": "121a-real",
+     "ggml_source": "llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml",
+     "cudart_runtime": 13000
+    },
+    "library_sha256": {
+     "ggml/src/ggml-cuda/libggml-cuda.so.0.24.0": "86ea9b4dcc51803089098e5436364e439f9ed43f468e17b2800e6a1b08534265",
+     "ggml/src/libggml-base.so.0.24.0": "24c7cb83cd48723097dc01f3385f817c2f385eb90fc2b0e48661d11a56b1aade",
+     "ggml/src/libggml-cpu.so.0.24.0": "43d4f1a6b9d700f1f2cc2ce5ae31fe3b26786dfe8a4c7ee2972f1da1813d9c1f",
+     "ggml/src/libggml.so.0.24.0": "61aff4a22d52304f2faba7b03f7bef897b1fc5a55aafac77db8bc82961ebdbe2",
+     "libggml_shim.so": "df18af7c887cf79b3a6f005acabead122fe0519f6368200776d9ca0cf637a41a"
+    },
+    "blas": {
+     "mapped": ["/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13", "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13"],
+     "cublasLt_version": {"/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13": 130800}
+    },
+    "torch": "2.14.0+cu130",
+    "harness_sha256": {
+     "exl3_op_plan.py": "b5030d7c503cffab27b3379832fed31a263694e4d9e3f728c3a65ebf84bff25d",
+     "exl3_heldout.py": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+     "ggml_ops.py": "9492b14a3368ebe5535cced3ee4d94a0dfa2c0522f4c6eb2d8b3485a93d7774b"
+    },
+    "tune_cache_before_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
+    "tune_cache_after_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
+    "passed": true
+   },
+   "4.5bpw": {
+    "fixture": "blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.5bpw",
+    "weight_sha256": "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc",
+    "reference": "/p0/exl3/v3-45-ggml_ops_cublas138b",
+    "library_build": {
+     "nvcc": "13.4.92",
+     "cuda_archs": "121a-real",
+     "ggml_source": "llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml",
+     "cudart_runtime": 13000
+    },
+    "library_sha256": {
+     "ggml/src/ggml-cuda/libggml-cuda.so.0.24.0": "86ea9b4dcc51803089098e5436364e439f9ed43f468e17b2800e6a1b08534265",
+     "ggml/src/libggml-base.so.0.24.0": "24c7cb83cd48723097dc01f3385f817c2f385eb90fc2b0e48661d11a56b1aade",
+     "ggml/src/libggml-cpu.so.0.24.0": "43d4f1a6b9d700f1f2cc2ce5ae31fe3b26786dfe8a4c7ee2972f1da1813d9c1f",
+     "ggml/src/libggml.so.0.24.0": "61aff4a22d52304f2faba7b03f7bef897b1fc5a55aafac77db8bc82961ebdbe2",
+     "libggml_shim.so": "df18af7c887cf79b3a6f005acabead122fe0519f6368200776d9ca0cf637a41a"
+    },
+    "blas": {
+     "mapped": ["/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublas.so.13", "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13"],
+     "cublasLt_version": {"/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcublasLt.so.13": 130800}
+    },
+    "torch": "2.14.0+cu130",
+    "harness_sha256": {
+     "exl3_op_plan.py": "b5030d7c503cffab27b3379832fed31a263694e4d9e3f728c3a65ebf84bff25d",
+     "exl3_heldout.py": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+     "ggml_ops.py": "9492b14a3368ebe5535cced3ee4d94a0dfa2c0522f4c6eb2d8b3485a93d7774b"
+    },
+    "tune_cache_before_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
+    "tune_cache_after_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
+    "passed": true
+   }
+  }
+ },
+ "bias_add": {
+  "owner": "ExLlamaV3's add_gr (add_kernel_hhh on F16) for q/k/v_proj on every path, as part of the linear and gated with it (Tier E, EXL3 linears).",
+  "precision": "linear output F16 (packed: exl3_gemm_kernel's F16 output; reconstruction: cuBLASLt HSH), bias F16, sum rounded once to nearest even, F16 out.",
+  "why": "Upstream already adds the bias this way inside its packed linear (BC_LinearEXL3::run -> add_gr), in F16. Its reconstruction path adds it with PyTorch's elementwise kernel (y += bias: F16 operands, F32 arithmetic, one rounding). The two are the same function: ExLlamaV3's kernel equals PyTorch's on all 2^32 F16 input pairs (every non-NaN result bit-identical, NaN exactly where PyTorch gives NaN), and on every reconstruction-path bias add of both probes. Keeping ExLlamaV3's kernel gives the bias add one owner and one precision on every path, changes no bit of upstream's result, and keeps it with the linear it belongs to. A GGML F32 add would need F32 linear outputs, a different dtype chain from upstream's and a separate accuracy case; it was not adopted.",
+  "exhaustive": {
+   "pairs": 4294967296,
+   "nan_result_pairs": 263987198,
+   "bit_identical_non_nan": 4030980098,
+   "differing_non_nan": 0,
+   "nan_disagreement": 0
+  },
+  "probe_checks": {
+   "4.0bpw": {
+    "embedding: GGML get_rows equals upstream's lookup": {"cases": 9, "equal": 9},
+    "MLP residual add: GGML add equals upstream's": {"cases": 216, "equal": 216},
+    "reconstruction-path bias add: ExLlamaV3 add kernel equals PyTorch's": {"cases": 288, "equal": 288}
+   },
+   "4.5bpw": {
+    "embedding: GGML get_rows equals upstream's lookup": {"cases": 9, "equal": 9},
+    "MLP residual add: GGML add equals upstream's": {"cases": 216, "equal": 216},
+    "reconstruction-path bias add: ExLlamaV3 add kernel equals PyTorch's": {"cases": 288, "equal": 288}
+   }
+  }
+ },
+ "attention": {
+  "kernel": "the vector kernel for every phase, launched through ggml_cuda_flash_attn_ext_vec_case<64, GGML_TYPE_F16, GGML_TYPE_F16> (fattn-vec.cuh:545): flash_attn_ext_vec<64, cols_per_block, F16, F16, false> with cols_per_block 1 for one query row and 2 otherwise, 128 threads (4 warps), nbatch_fa = 64, parallel_blocks from launch_fattn's occupancy search over the 48 SMs (fattn-common.cuh:1127-1195), then flash_attn_combine_results<64> when parallel_blocks > 1. For n >= 1024 launch_fattn first runs flash_attn_mask_to_KV_max<2>, which finds for each pair of query rows the last 256-position KV tile with an unmasked cell; the vector kernel stops there. GGML's own choice would be the MMA kernel for every prefill; the plan never takes it.",
+  "parameters": {
+   "scale": "head_dim^-1/2 = 0.125",
+   "max_bias": 0.0,
+   "logit_softcap": 0.0,
+   "precision_flag": "GGML_PREC_F32 set as llama.cpp does; no CUDA kernel reads it",
+   "Q": "q_rope, F32, GGML view [64, n, 14] (nb1 = 14 x 64 x 4 B, nb2 = 64 x 4 B)",
+   "K, V": "the layer's F16 cache cells [0, Npad), GGML view [64, Npad, 2] (nb1 = 256 B per position, nb2 = 128 B per KV head); GQA 7",
+   "mask": "F16 [n, Npad], row stride Npad x 2 B"
+  },
+  "padding": "Every phase, prefill and single-token alike, attends K and V padded to Npad = N rounded up to a multiple of 256 (FATTN_KQ_STRIDE; llama.cpp pads its cache the same way). The recorded phase kinds cover N = 32, 144, 145 (Npad 256), 1,023 and 1,024 (Npad 1,024), and single-token steps with N 33-161 (Npad 256) and 1,025-1,040 (Npad 1,280), all the trajectories reach.",
+  "padded_cells": "Declared content: zero, what the reference holds (the shim zero-fills its padded K/V; ExLlamaV3's cache, zeroed before each trajectory, holds zero past the written cells). Finite is the hard requirement: a padded cell's score is masked to exactly -inf, so a finite K and V there are weighted by exactly 0, while an Inf or NaN would poison the row. Native records the padded cells it passes as part of the attention's input; the operation-level recomputation uses those bytes.",
+  "mask_construction": "F16, n rows by Npad columns: 0 where column j <= P + i (row i is position P + i), -inf elsewhere, including every padded column. The reference builds it on the host (ggml_shim.cu); native may build it anywhere, but its bytes are these.",
+  "scratch": "partial results in GGML's pool: parallel_blocks x the output's F32 elements plus metadata; per phase in shape_parameters.attention_pool_scratch_bytes (the shim's counting pool). Scores are never materialized."
+ },
+ "kv_write": "After RoPE, layer l's K (k_rope, F16) and V (v, F16) rows are copied byte for byte into cells [P, P+n) of layer l's K and V cache (ExLlamaV3's paged layout, 256-position pages, contiguous pages 0..15, so a cell is [2, 64] F16 = 256 B), K first; then attention reads cells [0, Npad).",
+ "rope": {
+  "mode": "GGML_ROPE_TYPE_NEOX",
+  "n_dims": 64,
+  "freq_base": "rope_theta = 1e6",
+  "freq_scale": 1.0,
+  "ext_factor": 0.0,
+  "attn_factor": 1.0,
+  "beta_fast": 32.0,
+  "beta_slow": 1.0,
+  "n_ctx_orig": 32768,
+  "positions": "P .. P+n-1"
+ },
+ "tensors": {
+  "ids": {"dtype": "int32", "shape": "[n]", "note": "token IDs, host-built"},
+  "positions": {"dtype": "int32", "shape": "[n]", "note": "P .. P+n-1, host-built (RoPE's position input)"},
+  "mask": {
+   "dtype": "float16",
+   "shape": "[n, Npad]",
+   "note": "row i, column j: 0 if j <= P+i, else -inf; host-built; padded cells masked"
+  },
+  "embed_table": {"dtype": "bfloat16", "shape": "[151936, 896]", "note": "the artifact's embedding, on the device"},
+  "embed.out": {"dtype": "float32", "shape": "[n, 896]", "note": "the residual stream entering layer 0"},
+  "resid.in": {
+   "dtype": "float32",
+   "shape": "[n, 896]",
+   "note": "the layer's input: embed.out, or the previous layer's resid.out"
+  },
+  "attn_norm.w": {"dtype": "float32", "shape": "[896]", "note": "norm weight, widened exactly to F32"},
+  "attn_norm.f32": {"dtype": "float32", "shape": "[n, 896]"},
+  "attn_norm.out": {"dtype": "float16", "shape": "[n, 896]", "note": "input of q/k/v_proj"},
+  "q_proj.gemm": {"dtype": "float16", "shape": "[n, 896]", "note": "linear output before its bias"},
+  "q_proj.bias": {"dtype": "float16", "shape": "[896]", "note": "artifact bias"},
+  "q": {"dtype": "float16", "shape": "[n, 896]", "note": "viewed [n, 14, 64]"},
+  "k_proj.gemm": {"dtype": "float16", "shape": "[n, 128]"},
+  "k_proj.bias": {"dtype": "float16", "shape": "[128]"},
+  "k": {"dtype": "float16", "shape": "[n, 128]", "note": "viewed [n, 2, 64]"},
+  "v_proj.gemm": {"dtype": "float16", "shape": "[n, 128]"},
+  "v_proj.bias": {"dtype": "float16", "shape": "[128]"},
+  "v": {"dtype": "float16", "shape": "[n, 128]", "note": "viewed [n, 2, 64]; written to the V cache as is"},
+  "rope_q.in": {"dtype": "float32", "shape": "[n, 14, 64]", "note": "q widened exactly"},
+  "q_rope": {"dtype": "float32", "shape": "[n, 14, 64]", "note": "attention's Q; never rounded to F16"},
+  "rope_k.in": {"dtype": "float32", "shape": "[n, 2, 64]", "note": "k widened exactly"},
+  "k_rope.f32": {"dtype": "float32", "shape": "[n, 2, 64]"},
+  "k_rope": {"dtype": "float16", "shape": "[n, 2, 64]", "note": "written to the K cache"},
+  "k_cache": {
+   "dtype": "float16",
+   "shape": "[4096, 2, 64] per layer",
+   "note": "cells [P, P+n) written by kv_write.k; attention reads [0, Npad)"
+  },
+  "v_cache": {
+   "dtype": "float16",
+   "shape": "[4096, 2, 64] per layer",
+   "note": "cells [P, P+n) written by kv_write.v; attention reads [0, Npad)"
+  },
+  "attn.f32": {
+   "dtype": "float32",
+   "shape": "[n, 14, 64]",
+   "note": "flash_attn_ext output (GGML layout [64, 14, n] is the same memory)"
+  },
+  "attn.out": {"dtype": "float16", "shape": "[n, 896]", "note": "input of o_proj"},
+  "o_proj.out": {"dtype": "float32", "shape": "[n, 896]"},
+  "resid.mid": {"dtype": "float32", "shape": "[n, 896]", "note": "resid.in + o_proj.out, in place"},
+  "mlp_norm.w": {"dtype": "float32", "shape": "[896]"},
+  "mlp_norm.f32": {"dtype": "float32", "shape": "[n, 896]"},
+  "mlp_norm.out": {"dtype": "float16", "shape": "[n, 896]", "note": "input of gate/up"},
+  "gate": {
+   "dtype": "float32",
+   "shape": "[n, 4864]",
+   "note": "n <= 32: plane 0 of the multi-linear's [2, n, 4864] output"
+  },
+  "up": {"dtype": "float32", "shape": "[n, 4864]", "note": "n <= 32: plane 1"},
+  "swiglu.f32": {"dtype": "float32", "shape": "[n, 4864]"},
+  "swiglu.out": {"dtype": "float16", "shape": "[n, 4864]", "note": "input of down_proj"},
+  "down_proj.out": {"dtype": "float32", "shape": "[n, 896]"},
+  "resid.out": {"dtype": "float32", "shape": "[n, 896]", "note": "resid.mid + down_proj.out, in place"},
+  "final_norm.w": {"dtype": "float32", "shape": "[896]"},
+  "final_norm.f32": {"dtype": "float32", "shape": "[n, 896]"},
+  "final_norm.out": {"dtype": "float16", "shape": "[n, 896]", "note": "input of lm_head"},
+  "logits": {
+   "dtype": "float16",
+   "shape": "[n, 151936]",
+   "note": "the plan's output: lm_head's F16 output; widening to F32 is exact and outside the plan"
+  }
+ },
+ "operations": {
+  "embedding": [
+   {
+    "op": "embed",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_GET_ROWS",
+    "inputs": ["embed_table", "ids"],
+    "outputs": ["embed.out"],
+    "params": {"table": "BF16", "output": "F32 (exact widening)"}
+   }
+  ],
+  "layer": [
+   {
+    "op": "attn_norm",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_RMS_NORM + GGML_OP_MUL, fused by ggml-cuda",
+    "inputs": ["resid.in", "attn_norm.w"],
+    "outputs": ["attn_norm.f32"],
+    "params": {"eps": "rms_norm_eps"}
+   },
+   {
+    "op": "attn_norm.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["attn_norm.f32"],
+    "outputs": ["attn_norm.out"]
+   },
+   {
+    "op": "q_proj",
+    "owner": "exllamav3",
+    "linear": "q_proj",
+    "inputs": ["attn_norm.out"],
+    "outputs": ["q_proj.gemm"]
+   },
+   {
+    "op": "q_proj.bias_add",
+    "owner": "exllamav3",
+    "kernel": "add_kernel_hhh (add_gr)",
+    "inputs": ["q_proj.gemm", "q_proj.bias"],
+    "outputs": ["q"],
+    "params": {"precision": "F16 + F16 -> F16, one round to nearest even"}
+   },
+   {
+    "op": "k_proj",
+    "owner": "exllamav3",
+    "linear": "k_proj",
+    "inputs": ["attn_norm.out"],
+    "outputs": ["k_proj.gemm"]
+   },
+   {
+    "op": "k_proj.bias_add",
+    "owner": "exllamav3",
+    "kernel": "add_kernel_hhh (add_gr)",
+    "inputs": ["k_proj.gemm", "k_proj.bias"],
+    "outputs": ["k"],
+    "params": {"precision": "F16 + F16 -> F16, one round to nearest even"}
+   },
+   {
+    "op": "v_proj",
+    "owner": "exllamav3",
+    "linear": "v_proj",
+    "inputs": ["attn_norm.out"],
+    "outputs": ["v_proj.gemm"]
+   },
+   {
+    "op": "v_proj.bias_add",
+    "owner": "exllamav3",
+    "kernel": "add_kernel_hhh (add_gr)",
+    "inputs": ["v_proj.gemm", "v_proj.bias"],
+    "outputs": ["v"],
+    "params": {"precision": "F16 + F16 -> F16, one round to nearest even"}
+   },
+   {
+    "op": "rope_q.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F16 -> F32 (exact)",
+    "inputs": ["q"],
+    "outputs": ["rope_q.in"]
+   },
+   {
+    "op": "rope_q",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_ROPE (NEOX)",
+    "inputs": ["rope_q.in", "positions"],
+    "outputs": ["q_rope"],
+    "params": "rope"
+   },
+   {
+    "op": "rope_k.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F16 -> F32 (exact)",
+    "inputs": ["k"],
+    "outputs": ["rope_k.in"]
+   },
+   {
+    "op": "rope_k",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_ROPE (NEOX)",
+    "inputs": ["rope_k.in", "positions"],
+    "outputs": ["k_rope.f32"],
+    "params": "rope"
+   },
+   {
+    "op": "rope_k.cast_out",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["k_rope.f32"],
+    "outputs": ["k_rope"]
+   },
+   {
+    "op": "kv_write.k",
+    "owner": "device-copy",
+    "copy": "cudaMemcpyAsync device to device, n x 256 bytes, byte-exact",
+    "inputs": ["k_rope"],
+    "outputs": ["k_cache"],
+    "params": {"cells": "[P, P+n)"}
+   },
+   {
+    "op": "kv_write.v",
+    "owner": "device-copy",
+    "copy": "cudaMemcpyAsync device to device, n x 256 bytes, byte-exact",
+    "inputs": ["v"],
+    "outputs": ["v_cache"],
+    "params": {"cells": "[P, P+n)"}
+   },
+   {
+    "op": "attention.kv_max",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_FLASH_ATTN_EXT (mask pre-pass inside launch_fattn)",
+    "inputs": ["mask"],
+    "outputs": ["(pool) KV_max"],
+    "when": "n >= 1024 (fattn-common.cuh:1108; Npad is a multiple of 256)"
+   },
+   {
+    "op": "attention",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_FLASH_ATTN_EXT, vector kernel forced",
+    "inputs": ["q_rope", "k_cache", "v_cache", "mask"],
+    "outputs": ["attn.f32"],
+    "params": "attention"
+   },
+   {
+    "op": "attention.combine",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_FLASH_ATTN_EXT (launch_fattn's combine of parallel blocks)",
+    "inputs": ["(pool) partial results"],
+    "outputs": ["attn.f32"],
+    "when": "parallel_blocks > 1 (every recorded phase)"
+   },
+   {
+    "op": "attention.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["attn.f32"],
+    "outputs": ["attn.out"]
+   },
+   {
+    "op": "o_proj",
+    "owner": "exllamav3",
+    "linear": "o_proj",
+    "inputs": ["attn.out"],
+    "outputs": ["o_proj.out"]
+   },
+   {
+    "op": "attn_residual_add",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_ADD F32",
+    "inputs": ["resid.in", "o_proj.out"],
+    "outputs": ["resid.mid"]
+   },
+   {
+    "op": "mlp_norm",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_RMS_NORM + GGML_OP_MUL, fused by ggml-cuda",
+    "inputs": ["resid.mid", "mlp_norm.w"],
+    "outputs": ["mlp_norm.f32"],
+    "params": {"eps": "rms_norm_eps"}
+   },
+   {
+    "op": "mlp_norm.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["mlp_norm.f32"],
+    "outputs": ["mlp_norm.out"]
+   },
+   {
+    "op": "gate_up",
+    "owner": "exllamav3",
+    "linear": "gate_proj + up_proj as one multi-linear (exl3_mgemm)",
+    "inputs": ["mlp_norm.out"],
+    "outputs": ["gate", "up"],
+    "when": "n <= 32"
+   },
+   {
+    "op": "gate_proj",
+    "owner": "exllamav3",
+    "linear": "gate_proj",
+    "inputs": ["mlp_norm.out"],
+    "outputs": ["gate"],
+    "when": "n > 32"
+   },
+   {
+    "op": "up_proj",
+    "owner": "exllamav3",
+    "linear": "up_proj",
+    "inputs": ["mlp_norm.out"],
+    "outputs": ["up"],
+    "when": "n > 32"
+   },
+   {
+    "op": "swiglu",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_GLU (GGML_GLU_OP_SWIGLU, split inputs) F32",
+    "inputs": ["gate", "up"],
+    "outputs": ["swiglu.f32"]
+   },
+   {
+    "op": "swiglu.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["swiglu.f32"],
+    "outputs": ["swiglu.out"]
+   },
+   {
+    "op": "down_proj",
+    "owner": "exllamav3",
+    "linear": "down_proj",
+    "inputs": ["swiglu.out"],
+    "outputs": ["down_proj.out"]
+   },
+   {
+    "op": "mlp_residual_add",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_ADD F32",
+    "inputs": ["resid.mid", "down_proj.out"],
+    "outputs": ["resid.out"]
+   }
+  ],
+  "output": [
+   {
+    "op": "final_norm",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_RMS_NORM + GGML_OP_MUL, fused by ggml-cuda",
+    "inputs": ["resid.out (layer 23)", "final_norm.w"],
+    "outputs": ["final_norm.f32"],
+    "params": {"eps": "rms_norm_eps"}
+   },
+   {
+    "op": "final_norm.cast",
+    "owner": "ggml",
+    "ggml_op": "GGML_OP_CPY F32 -> F16 (round to nearest even)",
+    "inputs": ["final_norm.f32"],
+    "outputs": ["final_norm.out"]
+   },
+   {
+    "op": "lm_head",
+    "owner": "exllamav3",
+    "linear": "lm_head",
+    "inputs": ["final_norm.out"],
+    "outputs": ["logits"]
+   }
+  ]
+ },
+ "kernels": [
+  {
+   "id": 0,
+   "name": "void k_get_rows_float<__nv_bfloat16, float>(__nv_bfloat16 const*, int const*, float*, long, long, uint3, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+   "owner": "ggml",
+   "mangled": "_Z16k_get_rows_floatI13__nv_bfloat16fEvPKT_PKiPT0_ll5uint3mmmmmmmmm",
+   "sass_text_sha256": "ce508bca6e00e58e2541d5605a6db2293a58bc23fadc9e76d4248fa51331da29",
+   "sass_encoding_sha256": "4b29ae806e4f9f828b753010ce3171013bc49745e4502b168d96a5aeddb2ed0a",
+   "sass_instructions": 280,
+   "mangled_normalized": "_Z16k_get_rows_floatI13__nv_bfloat16fEvPKT_PKiPT0_ll5uint3mmmmmmmmm",
+   "fp16_bridge_sass": "absent",
+   "registers": 40,
+   "static_shared": 0
+  },
+  {
+   "id": 1,
+   "name": "void rms_norm_f32<256, true, false>(float const*, float*, int, long, long, long, float, float const*, long, long, long, uint3, uint3, uint3, uint3, float const*, long, long, long, uint3, uint3, uint3, uint3)",
+   "owner": "ggml",
+   "mangled": "_Z12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_",
+   "sass_text_sha256": "57a23dd0d8d5f077730438498e7aea3c94c1ab1c247a9db6a8525a050ec54475",
+   "sass_encoding_sha256": "1d62de222c424cc5eb33161f92e66fcb521a9e75602ce31122968004ff3c0ad0",
+   "sass_instructions": 352,
+   "mangled_normalized": "_Z12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_",
+   "fp16_bridge_sass": "identical",
+   "registers": 40,
+   "static_shared": 0
+  },
+  {
+   "id": 2,
+   "name": "void cpy_scalar_contiguous<float, __half>(char const*, char*, long)",
+   "owner": "ggml",
+   "mangled": "_Z21cpy_scalar_contiguousIf6__halfEvPKcPcl",
+   "sass_text_sha256": "db357c9da7ea75bff63c84b12f724701c18ca2afd373bf2a9169715340d217c9",
+   "sass_encoding_sha256": "7ed729816f503a4cdee3761a59714bba23bdbb7149921da17ac3f672c28abecd",
+   "sass_instructions": 32,
+   "mangled_normalized": "_Z21cpy_scalar_contiguousIf6__halfEvPKcPcl",
+   "fp16_bridge_sass": "absent",
+   "registers": 10,
+   "static_shared": 0
+  },
+  {
+   "id": 3,
+   "name": "void exl3_gemm_kernel<4, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 4,
+   "name": "add_kernel_hhh(__half const*, __half const*, __half*, unsigned long, unsigned long)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 5,
+   "name": "void cpy_scalar_contiguous<__half, float>(char const*, char*, long)",
+   "owner": "ggml",
+   "mangled": "_Z21cpy_scalar_contiguousI6__halffEvPKcPcl",
+   "sass_text_sha256": "1fd71c4e5dd8618636356d97d8ec3a3a2bdfe5ac6f9bc14c0a82f7587121bdb6",
+   "sass_encoding_sha256": "3196c573b0baaef88ad973ef40d98c0549f26e45d8a73bea164902ce49cb052f",
+   "sass_instructions": 32,
+   "mangled_normalized": "_Z21cpy_scalar_contiguousI6__halffEvPKcPcl",
+   "fp16_bridge_sass": "absent",
+   "registers": 10,
+   "static_shared": 0
+  },
+  {
+   "id": 6,
+   "name": "void rope_neox<true, false, float, float>(float const*, float*, int, int, int, int, int, int, int, int, int, int, int, int const*, float, float, float, rope_corr_dims, float, float const*, long const*, int, bool)",
+   "owner": "ggml",
+   "mangled": "_Z9rope_neoxILb1ELb0EffEvPKT1_PT2_iiiiiiiiiiiPKifff14rope_corr_dimsfPKfPKlib",
+   "sass_text_sha256": "02c4622b523a5e3b4ac1a89954e832d2c06ce2fd088b664c4a5c57175b78ecad",
+   "sass_encoding_sha256": "96d53d8ecb26634bf61f54a07c5e934bc1a4e7591d5cb28484bf7a07a7e072a0",
+   "sass_instructions": 184,
+   "mangled_normalized": "_Z9rope_neoxILb1ELb0EffEvPKT1_PT2_iiiiiiiiiiiPKifff14rope_corr_dimsfPKfPKlib",
+   "fp16_bridge_sass": "identical",
+   "registers": 18,
+   "static_shared": 0
+  },
+  {
+   "id": 7,
+   "name": "void flash_attn_ext_vec<64, 2, (ggml_type)1, (ggml_type)1, false>(char const*, char const*, char const*, char const*, char const*, int const*, float*, float2*, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+   "owner": "ggml",
+   "mangled": "_Z18flash_attn_ext_vecILi64ELi2EL9ggml_type1ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiPfP6float2ffffjfi5uint3iiiiiiiiiiiliiliiiiil",
+   "sass_text_sha256": "2cf4ba8c3578dec0bdc706d41d5895bb78c5c42961c20122dd5e267ac46dd54d",
+   "sass_encoding_sha256": "f908583b2e0f9424f10f762b6efe7dab154f8cb86b6c0dda142bb8e2dcf7a666",
+   "sass_instructions": 1352,
+   "mangled_normalized": "_Z18flash_attn_ext_vecILi64ELi2EL9ggml_type1ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiPfP6float2ffffjfi5uint3iiiiiiiiiiiliiliiiiil",
+   "fp16_bridge_sass": "absent",
+   "registers": 137,
+   "static_shared": 4608
+  },
+  {
+   "id": 8,
+   "name": "void flash_attn_combine_results<64>(float const*, float2 const*, float*, int)",
+   "owner": "ggml",
+   "mangled": "_Z26flash_attn_combine_resultsILi64EEvPKfPK6float2Pfi",
+   "sass_text_sha256": "53d46dae32ecf89de89cdb47fdfc835d957609a2b035e9fb71d8ee0120cc8895",
+   "sass_encoding_sha256": "5aa8361b858b5e5c3b6e72f50a21278d09496c06bcd4553eb19ed0fbd83efa34",
+   "sass_instructions": 440,
+   "mangled_normalized": "_Z26flash_attn_combine_resultsILi64EEvPKfPK6float2Pfi",
+   "fp16_bridge_sass": "absent",
+   "registers": 40,
+   "static_shared": 0
+  },
+  {
+   "id": 9,
+   "name": "void exl3_gemm_kernel<4, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 10,
+   "name": "void k_bin_bcast<&_INTERNAL_b727e39e_11_binbcast_cu_6840010b::op_add, float, float, float, float const*>(float const*, float const*, float*, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, float const*)",
+   "owner": "ggml",
+   "mangled": "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_b727e39e_11_binbcast_cu_6840010b6op_addEffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SB_SB_SB_SB_jjjjjjjjjjjDpT3_",
+   "sass_text_sha256": "ec816d710535af2a335f2f74d871e934ca5fd39fe34be6ae48ea53b75301c268",
+   "sass_encoding_sha256": "61ecaad7bae87a8cb87322481dfafb0bb3b90055611e7fee2007fa0f3b6ea6a6",
+   "sass_instructions": 144,
+   "mangled_normalized": "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_x_11_binbcast_cu_6840010b6op_addEffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SB_SB_SB_SB_jjjjjjjjjjjDpT3_",
+   "fp16_bridge_sass": "identical",
+   "registers": 20,
+   "static_shared": 0
+  },
+  {
+   "id": 11,
+   "name": "void exl3_mgemm_kernel<4, false, true, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const**, void*, int, int, int, int*, __half const**, __half*, __half const**, long*, __half*, int, int, int, int, int, int const*, void**, int const*, int const*, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 12,
+   "name": "void unary_gated_op_kernel<&_INTERNAL_11a4477a_8_unary_cu_eb6d5366::op_silu, float>(float const*, float const*, float*, long, long, long, long)",
+   "owner": "ggml",
+   "mangled": "_Z21unary_gated_op_kernelIXadL_ZN38_INTERNAL_11a4477a_8_unary_cu_eb6d53667op_siluEfEEfEvPKT0_S3_PS1_llll",
+   "sass_text_sha256": "ecfe3e90f04fc4d8f52ad47001245bf0557cd738599f9950af6d41e0edeeacf3",
+   "sass_encoding_sha256": "406ddc912827eeda7cf784787303074304184306a652c2089ef6d7559aa8ab62",
+   "sass_instructions": 176,
+   "mangled_normalized": "_Z21unary_gated_op_kernelIXadL_ZN38_INTERNAL_x_8_unary_cu_eb6d53667op_siluEfEEfEvPKT0_S3_PS1_llll",
+   "fp16_bridge_sass": "identical",
+   "registers": 18,
+   "static_shared": 0
+  },
+  {
+   "id": 13,
+   "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 14,
+   "name": "void exl3_gemm_kernel<6, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 15,
+   "name": "void exl3_gemm_kernel<6, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 16,
+   "name": "void exl3_mgemm_kernel<5, false, true, 1, 16, 32, 256, 4, 3>(__half const*, unsigned short const**, void*, int, int, int, int*, __half const**, __half*, __half const**, long*, __half*, int, int, int, int, int, int const*, void**, int const*, int const*, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 17,
+   "name": "void exl3_gemm_kernel<5, false, true, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 18,
+   "name": "void exl3_gemm_kernel<5, false, false, 1, 16, 32, 128, 4, 3>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 19,
+   "name": "void had_hf_r_128_kernel<true, false>(__half const*, __half*, __half const*, float)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 20,
+   "name": "void reconstruct_kernel<4, 1, false>(__half*, unsigned short const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 21,
+   "name": "nvjet_sm121_hsh_mma_64x56x64_6_16x56x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 22,
+   "name": "void had_hf_r_128_kernel<false, true>(__half const*, __half*, __half const*, float)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 23,
+   "name": "nvjet_sm121_hsh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 24,
+   "name": "nvjet_sm121_hss_mma_64x56x64_6_16x56x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 25,
+   "name": "void had_ff_r_128_kernel<false, true>(float const*, float*, __half const*, float)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 26,
+   "name": "nvjet_sm121_hss_mma_160x64x64_3_80x32x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 27,
+   "name": "nvjet_sm121_hss_mma_64x56x128_3_16x56x128_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 28,
+   "name": "void reconstruct_kernel<8, 1, false>(__half*, unsigned short const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 29,
+   "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_nn_align8::Params)",
+   "owner": "cublas"
+  },
+  {
+   "id": 30,
+   "name": "void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_nn_align8::Params)",
+   "owner": "cublas"
+  },
+  {
+   "id": 31,
+   "name": "void reconstruct_kernel<6, 1, false>(__half*, unsigned short const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 32,
+   "name": "void reconstruct_kernel<5, 1, false>(__half*, unsigned short const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 33,
+   "name": "nvjet_sm121_hsh_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 34,
+   "name": "nvjet_sm121_hsh_mma_64x48x64_7_16x48x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 35,
+   "name": "nvjet_sm121_hss_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 36,
+   "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8>(cutlass_80_tensorop_s16816gemm_f16_128x128_32x5_nn_align8::Params)",
+   "owner": "cublas"
+  },
+  {
+   "id": 37,
+   "name": "nvjet_sm121_hss_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 38,
+   "name": "nvjet_sm121_hsh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+   "owner": "cublas"
+  },
+  {
+   "id": 39,
+   "name": "void reconstruct_had_kernel<4, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 40,
+   "name": "void flash_attn_mask_to_KV_max<2>(__half2 const*, int*, int, long, long)",
+   "owner": "ggml",
+   "mangled": "_Z25flash_attn_mask_to_KV_maxILi2EEvPK7__half2Piill",
+   "sass_text_sha256": "1ce24d91f805a4f449601a71f8fe3115cf3b677f717777bace908ddd519302f0",
+   "sass_encoding_sha256": "787449ea045421da6de08b6eafb8153c2fd9f9be08d4d022573b0f91168bc89e",
+   "sass_instructions": 88,
+   "mangled_normalized": "_Z25flash_attn_mask_to_KV_maxILi2EEvPK7__half2Piill",
+   "fp16_bridge_sass": "absent",
+   "registers": 22,
+   "static_shared": 128
+  },
+  {
+   "id": 41,
+   "name": "void reconstruct_had_kernel<8, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 42,
+   "name": "void reconstruct_had_kernel<6, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 43,
+   "name": "void reconstruct_had_kernel<5, 1, false>(__half*, unsigned short const*, __half const*, __half const*, int, int)",
+   "owner": "exllamav3"
+  },
+  {
+   "id": 44,
+   "name": "void flash_attn_ext_vec<64, 1, (ggml_type)1, (ggml_type)1, false>(char const*, char const*, char const*, char const*, char const*, int const*, float*, float2*, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+   "owner": "ggml",
+   "mangled": "_Z18flash_attn_ext_vecILi64ELi1EL9ggml_type1ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiPfP6float2ffffjfi5uint3iiiiiiiiiiiliiliiiiil",
+   "sass_text_sha256": "3b65743bff83c048f1707b8e247588ed988eed1c895e50f0b2ae94f9df1612fe",
+   "sass_encoding_sha256": "416a5fea761d8d5a33ee6862219324f8024f35c6ffd3980c60f3f1071421d4f5",
+   "sass_instructions": 872,
+   "mangled_normalized": "_Z18flash_attn_ext_vecILi64ELi1EL9ggml_type1ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiPfP6float2ffffjfi5uint3iiiiiiiiiiiliiliiiiil",
+   "fp16_bridge_sass": "absent",
+   "registers": 112,
+   "static_shared": 4352
+  },
+  {
+   "id": 45,
+   "name": "void exl3_gemm_kernel<8, false, false, 1, 16, 16, 128, 6, 5>(__half const*, unsigned short const*, void*, int, int, int, int*, __half const*, __half*, __half const*)",
+   "owner": "exllamav3"
+  }
+ ],
+ "launch_format": "[kernel id, grid, block, shared bytes per block (static + dynamic)]; kv_write: [\"memcpy\", \"DtoD\", bytes]",
+ "phase_kinds": [
+  {
+   "phase_kind": "prefill 32",
+   "kind": "prefill",
+   "rows": 32,
+   "first_position": 0,
+   "attended": 32,
+   "padded_kv_length": 256,
+   "shape_parameters": {
+    "n": 32,
+    "P": 0,
+    "N": 32,
+    "Npad": 256,
+    "vec_cols_per_block": 2,
+    "attention_pool_scratch_bytes": 354816,
+    "parallel_blocks": 3
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [32, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_up", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [32, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [448, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [28, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [4, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [4, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [448, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [448, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [64, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [64, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [64, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 8192]],
+    "kv_write.v": [["memcpy", "DtoD", 8192]],
+    "attention": [[7, [16, 3, 14], [32, 4, 1], 4608]],
+    "attention.combine": [[8, [32, 14, 1], [64, 1, 1], 24]],
+    "attention.cast": [[2, [448, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [112, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [32, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [448, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [608, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [2432, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [112, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [32, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [448, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [24, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [40, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 32, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {"down_proj": [4], "k_proj": [4], "lm_head": [8], "o_proj": [4], "q_proj": [4], "v_proj": [4]}
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {"layers": [0, 1], "launches": [[14, [14, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [28, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {"layers": [0, 1], "launches": [[15, [14, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[17, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[16, [24, 1, 2], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [24, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [48, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 32, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 32, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 32, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "prefill 144",
+   "kind": "prefill",
+   "rows": 144,
+   "first_position": 0,
+   "attended": 144,
+   "padded_kv_length": 256,
+   "shape_parameters": {
+    "n": 144,
+    "P": 0,
+    "N": 144,
+    "Npad": 256,
+    "vec_cols_per_block": 2,
+    "attention_pool_scratch_bytes": 1596672,
+    "parallel_blocks": 3
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [144, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_proj", "up_proj", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [144, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [2016, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [126, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [18, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [18, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [2016, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [2016, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [288, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [288, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [288, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 36864]],
+    "kv_write.v": [["memcpy", "DtoD", 36864]],
+    "attention": [[7, [72, 3, 14], [32, 4, 1], 4608]],
+    "attention.combine": [[8, [144, 14, 1], [64, 1, 1], 24]],
+    "attention.cast": [[2, [2016, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [504, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [144, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [2016, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [2736, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [10944, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [504, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [144, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [2016, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [40, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "gate_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 4864],
+       "reconstruct_slices": null
+      },
+      "up_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4],
+      "gate_proj": [4],
+      "k_proj": [4],
+      "lm_head": [8],
+      "o_proj": [4],
+      "q_proj": [4],
+      "up_proj": [4],
+      "v_proj": [4]
+     }
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {"layers": [0, 1], "launches": [[14, [14, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [28, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {"layers": [0, 1], "launches": [[15, [14, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[17, [14, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [48, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "up_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [48, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [48, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "gate_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 4864],
+       "reconstruct_slices": null
+      },
+      "up_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 144, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 144, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "gate_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "up_proj": [4, 5],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "prefill 145",
+   "kind": "prefill",
+   "rows": 145,
+   "first_position": 0,
+   "attended": 145,
+   "padded_kv_length": 256,
+   "shape_parameters": {
+    "n": 145,
+    "P": 0,
+    "N": 145,
+    "Npad": 256,
+    "vec_cols_per_block": 2,
+    "attention_pool_scratch_bytes": 1607760,
+    "parallel_blocks": 3
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [145, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_proj", "up_proj", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [145, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [2030, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [127, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [19, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [19, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [2030, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [2030, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [290, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [290, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [290, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 37120]],
+    "kv_write.v": [["memcpy", "DtoD", 37120]],
+    "attention": [[7, [73, 3, 14], [32, 4, 1], 4608]],
+    "attention.combine": [[8, [145, 14, 1], [64, 1, 1], 24]],
+    "attention.cast": [[2, [2030, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [508, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [145, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [2030, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [2755, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [11020, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [508, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [145, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [2030, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [7, 56, 1], [256, 1, 1], 5120],
+         [21, [56, 1, 1], [32, 4, 1], 93184],
+         [22, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [1, 56, 1], [256, 1, 1], 5120],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [1, 56, 1], [256, 1, 1], 5120],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [7, 56, 1], [256, 1, 1], 5120],
+         [24, [56, 1, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 38, 1], [32, 1, 1], 0],
+         [20, [7, 304, 1], [256, 1, 1], 5120],
+         [27, [24, 2, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [19, [145, 7, 1], [32, 1, 1], 0],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [163, 56, 1], [256, 1, 1], 6144],
+        [30, [16, 21, 1], [128, 1, 1], 81920],
+        [22, [145, 1187, 1], [32, 1, 1], 0]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4],
+      "gate_proj": [4],
+      "k_proj": [4],
+      "lm_head": [8],
+      "o_proj": [4],
+      "q_proj": [4],
+      "up_proj": [4],
+      "v_proj": [4]
+     }
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [31, [7, 56, 1], [256, 1, 1], 5632],
+         [21, [56, 1, 1], [32, 4, 1], 93184],
+         [22, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [7, 56, 1], [256, 1, 1], 5376],
+         [21, [56, 1, 1], [32, 4, 1], 93184],
+         [22, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [31, [1, 56, 1], [256, 1, 1], 5632],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [1, 56, 1], [256, 1, 1], 5376],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [31, [1, 56, 1], [256, 1, 1], 5632],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [1, 56, 1], [256, 1, 1], 5376],
+         [23, [20, 1, 1], [32, 4, 1], 82944],
+         [22, [145, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [31, [7, 56, 1], [256, 1, 1], 5632],
+         [24, [56, 1, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [7, 56, 1], [256, 1, 1], 5376],
+         [24, [56, 1, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [38, 56, 1], [256, 1, 1], 5376],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [32, [38, 56, 1], [256, 1, 1], 5376],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [26, [248, 1, 1], [64, 2, 1], 87040],
+         [25, [145, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [145, 38, 1], [32, 1, 1], 0],
+         [32, [7, 304, 1], [256, 1, 1], 5376],
+         [27, [24, 2, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [145, 38, 1], [32, 1, 1], 0],
+         [20, [7, 304, 1], [256, 1, 1], 5120],
+         [27, [24, 2, 1], [32, 4, 1], 93184],
+         [25, [145, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [19, [145, 7, 1], [32, 1, 1], 0],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [29, [24, 64, 1], [128, 1, 1], 49152],
+        [28, [163, 56, 1], [256, 1, 1], 6144],
+        [30, [16, 21, 1], [128, 1, 1], 81920],
+        [22, [145, 1187, 1], [32, 1, 1], 0]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 145, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 145, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "gate_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "up_proj": [4, 5],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "prefill 1023",
+   "kind": "prefill",
+   "rows": 1023,
+   "first_position": 0,
+   "attended": 1023,
+   "padded_kv_length": 1024,
+   "shape_parameters": {
+    "n": 1023,
+    "P": 0,
+    "N": 1023,
+    "Npad": 1024,
+    "vec_cols_per_block": 2,
+    "attention_pool_scratch_bytes": 11343024,
+    "parallel_blocks": 3
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [1023, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_proj", "up_proj", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [1023, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [14322, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [896, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [128, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [128, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [14322, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [14322, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [2046, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [2046, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [2046, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 261888]],
+    "kv_write.v": [["memcpy", "DtoD", 261888]],
+    "attention": [[7, [512, 3, 14], [32, 4, 1], 4608]],
+    "attention.combine": [[8, [1023, 14, 1], [64, 1, 1], 24]],
+    "attention.cast": [[2, [14322, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [3581, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [1023, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [14322, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [19437, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [77748, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [3581, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [1023, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [14322, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [7, 56, 1], [256, 1, 1], 5120],
+         [33, [56, 1, 1], [64, 4, 1], 78848],
+         [22, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [1, 56, 1], [256, 1, 1], 5120],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [1, 56, 1], [256, 1, 1], 5120],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [7, 56, 1], [256, 1, 1], 5120],
+         [35, [56, 1, 1], [64, 4, 1], 78848],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 38, 1], [32, 1, 1], 0],
+         [20, [7, 304, 1], [256, 1, 1], 5120],
+         [37, [64, 1, 1], [128, 2, 1], 74752],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [19, [1023, 7, 1], [32, 1, 1], 0],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [163, 56, 1], [256, 1, 1], 6144],
+        [30, [64, 21, 1], [128, 1, 1], 81920],
+        [22, [1023, 1187, 1], [32, 1, 1], 0]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4],
+      "gate_proj": [4],
+      "k_proj": [4],
+      "lm_head": [8],
+      "o_proj": [4],
+      "q_proj": [4],
+      "up_proj": [4],
+      "v_proj": [4]
+     }
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [31, [7, 56, 1], [256, 1, 1], 5632],
+         [33, [56, 1, 1], [64, 4, 1], 78848],
+         [22, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [7, 56, 1], [256, 1, 1], 5376],
+         [33, [56, 1, 1], [64, 4, 1], 78848],
+         [22, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [31, [1, 56, 1], [256, 1, 1], 5632],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [1, 56, 1], [256, 1, 1], 5376],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [31, [1, 56, 1], [256, 1, 1], 5632],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [1, 56, 1], [256, 1, 1], 5376],
+         [34, [176, 1, 1], [32, 4, 1], 101376],
+         [22, [1023, 1, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [31, [7, 56, 1], [256, 1, 1], 5632],
+         [35, [56, 1, 1], [64, 4, 1], 78848],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [7, 56, 1], [256, 1, 1], 5376],
+         [35, [56, 1, 1], [64, 4, 1], 78848],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [38, 56, 1], [256, 1, 1], 5376],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [32, [38, 56, 1], [256, 1, 1], 5376],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 7, 1], [32, 1, 1], 0],
+         [20, [38, 56, 1], [256, 1, 1], 5120],
+         [36, [64, 5, 1], [128, 1, 1], 81920],
+         [25, [1023, 38, 1], [32, 1, 1], 0]
+        ]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [
+         [19, [1023, 38, 1], [32, 1, 1], 0],
+         [32, [7, 304, 1], [256, 1, 1], 5376],
+         [37, [64, 1, 1], [128, 2, 1], 74752],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [
+         [19, [1023, 38, 1], [32, 1, 1], 0],
+         [20, [7, 304, 1], [256, 1, 1], 5120],
+         [37, [64, 1, 1], [128, 2, 1], 74752],
+         [25, [1023, 7, 1], [32, 1, 1], 0]
+        ]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [19, [1023, 7, 1], [32, 1, 1], 0],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [256, 56, 1], [256, 1, 1], 6144],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [28, [163, 56, 1], [256, 1, 1], 6144],
+        [30, [64, 21, 1], [128, 1, 1], 81920],
+        [22, [1023, 1187, 1], [32, 1, 1], 0]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1023, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1023, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "gate_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "up_proj": [4, 5],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "prefill 1024",
+   "kind": "prefill",
+   "rows": 1024,
+   "first_position": 0,
+   "attended": 1024,
+   "padded_kv_length": 1024,
+   "shape_parameters": {
+    "n": 1024,
+    "P": 0,
+    "N": 1024,
+    "Npad": 1024,
+    "vec_cols_per_block": 2,
+    "attention_pool_scratch_bytes": 11356160,
+    "parallel_blocks": 3
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [1024, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention.kv_max", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_proj", "up_proj", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [1024, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [14336, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [896, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [128, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [128, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [14336, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [14336, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [2048, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [2048, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [2048, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 262144]],
+    "kv_write.v": [["memcpy", "DtoD", 262144]],
+    "attention.kv_max": [[40, [512, 1, 1], [128, 1, 1], 128]],
+    "attention": [[7, [512, 3, 14], [32, 4, 1], 4608]],
+    "attention.combine": [[8, [1024, 14, 1], [64, 1, 1], 24]],
+    "attention.cast": [[2, [14336, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [3584, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [1024, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [14336, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [19456, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [77824, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [3584, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [1024, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [14336, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [7, 7, 1], [256, 1, 1], 40960], [33, [56, 1, 1], [64, 4, 1], 78848]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [1, 7, 1], [256, 1, 1], 40960], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [1, 7, 1], [256, 1, 1], 40960], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [7, 7, 1], [256, 1, 1], 40960], [35, [56, 1, 1], [64, 4, 1], 78848]]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [38, 7, 1], [256, 1, 1], 40960], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [38, 7, 1], [256, 1, 1], 40960], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [7, 38, 1], [256, 1, 1], 40960], [37, [64, 1, 1], [128, 2, 1], 74752]]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [163, 7, 1], [256, 1, 1], 49152],
+        [30, [64, 21, 1], [128, 1, 1], 81920]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4],
+      "gate_proj": [4],
+      "k_proj": [4],
+      "lm_head": [8],
+      "o_proj": [4],
+      "q_proj": [4],
+      "up_proj": [4],
+      "v_proj": [4]
+     }
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [[42, [7, 7, 1], [256, 1, 1], 45056], [33, [56, 1, 1], [64, 4, 1], 78848]]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[43, [7, 7, 1], [256, 1, 1], 43008], [33, [56, 1, 1], [64, 4, 1], 78848]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [[42, [1, 7, 1], [256, 1, 1], 45056], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[43, [1, 7, 1], [256, 1, 1], 43008], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [[42, [1, 7, 1], [256, 1, 1], 45056], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[43, [1, 7, 1], [256, 1, 1], 43008], [34, [176, 1, 1], [32, 4, 1], 101376]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1],
+        "launches": [[42, [7, 7, 1], [256, 1, 1], 45056], [35, [56, 1, 1], [64, 4, 1], 78848]]
+       },
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[43, [7, 7, 1], [256, 1, 1], 43008], [35, [56, 1, 1], [64, 4, 1], 78848]]
+       }
+      ],
+      "gate_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [[43, [38, 7, 1], [256, 1, 1], 43008], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [38, 7, 1], [256, 1, 1], 40960], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       }
+      ],
+      "up_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [[43, [38, 7, 1], [256, 1, 1], 43008], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [38, 7, 1], [256, 1, 1], 40960], [36, [64, 5, 1], [128, 1, 1], 81920]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "launches": [[43, [7, 38, 1], [256, 1, 1], 43008], [37, [64, 1, 1], [128, 2, 1], 74752]]
+       },
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[39, [7, 38, 1], [256, 1, 1], 40960], [37, [64, 1, 1], [128, 2, 1], 74752]]
+       }
+      ]
+     },
+     "lm_head_launches": [
+      {
+       "op": "lm_head",
+       "launches": [
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [256, 7, 1], [256, 1, 1], 49152],
+        [38, [40, 32, 1], [64, 4, 1], 87040],
+        [41, [163, 7, 1], [256, 1, 1], 49152],
+        [30, [64, 21, 1], [128, 1, 1], 81920]
+       ]
+      }
+     ],
+     "linear_paths": {
+      "q_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "k_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 128],
+       "reconstruct_slices": 1
+      },
+      "v_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 128],
+       "reconstruct_slices": 1
+      },
+      "o_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "gate_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 4864],
+       "reconstruct_slices": 1
+      },
+      "up_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 4864],
+       "reconstruct_slices": 1
+      },
+      "down_proj": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float32",
+       "output_shape": [1, 1024, 896],
+       "reconstruct_slices": 1
+      },
+      "lm_head": {
+       "path": "fused-reconstruct",
+       "output_dtype": "float16",
+       "output_shape": [1, 1024, 151936],
+       "reconstruct_slices": 5
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "gate_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "up_proj": [4, 5],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "step 32",
+   "kind": "single-token step",
+   "rows": 1,
+   "first_position": 32,
+   "attended": 33,
+   "padded_kv_length": 256,
+   "shape_parameters": {
+    "n": 1,
+    "P": 32,
+    "N": 33,
+    "Npad": 256,
+    "vec_cols_per_block": 1,
+    "attention_pool_scratch_bytes": 14784,
+    "parallel_blocks": 4
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [1, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_up", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [1, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [14, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [14, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [2, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [2, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [2, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 256]],
+    "kv_write.v": [["memcpy", "DtoD", 256]],
+    "attention": [[44, [1, 4, 14], [32, 4, 1], 4352]],
+    "attention.combine": [[8, [1, 14, 1], [64, 1, 1], 32]],
+    "attention.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [4, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [1, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [19, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [76, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [4, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [1, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [14, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [20, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [22, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [24, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[45, [48, 1, 1], [256, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 1, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4],
+      "gate_proj": [4],
+      "k_proj": [4],
+      "lm_head": [8],
+      "o_proj": [4],
+      "q_proj": [4],
+      "up_proj": [4],
+      "v_proj": [4]
+     }
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {"layers": [0, 1], "launches": [[14, [28, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [20, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {"layers": [0, 1], "launches": [[15, [28, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[17, [28, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[16, [24, 1, 2], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [22, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [40, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 1, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "gate_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "up_proj": [4, 5],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  },
+  {
+   "phase_kind": "step 1024",
+   "kind": "single-token step",
+   "rows": 1,
+   "first_position": 1024,
+   "attended": 1025,
+   "padded_kv_length": 1280,
+   "shape_parameters": {
+    "n": 1,
+    "P": 1024,
+    "N": 1025,
+    "Npad": 1280,
+    "vec_cols_per_block": 1,
+    "attention_pool_scratch_bytes": 48048,
+    "parallel_blocks": 13
+   },
+   "embedding": [{"op": "embed", "launches": [[0, [1, 4, 1], [256, 1, 1], 0]]}],
+   "layer_order": ["attn_norm", "attn_norm.cast", "q_proj", "q_proj.bias_add", "k_proj", "k_proj.bias_add", "v_proj", "v_proj.bias_add", "rope_q.cast", "rope_q", "rope_k.cast", "rope_k", "rope_k.cast_out", "kv_write.k", "kv_write.v", "attention", "attention.combine", "attention.cast", "o_proj", "attn_residual_add", "mlp_norm", "mlp_norm.cast", "gate_up", "swiglu", "swiglu.cast", "down_proj", "mlp_residual_add"],
+   "layer_launches": {
+    "attn_norm": [[1, [1, 1, 1], [256, 1, 1], 128]],
+    "attn_norm.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "q_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "k_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "v_proj.bias_add": [[4, [1, 1, 1], [1024, 1, 1], 0]],
+    "rope_q.cast": [[5, [14, 1, 1], [64, 1, 1], 0]],
+    "rope_q": [[6, [14, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast": [[5, [2, 1, 1], [64, 1, 1], 0]],
+    "rope_k": [[6, [2, 1, 1], [1, 256, 1], 0]],
+    "rope_k.cast_out": [[2, [2, 1, 1], [64, 1, 1], 0]],
+    "kv_write.k": [["memcpy", "DtoD", 256]],
+    "kv_write.v": [["memcpy", "DtoD", 256]],
+    "attention": [[44, [1, 13, 14], [32, 4, 1], 4352]],
+    "attention.combine": [[8, [1, 14, 1], [64, 1, 1], 104]],
+    "attention.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "attn_residual_add": [[10, [4, 1, 1], [128, 1, 1], 0]],
+    "mlp_norm": [[1, [1, 1, 1], [256, 1, 1], 128]],
+    "mlp_norm.cast": [[2, [14, 1, 1], [64, 1, 1], 0]],
+    "swiglu": [[12, [19, 1, 1], [256, 1, 1], 0]],
+    "swiglu.cast": [[2, [76, 1, 1], [64, 1, 1], 0]],
+    "mlp_residual_add": [[10, [4, 1, 1], [128, 1, 1], 0]]
+   },
+   "output": [
+    {"op": "final_norm", "launches": [[1, [1, 1, 1], [256, 1, 1], 128]]},
+    {"op": "final_norm.cast", "launches": [[2, [14, 1, 1], [64, 1, 1], 0]]}
+   ],
+   "output_order": ["final_norm", "final_norm.cast", "lm_head"],
+   "fixtures": {
+    "4.0bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [20, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[3, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [22, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [24, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {
+        "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[45, [48, 1, 1], [256, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 1, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {"down_proj": [4], "k_proj": [4], "lm_head": [8], "o_proj": [4], "q_proj": [4], "v_proj": [4]}
+    },
+    "4.5bpw": {
+     "linear_launches": {
+      "q_proj": [
+       {"layers": [0, 1], "launches": [[14, [28, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [20, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "k_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "v_proj": [
+       {"layers": [0, 1], "launches": [[14, [4, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[18, [4, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "o_proj": [
+       {"layers": [0, 1], "launches": [[15, [28, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[17, [28, 1, 1], [512, 1, 1], 92160]]
+       }
+      ],
+      "gate_up": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[16, [24, 1, 2], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[11, [22, 1, 2], [512, 1, 1], 92160]]
+       }
+      ],
+      "down_proj": [
+       {"layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "launches": [[17, [40, 1, 1], [512, 1, 1], 92160]]},
+       {
+        "layers": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "launches": [[9, [48, 1, 1], [512, 1, 1], 92160]]
+       }
+      ]
+     },
+     "lm_head_launches": [{"op": "lm_head", "launches": [[13, [48, 1, 1], [512, 1, 1], 92160]]}],
+     "linear_paths": {
+      "q_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "k_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "v_proj": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 128],
+       "reconstruct_slices": null
+      },
+      "o_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "gate_up": {
+       "path": "packed (exl3_mgemm)",
+       "output_dtype": "float32",
+       "output_shape": [2, 1, 4864],
+       "reconstruct_slices": null
+      },
+      "down_proj": {
+       "path": "packed",
+       "output_dtype": "float32",
+       "output_shape": [1, 1, 896],
+       "reconstruct_slices": null
+      },
+      "lm_head": {
+       "path": "packed",
+       "output_dtype": "float16",
+       "output_shape": [1, 1, 151936],
+       "reconstruct_slices": null
+      }
+     },
+     "K_by_linear": {
+      "down_proj": [4, 5],
+      "k_proj": [5, 6],
+      "lm_head": [8],
+      "o_proj": [5, 6],
+      "q_proj": [5, 6],
+      "v_proj": [5, 6]
+     }
+    }
+   }
+  }
+ ],
+ "evidence": {
+  "4.0bpw": {
+   "prefill 32": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 144": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 145": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 1023": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 1024": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "step 32": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "step 1024": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   }
+  },
+  "4.5bpw": {
+   "prefill 32": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 144": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 145": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 1023": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "prefill 1024": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "step 32": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   },
+   "step 1024": {
+    "checked_run_logits_equal_reference_arm": true,
+    "profiled_logits_equal_reference_arm": true,
+    "excluded_transfers": {
+     "Memcpy DtoD (Device -> Device) [ggml.get_rows]": 2,
+     "Memcpy HtoD (Pageable -> Device) [ggml.get_rows]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rms_norm]": 147,
+     "Memcpy HtoD (Pageable -> Device) [block]": 1,
+     "Memcpy DtoD (Device -> Device) [ggml.rope_neox]": 96,
+     "Memcpy HtoD (Pageable -> Device) [ggml.rope_neox]": 48,
+     "Memcpy DtoH (Device -> Pinned) [block]": 24,
+     "Memcpy DtoH (Device -> Pageable) [attention_block]": 24,
+     "Memcpy DtoH (Device -> Pinned) [attention_block]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.attention]": 96,
+     "Memset (Device) [ggml.attention]": 48,
+     "Memcpy HtoD (Pageable -> Device) [ggml.attention]": 24,
+     "Memcpy DtoD (Device -> Device) [ggml.add]": 144,
+     "Memcpy DtoD (Device -> Device) [ggml.swiglu]": 72,
+     "Memcpy DtoD (Device -> Device) [mlp]": 24
+    }
+   }
+  }
+ },
+ "dtype_chain_checks": {"cases": 9768, "equal": 9768}
+}

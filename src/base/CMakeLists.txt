@@ -9,6 +9,12 @@ jitllm_build_info_library(jitllm_build_info)
 add_library(jitllm_surface_versions INTERFACE)
 target_include_directories(jitllm_surface_versions INTERFACE "${PROJECT_SOURCE_DIR}/src")
 
+# Invariant checks (check.h), typed identities (ids.h) and byte counts
+# (bytes.h).
+add_library(jitllm_base STATIC check.cc)
+target_include_directories(jitllm_base PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(jitllm_base PRIVATE jitllm_warnings)
+
 # Diagnostic reports (report.h), such as `jitllm doctor` prints.
 add_library(jitllm_report STATIC report.cc)
 target_include_directories(jitllm_report PUBLIC "${PROJECT_SOURCE_DIR}/src")

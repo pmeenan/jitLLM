@@ -750,19 +750,24 @@ combined:
 
 | Line | Source |
 | --- | --- |
-| Physical total and available memory | OS counters |
+| Physical total and available memory | OS counters: `MemTotal` and `MemAvailable`, which on the Spark include all VMM backing, device-local and host alike, from creation to release |
 | Configured headroom and execution budget `B` | Configuration |
 | Commitments: `F`, `R(G)`, `J` and the active envelopes | Commitment ledger |
 | Occupancy by class: weights (leased, eligible), admitted state, retained entries, workspace and activations, I/O and communication buffers, runtime metadata, loading, evicting or awaiting write-back, quarantined, pool-held, and non-evictable backend or unknown allocations | Occupancy ledger, with shared backing counted once |
 | Spill: bytes held and bytes written in the rolling window | Retention cache and storage service |
-| The runtime process's measured footprint | OS accounting for the process |
-| Unattributed: measured footprint minus cataloged occupancy | Derived; a discrepancy to explain, never free memory |
+| The runtime process's ordinary allocations | OS accounting for the process (RSS, its cgroup), which on the Spark misses VMM backing: device backing never appears, and host backing only while mapped with access |
+| Driver bookkeeping for the backing | Derived: the kernel's unreclaimable slab, about 34 KiB per 2 MiB extent while it exists and more while mapped on the Spark; charged to `F` |
+| Unattributed: the drop in `MemAvailable` not explained by cataloged occupancy, driver bookkeeping, ordinary allocations or page cache | Derived; a discrepancy to explain, never free memory |
 | Page cache, jobs and other processes | OS counters; all outside `B` |
 | Driver-reported free memory | Provider probe; informational, never an admission input |
 
-M2 owes a measurement of which OS counters include VMM backing on the Spark
-driver. Until then, the breakdown shows measured counters beside the catalog
-without claiming that they reconcile. D-034's direct reads kept the page
+On the Spark, VMM backing leaves `MemAvailable` when it is created and
+returns when it is released, and the driver's free memory equals
+`MemAvailable`. Per-process and cgroup counters miss it, so a cgroup limit
+does not bound it and the budget `B` must
+([measurement](experiments/vmm-counters/README.md)). The breakdown therefore
+reconciles the catalog against the system-wide counters, not the process
+footprint. D-034's direct reads kept the page
 cache empty ([I/O follow-up](environment.md#io-path-follow-up-2026-09-21)),
 but jobs and other processes can still fill page cache within the headroom.
 
@@ -1699,7 +1704,9 @@ explicit CPU and GPU targets (`sm_121` for GB10), never `-march=native`
 (D-011). The C++ and CUDA runtimes link statically, so a binary needs only
 glibc and, in CUDA builds, the NVIDIA driver's `libcuda.so.1` at run time
 (D-060, D-072). The driver is a hard requirement; the build links NVIDIA's
-stub from the SDK. Once RDMA is linked, rdma-core joins them. Sources come through
+stub from the SDK. The exception is cuBLAS: binaries that use it will link
+it dynamically, and the package will then ship its two pinned libraries
+(D-076). Once RDMA is linked, rdma-core joins them. Sources come through
 D-057's locked acquisition, and tools through the mise-managed SDK (D-049).
 Build profiles select optional modules; the copyleft-disabled profile
 excludes them before any source is fetched. `jitllm --version` and the build
@@ -1811,7 +1818,7 @@ evidence or a later choice:
 | Worker counts, queue sizes, wakeup and polling for D-048's lanes; lost-wakeup and memory-ordering evidence | M2 |
 | The operation contract's exact types, the implementation registry, per-operation GGML integration, phase envelopes and `F` | M2 backend proof (P6) |
 | Keep or amend D-033: independent handles versus slab slots, under criteria approved before measuring | M2 [retained-backing comparison](backend-proof.md#retained-backing-comparison) |
-| Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | M2 measurement |
+| Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | Settled in M2 ([vmm-counters](experiments/vmm-counters/README.md)) |
 | Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M4 |
 | State block sizes and KV layouts per state adapter | M2/M3 |
 | HTTP, TLS and JSON libraries (TOML: toml++, D-073) | M3, under D-017, D-057 and D-066 |

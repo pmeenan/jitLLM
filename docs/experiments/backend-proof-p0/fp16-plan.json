@@ -1,0 +1,4753 @@
+{
+ "description": "Executed plan of the FP16 toolchain bridge (llama.cpp b29c606e2 built with the jitLLM SDK) for the four P0 arms, from nsys CUDA traces, cuBLAS/cuBLASLt logs, cuobjdump SASS and an instrumented pool-peak copy. Reference only.",
+ "token_format": {
+  "kernel": "[\"kernel\", kernel id, grid, block, dynamic shared bytes, stream role or cublas#call]",
+  "memcpy": "[\"memcpy\", kind, src memory, dst memory, bytes, stream role]",
+  "memset": "[\"memset\", bytes, value, stream role, (cublas#call)]",
+  "repeat": "{\"repeat\": n, \"body\": [...]}: the body runs n times in a row"
+ },
+ "notes": ["2026-09-25 on spark (GB10, driver 580.178.04). nsys 2025.3.2 --trace=cuda; cuBLAS 13.8.0.4 logging via CUBLAS_LOGINFO_DBG/CUBLAS_LOGDEST_DBG and CUBLASLT_LOG_LEVEL=5/CUBLASLT_LOG_FILE (all four honored). Profiled runs used the unmodified bridge; pool peaks come from separate runs of the fp16-pool-peak.patch copy. Both sets of runs reproduced the known logits bit for bit.", "SASS: cuobjdump 13.0.85 -sass on the bridge executable and on each ggml-cuda object; text hash = instruction text without offsets or encodings, encoding hash = the 128-bit encodings in order. cuBLAS kernels live in libcublasLt and are identified by library hash, name and cuBLASLt algo only.", "Chunk boundaries are the logits device-to-host copies (rows x 151936 x 4 bytes); a chunk's inputs are the pinned host-to-device copies that directly precede its first compute-stream operation."],
+ "libraries": {
+  "libcublas.so.13.8.0.4": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+  "libcublasLt.so.13.8.0.4": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+  "libcudart.so.13.4.92": "5787a422ae23e45ab2f38f687f44b21b4d8aa0428fc3171cab80566211710967",
+  "bridge-build/fp16_reference": "609ee6ec2242866cd0da4d208689132f01c020a700935115e3198ec2378826cb",
+  "pool-peak-build/fp16_reference": "4b997f83128c8c41177a2ba992583b039c870f7f7c04f16b1f7e65d5b080c117"
+ },
+ "build": {
+  "flag_sets": [
+   {
+    "id": 0,
+    "nvcc_flags": "-forward-unknown-to-host-compiler -DGGML_CUDA_FA_BF16_BF16=1 -DGGML_CUDA_FA_BF16_F16=0 -DGGML_CUDA_FA_BF16_Q4_0=0 -DGGML_CUDA_FA_BF16_Q4_1=0 -DGGML_CUDA_FA_BF16_Q5_0=0 -DGGML_CUDA_FA_BF16_Q5_1=0 -DGGML_CUDA_FA_BF16_Q8_0=0 -DGGML_CUDA_FA_F16_BF16=0 -DGGML_CUDA_FA_F16_F16=1 -DGGML_CUDA_FA_F16_Q4_0=0 -DGGML_CUDA_FA_F16_Q4_1=0 -DGGML_CUDA_FA_F16_Q5_0=0 -DGGML_CUDA_FA_F16_Q5_1=0 -DGGML_CUDA_FA_F16_Q8_0=0 -DGGML_CUDA_FA_Q4_0_BF16=0 -DGGML_CUDA_FA_Q4_0_F16=0 -DGGML_CUDA_FA_Q4_0_Q4_0=1 -DGGML_CUDA_FA_Q4_0_Q4_1=0 -DGGML_CUDA_FA_Q4_0_Q5_0=0 -DGGML_CUDA_FA_Q4_0_Q5_1=0 -DGGML_CUDA_FA_Q4_0_Q8_0=0 -DGGML_CUDA_FA_Q4_1_BF16=0 -DGGML_CUDA_FA_Q4_1_F16=0 -DGGML_CUDA_FA_Q4_1_Q4_0=0 -DGGML_CUDA_FA_Q4_1_Q4_1=0 -DGGML_CUDA_FA_Q4_1_Q5_0=0 -DGGML_CUDA_FA_Q4_1_Q5_1=0 -DGGML_CUDA_FA_Q4_1_Q8_0=0 -DGGML_CUDA_FA_Q5_0_BF16=0 -DGGML_CUDA_FA_Q5_0_F16=0 -DGGML_CUDA_FA_Q5_0_Q4_0=0 -DGGML_CUDA_FA_Q5_0_Q4_1=0 -DGGML_CUDA_FA_Q5_0_Q5_0=0 -DGGML_CUDA_FA_Q5_0_Q5_1=0 -DGGML_CUDA_FA_Q5_0_Q8_0=0 -DGGML_CUDA_FA_Q5_1_BF16=0 -DGGML_CUDA_FA_Q5_1_F16=0 -DGGML_CUDA_FA_Q5_1_Q4_0=0 -DGGML_CUDA_FA_Q5_1_Q4_1=0 -DGGML_CUDA_FA_Q5_1_Q5_0=0 -DGGML_CUDA_FA_Q5_1_Q5_1=0 -DGGML_CUDA_FA_Q5_1_Q8_0=0 -DGGML_CUDA_FA_Q8_0_BF16=0 -DGGML_CUDA_FA_Q8_0_F16=0 -DGGML_CUDA_FA_Q8_0_Q4_0=0 -DGGML_CUDA_FA_Q8_0_Q4_1=0 -DGGML_CUDA_FA_Q8_0_Q5_0=0 -DGGML_CUDA_FA_Q8_0_Q5_1=0 -DGGML_CUDA_FA_Q8_0_Q8_0=1 -DGGML_CUDA_FA_QUANTS=\\\"q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16\\\" -DGGML_CUDA_USE_GRAPHS -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600 -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_121a,code=[sm_121a]\" -use_fast_math -extended-lambda -compress-mode=size -Xcompiler \"-Wmissing-declarations -Wmissing-noreturn -Wall -Wextra -Wpedantic -Wcast-qual -Wno-unused-function -Wunreachable-code-break -Wunreachable-code-return -Wmissing-prototypes -Wextra-semi -Wno-pedantic\" -x cu"
+   }
+  ],
+  "tu_flag_set": {
+   "binbcast.cu": 0,
+   "convert.cu": 0,
+   "cpy.cu": 0,
+   "getrows.cu": 0,
+   "ggml-cuda.cu": 0,
+   "mmvf.cu": 0,
+   "norm.cu": 0,
+   "rope.cu": 0,
+   "set-rows.cu": 0,
+   "softmax.cu": 0,
+   "unary.cu": 0,
+   "template-instances/mmf-instance-ncols_1.cu": 0,
+   "template-instances/mmf-instance-ncols_16.cu": 0
+  },
+  "tu_count": 143
+ },
+ "kernels": [
+  {
+   "id": 0,
+   "owner": "ggml",
+   "mangled": "_Z22k_compute_batched_ptrsPKvS0_PcPS0_PPvlllmmmmmmll",
+   "demangled": "k_compute_batched_ptrs(const void *, const void *, char *, const void **, void **, long, long, long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, long, long)",
+   "registers": 22,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["ggml-cuda.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "37c97848a6c6b2809a9895544ee0f83265a4d4def5c20155bca177df3a1ce3dd",
+   "sass_encoding_sha256": "29b61a30440babbb954237876d07041eefbd73860396ec6700ece730a31b8487",
+   "sass_instructions": [200],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 1,
+   "owner": "ggml",
+   "mangled": "_Z13convert_unaryI6__halffEvPKvPT0_lll5uint3lll",
+   "demangled": "void convert_unary<__half, float>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["convert.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "789f8a3d0c820b623066d5c5481314d17a849c7dadabea7e10a96c0216d58041",
+   "sass_encoding_sha256": "68da1cfb00849b24c719d6f6366efa3304705635e9e2b9ec94a184009a1c75cd",
+   "sass_instructions": [360],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 2,
+   "owner": "ggml",
+   "mangled": "_Z13convert_unaryIf6__halfEvPKvPT0_lll5uint3lll",
+   "demangled": "void convert_unary<float, __half>(const void *, T2 *, long, long, long, uint3, long, long, long)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["convert.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "04f65bcf67dbcdc3f5d4e98e4199191ee8ea8faf6845cefd9c49799c47334d3f",
+   "sass_encoding_sha256": "c20c94be4260dbeba2fcaff7d8b212ad2282b232acc67e11b0932e7ee101151d",
+   "sass_instructions": [360],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 3,
+   "owner": "ggml",
+   "mangled": "_Z10cpy_scalarIXadL_ZN36_INTERNAL_ae89f889_6_cpy_cu_bfba63e212cpy_1_scalarIffEEvPKcPcEEEvS3_S4_lllllllllllllll",
+   "demangled": "void cpy_scalar<&cpy_1_scalar<float, float>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",
+   "registers": 34,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["cpy.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "6640204ee49c86b473c806bbcac209db4eab176528aa4240d93af401c069dd88",
+   "sass_encoding_sha256": "8e8d6355dadaae498349beac79954cd3fe9bca898713916c3ff477f9ac06b90c",
+   "sass_instructions": [400],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 4,
+   "owner": "ggml",
+   "mangled": "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_d5c41c42_11_binbcast_cu_6840010b6op_addEffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SB_SB_SB_SB_jjjjjjjjjjjDpT3_",
+   "demangled": "void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+   "registers": 20,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["binbcast.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "ec816d710535af2a335f2f74d871e934ca5fd39fe34be6ae48ea53b75301c268",
+   "sass_encoding_sha256": "61ecaad7bae87a8cb87322481dfafb0bb3b90055611e7fee2007fa0f3b6ea6a6",
+   "sass_instructions": [144],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 5,
+   "owner": "ggml",
+   "mangled": "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_d5c41c42_11_binbcast_cu_6840010b6op_mulEffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SB_SB_SB_SB_jjjjjjjjjjjDpT3_",
+   "demangled": "void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)",
+   "registers": 20,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["binbcast.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "ef79ce551f2db83afa78d8592686b21d2382da36049fa76e8500bfd89cb3ac53",
+   "sass_encoding_sha256": "331def4320640c8185b328a7cc2eef0eab1a17b60560e76f6e84fe4624db4b71",
+   "sass_instructions": [144],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 6,
+   "owner": "ggml",
+   "mangled": "_Z16k_get_rows_floatIffEvPKT_PKiPT0_ll5uint3mmmmmmmmm",
+   "demangled": "void k_get_rows_float<float, float>(const T1 *, const int *, T2 *, long, long, uint3, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["getrows.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "b6374a8911570fea1191c522edad62cb133dc470c179000caf3c6408366c2779",
+   "sass_encoding_sha256": "5982e097bf126f663c63ef0e31ed7abb91a35fc3379e473f6986b5a295eb8329",
+   "sass_instructions": [264],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 7,
+   "owner": "ggml",
+   "mangled": "_Z20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm",
+   "demangled": "void k_get_rows_float_vec<float>(const T1 *, const int *, T1 *, long, long, uint3, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["getrows.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "2c1445ceef8573bf90fad1e002af0cfd79cfee2595eeccaf75893cdfab47573d",
+   "sass_encoding_sha256": "76c9d232e1b2ed24784755a095a887589b6a2ca9bf40e315778e3ce1d683404b",
+   "sass_instructions": [264],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 8,
+   "owner": "ggml",
+   "mangled": "_Z10k_set_rowsIfl6__halfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_",
+   "demangled": "void k_set_rows<float, long, __half>(const T1 *, const T2 *, T3 *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, uint3, uint3, uint3, uint3, uint3)",
+   "registers": 18,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["set-rows.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "8c205a55831b9985ddd654046c7ddbae84f4d9e640c42000e3295c88304432f1",
+   "sass_encoding_sha256": "37b4ae12ca316642182c6d8a3f19dcb138de6675eaaf7f0650d7b55f9e3c5157",
+   "sass_instructions": [96],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 9,
+   "owner": "ggml",
+   "mangled": "_Z9mul_mat_fI7__half2Li32ELi1ELi1ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii",
+   "demangled": "void mul_mat_f<__half2, (int)32, (int)1, (int)1, (bool)0>(const T1 *, const float *, const int *, float *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+   "registers": 152,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["template-instances/mmf-instance-ncols_1.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "849f3794970a1260e04aa1de75fc29e1ee5ea4c2e0a49516f5421fd2c5e7480b",
+   "sass_encoding_sha256": "9f66bd53f71758428fbd13b7b1bf66200e70ced45e1457851abe9702a1cc0684",
+   "sass_instructions": [584],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 10,
+   "owner": "ggml",
+   "mangled": "_Z9mul_mat_fI7__half2Li32ELi16ELi1ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii",
+   "demangled": "void mul_mat_f<__half2, (int)32, (int)16, (int)1, (bool)0>(const T1 *, const float *, const int *, float *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+   "registers": 158,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["template-instances/mmf-instance-ncols_16.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "4db732d368f8f2fb98a9a42d1996fbf76305b09e51f0f872d05c393d07c75c34",
+   "sass_encoding_sha256": "19fd4a1e06ffe56a8167db42d37f6a38bb5fdc4b627b914360c2a39e87a896e2",
+   "sass_instructions": [784],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 11,
+   "owner": "ggml",
+   "mangled": "_Z9mul_mat_fI7__half2Li32ELi16ELi2ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii",
+   "demangled": "void mul_mat_f<__half2, (int)32, (int)16, (int)2, (bool)0>(const T1 *, const float *, const int *, float *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+   "registers": 158,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["template-instances/mmf-instance-ncols_16.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "48057c8e60ba32ac399876c3acf9054130a9a5f4bd046929c3209796070e6392",
+   "sass_encoding_sha256": "1eb5b8e47c587c445084c69e56bcc7c3b1e8c5fa7d34bdb9450d2a1c8d0892f5",
+   "sass_instructions": [704],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 12,
+   "owner": "ggml",
+   "mangled": "_Z9mul_mat_fI7__half2Li32ELi16ELi7ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii",
+   "demangled": "void mul_mat_f<__half2, (int)32, (int)16, (int)7, (bool)0>(const T1 *, const float *, const int *, float *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+   "registers": 158,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["template-instances/mmf-instance-ncols_16.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "36adb521295eab87de52e1e2913a9081e96d448423006f469db00153a695337c",
+   "sass_encoding_sha256": "48100c663de5b9bf98047468f7aa727d512f1ca1f2874d8d3487f86a1d5e45e7",
+   "sass_instructions": [688],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 13,
+   "owner": "ggml",
+   "mangled": "_Z9mul_mat_fI7__half2Li32ELi16ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii",
+   "demangled": "void mul_mat_f<__half2, (int)32, (int)16, (int)8, (bool)0>(const T1 *, const float *, const int *, float *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+   "registers": 158,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["template-instances/mmf-instance-ncols_16.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "005cf243676248c039b5b4400a14f3551bb2665d1a40622a4c5684e8ac9fee63",
+   "sass_encoding_sha256": "303aef7dcf869240b787b646db00a5af8b071a2e15a85c26b90f97da29c7e80e",
+   "sass_instructions": [664],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 14,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi128ELb0ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)128, (bool)0, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 38,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "76a875df1d6bf489529e37d6a5c0dcdfb54f5293197eb0aa9db5d019b4aeba66",
+   "sass_encoding_sha256": "a1da9f2e5f4b116ab25aed55aa0c9c556f9a11573deea44231b575a7f8dfb1dc",
+   "sass_instructions": [288],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 15,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi192ELb0ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)192, (bool)0, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 38,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "aebcab120925baaea8a5d101201d8538fd89d61af2fd9d02d90754ff5a951b31",
+   "sass_encoding_sha256": "c3933b70b99425409154508bf478c65e5baf5b88e6580e46b5ff8d5c4c6245f5",
+   "sass_instructions": [288],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 16,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi224ELb0ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)224, (bool)0, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 38,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "bbed9c195591cc2ee5fcb808be38f09f7fb004175cabde4dec6075e7cf9dec26",
+   "sass_encoding_sha256": "c42248adb80d6248885d75a4500ef4b88b621349767137b52420f17ccf83fd26",
+   "sass_instructions": [288],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 17,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi224ELb1ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)224, (bool)1, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 42,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "202fe3ccc17d002faf58785c0f1b64ee19db8deaac3b8b7a02c0e2c8ac44c696",
+   "sass_encoding_sha256": "cdc6aa2bcc9c50f36d977b585453795ecd3936768eba1a020470a7788aca6312",
+   "sass_instructions": [552],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 18,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi256ELb0ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)256, (bool)0, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 38,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "3009abe7973f3c41baeb90082d86403e720d8df2cbf1d86fcb9f9016977d52fa",
+   "sass_encoding_sha256": "6830c6a2ab42058d0d753ac5487f993aaef7042e3b038f0d388b3d56ccb21365",
+   "sass_instructions": [288],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 19,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halfS0_Li1ELi256ELb1ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, __half, (int)1, (int)256, (bool)1, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 42,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "c3249ffe9e8da6a4398a85757c5a491d6125640afde4bed422e4ae04e3a4d8cf",
+   "sass_encoding_sha256": "220603813ba7460f35a37e3865ba633708b881d0e28904711193ce5cf24800ce",
+   "sass_instructions": [544],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 20,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halffLi1ELi224ELb1ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, float, (int)1, (int)224, (bool)1, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 44,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "5f01ff3eae09192d0dd49af2d8682289e998e98b099ebeb525d463f68f3a531b",
+   "sass_encoding_sha256": "69b8b285e4fd16b8a64e2d4763e35ff529a62fa74d6f71f1872ce59ed62e4947",
+   "sass_instructions": [712],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 21,
+   "owner": "ggml",
+   "mangled": "_Z13mul_mat_vec_fI6__halffLi1ELi32ELb0ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii",
+   "demangled": "void mul_mat_vec_f<__half, float, (int)1, (int)32, (bool)0, (bool)0>(const T1 *, const float *, const int *, ggml_cuda_mm_fusion_args_device, float *, int, uint3, int, int, int, uint3, int, int, int, uint3, int, int, int, int)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["mmvf.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "14b514867ae219368ca04e51d6b1abcb5422f3ff4f041d75f5add6187775af66",
+   "sass_encoding_sha256": "972410729ede0d7fe1d6f3fb8c5a3d2212c418170d611c5195dae4ee0bdc6f52",
+   "sass_instructions": [344],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 22,
+   "owner": "ggml",
+   "mangled": "_Z12rms_norm_f32ILi256ELb0ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_",
+   "demangled": "void rms_norm_f32<(int)256, (bool)0, (bool)0>(const float *, float *, int, long, long, long, float, const float *, long, long, long, uint3, uint3, uint3, uint3, const float *, long, long, long, uint3, uint3, uint3, uint3)",
+   "registers": 39,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["norm.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "84cee90e6327a45ba87b42ef4e6b34de74dcd34e251b3326d416d35aba2dc2b6",
+   "sass_encoding_sha256": "166e3545c5c5ffbdc504013c308932a64e0659a70f10ba5312d40203463b46b2",
+   "sass_instructions": [368],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 23,
+   "owner": "ggml",
+   "mangled": "_Z12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_",
+   "demangled": "void rms_norm_f32<(int)256, (bool)1, (bool)0>(const float *, float *, int, long, long, long, float, const float *, long, long, long, uint3, uint3, uint3, uint3, const float *, long, long, long, uint3, uint3, uint3, uint3)",
+   "registers": 40,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["norm.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "57a23dd0d8d5f077730438498e7aea3c94c1ab1c247a9db6a8525a050ec54475",
+   "sass_encoding_sha256": "1d62de222c424cc5eb33161f92e66fcb521a9e75602ce31122968004ff3c0ad0",
+   "sass_instructions": [352],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 24,
+   "owner": "ggml",
+   "mangled": "_Z9rope_neoxILb1ELb0Ef6__halfEvPKT1_PT2_iiiiiiiiiiiPKifff14rope_corr_dimsfPKfPKlib",
+   "demangled": "void rope_neox<(bool)1, (bool)0, float, __half>(const T3 *, T4 *, int, int, int, int, int, int, int, int, int, int, int, const int *, float, float, float, rope_corr_dims, float, const float *, const long *, int, bool)",
+   "registers": 18,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["rope.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "a2a79f66d19ee4f52b42799a9f5f3cbf25da1a08e16c9403252e03c9568f8b1b",
+   "sass_encoding_sha256": "b63aad921cac43aa274dd0388d244614e120d702cf45d5c5ca93bac588fac770",
+   "sass_instructions": [184],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 25,
+   "owner": "ggml",
+   "mangled": "_Z9rope_neoxILb1ELb0EffEvPKT1_PT2_iiiiiiiiiiiPKifff14rope_corr_dimsfPKfPKlib",
+   "demangled": "void rope_neox<(bool)1, (bool)0, float, float>(const T3 *, T4 *, int, int, int, int, int, int, int, int, int, int, int, const int *, float, float, float, rope_corr_dims, float, const float *, const long *, int, bool)",
+   "registers": 18,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["rope.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "02c4622b523a5e3b4ac1a89954e832d2c06ce2fd088b664c4a5c57175b78ecad",
+   "sass_encoding_sha256": "96d53d8ecb26634bf61f54a07c5e934bc1a4e7591d5cb28484bf7a07a7e072a0",
+   "sass_instructions": [184],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 26,
+   "owner": "ggml",
+   "mangled": "_Z12soft_max_f32ILb1ELi0ELi0EfEvPKfPKT2_S1_Pf15soft_max_params",
+   "demangled": "void soft_max_f32<(bool)1, (int)0, (int)0, float>(const float *, const T4 *, const float *, float *, soft_max_params)",
+   "registers": 26,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["softmax.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "0d8dea62788d7a77066f011d257f4188b9652a935646e2e3d979901966c642e7",
+   "sass_encoding_sha256": "249aad62281cfa7f9f18dfb7b726be4f79d43ccee95e7b4d24b56223848d8b39",
+   "sass_instructions": [384],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 27,
+   "owner": "ggml",
+   "mangled": "_Z12soft_max_f32ILb1ELi256ELi256EfEvPKfPKT2_S1_Pf15soft_max_params",
+   "demangled": "void soft_max_f32<(bool)1, (int)256, (int)256, float>(const float *, const T4 *, const float *, float *, soft_max_params)",
+   "registers": 22,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernel"],
+   "translation_units": ["softmax.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "4c3815212ed2923fe9f88fecb5f53dd6e011777352bf4476e043ca907f03d2eb",
+   "sass_encoding_sha256": "1a96309ab55a1e7d95861af880c66f01b5756ffcbf7a34b3e791edade034fc00",
+   "sass_instructions": [288],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 28,
+   "owner": "ggml",
+   "mangled": "_Z21unary_gated_op_kernelIXadL_ZN38_INTERNAL_b65f5324_8_unary_cu_eb6d53667op_siluEfEEfEvPKT0_S3_PS1_llll",
+   "demangled": "void unary_gated_op_kernel<&op_silu, float>(const T2 *, const T2 *, T2 *, long, long, long, long)",
+   "registers": 18,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"],
+   "translation_units": ["unary.cu"],
+   "nvcc_flag_set": [0],
+   "sass_text_sha256": "ecfe3e90f04fc4d8f52ad47001245bf0557cd738599f9950af6d41e0edeeacf3",
+   "sass_encoding_sha256": "406ddc912827eeda7cf784787303074304184306a652c2089ef6d7559aa8ab62",
+   "sass_instructions": [176],
+   "copies_in_executable": 1,
+   "tu_sass_matches_executable": true
+  },
+  {
+   "id": 29,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 30,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_32x32x128_6_32x8x128_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_32x32x128_6_32x8x128_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 31,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_32x64x128_4_32x16x128_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_32x64x128_4_32x16x128_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 32,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 33,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 34,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_splitK_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_64x16x128_4_16x16x128_tmaAB_alignCD4_splitK_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 35,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_64x16x64_9_16x16x64_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_64x16x64_9_16x16x64_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 36,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_64x24x128_4_16x24x128_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_64x24x128_4_16x24x128_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 37,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_96x128x64_3_48x32x64_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_96x128x64_3_48x32x64_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 38,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_hhh_mma_96x128x64_3_96x16x64_tmaAB_alignCD4_bz_TNNN",
+   "demangled": "nvjet_sm121_hhh_mma_96x128x64_3_96x16x64_tmaAB_alignCD4_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 39,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_sss_tf32_mma_128x32x32_4_32x32x32_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "demangled": "nvjet_sm121_sss_tf32_mma_128x32x32_4_32x32x32_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 40,
+   "owner": "cublas",
+   "mangled": "nvjet_sm121_sss_tf32_mma_64x48x32_7_16x48x32_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "demangled": "nvjet_sm121_sss_tf32_mma_64x48x32_7_16x48x32_tmaAB_alignCD4_ptrBatch_bz_TNNN",
+   "registers": 255,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernelEx"]
+  },
+  {
+   "id": 41,
+   "owner": "cublas",
+   "mangled": "_ZN8cublasLt19splitKreduce_kernelILi32ELi16Ei6__halfS1_S1_S1_Lb0ES1_S1_S1_Lb1ELb0ELb0ELb0EEEvNS_18cublasSplitKParamsIT4_EEPKT2_PKT8_PT7_PT3_PKS3_SG_PKT9_S7_PSH_PvlPS3_PiSM_SM_SG_SG_SG_SG_SG_",
+   "demangled": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __half, __half, __half, __half, (bool)0, __half, __half, __half, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+   "registers": 46,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cudaLaunchKernelExC"]
+  },
+  {
+   "id": 42,
+   "owner": "cublas",
+   "mangled": "_ZN7cutlass7Kernel2I53cutlass_80_tensorop_h16816gemm_128x128_64x3_tn_align8EEvNT_6ParamsE",
+   "demangled": "void cutlass::Kernel2<cutlass_80_tensorop_h16816gemm_128x128_64x3_tn_align8>(T1::Params)",
+   "registers": 166,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernel"]
+  },
+  {
+   "id": 43,
+   "owner": "cublas",
+   "mangled": "_ZN7cutlass7Kernel2I52cutlass_80_tensorop_s1688gemm_128x128_16x5_tn_align4EEvNT_6ParamsE",
+   "demangled": "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x128_16x5_tn_align4>(T1::Params)",
+   "registers": 224,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernel"]
+  },
+  {
+   "id": 44,
+   "owner": "cublas",
+   "mangled": "_ZN7cutlass7Kernel2I58cutlass_80_wmma_tensorop_h161616gemm_32x32_128x1_tn_align8EEvNT_6ParamsE",
+   "demangled": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_h161616gemm_32x32_128x1_tn_align8>(T1::Params)",
+   "registers": 96,
+   "static_shared": 0,
+   "local_per_thread": 0,
+   "launch_api": ["cuLaunchKernel"]
+  }
+ ],
+ "cublas_calls": [
+  {
+   "id": 0,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 32,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=896 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Cdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=32 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_64xAUTO customOption=29",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cuLaunchKernelEx"]],
+   "count": {"control-fused": 144, "control-unfused": 144}
+  },
+  {
+   "id": 1,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 128,
+    "n": 32,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 128,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=128 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Cdesc": "type=R_16F rows=128 cols=32 ld=128",
+    "Ddesc": "type=R_16F rows=128 cols=32 ld=128",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO reductionScheme=REDUCTION_SCHEME_COMPUTE_TYPE numSplitsK=12 customOption=142",
+    "workspace_bytes": 57344,
+    "beta": "0"
+   },
+   "launches": [
+    ["kernel", 34, [2, 2, 7], [32, 4, 1], 41984, "cuLaunchKernelEx"],
+    ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cudaLaunchKernelExC"]
+   ],
+   "count": {"control-fused": 144, "control-unfused": 144}
+  },
+  {
+   "id": 2,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 256,
+    "n": 32,
+    "k": 64,
+    "Atype": "CUDA_R_32F",
+    "lda": 128,
+    "Btype": "CUDA_R_32F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_32F",
+    "ldc": 256,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_32F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtSSSMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_32F rows=64 cols=256 ld=128 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_32F rows=64 cols=32 ld=896 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_32F rows=256 cols=32 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_32F rows=256 cols=32 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_32F_FAST_TF32 scaleType=R_32F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x48 stages=MATMUL_STAGES_32xAUTO customOption=104",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 40, [8, 1, 14], [32, 4, 1], 29696, "cuLaunchKernelEx"]],
+   "count": {"control-fused": 72, "control-unfused": 72}
+  },
+  {
+   "id": 3,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 64,
+    "n": 32,
+    "k": 256,
+    "Atype": "CUDA_R_16F",
+    "lda": 512,
+    "Btype": "CUDA_R_16F",
+    "ldb": 256,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 64,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=256 cols=64 ld=512 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_16F rows=256 cols=32 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_16F rows=64 cols=32 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_16F rows=64 cols=32 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO customOption=104",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cuLaunchKernelEx"]],
+   "count": {"control-fused": 72, "control-unfused": 72}
+  },
+  {
+   "id": 4,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 4864,
+    "n": 32,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 4864,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[21]",
+    "Adesc": "type=R_16F rows=896 cols=4864 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Cdesc": "type=R_16F rows=4864 cols=32 ld=4864",
+    "Ddesc": "type=R_16F rows=4864 cols=32 ld=4864",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=21 tile=MATMUL_TILE_32x32 stages=MATMUL_STAGES_128x1 reductionScheme=REDUCTION_SCHEME_INPLACE numSplitsK=4",
+    "workspace_bytes": 608,
+    "beta": "0"
+   },
+   "launches": [["memset", 608, 0, "compute"], ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cuLaunchKernel"]],
+   "count": {"control-fused": 144, "control-unfused": 144}
+  },
+  {
+   "id": 5,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 32,
+    "k": 4864,
+    "Atype": "CUDA_R_16F",
+    "lda": 4864,
+    "Btype": "CUDA_R_16F",
+    "ldb": 4864,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=4864 cols=896 ld=4864",
+    "Bdesc": "type=R_16F rows=4864 cols=32 ld=4864",
+    "Cdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=32 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO customOption=28",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 32, [112, 1, 1], [32, 4, 1], 82944, "cuLaunchKernelEx"]],
+   "count": {"control-fused": 72, "control-unfused": 72}
+  },
+  {
+   "id": 6,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 151936,
+    "n": 32,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 151936,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=151936 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=32 ld=896",
+    "Cdesc": "type=R_16F rows=151936 cols=32 ld=151936",
+    "Ddesc": "type=R_16F rows=151936 cols=32 ld=151936",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=31",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 29, [8, 149, 1], [64, 4, 1], 87040, "cuLaunchKernelEx"]],
+   "count": {"control-fused": 3, "control-unfused": 3}
+  },
+  {
+   "id": 7,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 17,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=896 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Cdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=17 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x24 stages=MATMUL_STAGES_128xAUTO customOption=66",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 8,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 128,
+    "n": 17,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 128,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=128 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Cdesc": "type=R_16F rows=128 cols=17 ld=128",
+    "Ddesc": "type=R_16F rows=128 cols=17 ld=128",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO reductionScheme=REDUCTION_SCHEME_COMPUTE_TYPE numSplitsK=8 customOption=29",
+    "workspace_bytes": 30464,
+    "beta": "0"
+   },
+   "launches": [
+    ["kernel", 34, [16, 1, 7], [32, 4, 1], 41984, "cuLaunchKernelEx"],
+    ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cudaLaunchKernelExC"]
+   ],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 9,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 256,
+    "n": 17,
+    "k": 64,
+    "Atype": "CUDA_R_32F",
+    "lda": 128,
+    "Btype": "CUDA_R_32F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_32F",
+    "ldc": 256,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_32F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtSSSMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_32F rows=64 cols=256 ld=128 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_32F rows=64 cols=17 ld=896 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_32F rows=256 cols=17 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_32F rows=256 cols=17 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_32F_FAST_TF32 scaleType=R_32F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_128x32 stages=MATMUL_STAGES_32xAUTO customOption=143",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 39, [1, 2, 14], [32, 4, 1], 41984, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 10,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 64,
+    "n": 17,
+    "k": 256,
+    "Atype": "CUDA_R_16F",
+    "lda": 1024,
+    "Btype": "CUDA_R_16F",
+    "ldb": 256,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 64,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=256 cols=64 ld=1024 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_16F rows=256 cols=17 ld=256 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_16F rows=64 cols=17 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_16F rows=64 cols=17 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x16 stages=MATMUL_STAGES_128xAUTO customOption=104",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 11,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 4864,
+    "n": 17,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 4864,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[21]",
+    "Adesc": "type=R_16F rows=896 cols=4864 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Cdesc": "type=R_16F rows=4864 cols=17 ld=4864",
+    "Ddesc": "type=R_16F rows=4864 cols=17 ld=4864",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=21 tile=MATMUL_TILE_32x32 stages=MATMUL_STAGES_128x1 reductionScheme=REDUCTION_SCHEME_INPLACE numSplitsK=4",
+    "workspace_bytes": 608,
+    "beta": "0"
+   },
+   "launches": [["memset", 608, 0, "compute"], ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cuLaunchKernel"]],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 12,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 17,
+    "k": 4864,
+    "Atype": "CUDA_R_16F",
+    "lda": 4864,
+    "Btype": "CUDA_R_16F",
+    "ldb": 4864,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=4864 cols=896 ld=4864",
+    "Bdesc": "type=R_16F rows=4864 cols=17 ld=4864",
+    "Cdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=17 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_64x24 stages=MATMUL_STAGES_128xAUTO customOption=66",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 13,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 151936,
+    "n": 17,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 151936,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[21]",
+    "Adesc": "type=R_16F rows=896 cols=151936 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=17 ld=896",
+    "Cdesc": "type=R_16F rows=151936 cols=17 ld=151936",
+    "Ddesc": "type=R_16F rows=151936 cols=17 ld=151936",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_64x3",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 42, [8, 149, 1], [128, 1, 1], 98304, "cuLaunchKernel"]],
+   "count": {"heldout-fused": 3, "heldout-unfused": 3}
+  },
+  {
+   "id": 14,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 512,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=896 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Cdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=512 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_96x128 stages=MATMUL_STAGES_64xAUTO customOption=14",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 15,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 128,
+    "n": 512,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 128,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=128 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Cdesc": "type=R_16F rows=128 cols=512 ld=128",
+    "Ddesc": "type=R_16F rows=128 cols=512 ld=128",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_32x64 stages=MATMUL_STAGES_128xAUTO customOption=121",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 31, [8, 4, 1], [128, 1, 1], 99328, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 16,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 768,
+    "n": 512,
+    "k": 64,
+    "Atype": "CUDA_R_32F",
+    "lda": 128,
+    "Btype": "CUDA_R_32F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_32F",
+    "ldc": 768,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_32F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtSSSMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[21]",
+    "Adesc": "type=R_32F rows=64 cols=768 ld=128 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_32F rows=64 cols=512 ld=896 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_32F rows=768 cols=512 ld=768 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_32F rows=768 cols=512 ld=768 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_32F_FAST_TF32 scaleType=R_32F transa=OP_T smCountTarget=48",
+    "algo": "algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_16x5",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 43, [32, 1, 14], [128, 1, 1], 81920, "cuLaunchKernel"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 17,
+   "function": "cublasGemmBatchedEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 64,
+    "n": 512,
+    "k": 768,
+    "Atype": "CUDA_R_16F",
+    "lda": 1024,
+    "Btype": "CUDA_R_16F",
+    "ldb": 768,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 64,
+    "batchCount": 14,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=768 cols=64 ld=1024 batchCount=14 batchMode=POINTER_ARRAY",
+    "Bdesc": "type=R_16F rows=768 cols=512 ld=768 batchCount=14 batchMode=POINTER_ARRAY",
+    "Cdesc": "type=R_16F rows=64 cols=512 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "Ddesc": "type=R_16F rows=64 cols=512 ld=64 batchCount=14 batchMode=POINTER_ARRAY",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_32x32 stages=MATMUL_STAGES_128xAUTO customOption=6",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 30, [16, 2, 14], [128, 1, 1], 99328, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 18,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 4864,
+    "n": 512,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 4864,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[21]",
+    "Adesc": "type=R_16F rows=896 cols=4864 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Cdesc": "type=R_16F rows=4864 cols=512 ld=4864",
+    "Ddesc": "type=R_16F rows=4864 cols=512 ld=4864",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=21 tile=MATMUL_TILE_128x128 stages=MATMUL_STAGES_64x3",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 42, [32, 5, 1], [128, 1, 1], 98304, "cuLaunchKernel"]],
+   "count": {"heldout-fused": 144, "heldout-unfused": 144}
+  },
+  {
+   "id": 19,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 896,
+    "n": 512,
+    "k": 4864,
+    "Atype": "CUDA_R_16F",
+    "lda": 4864,
+    "Btype": "CUDA_R_16F",
+    "ldb": 4864,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 896,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=4864 cols=896 ld=4864",
+    "Bdesc": "type=R_16F rows=4864 cols=512 ld=4864",
+    "Cdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Ddesc": "type=R_16F rows=896 cols=512 ld=896",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_96x128 stages=MATMUL_STAGES_64xAUTO customOption=22",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 37, [80, 1, 1], [128, 2, 1], 87040, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 72, "heldout-unfused": 72}
+  },
+  {
+   "id": 20,
+   "function": "cublasGemmEx",
+   "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH",
+   "args": {
+    "transa": "CUBLAS_OP_T",
+    "transb": "CUBLAS_OP_N",
+    "m": 151936,
+    "n": 512,
+    "k": 896,
+    "Atype": "CUDA_R_16F",
+    "lda": 896,
+    "Btype": "CUDA_R_16F",
+    "ldb": 896,
+    "Ctype": "CUDA_R_16F",
+    "ldc": 151936,
+    "computeType": "CUBLAS_COMPUTE_16F",
+    "algo": "CUBLAS_GEMM_DEFAULT_TENSOR_OP"
+   },
+   "cublaslt": {
+    "function": "cublasLtHHHMatmul",
+    "preference": "maxWavesCount=0.0 maxWorkspaceSizeinBytes=33554432 minBytesAlignmentA=16 minBytesAlignmentB=16 minBytesAlignmentC=16 minBytesAlignmentD=16 implMask=18446744069414584319",
+    "heuristic": "heuristicResults=[67]",
+    "Adesc": "type=R_16F rows=896 cols=151936 ld=896",
+    "Bdesc": "type=R_16F rows=896 cols=512 ld=896",
+    "Cdesc": "type=R_16F rows=151936 cols=512 ld=151936",
+    "Ddesc": "type=R_16F rows=151936 cols=512 ld=151936",
+    "computeDesc": "computeType=COMPUTE_16F scaleType=R_16F transa=OP_T smCountTarget=48",
+    "algo": "algoId=67 tile=MATMUL_TILE_128x208 stages=MATMUL_STAGES_64xAUTO customOption=30",
+    "workspace_bytes": 0,
+    "beta": "0"
+   },
+   "launches": [["kernel", 29, [9496, 1, 1], [64, 4, 1], 87040, "cuLaunchKernelEx"]],
+   "count": {"heldout-fused": 3, "heldout-unfused": 3}
+  }
+ ],
+ "arms": [
+  {
+   "arm": "control-fused",
+   "trajectory": "control",
+   "fusion": true,
+   "environment": {"CUDA_DISABLE_PTX_JIT": "1", "GGML_CUDA_DISABLE_GRAPHS": "1"},
+   "summary": {
+    "backend": "cuda",
+    "trajectory": "control",
+    "tokens": 76,
+    "chunks": [32, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "context": 512,
+    "batch": 64,
+    "vocabulary": 151936,
+    "logit_values": 11547136,
+    "restore_prefix_tokens": 32,
+    "state_bytes": 394201,
+    "repeat_bit_differences": 0,
+    "restore_bit_differences": 0
+   },
+   "profiled_logits_sha256": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+   "expected_logits_sha256": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+   "profiled_bit_identical": true,
+   "pool_run_logits_sha256": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+   "pool_run_bit_identical": true,
+   "dumped_evaluation": "logits.f32le holds the first (fresh) of the harness's three evaluations; the plan covers all three",
+   "evaluations_identical": true,
+   "chunk_sequence_first_evaluation": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+   "streams": {
+    "compute": "the context's non-blocking stream (one per context); ggml compute, cuBLAS and the logits copy",
+    "per_thread": "cudaStreamPerThread (nsys: default stream): input set_tensor copies, buffer clears, state save/restore, each followed by a synchronize",
+    "other:Non-blocking stream": "the model loader's upload stream"
+   },
+   "cublas_handle_setup": [
+    {"function": "cublasCreate_v2", "args": {}, "math_mode": null},
+    {
+     "function": "cublasSetMathMode",
+     "args": {"mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+     "math_mode": "CUBLAS_DEFAULT_MATH"
+    },
+    {"function": "cublasSetStream_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+    {
+     "function": "cublasSetWorkspace_v2",
+     "args": {"workspaceSizeInBytes": 33554432},
+     "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"
+    },
+    {"function": "cublasDestroy_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"}
+   ],
+   "cublas_handle_setup_counts": {
+    "cublasCreate_v2": 3,
+    "cublasSetMathMode": 3,
+    "cublasSetStream_v2": 3,
+    "cublasSetWorkspace_v2": 3,
+    "cublasGetMathMode": 144,
+    "cublasDestroy_v2": 3
+   },
+   "llama_log": ["Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes, VRAM: 124608 MiB", "load_tensors:        CUDA0 model buffer size =   942.43 MiB", "load_tensors:    CUDA_Host model buffer size =   259.66 MiB", "llama_context: n_ctx                 = 512", "llama_context: n_batch               = 64", "llama_context: n_ubatch              = 64", "llama_context: flash_attn            = disabled", "llama_context:  CUDA_Host  output buffer size =     0.58 MiB", "llama_kv_cache:      CUDA0 KV buffer size =     6.00 MiB", "llama_kv_cache: size =    6.00 MiB (   512 cells,  24 layers,  1/1 seqs), K (f16):    3.00 MiB, V (f16):    3.00 MiB", "sched_reserve:      CUDA0 compute buffer size =    37.31 MiB", "sched_reserve:  CUDA_Host compute buffer size =     0.63 MiB", "sched_reserve: graph nodes  = 942", "sched_reserve: graph splits = 2", "~llama_context:      CUDA0 compute buffer size is  37.3125 MiB, matches expectation of  37.3125 MiB", "~llama_context:  CUDA_Host compute buffer size is   0.6262 MiB, matches expectation of   0.6262 MiB"],
+   "sequences": [
+    {
+     "id": 0,
+     "rows": 32,
+     "input_copies": 6,
+     "cublas_calls": [0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 6],
+     "pool_peak_used": [9781248],
+     "pool_allocs": [506],
+     "launches": 1038,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 114688, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 256, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 32768, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [32, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 32, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [448, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 34, [2, 2, 7], [32, 4, 1], 41984, "cublas#1"],
+          ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#1"],
+          ["kernel", 1, [16, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 16, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 24, [64, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [16, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 40, [8, 1, 14], [32, 4, 1], 29696, "cublas#2"],
+        ["kernel", 27, [32, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 2, [448, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#3"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [448, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 23, [32, 1, 1], [256, 1, 1], 128, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+          ["memset", 608, 0, "compute", "cublas#4"],
+          ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#4"],
+          ["kernel", 1, [608, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [608, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [608, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 32, [112, 1, 1], [32, 4, 1], 82944, "cublas#5"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 23, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 32, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [448, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 34, [2, 2, 7], [32, 4, 1], 41984, "cublas#1"],
+        ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#1"],
+        ["kernel", 1, [16, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 16, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 24, [64, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [16, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 40, [8, 1, 14], [32, 4, 1], 29696, "cublas#2"],
+      ["kernel", 27, [32, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 2, [448, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#3"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [448, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [32, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["memset", 608, 0, "compute", "cublas#4"],
+        ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#4"],
+        ["kernel", 1, [608, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [608, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [608, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 32, [112, 1, 1], [32, 4, 1], 82944, "cublas#5"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 29, [8, 149, 1], [64, 4, 1], 87040, "cublas#6"],
+      ["kernel", 1, [18992, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 19447808, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[0, 0]]
+    },
+    {
+     "id": 1,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 341,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+        ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+        ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"]
+       ]
+      },
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+      ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+      ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 132,
+     "first_evaluation_chunks": [
+      [1, 32],
+      [2, 33],
+      [3, 34],
+      [4, 35],
+      [5, 36],
+      [6, 37],
+      [7, 38],
+      [8, 39],
+      [9, 40],
+      [10, 41],
+      [11, 42],
+      [12, 43],
+      [13, 44],
+      [14, 45],
+      [15, 46],
+      [16, 47],
+      [17, 48],
+      [18, 49],
+      [19, 50],
+      [20, 51],
+      [21, 52],
+      [22, 53],
+      [23, 54],
+      [24, 55],
+      [25, 56],
+      [26, 57],
+      [27, 58],
+      [28, 59],
+      [29, 60],
+      [30, 61],
+      [31, 62],
+      [32, 63],
+      [33, 64],
+      [34, 65],
+      [35, 66],
+      [36, 67],
+      [37, 68],
+      [38, 69],
+      [39, 70],
+      [40, 71],
+      [41, 72],
+      [42, 73],
+      [43, 74],
+      [44, 75]
+     ]
+    }
+   ],
+   "chunks_first_evaluation": [
+    {
+     "chunk": 0,
+     "rows": 32,
+     "n_past": 0,
+     "sequence": 0,
+     "pool_peak_used": 9781248,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 1,
+     "rows": 1,
+     "n_past": 32,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 2,
+     "rows": 1,
+     "n_past": 33,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 3,
+     "rows": 1,
+     "n_past": 34,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 4,
+     "rows": 1,
+     "n_past": 35,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 5,
+     "rows": 1,
+     "n_past": 36,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 6,
+     "rows": 1,
+     "n_past": 37,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 7,
+     "rows": 1,
+     "n_past": 38,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 8,
+     "rows": 1,
+     "n_past": 39,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 9,
+     "rows": 1,
+     "n_past": 40,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 10,
+     "rows": 1,
+     "n_past": 41,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 11,
+     "rows": 1,
+     "n_past": 42,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 12,
+     "rows": 1,
+     "n_past": 43,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 13,
+     "rows": 1,
+     "n_past": 44,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 14,
+     "rows": 1,
+     "n_past": 45,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 15,
+     "rows": 1,
+     "n_past": 46,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 16,
+     "rows": 1,
+     "n_past": 47,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 17,
+     "rows": 1,
+     "n_past": 48,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 18,
+     "rows": 1,
+     "n_past": 49,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 19,
+     "rows": 1,
+     "n_past": 50,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 20,
+     "rows": 1,
+     "n_past": 51,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 21,
+     "rows": 1,
+     "n_past": 52,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 22,
+     "rows": 1,
+     "n_past": 53,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 23,
+     "rows": 1,
+     "n_past": 54,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 24,
+     "rows": 1,
+     "n_past": 55,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 25,
+     "rows": 1,
+     "n_past": 56,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 26,
+     "rows": 1,
+     "n_past": 57,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 27,
+     "rows": 1,
+     "n_past": 58,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 28,
+     "rows": 1,
+     "n_past": 59,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 29,
+     "rows": 1,
+     "n_past": 60,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 30,
+     "rows": 1,
+     "n_past": 61,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 31,
+     "rows": 1,
+     "n_past": 62,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 32,
+     "rows": 1,
+     "n_past": 63,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 33,
+     "rows": 1,
+     "n_past": 64,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 34,
+     "rows": 1,
+     "n_past": 65,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 35,
+     "rows": 1,
+     "n_past": 66,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 36,
+     "rows": 1,
+     "n_past": 67,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 37,
+     "rows": 1,
+     "n_past": 68,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 38,
+     "rows": 1,
+     "n_past": 69,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 39,
+     "rows": 1,
+     "n_past": 70,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 40,
+     "rows": 1,
+     "n_past": 71,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 41,
+     "rows": 1,
+     "n_past": 72,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 42,
+     "rows": 1,
+     "n_past": 73,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 43,
+     "rows": 1,
+     "n_past": 74,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 44,
+     "rows": 1,
+     "n_past": 75,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    }
+   ],
+   "setup_phases": [
+    {
+     "evaluation": 1,
+     "before_chunk": 0,
+     "phase": "model load and context creation",
+     "ops": [
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 1048576], "count": 883},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 3584], "count": 73},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 327680], "count": 72},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 229376], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 512], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 557056], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 688128], "count": 1},
+      {"op": ["memset", "per_thread", 6291456, 0], "count": 1}
+     ]
+    },
+    {
+     "evaluation": 2,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 6291456, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 6291456, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 1,
+     "phase": "state save, context recreation and restore",
+     "ops": [
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 64], "count": 3072},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 64], "count": 3072},
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 8192], "count": 24},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 8192], "count": 24},
+      {"op": ["memset", "per_thread", 6291456, 0], "count": 2}
+     ]
+    }
+   ]
+  },
+  {
+   "arm": "control-unfused",
+   "trajectory": "control",
+   "fusion": false,
+   "environment": {"CUDA_DISABLE_PTX_JIT": "1", "GGML_CUDA_DISABLE_GRAPHS": "1", "GGML_CUDA_DISABLE_FUSION": "1"},
+   "summary": {
+    "backend": "cuda",
+    "trajectory": "control",
+    "tokens": 76,
+    "chunks": [32, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "context": 512,
+    "batch": 64,
+    "vocabulary": 151936,
+    "logit_values": 11547136,
+    "restore_prefix_tokens": 32,
+    "state_bytes": 394201,
+    "repeat_bit_differences": 0,
+    "restore_bit_differences": 0
+   },
+   "profiled_logits_sha256": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1",
+   "expected_logits_sha256": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1",
+   "profiled_bit_identical": true,
+   "pool_run_logits_sha256": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1",
+   "pool_run_bit_identical": true,
+   "dumped_evaluation": "logits.f32le holds the first (fresh) of the harness's three evaluations; the plan covers all three",
+   "evaluations_identical": true,
+   "chunk_sequence_first_evaluation": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+   "streams": {
+    "compute": "the context's non-blocking stream (one per context); ggml compute, cuBLAS and the logits copy",
+    "per_thread": "cudaStreamPerThread (nsys: default stream): input set_tensor copies, buffer clears, state save/restore, each followed by a synchronize",
+    "other:Non-blocking stream": "the model loader's upload stream"
+   },
+   "cublas_handle_setup": [
+    {"function": "cublasCreate_v2", "args": {}, "math_mode": null},
+    {
+     "function": "cublasSetMathMode",
+     "args": {"mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+     "math_mode": "CUBLAS_DEFAULT_MATH"
+    },
+    {"function": "cublasSetStream_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+    {
+     "function": "cublasSetWorkspace_v2",
+     "args": {"workspaceSizeInBytes": 33554432},
+     "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"
+    },
+    {"function": "cublasDestroy_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"}
+   ],
+   "cublas_handle_setup_counts": {
+    "cublasCreate_v2": 3,
+    "cublasSetMathMode": 3,
+    "cublasSetStream_v2": 3,
+    "cublasSetWorkspace_v2": 3,
+    "cublasGetMathMode": 144,
+    "cublasDestroy_v2": 3
+   },
+   "llama_log": ["Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes, VRAM: 124608 MiB", "load_tensors:        CUDA0 model buffer size =   942.43 MiB", "load_tensors:    CUDA_Host model buffer size =   259.66 MiB", "llama_context: n_ctx                 = 512", "llama_context: n_batch               = 64", "llama_context: n_ubatch              = 64", "llama_context: flash_attn            = disabled", "llama_context:  CUDA_Host  output buffer size =     0.58 MiB", "llama_kv_cache:      CUDA0 KV buffer size =     6.00 MiB", "llama_kv_cache: size =    6.00 MiB (   512 cells,  24 layers,  1/1 seqs), K (f16):    3.00 MiB, V (f16):    3.00 MiB", "sched_reserve:      CUDA0 compute buffer size =    37.31 MiB", "sched_reserve:  CUDA_Host compute buffer size =     0.63 MiB", "sched_reserve: graph nodes  = 942", "sched_reserve: graph splits = 2", "~llama_context:      CUDA0 compute buffer size is  37.3125 MiB, matches expectation of  37.3125 MiB", "~llama_context:  CUDA_Host compute buffer size is   0.6262 MiB, matches expectation of   0.6262 MiB"],
+   "sequences": [
+    {
+     "id": 0,
+     "rows": 32,
+     "input_copies": 6,
+     "cublas_calls": [0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 0, 1, 1, 2, 3, 0, 4, 4, 5, 6],
+     "pool_peak_used": [9781248],
+     "pool_allocs": [506],
+     "launches": 1111,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 114688, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 256, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 32768, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [32, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 32, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 32, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [448, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 34, [2, 2, 7], [32, 4, 1], 41984, "cublas#1"],
+          ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#1"],
+          ["kernel", 1, [16, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 16, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [64, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [16, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 40, [8, 1, 14], [32, 4, 1], 29696, "cublas#2"],
+        ["kernel", 27, [32, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 2, [448, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#3"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [448, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [32, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 32, 1], [128, 1, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+          ["memset", 608, 0, "compute", "cublas#4"],
+          ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#4"],
+          ["kernel", 1, [608, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [608, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [608, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 32, [112, 1, 1], [32, 4, 1], 82944, "cublas#5"],
+        ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 32, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 32, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [448, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 34, [2, 2, 7], [32, 4, 1], 41984, "cublas#1"],
+        ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#1"],
+        ["kernel", 1, [16, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 16, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [64, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [16, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 40, [8, 1, 14], [32, 4, 1], 29696, "cublas#2"],
+      ["kernel", 27, [32, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 2, [448, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#3"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [448, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 35, [16, 2, 1], [32, 4, 1], 93184, "cublas#0"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [32, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 32, 1], [128, 1, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+        ["memset", 608, 0, "compute", "cublas#4"],
+        ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#4"],
+        ["kernel", 1, [608, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [608, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [608, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 32, [112, 1, 1], [32, 4, 1], 82944, "cublas#5"],
+      ["kernel", 1, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [112, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [32, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 32, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [112, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 29, [8, 149, 1], [64, 4, 1], 87040, "cublas#6"],
+      ["kernel", 1, [18992, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 19447808, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[0, 0]]
+    },
+    {
+     "id": 1,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 581,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+          ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+        ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+        ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+      ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+      ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 132,
+     "first_evaluation_chunks": [
+      [1, 32],
+      [2, 33],
+      [3, 34],
+      [4, 35],
+      [5, 36],
+      [6, 37],
+      [7, 38],
+      [8, 39],
+      [9, 40],
+      [10, 41],
+      [11, 42],
+      [12, 43],
+      [13, 44],
+      [14, 45],
+      [15, 46],
+      [16, 47],
+      [17, 48],
+      [18, 49],
+      [19, 50],
+      [20, 51],
+      [21, 52],
+      [22, 53],
+      [23, 54],
+      [24, 55],
+      [25, 56],
+      [26, 57],
+      [27, 58],
+      [28, 59],
+      [29, 60],
+      [30, 61],
+      [31, 62],
+      [32, 63],
+      [33, 64],
+      [34, 65],
+      [35, 66],
+      [36, 67],
+      [37, 68],
+      [38, 69],
+      [39, 70],
+      [40, 71],
+      [41, 72],
+      [42, 73],
+      [43, 74],
+      [44, 75]
+     ]
+    }
+   ],
+   "chunks_first_evaluation": [
+    {
+     "chunk": 0,
+     "rows": 32,
+     "n_past": 0,
+     "sequence": 0,
+     "pool_peak_used": 9781248,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 1,
+     "rows": 1,
+     "n_past": 32,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 2,
+     "rows": 1,
+     "n_past": 33,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 3,
+     "rows": 1,
+     "n_past": 34,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 4,
+     "rows": 1,
+     "n_past": 35,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 5,
+     "rows": 1,
+     "n_past": 36,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 6,
+     "rows": 1,
+     "n_past": 37,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 7,
+     "rows": 1,
+     "n_past": 38,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 8,
+     "rows": 1,
+     "n_past": 39,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 9,
+     "rows": 1,
+     "n_past": 40,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 10,
+     "rows": 1,
+     "n_past": 41,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 11,
+     "rows": 1,
+     "n_past": 42,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 12,
+     "rows": 1,
+     "n_past": 43,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 13,
+     "rows": 1,
+     "n_past": 44,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 14,
+     "rows": 1,
+     "n_past": 45,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 15,
+     "rows": 1,
+     "n_past": 46,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 16,
+     "rows": 1,
+     "n_past": 47,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 17,
+     "rows": 1,
+     "n_past": 48,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 18,
+     "rows": 1,
+     "n_past": 49,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 19,
+     "rows": 1,
+     "n_past": 50,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 20,
+     "rows": 1,
+     "n_past": 51,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 21,
+     "rows": 1,
+     "n_past": 52,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 22,
+     "rows": 1,
+     "n_past": 53,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 23,
+     "rows": 1,
+     "n_past": 54,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 24,
+     "rows": 1,
+     "n_past": 55,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 25,
+     "rows": 1,
+     "n_past": 56,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 26,
+     "rows": 1,
+     "n_past": 57,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 27,
+     "rows": 1,
+     "n_past": 58,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 28,
+     "rows": 1,
+     "n_past": 59,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 29,
+     "rows": 1,
+     "n_past": 60,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 30,
+     "rows": 1,
+     "n_past": 61,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 31,
+     "rows": 1,
+     "n_past": 62,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 32,
+     "rows": 1,
+     "n_past": 63,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 33,
+     "rows": 1,
+     "n_past": 64,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 34,
+     "rows": 1,
+     "n_past": 65,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 35,
+     "rows": 1,
+     "n_past": 66,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 36,
+     "rows": 1,
+     "n_past": 67,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 37,
+     "rows": 1,
+     "n_past": 68,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 38,
+     "rows": 1,
+     "n_past": 69,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 39,
+     "rows": 1,
+     "n_past": 70,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 40,
+     "rows": 1,
+     "n_past": 71,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 41,
+     "rows": 1,
+     "n_past": 72,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 42,
+     "rows": 1,
+     "n_past": 73,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 43,
+     "rows": 1,
+     "n_past": 74,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 44,
+     "rows": 1,
+     "n_past": 75,
+     "sequence": 1,
+     "pool_peak_used": 0,
+     "pool_committed_after": 10485760,
+     "pool_allocs": 0
+    }
+   ],
+   "setup_phases": [
+    {
+     "evaluation": 1,
+     "before_chunk": 0,
+     "phase": "model load and context creation",
+     "ops": [
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 1048576], "count": 883},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 3584], "count": 73},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 327680], "count": 72},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 229376], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 512], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 557056], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 688128], "count": 1},
+      {"op": ["memset", "per_thread", 6291456, 0], "count": 1}
+     ]
+    },
+    {
+     "evaluation": 2,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 6291456, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 6291456, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 1,
+     "phase": "state save, context recreation and restore",
+     "ops": [
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 64], "count": 3072},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 64], "count": 3072},
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 8192], "count": 24},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 8192], "count": 24},
+      {"op": ["memset", "per_thread", 6291456, 0], "count": 2}
+     ]
+    }
+   ]
+  },
+  {
+   "arm": "heldout-fused",
+   "trajectory": "heldout",
+   "fusion": true,
+   "environment": {"CUDA_DISABLE_PTX_JIT": "1", "GGML_CUDA_DISABLE_GRAPHS": "1"},
+   "summary": {
+    "backend": "cuda",
+    "trajectory": "heldout",
+    "tokens": 577,
+    "chunks": [16, 17, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "context": 1024,
+    "batch": 512,
+    "vocabulary": 151936,
+    "logit_values": 87667072,
+    "restore_prefix_tokens": 33,
+    "state_bytes": 406501,
+    "repeat_bit_differences": 0,
+    "restore_bit_differences": 0
+   },
+   "profiled_logits_sha256": "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5",
+   "expected_logits_sha256": "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5",
+   "profiled_bit_identical": true,
+   "pool_run_logits_sha256": "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5",
+   "pool_run_bit_identical": true,
+   "dumped_evaluation": "logits.f32le holds the first (fresh) of the harness's three evaluations; the plan covers all three",
+   "evaluations_identical": true,
+   "chunk_sequence_first_evaluation": [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+   "streams": {
+    "compute": "the context's non-blocking stream (one per context); ggml compute, cuBLAS and the logits copy",
+    "per_thread": "cudaStreamPerThread (nsys: default stream): input set_tensor copies, buffer clears, state save/restore, each followed by a synchronize",
+    "other:Non-blocking stream": "the model loader's upload stream"
+   },
+   "cublas_handle_setup": [
+    {"function": "cublasCreate_v2", "args": {}, "math_mode": null},
+    {
+     "function": "cublasSetMathMode",
+     "args": {"mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+     "math_mode": "CUBLAS_DEFAULT_MATH"
+    },
+    {"function": "cublasSetStream_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+    {
+     "function": "cublasSetWorkspace_v2",
+     "args": {"workspaceSizeInBytes": 33554432},
+     "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"
+    },
+    {"function": "cublasDestroy_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"}
+   ],
+   "cublas_handle_setup_counts": {
+    "cublasCreate_v2": 4,
+    "cublasSetMathMode": 4,
+    "cublasSetStream_v2": 4,
+    "cublasSetWorkspace_v2": 4,
+    "cublasGetMathMode": 288,
+    "cublasDestroy_v2": 4
+   },
+   "llama_log": ["Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes, VRAM: 124608 MiB", "load_tensors:        CUDA0 model buffer size =   942.43 MiB", "load_tensors:    CUDA_Host model buffer size =   259.66 MiB", "llama_context: n_ctx                 = 1024", "llama_context: n_batch               = 512", "llama_context: n_ubatch              = 512", "llama_context: flash_attn            = disabled", "llama_context:  CUDA_Host  output buffer size =     0.58 MiB", "llama_kv_cache:      CUDA0 KV buffer size =    12.00 MiB", "llama_kv_cache: size =   12.00 MiB (  1024 cells,  24 layers,  1/1 seqs), K (f16):    6.00 MiB, V (f16):    6.00 MiB", "sched_reserve:      CUDA0 compute buffer size =   298.50 MiB", "sched_reserve:  CUDA_Host compute buffer size =     6.01 MiB", "sched_reserve: graph nodes  = 942", "sched_reserve: graph splits = 2", "~llama_context:      CUDA0 compute buffer size is 298.5000 MiB, matches expectation of 298.5000 MiB", "~llama_context:  CUDA_Host compute buffer size is   6.0098 MiB, matches expectation of   6.0098 MiB"],
+   "sequences": [
+    {
+     "id": 0,
+     "rows": 16,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 532,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 57344, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 64, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 16384, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 64, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [16, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [4, 16, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [224, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 12, [4, 1, 1], [32, 7, 1], 16128, "compute"],
+          ["kernel", 4, [1, 8, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 24, [32, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [8, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 10, [8, 14, 1], [32, 1, 1], 2304, "compute"],
+        ["kernel", 27, [16, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 11, [2, 14, 1], [32, 2, 1], 4608, "compute"],
+        ["kernel", 3, [224, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 23, [16, 1, 1], [256, 1, 1], 128, "compute"],
+        {"repeat": 2, "body": [["kernel", 12, [152, 1, 1], [32, 7, 1], 16128, "compute"]]},
+        ["kernel", 28, [304, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 13, [28, 1, 1], [32, 8, 1], 18432, "compute"],
+        ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 23, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+      ["kernel", 4, [4, 16, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [224, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 12, [4, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [1, 8, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 24, [32, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [8, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 10, [8, 14, 1], [32, 1, 1], 2304, "compute"],
+      ["kernel", 27, [16, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 11, [2, 14, 1], [32, 2, 1], 4608, "compute"],
+      ["kernel", 3, [224, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [16, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 12, [152, 1, 1], [32, 7, 1], 16128, "compute"]]},
+      ["kernel", 28, [304, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 13, [28, 1, 1], [32, 8, 1], 18432, "compute"],
+      ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 12, [4748, 1, 1], [32, 7, 1], 16128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 9723904, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[0, 0]]
+    },
+    {
+     "id": 1,
+     "rows": 17,
+     "input_copies": 6,
+     "cublas_calls": [7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 13],
+     "pool_peak_used": [5196288],
+     "pool_allocs": [506],
+     "launches": 1038,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 60928, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 68, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 136, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 17408, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 68, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [17, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 17, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [238, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 34, [16, 1, 7], [32, 4, 1], 41984, "cublas#8"],
+          ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#8"],
+          ["kernel", 1, [9, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 9, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 24, [34, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [9, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 39, [1, 2, 14], [32, 4, 1], 41984, "cublas#9"],
+        ["kernel", 27, [17, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 2, [238, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#10"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [238, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 23, [17, 1, 1], [256, 1, 1], 128, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+          ["memset", 608, 0, "compute", "cublas#11"],
+          ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#11"],
+          ["kernel", 1, [323, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [323, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [323, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#12"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 23, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 17, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [238, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 34, [16, 1, 7], [32, 4, 1], 41984, "cublas#8"],
+        ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#8"],
+        ["kernel", 1, [9, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 9, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 24, [34, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [9, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 39, [1, 2, 14], [32, 4, 1], 41984, "cublas#9"],
+      ["kernel", 27, [17, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 2, [238, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#10"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [238, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [17, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["memset", 608, 0, "compute", "cublas#11"],
+        ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#11"],
+        ["kernel", 1, [323, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [323, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [323, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#12"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 42, [8, 149, 1], [128, 1, 1], 98304, "cublas#13"],
+      ["kernel", 1, [10090, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 10331648, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[1, 16]]
+    },
+    {
+     "id": 2,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 341,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+        ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+        ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"]
+       ]
+      },
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+      ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+      ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 48,
+     "first_evaluation_chunks": [
+      [2, 33],
+      [3, 34],
+      [4, 35],
+      [5, 36],
+      [6, 37],
+      [7, 38],
+      [8, 39],
+      [9, 40],
+      [10, 41],
+      [11, 42],
+      [12, 43],
+      [13, 44],
+      [14, 45],
+      [15, 46],
+      [16, 47],
+      [17, 48]
+     ]
+    },
+    {
+     "id": 3,
+     "rows": 512,
+     "input_copies": 6,
+     "cublas_calls": [14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 20],
+     "pool_peak_used": [156499968],
+     "pool_allocs": [506],
+     "launches": 990,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 1835008, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 2048, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4096, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 524288, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 1572864, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 2048, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [512, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 512, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [7168, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 31, [8, 4, 1], [128, 1, 1], 99328, "cublas#15"],
+          ["kernel", 1, [256, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 256, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 24, [1024, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [256, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 1, [384, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 43, [32, 1, 14], [128, 1, 1], 81920, "cublas#16"],
+        ["kernel", 26, [512, 14, 1], [1024, 1, 1], 3200, "compute"],
+        ["kernel", 2, [21504, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 30, [16, 2, 14], [128, 1, 1], 99328, "cublas#17"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [7168, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 23, [512, 1, 1], [256, 1, 1], 128, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 42, [32, 5, 1], [128, 1, 1], 98304, "cublas#18"],
+          ["kernel", 1, [9728, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 37, [80, 1, 1], [128, 2, 1], 87040, "cublas#19"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 23, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 512, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [7168, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 31, [8, 4, 1], [128, 1, 1], 99328, "cublas#15"],
+        ["kernel", 1, [256, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 256, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 24, [1024, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [256, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 1, [384, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 43, [32, 1, 14], [128, 1, 1], 81920, "cublas#16"],
+      ["kernel", 26, [512, 14, 1], [1024, 1, 1], 3200, "compute"],
+      ["kernel", 2, [21504, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 30, [16, 2, 14], [128, 1, 1], 99328, "cublas#17"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [7168, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 7, [512, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 42, [32, 5, 1], [128, 1, 1], 98304, "cublas#18"],
+        ["kernel", 1, [9728, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 37, [80, 1, 1], [128, 2, 1], 87040, "cublas#19"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 29, [9496, 1, 1], [64, 4, 1], 87040, "cublas#20"],
+      ["kernel", 1, [303872, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 311164928, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[18, 49]]
+    },
+    {
+     "id": 4,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 341,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 3072, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+        ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 9, [24, 14, 1], [32, 1, 1], 2304, "compute"],
+        ["kernel", 26, [1, 14, 1], [1024, 1, 1], 3200, "compute"],
+        ["kernel", 15, [64, 14, 1], [192, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+        ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"]
+       ]
+      },
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 17, [896, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 17, [128, 1, 1], [224, 1, 1], 256, "compute"]]},
+      ["kernel", 24, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      ["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 9, [24, 14, 1], [32, 1, 1], 2304, "compute"],
+      ["kernel", 26, [1, 14, 1], [1024, 1, 1], 3200, "compute"],
+      ["kernel", 15, [64, 14, 1], [192, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 20, [4864, 1, 1], [224, 1, 1], 256, "compute"],
+      ["kernel", 19, [896, 1, 1], [256, 1, 1], 256, "compute"],
+      ["kernel", 23, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 48,
+     "first_evaluation_chunks": [
+      [19, 561],
+      [20, 562],
+      [21, 563],
+      [22, 564],
+      [23, 565],
+      [24, 566],
+      [25, 567],
+      [26, 568],
+      [27, 569],
+      [28, 570],
+      [29, 571],
+      [30, 572],
+      [31, 573],
+      [32, 574],
+      [33, 575],
+      [34, 576]
+     ]
+    }
+   ],
+   "chunks_first_evaluation": [
+    {
+     "chunk": 0,
+     "rows": 16,
+     "n_past": 0,
+     "sequence": 0,
+     "pool_peak_used": 0,
+     "pool_committed_after": 0,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 1,
+     "rows": 17,
+     "n_past": 16,
+     "sequence": 1,
+     "pool_peak_used": 5196288,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 2,
+     "rows": 1,
+     "n_past": 33,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 3,
+     "rows": 1,
+     "n_past": 34,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 4,
+     "rows": 1,
+     "n_past": 35,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 5,
+     "rows": 1,
+     "n_past": 36,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 6,
+     "rows": 1,
+     "n_past": 37,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 7,
+     "rows": 1,
+     "n_past": 38,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 8,
+     "rows": 1,
+     "n_past": 39,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 9,
+     "rows": 1,
+     "n_past": 40,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 10,
+     "rows": 1,
+     "n_past": 41,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 11,
+     "rows": 1,
+     "n_past": 42,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 12,
+     "rows": 1,
+     "n_past": 43,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 13,
+     "rows": 1,
+     "n_past": 44,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 14,
+     "rows": 1,
+     "n_past": 45,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 15,
+     "rows": 1,
+     "n_past": 46,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 16,
+     "rows": 1,
+     "n_past": 47,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 17,
+     "rows": 1,
+     "n_past": 48,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 18,
+     "rows": 512,
+     "n_past": 49,
+     "sequence": 3,
+     "pool_peak_used": 156499968,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 19,
+     "rows": 1,
+     "n_past": 561,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 20,
+     "rows": 1,
+     "n_past": 562,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 21,
+     "rows": 1,
+     "n_past": 563,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 22,
+     "rows": 1,
+     "n_past": 564,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 23,
+     "rows": 1,
+     "n_past": 565,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 24,
+     "rows": 1,
+     "n_past": 566,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 25,
+     "rows": 1,
+     "n_past": 567,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 26,
+     "rows": 1,
+     "n_past": 568,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 27,
+     "rows": 1,
+     "n_past": 569,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 28,
+     "rows": 1,
+     "n_past": 570,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 29,
+     "rows": 1,
+     "n_past": 571,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 30,
+     "rows": 1,
+     "n_past": 572,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 31,
+     "rows": 1,
+     "n_past": 573,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 32,
+     "rows": 1,
+     "n_past": 574,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 33,
+     "rows": 1,
+     "n_past": 575,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 34,
+     "rows": 1,
+     "n_past": 576,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    }
+   ],
+   "setup_phases": [
+    {
+     "evaluation": 1,
+     "before_chunk": 0,
+     "phase": "model load and context creation",
+     "ops": [
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 1048576], "count": 883},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 3584], "count": 73},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 327680], "count": 72},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 229376], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 512], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 557056], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 688128], "count": 1},
+      {"op": ["memset", "per_thread", 12582912, 0], "count": 1}
+     ]
+    },
+    {
+     "evaluation": 2,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 12582912, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 12582912, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 2,
+     "phase": "state save, context recreation and restore",
+     "ops": [
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 66], "count": 3072},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 66], "count": 3072},
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 8448], "count": 24},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 8448], "count": 24},
+      {"op": ["memset", "per_thread", 12582912, 0], "count": 2}
+     ]
+    }
+   ]
+  },
+  {
+   "arm": "heldout-unfused",
+   "trajectory": "heldout",
+   "fusion": false,
+   "environment": {"CUDA_DISABLE_PTX_JIT": "1", "GGML_CUDA_DISABLE_GRAPHS": "1", "GGML_CUDA_DISABLE_FUSION": "1"},
+   "summary": {
+    "backend": "cuda",
+    "trajectory": "heldout",
+    "tokens": 577,
+    "chunks": [16, 17, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "context": 1024,
+    "batch": 512,
+    "vocabulary": 151936,
+    "logit_values": 87667072,
+    "restore_prefix_tokens": 33,
+    "state_bytes": 406501,
+    "repeat_bit_differences": 0,
+    "restore_bit_differences": 0
+   },
+   "profiled_logits_sha256": "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0",
+   "expected_logits_sha256": "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0",
+   "profiled_bit_identical": true,
+   "pool_run_logits_sha256": "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0",
+   "pool_run_bit_identical": true,
+   "dumped_evaluation": "logits.f32le holds the first (fresh) of the harness's three evaluations; the plan covers all three",
+   "evaluations_identical": true,
+   "chunk_sequence_first_evaluation": [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+   "streams": {
+    "compute": "the context's non-blocking stream (one per context); ggml compute, cuBLAS and the logits copy",
+    "per_thread": "cudaStreamPerThread (nsys: default stream): input set_tensor copies, buffer clears, state save/restore, each followed by a synchronize",
+    "other:Non-blocking stream": "the model loader's upload stream"
+   },
+   "cublas_handle_setup": [
+    {"function": "cublasCreate_v2", "args": {}, "math_mode": null},
+    {
+     "function": "cublasSetMathMode",
+     "args": {"mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+     "math_mode": "CUBLAS_DEFAULT_MATH"
+    },
+    {"function": "cublasSetStream_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"},
+    {
+     "function": "cublasSetWorkspace_v2",
+     "args": {"workspaceSizeInBytes": 33554432},
+     "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"
+    },
+    {"function": "cublasDestroy_v2", "args": {}, "math_mode": "CUBLAS_TF32_TENSOR_OP_MATH"}
+   ],
+   "cublas_handle_setup_counts": {
+    "cublasCreate_v2": 4,
+    "cublasSetMathMode": 4,
+    "cublasSetStream_v2": 4,
+    "cublasSetWorkspace_v2": 4,
+    "cublasGetMathMode": 288,
+    "cublasDestroy_v2": 4
+   },
+   "llama_log": ["Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes, VRAM: 124608 MiB", "load_tensors:        CUDA0 model buffer size =   942.43 MiB", "load_tensors:    CUDA_Host model buffer size =   259.66 MiB", "llama_context: n_ctx                 = 1024", "llama_context: n_batch               = 512", "llama_context: n_ubatch              = 512", "llama_context: flash_attn            = disabled", "llama_context:  CUDA_Host  output buffer size =     0.58 MiB", "llama_kv_cache:      CUDA0 KV buffer size =    12.00 MiB", "llama_kv_cache: size =   12.00 MiB (  1024 cells,  24 layers,  1/1 seqs), K (f16):    6.00 MiB, V (f16):    6.00 MiB", "sched_reserve:      CUDA0 compute buffer size =   298.50 MiB", "sched_reserve:  CUDA_Host compute buffer size =     6.01 MiB", "sched_reserve: graph nodes  = 942", "sched_reserve: graph splits = 2", "~llama_context:      CUDA0 compute buffer size is 298.5000 MiB, matches expectation of 298.5000 MiB", "~llama_context:  CUDA_Host compute buffer size is   6.0098 MiB, matches expectation of   6.0098 MiB"],
+   "sequences": [
+    {
+     "id": 0,
+     "rows": 16,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 605,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 57344, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 64, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 128, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 16384, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 64, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [16, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 16, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [4, 16, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [224, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 12, [4, 1, 1], [32, 7, 1], 16128, "compute"],
+          ["kernel", 4, [1, 8, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [32, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [8, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 10, [8, 14, 1], [32, 1, 1], 2304, "compute"],
+        ["kernel", 27, [16, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 11, [2, 14, 1], [32, 2, 1], 4608, "compute"],
+        ["kernel", 3, [224, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [16, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 16, 1], [128, 1, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 12, [152, 1, 1], [32, 7, 1], 16128, "compute"]]},
+        ["kernel", 28, [304, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 13, [28, 1, 1], [32, 8, 1], 18432, "compute"],
+        ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 16, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+      ["kernel", 4, [4, 16, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [224, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 12, [4, 1, 1], [32, 7, 1], 16128, "compute"],
+        ["kernel", 4, [1, 8, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [32, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [8, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 10, [8, 14, 1], [32, 1, 1], 2304, "compute"],
+      ["kernel", 27, [16, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 11, [2, 14, 1], [32, 2, 1], 4608, "compute"],
+      ["kernel", 3, [224, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 12, [28, 1, 1], [32, 7, 1], 16128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [16, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 16, 1], [128, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 12, [152, 1, 1], [32, 7, 1], 16128, "compute"]]},
+      ["kernel", 28, [304, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 13, [28, 1, 1], [32, 8, 1], 18432, "compute"],
+      ["kernel", 4, [56, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [16, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 16, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 12, [4748, 1, 1], [32, 7, 1], 16128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 9723904, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[0, 0]]
+    },
+    {
+     "id": 1,
+     "rows": 17,
+     "input_copies": 6,
+     "cublas_calls": [7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 7, 8, 8, 9, 10, 7, 11, 11, 12, 13],
+     "pool_peak_used": [5196288],
+     "pool_allocs": [506],
+     "launches": 1111,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 60928, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 68, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 136, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 17408, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 68, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [17, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 17, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 17, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [238, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 34, [16, 1, 7], [32, 4, 1], 41984, "cublas#8"],
+          ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#8"],
+          ["kernel", 1, [9, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 9, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [34, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [9, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 39, [1, 2, 14], [32, 4, 1], 41984, "cublas#9"],
+        ["kernel", 27, [17, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 2, [238, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#10"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [238, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [17, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 17, 1], [128, 1, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+          ["memset", 608, 0, "compute", "cublas#11"],
+          ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#11"],
+          ["kernel", 1, [323, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [323, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [323, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#12"],
+        ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 17, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 17, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [238, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 34, [16, 1, 7], [32, 4, 1], 41984, "cublas#8"],
+        ["kernel", 41, [4, 2, 1], [32, 16, 1], 0, "cublas#8"],
+        ["kernel", 1, [9, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 9, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [34, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [9, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 1, [128, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 39, [1, 2, 14], [32, 4, 1], 41984, "cublas#9"],
+      ["kernel", 27, [17, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 2, [238, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 33, [2, 1, 14], [32, 4, 1], 41984, "cublas#10"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [238, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#7"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [17, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 17, 1], [128, 1, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+        ["memset", 608, 0, "compute", "cublas#11"],
+        ["kernel", 44, [8, 19, 4], [128, 1, 1], 17408, "cublas#11"],
+        ["kernel", 1, [323, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [323, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [323, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 36, [56, 1, 1], [32, 4, 1], 91136, "cublas#12"],
+      ["kernel", 1, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [60, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [17, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 17, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [60, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 42, [8, 149, 1], [128, 1, 1], 98304, "cublas#13"],
+      ["kernel", 1, [10090, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 10331648, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[1, 16]]
+    },
+    {
+     "id": 2,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 581,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      {"repeat": 2, "body": [["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"]]},
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+          ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+        ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+        ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+        ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 21, [256, 14, 1], [32, 1, 1], 128, "compute"],
+      ["kernel", 27, [1, 14, 1], [256, 1, 1], 1152, "compute"],
+      ["kernel", 14, [64, 14, 1], [128, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+      ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 48,
+     "first_evaluation_chunks": [
+      [2, 33],
+      [3, 34],
+      [4, 35],
+      [5, 36],
+      [6, 37],
+      [7, 38],
+      [8, 39],
+      [9, 40],
+      [10, 41],
+      [11, 42],
+      [12, 43],
+      [13, 44],
+      [14, 45],
+      [15, 46],
+      [16, 47],
+      [17, 48]
+     ]
+    },
+    {
+     "id": 3,
+     "rows": 512,
+     "input_copies": 6,
+     "cublas_calls": [14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 14, 15, 15, 16, 17, 14, 18, 18, 19, 20],
+     "pool_peak_used": [156499968],
+     "pool_allocs": [506],
+     "launches": 1063,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 1835008, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 2048, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4096, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 524288, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 1572864, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 2048, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [512, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 512, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [4, 512, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [7168, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 31, [8, 4, 1], [128, 1, 1], 99328, "cublas#15"],
+          ["kernel", 1, [256, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 4, [1, 256, 1], [64, 2, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [1024, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [256, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 1, [384, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 43, [32, 1, 14], [128, 1, 1], 81920, "cublas#16"],
+        ["kernel", 26, [512, 14, 1], [1024, 1, 1], 3200, "compute"],
+        ["kernel", 2, [21504, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+        ["kernel", 30, [16, 2, 14], [128, 1, 1], 99328, "cublas#17"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 3, [7168, 1, 1], [64, 1, 1], 0, "compute"],
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [512, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 512, 1], [128, 1, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+          ["kernel", 42, [32, 5, 1], [128, 1, 1], 98304, "cublas#18"],
+          ["kernel", 1, [9728, 1, 1], [256, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 28, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 2, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 37, [80, 1, 1], [128, 2, 1], 87040, "cublas#19"],
+        ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 512, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [4, 512, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [7168, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 31, [8, 4, 1], [128, 1, 1], 99328, "cublas#15"],
+        ["kernel", 1, [256, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 4, [1, 256, 1], [64, 2, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [1024, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [256, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 1, [384, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 43, [32, 1, 14], [128, 1, 1], 81920, "cublas#16"],
+      ["kernel", 26, [512, 14, 1], [1024, 1, 1], 3200, "compute"],
+      ["kernel", 2, [21504, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 0, [1, 1, 1], [16, 16, 1], 0, "compute"],
+      ["kernel", 30, [16, 2, 14], [128, 1, 1], 99328, "cublas#17"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 3, [7168, 1, 1], [64, 1, 1], 0, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 38, [80, 1, 1], [256, 1, 1], 87040, "cublas#14"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 7, [512, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 512, 1], [128, 1, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 42, [32, 5, 1], [128, 1, 1], 98304, "cublas#18"],
+        ["kernel", 1, [9728, 1, 1], [256, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 28, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 2, [9728, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 37, [80, 1, 1], [128, 2, 1], 87040, "cublas#19"],
+      ["kernel", 1, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 4, [1792, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [512, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 512, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 2, [1792, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 29, [9496, 1, 1], [64, 4, 1], 87040, "cublas#20"],
+      ["kernel", 1, [303872, 1, 1], [256, 1, 1], 0, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 311164928, "compute"]
+     ],
+     "occurrence_count": 3,
+     "first_evaluation_chunks": [[18, 49]]
+    },
+    {
+     "id": 4,
+     "rows": 1,
+     "input_copies": 6,
+     "cublas_calls": [],
+     "pool_peak_used": [0],
+     "pool_allocs": [0],
+     "launches": 581,
+     "plan": [
+      ["memcpy", "HtoD", "pinned", "device", 3584, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 8, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 1024, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 3072, "per_thread"],
+      ["memcpy", "HtoD", "pinned", "device", 4, "per_thread"],
+      {
+       "repeat": 23,
+       "body": [
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+        {
+         "repeat": 2,
+         "body": [
+          ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+          ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+         ]
+        },
+        ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+        ["kernel", 9, [24, 14, 1], [32, 1, 1], 2304, "compute"],
+        ["kernel", 26, [1, 14, 1], [1024, 1, 1], 3200, "compute"],
+        ["kernel", 15, [64, 14, 1], [192, 1, 1], 128, "compute"],
+        ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+        ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+        {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+        ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+        ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+        ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 25, [14, 1, 1], [1, 256, 1], 0, "compute"],
+      {
+       "repeat": 2,
+       "body": [
+        ["kernel", 16, [128, 1, 1], [224, 1, 1], 128, "compute"],
+        ["kernel", 4, [1, 1, 1], [64, 1, 1], 0, "compute"]
+       ]
+      },
+      ["kernel", 25, [2, 1, 1], [1, 256, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 8, [1, 1, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 9, [24, 14, 1], [32, 1, 1], 2304, "compute"],
+      ["kernel", 26, [1, 14, 1], [1024, 1, 1], 3200, "compute"],
+      ["kernel", 15, [64, 14, 1], [192, 1, 1], 128, "compute"],
+      ["memcpy", "DtoD", "device", "device", 3584, "compute"],
+      ["kernel", 16, [896, 1, 1], [224, 1, 1], 128, "compute"],
+      {"repeat": 2, "body": [["kernel", 6, [1, 4, 1], [256, 1, 1], 0, "compute"]]},
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      {"repeat": 2, "body": [["kernel", 16, [4864, 1, 1], [224, 1, 1], 128, "compute"]]},
+      ["kernel", 28, [19, 1, 1], [256, 1, 1], 0, "compute"],
+      ["kernel", 18, [896, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 4, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 22, [1, 1, 1], [256, 1, 1], 128, "compute"],
+      ["kernel", 5, [4, 1, 1], [128, 1, 1], 0, "compute"],
+      ["kernel", 16, [151936, 1, 1], [224, 1, 1], 128, "compute"],
+      ["memcpy", "DtoH", "device", "pinned", 607744, "compute"]
+     ],
+     "occurrence_count": 48,
+     "first_evaluation_chunks": [
+      [19, 561],
+      [20, 562],
+      [21, 563],
+      [22, 564],
+      [23, 565],
+      [24, 566],
+      [25, 567],
+      [26, 568],
+      [27, 569],
+      [28, 570],
+      [29, 571],
+      [30, 572],
+      [31, 573],
+      [32, 574],
+      [33, 575],
+      [34, 576]
+     ]
+    }
+   ],
+   "chunks_first_evaluation": [
+    {
+     "chunk": 0,
+     "rows": 16,
+     "n_past": 0,
+     "sequence": 0,
+     "pool_peak_used": 0,
+     "pool_committed_after": 0,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 1,
+     "rows": 17,
+     "n_past": 16,
+     "sequence": 1,
+     "pool_peak_used": 5196288,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 2,
+     "rows": 1,
+     "n_past": 33,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 3,
+     "rows": 1,
+     "n_past": 34,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 4,
+     "rows": 1,
+     "n_past": 35,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 5,
+     "rows": 1,
+     "n_past": 36,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 6,
+     "rows": 1,
+     "n_past": 37,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 7,
+     "rows": 1,
+     "n_past": 38,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 8,
+     "rows": 1,
+     "n_past": 39,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 9,
+     "rows": 1,
+     "n_past": 40,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 10,
+     "rows": 1,
+     "n_past": 41,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 11,
+     "rows": 1,
+     "n_past": 42,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 12,
+     "rows": 1,
+     "n_past": 43,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 13,
+     "rows": 1,
+     "n_past": 44,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 14,
+     "rows": 1,
+     "n_past": 45,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 15,
+     "rows": 1,
+     "n_past": 46,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 16,
+     "rows": 1,
+     "n_past": 47,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 17,
+     "rows": 1,
+     "n_past": 48,
+     "sequence": 2,
+     "pool_peak_used": 0,
+     "pool_committed_after": 6291456,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 18,
+     "rows": 512,
+     "n_past": 49,
+     "sequence": 3,
+     "pool_peak_used": 156499968,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 506
+    },
+    {
+     "chunk": 19,
+     "rows": 1,
+     "n_past": 561,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 20,
+     "rows": 1,
+     "n_past": 562,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 21,
+     "rows": 1,
+     "n_past": 563,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 22,
+     "rows": 1,
+     "n_past": 564,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 23,
+     "rows": 1,
+     "n_past": 565,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 24,
+     "rows": 1,
+     "n_past": 566,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 25,
+     "rows": 1,
+     "n_past": 567,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 26,
+     "rows": 1,
+     "n_past": 568,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 27,
+     "rows": 1,
+     "n_past": 569,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 28,
+     "rows": 1,
+     "n_past": 570,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 29,
+     "rows": 1,
+     "n_past": 571,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 30,
+     "rows": 1,
+     "n_past": 572,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 31,
+     "rows": 1,
+     "n_past": 573,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 32,
+     "rows": 1,
+     "n_past": 574,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 33,
+     "rows": 1,
+     "n_past": 575,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    },
+    {
+     "chunk": 34,
+     "rows": 1,
+     "n_past": 576,
+     "sequence": 4,
+     "pool_peak_used": 0,
+     "pool_committed_after": 157286400,
+     "pool_allocs": 0
+    }
+   ],
+   "setup_phases": [
+    {
+     "evaluation": 1,
+     "before_chunk": 0,
+     "phase": "model load and context creation",
+     "ops": [
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 1048576], "count": 883},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 3584], "count": 73},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 327680], "count": 72},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 229376], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 512], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 557056], "count": 48},
+      {"op": ["memcpy", "other:Non-blocking stream", "HtoD pinned->device", 688128], "count": 1},
+      {"op": ["memset", "per_thread", 12582912, 0], "count": 1}
+     ]
+    },
+    {
+     "evaluation": 2,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 12582912, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 0,
+     "phase": "context creation",
+     "ops": [{"op": ["memset", "per_thread", 12582912, 0], "count": 1}]
+    },
+    {
+     "evaluation": 3,
+     "before_chunk": 2,
+     "phase": "state save, context recreation and restore",
+     "ops": [
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 66], "count": 3072},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 66], "count": 3072},
+      {"op": ["memcpy", "per_thread", "DtoH device->pageable", 8448], "count": 24},
+      {"op": ["memcpy", "per_thread", "HtoD pageable->device", 8448], "count": 24},
+      {"op": ["memset", "per_thread", 12582912, 0], "count": 2}
+     ]
+    }
+   ]
+  }
+ ]
+}

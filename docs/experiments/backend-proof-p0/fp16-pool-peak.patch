@@ -1,0 +1,53 @@
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -414,6 +414,9 @@
+ 
+ // #define DEBUG_CUDA_MALLOC
+ 
++// jitLLM P0 instrumentation (reference only): the VMM pool's high-water mark per graph compute.
++static size_t jitllm_pool_used = 0, jitllm_pool_peak = 0, jitllm_pool_size = 0, jitllm_pool_allocs = 0;
++
+ // buffer pool for cuda (legacy)
+ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+     static const int MAX_BUFFERS = 256;
+@@ -552,6 +555,8 @@
+     }
+ 
+     ~ggml_cuda_pool_vmm() {
++        jitllm_pool_used = 0;
++        jitllm_pool_size = 0;
+         if (pool_addr != 0) {
+ #if defined(GGML_USE_HIP)
+             // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
+@@ -660,6 +665,10 @@
+         void * ptr = (void *) ((CUdeviceptr)((char *)(pool_addr) + pool_used));
+         *actual_size = size;
+         pool_used += size;
++        jitllm_pool_used = pool_used;
++        jitllm_pool_size = pool_size;
++        jitllm_pool_allocs += 1;
++        if (pool_used > jitllm_pool_peak) jitllm_pool_peak = pool_used;
+ 
+ #ifdef DEBUG_CUDA_MALLOC
+         printf("cuda pool[%d]: allocated %llu bytes at %llx\n", device, (unsigned long long) size, ptr);
+@@ -674,6 +683,7 @@
+ #endif
+ 
+         pool_used -= size;
++        jitllm_pool_used = pool_used;
+ 
+         // all deallocations must be in reverse order of the allocations
+         GGML_ASSERT(ptr == (void *) ((char *)(pool_addr) + pool_used));
+@@ -4471,7 +4481,12 @@
+         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
+     }
+ 
++    jitllm_pool_peak = jitllm_pool_used;
++    jitllm_pool_allocs = 0;
+     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
++    GGML_LOG_INFO("jitllm_pool: nodes=%d last_ne1=%lld allocs=%zu peak_used=%zu pool_size=%zu used_after=%zu\n",
++                  cgraph->n_nodes, (long long) cgraph->nodes[cgraph->n_nodes - 1]->ne[1], jitllm_pool_allocs,
++                  jitllm_pool_peak, jitllm_pool_size, jitllm_pool_used);
+ 
+     return GGML_STATUS_SUCCESS;
+ }
