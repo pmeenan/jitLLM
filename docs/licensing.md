@@ -587,8 +587,12 @@ including relevant build/install/run scripts and covered dependencies;
 **Shipping (D-080).** jitLLM's own builds and packages include its
 optional copyleft modules by default; the copyleft-disabled profile is the
 build-time opt-out. A component counts as copyleft only once that is
-confirmed; a provenance suspicion alone does not. A package with a
-confirmed-GPL module is conveyed under its terms as a whole; an AGPL one
+confirmed; a provenance suspicion alone does not. A project's declared
+license covers its own code; an included library or file that directly
+states a different license for itself (its own license file, an SPDX tag
+or license text) is classified by that statement, and an implied origin
+(a citation, "based on", "QTIP-style") is not a statement. A package with
+a confirmed-GPL module is conveyed under its terms as a whole; an AGPL one
 also owes the network source offer below.
 
 For a future enabled AGPL backend, review the **actual combined program** and

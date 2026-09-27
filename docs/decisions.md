@@ -114,6 +114,14 @@ measurably slows concurrent decode.
   2026-09-27, asked directly). This narrows D-002's rule that ambiguous
   provenance stays out of distributed builds. Unknown or incompatible
   terms still block (D-017).
+- **What "declared" means.** The owner, the same day: a project's declared
+  license covers the project's own code. A library or file it includes
+  that directly states a different license for itself (its own license
+  file, an SPDX tag or license text in the file) is classified by that
+  statement, whatever the project declares; the project's own changes to
+  it are project code. An implication alone, such as a citation or a
+  "based on" or "QTIP-style" remark, does not change the classification;
+  confirmed copyleft code still does (above).
 - **Kernel choice.** "I honestly don't care where the kernels come from as
   long as they are correct and the fastest available." Kernels are chosen
   by correctness and speed; the license decides only core or optional
