@@ -5,8 +5,9 @@
 # locked GGML subset (third_party/sources.lock.json, component `ggml`).
 #
 #   jitllm_ggml_tensors  GGML tensor descriptors over jitLLM memory
-#                        (tensors.h) and the implementations' operand
-#                        checks (validate.h). Every profile.
+#                        (tensors.h), the implementations' operand checks
+#                        (validate.h) and upstream's fusion gates
+#                        (fusion.h). Every profile.
 #   jitllm_ggml_kernels  the K-C launch context (launch.h), jitLLM's cuBLAS
 #                        handle (cublas.h), the operation implementations
 #                        (ops.h, mul_mat_cublas.cu) and jitLLM's definitions
@@ -14,7 +15,7 @@
 #                        (ggml_support.cu), and the module's declarations
 #                        in the implementation registry
 #                        (implementations.h). CUDA builds only.
-add_library(jitllm_ggml_tensors STATIC tensors.cc validate.cc)
+add_library(jitllm_ggml_tensors STATIC fusion.cc tensors.cc validate.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base PRIVATE jitllm_warnings)
 
@@ -86,9 +87,10 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h ggml_support.cu ggml_support.h
-                   implementations.cc implementations.h launch.cu launch.h module_digest.cmake
-                   mul_mat_cublas.cu ops.cu ops.h tensors.cc tensors.h validate.cc validate.h)
+  set(module_files CMakeLists.txt cublas.cc cublas.h fusion.cc fusion.h ggml_support.cu
+                   ggml_support.h implementations.cc implementations.h launch.cu launch.h
+                   module_digest.cmake mul_mat_cublas.cu ops.cu ops.h tensors.cc tensors.h
+                   validate.cc validate.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)

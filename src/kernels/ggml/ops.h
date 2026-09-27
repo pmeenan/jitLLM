@@ -67,6 +67,55 @@ std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext&
 // only for activations (BP-A3).
 std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tensor* node);
 
+// The operations of the FP16 bridge's recorded plan beyond those above
+// (validate.h). None draws scratch. The row indices GetRows, SetRows and
+// RopeSetRows read from device memory are not checked: an index outside
+// its tensor reads or writes out of bounds, so the plan that writes them
+// must bound them (validate.h).
+
+// A ggml_get_rows node (the last layer's output rows): upstream's launcher,
+// which chooses its vector or scalar kernel (validate.h GetRowsVectorized).
+std::expected<void, KernelFailure> GetRows(LaunchContext& launch, ggml_tensor* node);
+// A ggml_set_rows node: the KV write, F32 rows into an F16 cache.
+std::expected<void, KernelFailure> SetRows(LaunchContext& launch, ggml_tensor* node);
+// A NEOX ggml_rope_ext node over F32.
+std::expected<void, KernelFailure> Rope(LaunchContext& launch, ggml_tensor* rope);
+// The same RoPE fused with the KV write that stores a flattening view of it:
+// one kernel writes the rotated rows into set_rows' F16 destination, and the
+// RoPE is never written (the FP16-F plan's K write). Unfused, the plan runs
+// Rope, then SetRows over the view.
+std::expected<void, KernelFailure> RopeSetRows(LaunchContext& launch, ggml_tensor* rope,
+                                               ggml_tensor* set_rows);
+// A ggml_soft_max_ext node over F32 with an F32 mask (attention's scores),
+// refused if a row does not fit the device's shared memory.
+std::expected<void, KernelFailure> SoftMax(LaunchContext& launch, ggml_tensor* node);
+// A ggml_cont node over F32 (attention's merged heads): a copy, a pitched
+// copy or GGML's scalar kernel, as upstream's launcher chooses
+// (validate.h CheckCont).
+std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node);
+// A ggml_swiglu_split node over F32.
+std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* node);
+
+// MMVF with GGML's fusion arguments, for one activation column, as the
+// FP16-F plan runs it: a product and its bias (or residual) add, written to
+// the add; and gate and up products with their SwiGLU, written to the GLU.
+// The products are never written. Refused unless upstream would select MMVF
+// for the product (for the GLU, the up product) on the context's device.
+// Unfused, the plan runs MulMatVecF, then Add; or MulMatVecF twice, then
+// SwiGlu.
+std::expected<void, KernelFailure> MulMatVecBias(LaunchContext& launch, ggml_tensor* mul_mat,
+                                                 ggml_tensor* add);
+std::expected<void, KernelFailure> MulMatVecGlu(LaunchContext& launch, ggml_tensor* gate,
+                                                ggml_tensor* up, ggml_tensor* glu);
+
+// The device's part of upstream's MMVF fusion gates
+// (ggml_cuda_should_fuse_mul_mat_vec_f, ggml-cuda.cu:1767-1792): F16, BF16
+// or F32 weights with F32 activations and output, MMVF selected for them on
+// the context's device, and one output column. With fusion.h's
+// MulMatGluFusionAt (asked of its up product) or MulMatAddFusionAt, this
+// decides whether upstream fuses.
+bool MulMatVecFusible(const LaunchContext& launch, const ggml_tensor* mul_mat);
+
 }  // namespace jitllm::kernels::ggml
 
 #endif  // JITLLM_KERNELS_GGML_OPS_H_

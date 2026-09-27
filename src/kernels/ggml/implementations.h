@@ -10,7 +10,23 @@
 //   ggml.rms_norm_mul.fused    GGML's fused launcher (ops.h RmsNormMul), as
 //                              the FP16-F profile runs it;
 //   ggml.rms_norm_mul.unfused  rms_norm's launcher, then mul's (ops.h
-//                              RmsNormThenMul), as FP16-U runs it.
+//                              RmsNormThenMul), as FP16-U runs it;
+// and the other operations the FP16 bridge's recorded plan launches, each
+// over its nodes in this order (Kernel):
+//   ggml.get_rows                {get_rows}              ops.h GetRows
+//   ggml.set_rows                {set_rows}              ops.h SetRows
+//   ggml.rope.neox               {rope}                  ops.h Rope
+//   ggml.rope_set_rows.fused     {rope, set_rows}        ops.h RopeSetRows
+//   ggml.soft_max                {soft_max}              ops.h SoftMax
+//   ggml.cont                    {cont}                  ops.h Cont
+//   ggml.swiglu                  {glu}                   ops.h SwiGlu
+//   ggml.mul_mat_add.mmvf_fused  {mul_mat, add}          ops.h MulMatVecBias
+//   ggml.mul_mat_glu.mmvf_fused  {gate, up, glu}         ops.h MulMatVecGlu
+// The three fused ones are FP16-F's; FP16-U runs their parts as separate
+// operations (ops.h). Which kernel variant each launches follows from its
+// operands, as upstream's launcher chooses it, so a variant names the
+// launcher and its rule rather than one kernel.
+//
 // Each identity covers everything that decides what an implementation
 // computes and launches:
 //   - the prepared GGML tree's digest, which covers upstream's bytes,
@@ -23,7 +39,8 @@
 //   - the name, and a variant naming the launcher sequence.
 // Code outside the module, such as the provider that supplies the stream,
 // is not covered: it does not choose what is launched.
-// The other implementations in ops.h join when a planner selects them.
+// The remaining implementations in ops.h (RMSNorm, add, mul and the matrix
+// product families) join when a planner selects them.
 //
 // A bound plan's implementation becomes a kernel here once, when the plan
 // is bound; each launch then runs that kernel's host checks and launchers
@@ -32,7 +49,9 @@
 #ifndef JITLLM_KERNELS_GGML_IMPLEMENTATIONS_H_
 #define JITLLM_KERNELS_GGML_IMPLEMENTATIONS_H_
 
+#include <cstddef>
 #include <expected>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -69,6 +88,34 @@ class RmsNormMulKernel {
 
  private:
   explicit RmsNormMulKernel(const Entry& entry) : entry_(&entry) {}
+
+  const Entry* entry_;
+};
+
+// One of the module's other implementations (above), over its operation's
+// nodes in the order listed there.
+class Kernel {
+ public:
+  // Refused unless `implementation` is one of those this module declares,
+  // identity and all.
+  static std::expected<Kernel, KernelFailure> Bind(const execution::Implementation& implementation);
+
+  // The implementation's operand checks, on the host (validate.h); refused
+  // unless `nodes` has the operation's number of nodes. Row indices read
+  // from device memory are the plan's to bound (ops.h).
+  std::expected<void, KernelFailure> Check(std::span<const ggml_tensor* const> nodes) const;
+  // Checks, then launches on the context's stream.
+  std::expected<void, KernelFailure> Run(LaunchContext& launch,
+                                         std::span<ggml_tensor* const> nodes) const;
+  std::string_view name() const;
+  execution::Operation operation() const;
+  // How many nodes the operation takes.
+  std::size_t arity() const;
+
+  struct Entry;
+
+ private:
+  explicit Kernel(const Entry& entry) : entry_(&entry) {}
 
   const Entry* entry_;
 };

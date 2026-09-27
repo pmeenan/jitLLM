@@ -81,6 +81,24 @@ std::string_view OperationName(Operation operation) {
       return "mul";
     case Operation::kMatMul:
       return "mul_mat";
+    case Operation::kGetRows:
+      return "get_rows";
+    case Operation::kSetRows:
+      return "set_rows";
+    case Operation::kRope:
+      return "rope";
+    case Operation::kRopeSetRows:
+      return "rope_set_rows";
+    case Operation::kSoftMax:
+      return "soft_max";
+    case Operation::kCont:
+      return "cont";
+    case Operation::kSwiGlu:
+      return "swiglu";
+    case Operation::kMulMatAdd:
+      return "mul_mat_add";
+    case Operation::kMulMatGlu:
+      return "mul_mat_glu";
   }
   return "unknown";
 }

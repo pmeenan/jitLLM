@@ -322,12 +322,29 @@ than the pinned one and cuBLAS's own numerics switches in the environment.
 A context without a handle refuses the path, so GGML never creates a
 handle or workspace of its own.
 
+Every GGML kernel in the FP16 bridge's recorded plan now has an
+implementation (`src/kernels/ggml/ops.h`), fused launchers included:
+RoPE with the K write, MMVF with a bias or residual add, and MMVF with
+gate, up and SwiGLU. Each fused one is called with the node upstream
+writes (the add, the GLU), so the launcher reads its precision from the
+same parameters as upstream's: under the GLU, whose first parameter is its
+GLU operation, F16 weights accumulate in F32, which is one of the precision
+rules fusion changes. Where a launcher chooses its kernel from the operands
+and addresses (get_rows' vector kernel by alignment, cont's copy or
+kernel), the host check predicts the choice; soft_max's column template
+follows from the column count alone.
+
 Either way, operation scratch must fit declared workspace (BP-A1/A2).
 Library handles and unavoidable driver/library allocations are separately
 bounded and charged; supplying a cuBLAS workspace does not account for all
 of cuBLAS's internal memory. Workspace exhaustion must return an error,
 never abort (BP-V2). Fusion is an explicit plan choice among fused and
-unfused implementations. GGML's graph-time fusion checks do not run.
+unfused implementations. GGML's graph-compute loop, and the fusion checks
+in it, do not run. To fuse where FP16-F's bridge fused, a planner asks
+jitLLM's copies of upstream's gates (`src/kernels/ggml/fusion.h`), which
+take the model graph's nodes in GGML's order and reproduce, per pattern,
+upstream's conditions on operations, edges, uses and overlapping data
+ranges.
 
 **EXL3-derived operations.** Lifted kernels behind jitLLM launchers
 (exl3-bringup.md). The dispatcher sequences them and GGML-derived operations

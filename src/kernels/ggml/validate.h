@@ -43,6 +43,82 @@ std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node);
 // CheckMulMat plus MMF's own limits: at most 16 columns and paired strides.
 std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node);
 
+// The operations the FP16 bridge's recorded plan launches beyond those
+// above (docs/experiments/backend-proof-p0/fp16-plan.json). Upstream file
+// and line references are to ggml/src/ggml-cuda/ at llama.cpp b29c606e2.
+//
+// Several kernels read row or position indices from device memory, which
+// no host check can see: get_rows' ids must each name a row of the source,
+// and set_rows' (and the fused RoPE's) a row of the destination. An index
+// outside is an out-of-bounds access, so the plan that uploads them owns
+// that bound.
+
+// A ggml_get_rows node: F32 rows gathered by I32 ids into F32
+// (ggml_cuda_op_get_rows, getrows.cu:442-459).
+std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node);
+// Which kernel get_rows' launcher chooses for a node CheckGetRows accepts:
+// k_get_rows_float_vec when rows are whole 16-byte vectors on 16-byte
+// aligned rows and the grid has at least 128 blocks, else k_get_rows_float
+// (get_rows_cuda_float's can_vec, getrows.cu:256-265). The choice depends on
+// the addresses bound, which the recorded plan's conditions include.
+bool GetRowsVectorized(const ggml_tensor* node);
+
+// A ggml_set_rows node writing F32 rows into an F16 destination at I64 row
+// indices: the KV write (ggml_cuda_op_set_rows, set-rows.cu:376-398).
+std::expected<void, KernelFailure> CheckSetRows(const ggml_tensor* node);
+
+// A forward ggml_rope_ext node in NEOX mode over F32, without frequency
+// factors or a rotation offset (ggml_cuda_op_rope_impl, rope.cu:536-694).
+std::expected<void, KernelFailure> CheckRope(const ggml_tensor* rope);
+// The same RoPE fused with the KV write, as GGML's fused launcher runs it
+// (ggml_cuda_op_rope_fused, rope.cu:704-706): `set_rows` stores a view of
+// `rope` that flattens its heads, and the kernel writes the rotated rows
+// straight into set_rows' F16 destination. `rope` and the view are never
+// written.
+std::expected<void, KernelFailure> CheckRopeSetRows(const ggml_tensor* rope,
+                                                    const ggml_tensor* set_rows);
+
+// A ggml_soft_max_ext node over packed F32 rows with an optional F32 mask,
+// no sinks and no ALiBi (ggml_cuda_op_soft_max, softmax.cu:383-452). The
+// launcher takes a row into shared memory only if it fits the device's
+// opt-in limit (softmax.cu:349), which ops.h checks on the device.
+std::expected<void, KernelFailure> CheckSoftMax(const ggml_tensor* node);
+// The dynamic shared memory soft_max's launcher asks for a row
+// (softmax.cu:341): one float per column, padded to a warp, and a warp's
+// worth for the reductions.
+std::uint64_t SoftMaxSharedBytes(const ggml_tensor* node);
+
+// A ggml_cont node copying F32 into a packed F32 tensor (ggml_cuda_dup,
+// cpy.cu:429-617), and how upstream's launcher copies it. The tiled
+// transpose it would use for a source whose rows are transposed columns
+// (cpy.cu:461-463, 480-482) is refused.
+enum class ContCopy : std::uint8_t {
+  kMemcpy,    // both contiguous: one cudaMemcpyAsync (cpy.cu:467-475)
+  kMemcpy2d,  // a contiguous prefix at a fixed pitch: cudaMemcpy2DAsync
+  kScalar,    // cpy_scalar<cpy_1_scalar<float, float>>, one thread per element
+};
+std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node);
+
+// A ggml_swiglu_split node over F32 (ggml_cuda_op_swiglu, unary.cu:287-350):
+// silu(gate) * up, element by element.
+std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node);
+
+// MMVF with GGML's fusion arguments (ggml_cuda_mul_mat_vec_f,
+// mmvf.cu:634-729), for one activation column. Beyond CheckMulMat's rules
+// on the product's operands:
+// - a product and the ggml_add of a bias (or a residual) of its own shape,
+//   written to the add's memory; the product is never written;
+// - gate and up products of one input with a split SwiGLU over them,
+//   written to the GLU's memory; neither product is written. The launcher
+//   reads the accumulation precision from the node it writes, so the GLU
+//   (whose first parameter is its GLU operation, not a precision) makes
+//   F16 weights accumulate in F32, and the add keeps F16 accumulation:
+//   the precision rule that fusion changes.
+std::expected<void, KernelFailure> CheckMulMatVecBias(const ggml_tensor* mul_mat,
+                                                      const ggml_tensor* add);
+std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, const ggml_tensor* up,
+                                                     const ggml_tensor* glu);
+
 // GGML's cuBLAS matrix multiplication (ggml_cuda_mul_mat_cublas_impl in
 // ggml-cuda.cu), as it would run for one node: what it converts into
 // scratch, which cuBLAS entry point it calls with which leading dimensions,

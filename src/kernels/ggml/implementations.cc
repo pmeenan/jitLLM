@@ -4,8 +4,10 @@
 #include "kernels/ggml/implementations.h"
 
 #include <array>
+#include <cstddef>
 #include <expected>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,6 +37,17 @@ struct RmsNormMulKernel::Entry {
                                             ggml_tensor* mul);
 };
 
+struct Kernel::Entry {
+  std::string_view name;
+  execution::Operation operation;
+  std::string_view variant;
+  std::size_t arity;
+  // Called with exactly `arity` nodes.
+  std::expected<void, KernelFailure> (*check)(std::span<const ggml_tensor* const> nodes);
+  std::expected<void, KernelFailure> (*run)(LaunchContext& launch,
+                                            std::span<ggml_tensor* const> nodes);
+};
+
 namespace {
 
 // Whether this build keeps asserts, GGML's device asserts among them.
@@ -55,24 +68,116 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
      .run = &RmsNormThenMul},
 }};
 
-execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {
-  return {.name = std::string(entry.name),
-          .operation = execution::Operation::kRmsNormMul,
+// The other implementations (implementations.h), each checking and running
+// its nodes through ops.h.
+using Nodes = std::span<ggml_tensor* const>;
+using ConstNodes = std::span<const ggml_tensor* const>;
+
+constexpr std::array<Kernel::Entry, 9> kKernels = {{
+    {.name = "ggml.get_rows",
+     .operation = execution::Operation::kGetRows,
+     .variant = "ggml_cuda_op_get_rows: k_get_rows_float_vec on 16-byte vectors, aligned rows "
+                "and at least 128 blocks, else k_get_rows_float; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGetRows(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return GetRows(launch, n[0]); }},
+    {.name = "ggml.set_rows",
+     .operation = execution::Operation::kSetRows,
+     .variant = "ggml_cuda_op_set_rows: k_set_rows<float, int64_t, half>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSetRows(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SetRows(launch, n[0]); }},
+    {.name = "ggml.rope.neox",
+     .operation = execution::Operation::kRope,
+     .variant = "ggml_cuda_op_rope: rope_neox<true, false, float, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckRope(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Rope(launch, n[0]); }},
+    {.name = "ggml.rope_set_rows.fused",
+     .operation = execution::Operation::kRopeSetRows,
+     .variant = "ggml_cuda_op_rope_fused: rope_neox<true, false, float, half> writing the KV "
+                "destination; upstream launch configuration",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckRopeSetRows(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RopeSetRows(launch, n[0], n[1]); }},
+    {.name = "ggml.soft_max",
+     .operation = execution::Operation::kSoftMax,
+     .variant = "ggml_cuda_op_soft_max: soft_max_f32<true, ncols, block, float> for 32 to 4,096 "
+                "columns in powers of two, else soft_max_f32<true, 0, 0, float>, rows in shared "
+                "memory only; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSoftMax(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SoftMax(launch, n[0]); }},
+    {.name = "ggml.cont",
+     .operation = execution::Operation::kCont,
+     .variant = "ggml_cuda_dup: cudaMemcpyAsync if contiguous, cudaMemcpy2DAsync for a pitched "
+                "block, else cpy_scalar<cpy_1_scalar<float, float>>; no tiled transpose; upstream "
+                "launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       if (auto checked = CheckCont(n[0]); !checked) {
+         return std::unexpected(checked.error());
+       }
+       return {};
+     },
+     .run = [](LaunchContext& launch, Nodes n) { return Cont(launch, n[0]); }},
+    {.name = "ggml.swiglu",
+     .operation = execution::Operation::kSwiGlu,
+     .variant = "ggml_cuda_op_swiglu: unary_gated_op_kernel<op_silu, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSwiGlu(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SwiGlu(launch, n[0]); }},
+    {.name = "ggml.mul_mat_add.mmvf_fused",
+     .operation = execution::Operation::kMulMatAdd,
+     .variant = "ggml_cuda_mul_mat_vec_f with x_bias, writing the add: mul_mat_vec_f<T, "
+                "type_acc, 1, block, true, false>, the add's precision; upstream launch "
+                "configuration",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckMulMatVecBias(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecBias(launch, n[0], n[1]); }},
+    {.name = "ggml.mul_mat_glu.mmvf_fused",
+     .operation = execution::Operation::kMulMatGlu,
+     .variant = "ggml_cuda_mul_mat_vec_f with gate and SwiGLU, writing the GLU: "
+                "mul_mat_vec_f<T, type_acc, 1, block, true, false>, the GLU's parameters as "
+                "precision; upstream launch configuration",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckMulMatVecGlu(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecGlu(launch, n[0], n[1], n[2]); }},
+}};
+
+execution::Implementation Declare(std::string_view name, execution::Operation operation,
+                                  std::string_view variant) {
+  return {.name = std::string(name),
+          .operation = operation,
           .source = "ggml",
           .revision = std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
                                   ModuleSourcesDigest()),
           .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; sanitizers {}",
                                JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
                                JITLLM_GGML_BUILD_TYPE, kAsserts, JITLLM_GGML_SANITIZE),
-          .variant = std::string(entry.variant)};
+          .variant = std::string(variant)};
+}
+
+execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {
+  return Declare(entry.name, execution::Operation::kRmsNormMul, entry.variant);
+}
+
+execution::Implementation Declare(const Kernel::Entry& entry) {
+  return Declare(entry.name, entry.operation, entry.variant);
 }
 
 }  // namespace
 
 std::vector<execution::Implementation> Implementations() {
   std::vector<execution::Implementation> declared;
-  declared.reserve(kRmsNormMul.size());
+  declared.reserve(kRmsNormMul.size() + kKernels.size());
   for (const RmsNormMulKernel::Entry& entry : kRmsNormMul) {
+    declared.push_back(Declare(entry));
+  }
+  for (const Kernel::Entry& entry : kKernels) {
     declared.push_back(Declare(entry));
   }
   return declared;
@@ -106,5 +211,47 @@ std::expected<void, KernelFailure> RmsNormMulKernel::Run(LaunchContext& launch, 
 }
 
 std::string_view RmsNormMulKernel::name() const { return entry_->name; }
+
+std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementation& implementation) {
+  for (const Entry& entry : kKernels) {
+    if (entry.name != implementation.name) {
+      continue;
+    }
+    if (execution::IdentityOf(Declare(entry)) != execution::IdentityOf(implementation)) {
+      break;
+    }
+    return Kernel(entry);
+  }
+  return std::unexpected(KernelFailure{
+      .error = KernelError::kRejected,
+      .detail = std::format("{} is not a GGML implementation of this build", implementation.name)});
+}
+
+std::expected<void, KernelFailure> Kernel::Check(std::span<const ggml_tensor* const> nodes) const {
+  if (nodes.size() != entry_->arity) {
+    return std::unexpected(KernelFailure{
+        .error = KernelError::kRejected,
+        .detail =
+            std::format("{} takes {} nodes, not {}", entry_->name, entry_->arity, nodes.size())});
+  }
+  return entry_->check(nodes);
+}
+
+std::expected<void, KernelFailure> Kernel::Run(LaunchContext& launch,
+                                               std::span<ggml_tensor* const> nodes) const {
+  if (nodes.size() != entry_->arity) {
+    return std::unexpected(KernelFailure{
+        .error = KernelError::kRejected,
+        .detail =
+            std::format("{} takes {} nodes, not {}", entry_->name, entry_->arity, nodes.size())});
+  }
+  return entry_->run(launch, nodes);
+}
+
+std::string_view Kernel::name() const { return entry_->name; }
+
+execution::Operation Kernel::operation() const { return entry_->operation; }
+
+std::size_t Kernel::arity() const { return entry_->arity; }
 
 }  // namespace jitllm::kernels::ggml

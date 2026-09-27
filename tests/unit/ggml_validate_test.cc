@@ -5,18 +5,26 @@
 // validate.h), in every profile and without a GPU: the dense Qwen2 shapes
 // pass, and malformed shapes, boundary sizes, misalignment, stale views
 // and aliasing are refused; the cuBLAS path's plans follow upstream's
-// launcher and draw the scratch GGML's pool recorded in P0. Nothing here
-// touches the addresses bound.
+// launcher and draw the scratch GGML's pool recorded in P0; the launchers'
+// variant choices that follow from the operands (get_rows' vector kernel,
+// cont's copy) are predicted. GgmlFusionTest checks upstream's fusion
+// gates (kernels/ggml/fusion.h) on GGML graphs of Qwen2's layer. Nothing
+// here touches the addresses bound.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <limits>
+#include <span>
 #include <utility>
+#include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/fusion.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 
@@ -24,15 +32,32 @@ namespace {
 
 using jitllm::kernels::ggml::CheckBinary;
 using jitllm::kernels::ggml::CheckClearOf;
+using jitllm::kernels::ggml::CheckCont;
+using jitllm::kernels::ggml::CheckGetRows;
 using jitllm::kernels::ggml::CheckMulMat;
 using jitllm::kernels::ggml::CheckMulMatCublas;
 using jitllm::kernels::ggml::CheckMulMatF;
+using jitllm::kernels::ggml::CheckMulMatVecBias;
+using jitllm::kernels::ggml::CheckMulMatVecGlu;
 using jitllm::kernels::ggml::CheckRmsNorm;
 using jitllm::kernels::ggml::CheckRmsNormMul;
 using jitllm::kernels::ggml::CheckRmsNormThenMul;
+using jitllm::kernels::ggml::CheckRope;
+using jitllm::kernels::ggml::CheckRopeSetRows;
+using jitllm::kernels::ggml::CheckSetRows;
+using jitllm::kernels::ggml::CheckSoftMax;
+using jitllm::kernels::ggml::CheckSwiGlu;
+using jitllm::kernels::ggml::ContCopy;
 using jitllm::kernels::ggml::CublasGemm;
 using jitllm::kernels::ggml::CublasOperand;
+using jitllm::kernels::ggml::FusionMemoryClear;
+using jitllm::kernels::ggml::GetRowsVectorized;
+using jitllm::kernels::ggml::GraphOrder;
 using jitllm::kernels::ggml::KernelError;
+using jitllm::kernels::ggml::MulMatAddFusionAt;
+using jitllm::kernels::ggml::MulMatGluFusionAt;
+using jitllm::kernels::ggml::RopeSetRowsFusionAt;
+using jitllm::kernels::ggml::SoftMaxSharedBytes;
 using jitllm::kernels::ggml::TensorArena;
 
 constexpr std::int64_t kWidth = 896;
@@ -342,6 +367,494 @@ TEST_F(GgmlValidateTest, WhatCublasWouldRefuseIsRefused) {
   Rejected(CheckMulMatCublas(plain, GGML_TYPE_Q8_0, false));
   plain->op_params[1] = GGML_HINT_SRC0_IS_HADAMARD;
   Rejected(CheckMulMat(plain));
+}
+
+// Qwen2.5-0.5B's attention and FFN shapes, as llama.cpp builds them at the
+// pin: 14 query heads and 2 KV heads of 64, an F16 cache of 1,024 cells,
+// an intermediate width of 4,864.
+constexpr std::int64_t kHead = 64;
+constexpr std::int64_t kHeads = 14;
+constexpr std::int64_t kKvHeads = 2;
+constexpr std::int64_t kKvWidth = kHead * kKvHeads;
+constexpr std::int64_t kCells = 1024;
+constexpr std::int64_t kFfn = 4864;
+
+// The model's RoPE (NEOX, all 64 dimensions, base 1e6), as llama.cpp calls
+// ggml_rope_ext for it.
+ggml_tensor* QwenRope(ggml_context* context, ggml_tensor* x, ggml_tensor* positions) {
+  return ggml_rope_ext(context, x, positions, nullptr, static_cast<int>(kHead), GGML_ROPE_TYPE_NEOX,
+                       32768, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+}
+
+class GgmlOpsValidateTest : public GgmlValidateTest {
+ protected:
+  // Room for a layer's worth of nodes at five row counts.
+  GgmlOpsValidateTest() { arena_ = TensorArena::Create(512).value(); }
+
+  ggml_tensor* Typed(ggml_type type, std::int64_t ne0, std::int64_t ne1 = 1, std::int64_t ne2 = 1) {
+    return Bound(ggml_new_tensor_3d(context(), type, ne0, ne1, ne2));
+  }
+};
+
+TEST_F(GgmlOpsValidateTest, TheFp16PlansOperationsPass) {
+  for (const std::int64_t rows : {1, 16, 17, 32, 512}) {
+    // The last layer's output rows.
+    ggml_tensor* hidden = F32(kWidth, rows);
+    ggml_tensor* ids = Typed(GGML_TYPE_I32, rows);
+    ggml_tensor* picked = Bound(ggml_get_rows(context(), hidden, ids));
+    EXPECT_TRUE(CheckGetRows(picked).has_value()) << rows;
+    // The recorded plan's vector kernel only at 512 rows: 224 vectors of a
+    // row need one block, and fewer than 128 rows are too few blocks.
+    EXPECT_EQ(GetRowsVectorized(picked), rows == 512) << rows;
+
+    // Q's RoPE; K's RoPE, then its KV write, unfused or fused; V's write of
+    // one element per row into the transposed cache.
+    ggml_tensor* positions = Typed(GGML_TYPE_I32, rows);
+    ggml_tensor* q = ggml_reshape_3d(context(), F32(kHead * kHeads, rows), kHead, kHeads, rows);
+    ggml_tensor* q_rope = Bound(QwenRope(context(), q, positions));
+    EXPECT_TRUE(CheckRope(q_rope).has_value()) << rows;
+    ggml_tensor* k = ggml_reshape_3d(context(), F32(kKvWidth, rows), kHead, kKvHeads, rows);
+    ggml_tensor* k_rope = Bound(QwenRope(context(), k, positions));
+    ggml_tensor* k_cache = Typed(GGML_TYPE_F16, kKvWidth, kCells);
+    ggml_tensor* k_ids = Typed(GGML_TYPE_I64, rows);
+    ggml_tensor* k_view = ggml_view_2d(context(), k_rope, kKvWidth, rows, k_rope->nb[2], 0);
+    ggml_tensor* k_write = ggml_set_rows(context(), k_cache, k_view, k_ids);
+    EXPECT_TRUE(CheckSetRows(k_write).has_value()) << rows;
+    ggml_tensor* fused_rope = QwenRope(context(), k, positions);  // never written
+    ggml_tensor* fused_view =
+        ggml_view_2d(context(), fused_rope, kKvWidth, rows, fused_rope->nb[2], 0);
+    EXPECT_TRUE(CheckRopeSetRows(fused_rope, ggml_set_rows(context(), k_cache, fused_view, k_ids))
+                    .has_value())
+        << rows;
+    ggml_tensor* v_cache = Typed(GGML_TYPE_F16, kKvWidth * kCells);
+    ggml_tensor* v = ggml_reshape_2d(context(), F32(kKvWidth, rows), 1, kKvWidth * rows);
+    ggml_tensor* v_ids = Typed(GGML_TYPE_I64, kKvWidth * rows);
+    ggml_tensor* v_write = ggml_set_rows(
+        context(), ggml_reshape_2d(context(), v_cache, 1, kKvWidth * kCells), v, v_ids);
+    EXPECT_TRUE(CheckSetRows(v_write).has_value()) << rows;
+
+    // Masked, scaled scores over 256 and 768 padded cells.
+    for (const std::int64_t cells : {256, 768}) {
+      ggml_tensor* scores = Typed(GGML_TYPE_F32, cells, rows, kHeads);
+      ggml_tensor* mask = F32(cells, rows);
+      ggml_tensor* probabilities = Bound(ggml_soft_max_ext(context(), scores, mask, 0.125f, 0.0f));
+      EXPECT_TRUE(CheckSoftMax(probabilities).has_value()) << rows;
+      // The recorded plan's shared memory: 1,152 bytes at 256 cells, 3,200 at 768.
+      EXPECT_EQ(SoftMaxSharedBytes(probabilities), cells == 256 ? 1152U : 3200U);
+    }
+
+    // The heads merged back into rows: one copy at one row, else GGML's
+    // scalar kernel.
+    ggml_tensor* kqv = Typed(GGML_TYPE_F32, kHead, rows, kHeads);
+    ggml_tensor* merged =
+        Bound(ggml_cont_2d(context(), ggml_permute(context(), kqv, 0, 2, 1, 3), kWidth, rows));
+    const auto copy = CheckCont(merged);
+    ASSERT_TRUE(copy.has_value()) << copy.error().detail;
+    EXPECT_EQ(*copy, rows == 1 ? ContCopy::kMemcpy : ContCopy::kScalar) << rows;
+
+    ggml_tensor* glu = Bound(ggml_swiglu_split(context(), F32(kFfn, rows), F32(kFfn, rows)));
+    EXPECT_TRUE(CheckSwiGlu(glu).has_value()) << rows;
+  }
+
+  // The decode step's fused products: Q with its bias, and the FFN's gate
+  // and up products with their SwiGLU. The products are never written.
+  ggml_tensor* x = F32(kWidth);
+  ggml_tensor* wq = Typed(GGML_TYPE_F16, kWidth, kWidth);
+  ggml_tensor* q = ggml_mul_mat(context(), wq, x);
+  EXPECT_TRUE(CheckMulMatVecBias(q, Bound(ggml_add(context(), q, F32(kWidth)))).has_value());
+  ggml_tensor* w_gate = Typed(GGML_TYPE_F16, kWidth, kFfn);
+  ggml_tensor* w_up = Typed(GGML_TYPE_F16, kWidth, kFfn);
+  ggml_tensor* gate = ggml_mul_mat(context(), w_gate, x);
+  ggml_tensor* up = ggml_mul_mat(context(), w_up, x);
+  EXPECT_TRUE(
+      CheckMulMatVecGlu(gate, up, Bound(ggml_swiglu_split(context(), gate, up))).has_value());
+}
+
+TEST_F(GgmlOpsValidateTest, GetRowsIsRefusedWhatItsLauncherAssertsOn) {
+  ggml_tensor* rows = F32(kWidth, 8);
+  ggml_tensor* ids = Typed(GGML_TYPE_I32, 4);
+  ggml_tensor* picked = Bound(ggml_get_rows(context(), rows, ids));
+  EXPECT_TRUE(CheckGetRows(picked).has_value());
+  // F16 rows: another kernel instance than the plan's.
+  Rejected(CheckGetRows(Bound(ggml_get_rows(context(), Typed(GGML_TYPE_F16, kWidth, 8), ids))));
+  // An output over the rows it reads.
+  ggml_tensor* over = ggml_get_rows(context(), rows, ids);
+  TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(rows->data));
+  Rejected(CheckGetRows(over));
+  // Misaligned rows.
+  ggml_tensor* odd = ggml_new_tensor_2d(context(), GGML_TYPE_F32, kWidth, 8);
+  TensorArena::Bind(odd, kBase + (next_++ * kSlot) + 2);
+  Rejected(CheckGetRows(Bound(ggml_get_rows(context(), odd, ids))));
+  // A shape edited after GGML built it.
+  ggml_tensor* edited = Bound(ggml_get_rows(context(), rows, ids));
+  edited->ne[1] = 5;
+  Rejected(CheckGetRows(edited));
+  // Rows at an odd pitch take the scalar kernel even at 512 ids.
+  ggml_tensor* wide = F32(kWidth + 4, 512);
+  ggml_tensor* pitched =
+      ggml_view_2d(context(), wide, kWidth, 512, (kWidth + 1) * sizeof(float), 0);
+  ggml_tensor* many = Typed(GGML_TYPE_I32, 512);
+  ggml_tensor* from_pitched = Bound(ggml_get_rows(context(), pitched, many));
+  EXPECT_TRUE(CheckGetRows(from_pitched).has_value());
+  EXPECT_FALSE(GetRowsVectorized(from_pitched));
+  EXPECT_TRUE(GetRowsVectorized(Bound(ggml_get_rows(context(), F32(kWidth, 512), many))));
+}
+
+TEST_F(GgmlOpsValidateTest, SetRowsWritesF32RowsIntoF16AtI64Indices) {
+  ggml_tensor* cache = Typed(GGML_TYPE_F16, kKvWidth, kCells);
+  ggml_tensor* values = F32(kKvWidth, 4);
+  ggml_tensor* ids = Typed(GGML_TYPE_I64, 4);
+  EXPECT_TRUE(CheckSetRows(ggml_set_rows(context(), cache, values, ids)).has_value());
+  // I32 indices and an F32 destination take other kernel instances.
+  Rejected(CheckSetRows(ggml_set_rows(context(), cache, values, Typed(GGML_TYPE_I32, 4))));
+  Rejected(
+      CheckSetRows(ggml_set_rows(context(), Typed(GGML_TYPE_F32, kKvWidth, kCells), values, ids)));
+  // Values or indices inside the destination.
+  ggml_tensor* inside = ggml_view_2d(context(), cache, kKvWidth / 2, 4, cache->nb[1], 0);
+  ggml_tensor* inside_f32 = ggml_new_tensor_2d(context(), GGML_TYPE_F32, kKvWidth, 4);
+  TensorArena::Bind(inside_f32, reinterpret_cast<std::uintptr_t>(inside->data));
+  Rejected(CheckSetRows(ggml_set_rows(context(), cache, inside_f32, ids)));
+  ggml_tensor* ids_inside = ggml_new_tensor_1d(context(), GGML_TYPE_I64, 4);
+  TensorArena::Bind(ids_inside, reinterpret_cast<std::uintptr_t>(cache->data) + 64);
+  Rejected(CheckSetRows(ggml_set_rows(context(), cache, values, ids_inside)));
+  // A destination bound again after the node was built: a stale view.
+  ggml_tensor* write = ggml_set_rows(context(), cache, values, ids);
+  TensorArena::Bind(cache, kBase + (next_++ * kSlot));
+  Rejected(CheckSetRows(write));
+}
+
+TEST_F(GgmlOpsValidateTest, RopeTakesNeoxOverF32AndMayRunInPlace) {
+  ggml_tensor* positions = Typed(GGML_TYPE_I32, 3);
+  ggml_tensor* x = Typed(GGML_TYPE_F32, kHead, kHeads, 3);
+  EXPECT_TRUE(CheckRope(Bound(QwenRope(context(), x, positions))).has_value());
+  EXPECT_TRUE(CheckRope(ggml_rope_ext_inplace(context(), x, positions, nullptr,
+                                              static_cast<int>(kHead), GGML_ROPE_TYPE_NEOX, 32768,
+                                              1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))
+                  .has_value());
+  // The normal mode and frequency factors launch other kernels.
+  Rejected(CheckRope(Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
+                                         GGML_ROPE_TYPE_NORMAL, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f,
+                                         32.0f, 1.0f))));
+  Rejected(CheckRope(
+      Bound(ggml_rope_ext(context(), x, positions, F32(kHead / 2), static_cast<int>(kHead),
+                          GGML_ROPE_TYPE_NEOX, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  // A rotation offset, an odd rotated part and an output over the positions.
+  ggml_tensor* offset = Bound(QwenRope(context(), x, positions));
+  offset->op_params[15] = 2;
+  Rejected(CheckRope(offset));
+  ggml_tensor* odd = Bound(QwenRope(context(), x, positions));
+  odd->op_params[1] = 63;
+  Rejected(CheckRope(odd));
+  ggml_tensor* over = QwenRope(context(), x, positions);
+  TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(positions->data));
+  Rejected(CheckRope(over));
+  // A single-row output one head into its input.
+  ggml_tensor* shifted = QwenRope(context(), x, positions);
+  TensorArena::Bind(shifted, reinterpret_cast<std::uintptr_t>(x->data) + x->nb[1]);
+  Rejected(CheckRope(shifted));
+}
+
+TEST_F(GgmlOpsValidateTest, TheFusedRopeWritesOnlyAFlatteningViewIntoF16) {
+  ggml_tensor* positions = Typed(GGML_TYPE_I32, 3);
+  ggml_tensor* x = Typed(GGML_TYPE_F32, kHead, kKvHeads, 3);
+  ggml_tensor* cache = Typed(GGML_TYPE_F16, kKvWidth, kCells);
+  ggml_tensor* ids = Typed(GGML_TYPE_I64, 3);
+  const auto write = [&](ggml_tensor* rope, ggml_tensor* destination, std::size_t offset = 0) {
+    ggml_tensor* view = ggml_view_2d(context(), rope, kKvWidth, 3, rope->nb[2], offset);
+    return ggml_set_rows(context(), destination, view, ids);
+  };
+  ggml_tensor* rope = QwenRope(context(), x, positions);
+  EXPECT_TRUE(CheckRopeSetRows(rope, write(rope, cache)).has_value());
+  // Upstream fuses into F32 too; the implementation writes the F16 cache.
+  Rejected(CheckRopeSetRows(rope, write(rope, Typed(GGML_TYPE_F32, kKvWidth, kCells))));
+  // A view that does not start at the RoPE, or of another tensor.
+  ggml_tensor* other = QwenRope(context(), x, positions);
+  Rejected(CheckRopeSetRows(rope, write(other, cache)));
+  // A write over the RoPE's input.
+  ggml_tensor* over = ggml_new_tensor_2d(context(), GGML_TYPE_F16, kKvWidth, kCells);
+  TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(x->data));
+  Rejected(CheckRopeSetRows(rope, write(rope, over)));
+  // An in-place RoPE is a view of its input, which upstream's gate never
+  // fuses.
+  ggml_tensor* in_place =
+      ggml_rope_ext_inplace(context(), x, positions, nullptr, static_cast<int>(kHead),
+                            GGML_ROPE_TYPE_NEOX, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+  Rejected(CheckRopeSetRows(in_place, write(in_place, cache)));
+}
+
+TEST_F(GgmlOpsValidateTest, SoftMaxTakesAnF32MaskAndNoAlibi) {
+  ggml_tensor* scores = Typed(GGML_TYPE_F32, 256, 4, kHeads);
+  ggml_tensor* mask = F32(256, 4);
+  EXPECT_TRUE(
+      CheckSoftMax(Bound(ggml_soft_max_ext(context(), scores, mask, 0.125f, 0.0f))).has_value());
+  EXPECT_TRUE(
+      CheckSoftMax(Bound(ggml_soft_max_ext(context(), scores, nullptr, 1.0f, 0.0f))).has_value());
+  EXPECT_TRUE(
+      CheckSoftMax(ggml_soft_max_ext_inplace(context(), scores, mask, 0.125f, 0.0f)).has_value());
+  Rejected(CheckSoftMax(Bound(ggml_soft_max_ext(context(), scores, mask, 0.125f, 8.0f))));
+  Rejected(CheckSoftMax(
+      Bound(ggml_soft_max_ext(context(), scores, Typed(GGML_TYPE_F16, 256, 4), 0.125f, 0.0f))));
+  // A mask with fewer rows than the scores, edited after GGML built it.
+  ggml_tensor* short_mask = Bound(ggml_soft_max_ext(context(), scores, F32(256, 4), 0.125f, 0.0f));
+  short_mask->src[1]->ne[1] = 3;
+  Rejected(CheckSoftMax(short_mask));
+  // Output over the mask.
+  ggml_tensor* over = ggml_soft_max_ext(context(), scores, mask, 0.125f, 0.0f);
+  TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(mask->data));
+  Rejected(CheckSoftMax(over));
+}
+
+TEST_F(GgmlOpsValidateTest, ContCopiesAsUpstreamChoosesAndNeverTiles) {
+  // A pitched block of the same shape: one two-dimensional copy.
+  ggml_tensor* wide = F32(kWidth + 16, 4);
+  ggml_tensor* block = ggml_view_2d(context(), wide, kWidth, 4, wide->nb[1], 0);
+  const auto pitched = CheckCont(Bound(ggml_cont(context(), block)));
+  ASSERT_TRUE(pitched.has_value()) << pitched.error().detail;
+  EXPECT_EQ(*pitched, ContCopy::kMemcpy2d);
+  // Transposed rows: upstream's tiled transpose, which is not taken.
+  ggml_tensor* square = F32(64, 32);
+  Rejected(CheckCont(Bound(ggml_cont(context(), ggml_transpose(context(), square)))));
+  // F16, and an output over its input.
+  Rejected(CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_F16, 64, 2)))));
+  ggml_tensor* heads = Typed(GGML_TYPE_F32, kHead, 4, kHeads);
+  ggml_tensor* merged =
+      ggml_cont_2d(context(), ggml_permute(context(), heads, 0, 2, 1, 3), kWidth, 4);
+  TensorArena::Bind(merged, reinterpret_cast<std::uintptr_t>(heads->data) + 256);
+  Rejected(CheckCont(merged));
+}
+
+TEST_F(GgmlOpsValidateTest, SwiGluIsSplitAndMayRunInPlace) {
+  ggml_tensor* gate = F32(kFfn, 3);
+  ggml_tensor* up = F32(kFfn, 3);
+  EXPECT_TRUE(CheckSwiGlu(Bound(ggml_swiglu_split(context(), gate, up))).has_value());
+  // In place over the gate: each element is read, then written.
+  ggml_tensor* in_place = ggml_swiglu_split(context(), gate, up);
+  TensorArena::Bind(in_place, reinterpret_cast<std::uintptr_t>(gate->data));
+  EXPECT_TRUE(CheckSwiGlu(in_place).has_value());
+  // One tensor holding both halves, and another GLU operation.
+  Rejected(CheckSwiGlu(Bound(ggml_swiglu(context(), F32(2 * kFfn, 3)))));
+  Rejected(CheckSwiGlu(Bound(ggml_geglu_split(context(), gate, up))));
+  // An output one row into the gate.
+  ggml_tensor* shifted = ggml_swiglu_split(context(), gate, up);
+  TensorArena::Bind(shifted, reinterpret_cast<std::uintptr_t>(gate->data) + gate->nb[1]);
+  Rejected(CheckSwiGlu(shifted));
+}
+
+TEST_F(GgmlOpsValidateTest, FusedMmvfTakesOneColumnAndItsOwnOperands) {
+  ggml_tensor* x = F32(kWidth);
+  ggml_tensor* w = Typed(GGML_TYPE_F16, kWidth, kWidth);
+  ggml_tensor* bias = F32(kWidth);
+  ggml_tensor* product = ggml_mul_mat(context(), w, x);
+  EXPECT_TRUE(CheckMulMatVecBias(product, Bound(ggml_add(context(), bias, product))).has_value());
+  // In place over the bias (a residual that is not needed again).
+  ggml_tensor* into_bias = ggml_add(context(), product, bias);
+  TensorArena::Bind(into_bias, reinterpret_cast<std::uintptr_t>(bias->data));
+  EXPECT_TRUE(CheckMulMatVecBias(product, into_bias).has_value());
+  // Two columns; a broadcast bias; an add of something else; an output over
+  // the input.
+  ggml_tensor* two = F32(kWidth, 2);
+  ggml_tensor* products = ggml_mul_mat(context(), w, two);
+  Rejected(CheckMulMatVecBias(products, Bound(ggml_add(context(), products, F32(kWidth, 2)))));
+  Rejected(CheckMulMatVecBias(products, Bound(ggml_add(context(), products, bias))));
+  Rejected(CheckMulMatVecBias(product, Bound(ggml_add(context(), bias, bias))));
+  ggml_tensor* over_input = ggml_add(context(), product, bias);
+  TensorArena::Bind(over_input, reinterpret_cast<std::uintptr_t>(x->data));
+  Rejected(CheckMulMatVecBias(product, over_input));
+
+  ggml_tensor* w_gate = Typed(GGML_TYPE_F16, kWidth, kFfn);
+  ggml_tensor* w_up = Typed(GGML_TYPE_F16, kWidth, kFfn);
+  ggml_tensor* gate = ggml_mul_mat(context(), w_gate, x);
+  ggml_tensor* up = ggml_mul_mat(context(), w_up, x);
+  EXPECT_TRUE(
+      CheckMulMatVecGlu(gate, up, Bound(ggml_swiglu_split(context(), gate, up))).has_value());
+  // Gate and up in the other order, or of different inputs.
+  Rejected(CheckMulMatVecGlu(up, gate, Bound(ggml_swiglu_split(context(), gate, up))));
+  ggml_tensor* other_up = ggml_mul_mat(context(), w_up, F32(kWidth));
+  Rejected(CheckMulMatVecGlu(gate, other_up, Bound(ggml_swiglu_split(context(), gate, other_up))));
+  // Gate weights of another type, or F32 weights paired with F16.
+  ggml_tensor* f32_gate = ggml_mul_mat(context(), Typed(GGML_TYPE_F32, kWidth, kFfn), x);
+  Rejected(CheckMulMatVecGlu(f32_gate, up, Bound(ggml_swiglu_split(context(), f32_gate, up))));
+  // GEGLU: upstream fuses it, the implementation takes SwiGLU.
+  Rejected(CheckMulMatVecGlu(gate, up, Bound(ggml_geglu_split(context(), gate, up))));
+  // The GLU over the gate weights.
+  ggml_tensor* over_weights = ggml_swiglu_split(context(), gate, up);
+  TensorArena::Bind(over_weights, reinterpret_cast<std::uintptr_t>(w_gate->data));
+  Rejected(CheckMulMatVecGlu(gate, up, over_weights));
+}
+
+// Upstream's fusion gates on GGML graphs of Qwen2's layer, as llama.cpp
+// builds them.
+class GgmlFusionTest : public GgmlOpsValidateTest {
+ protected:
+  // The nodes GGML's graph would record for `outputs`, in its order.
+  static std::vector<ggml_tensor*> Graph(std::initializer_list<ggml_tensor*> outputs) {
+    return GraphOrder(std::span<ggml_tensor* const>(outputs.begin(), outputs.size()));
+  }
+
+  static std::size_t IndexOf(const std::vector<ggml_tensor*>& graph, const ggml_tensor* node) {
+    return static_cast<std::size_t>(std::ranges::find(graph, node) - graph.begin());
+  }
+
+  // An RMSNorm-mul, the input that follows it in the layer.
+  ggml_tensor* Normed(std::int64_t rows = 1) {
+    ggml_tensor* norm = Bound(ggml_rms_norm(context(), F32(kWidth, rows), 1e-6f));
+    return Bound(ggml_mul(context(), norm, F32(kWidth)));
+  }
+};
+
+TEST_F(GgmlFusionTest, TheDecodeFfnFusesGateUpAndDownWithTheResidual) {
+  ggml_tensor* residual = F32(kWidth);
+  ggml_tensor* x = Normed();
+  ggml_tensor* up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* glu = Bound(ggml_swiglu_split(context(), gate, up));
+  ggml_tensor* down = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kFfn, kWidth), glu));
+  ggml_tensor* out = Bound(ggml_add(context(), down, residual));
+  const std::vector<ggml_tensor*> graph = Graph({out});
+  // GGML's order, inputs first and left to right, leaves omitted: the gate
+  // product comes first, as the gate requires.
+  EXPECT_EQ(graph, (std::vector<ggml_tensor*>{x->src[0], x, gate, up, glu, down, out}));
+  const std::size_t at = IndexOf(graph, gate);
+  ASSERT_LT(at, graph.size());
+  ASSERT_EQ(IndexOf(graph, up), at + 1);
+  const auto fused = MulMatGluFusionAt(graph, at);
+  if (!fused) {
+    FAIL() << "not fused";
+  }
+  const jitllm::kernels::ggml::MulMatGluNodes nodes = *fused;
+  EXPECT_EQ(nodes.gate, gate);
+  EXPECT_EQ(nodes.up, up);
+  EXPECT_EQ(nodes.glu, glu);
+  EXPECT_TRUE(CheckMulMatVecGlu(nodes.gate, nodes.up, nodes.glu).has_value());
+  EXPECT_FALSE(MulMatGluFusionAt(graph, at + 1).has_value());
+  EXPECT_FALSE(MulMatAddFusionAt(graph, at).has_value());
+  const auto residual_add = MulMatAddFusionAt(graph, IndexOf(graph, down));
+  if (!residual_add) {
+    FAIL() << "not fused";
+  }
+  EXPECT_EQ(residual_add->mul_mat, down);
+  EXPECT_EQ(residual_add->add, out);
+}
+
+TEST_F(GgmlFusionTest, TheGluGateComparesDataRangesAndUses) {
+  // The GLU written over its input, a computed node: upstream does not fuse.
+  ggml_tensor* x = Normed();
+  ggml_tensor* up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* glu = ggml_swiglu_split(context(), gate, up);
+  TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(x->data));
+  const std::vector<ggml_tensor*> graph = Graph({glu});
+  const std::size_t at = IndexOf(graph, gate);
+  EXPECT_FALSE(FusionMemoryClear(graph, at, 3, at + 2));
+  EXPECT_FALSE(MulMatGluFusionAt(graph, at).has_value());
+  // Over an elided intermediate it may be.
+  TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(up->data));
+  EXPECT_TRUE(MulMatGluFusionAt(graph, at).has_value());
+  // Over a leaf input upstream does not look.
+  ggml_tensor* leaf = F32(kWidth);
+  ggml_tensor* leaf_up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), leaf));
+  ggml_tensor* leaf_gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), leaf));
+  ggml_tensor* over_leaf = ggml_swiglu_split(context(), leaf_gate, leaf_up);
+  TensorArena::Bind(over_leaf, reinterpret_cast<std::uintptr_t>(leaf->data));
+  const std::vector<ggml_tensor*> leaf_graph = Graph({over_leaf});
+  EXPECT_TRUE(MulMatGluFusionAt(leaf_graph, IndexOf(leaf_graph, leaf_gate)).has_value());
+
+  // A product with another use, or marked as a graph output.
+  ggml_tensor* y = Normed();
+  ggml_tensor* y_up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), y));
+  ggml_tensor* y_gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), y));
+  ggml_tensor* y_glu = Bound(ggml_swiglu_split(context(), y_gate, y_up));
+  ggml_tensor* also = Bound(ggml_add(context(), y_up, y_up));
+  const std::vector<ggml_tensor*> used = Graph({y_glu, also});
+  EXPECT_FALSE(MulMatGluFusionAt(used, IndexOf(used, y_gate)).has_value());
+  ggml_tensor* z = Normed();
+  ggml_tensor* z_up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), z));
+  ggml_tensor* z_gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), z));
+  ggml_set_output(z_gate);
+  const std::vector<ggml_tensor*> output = Graph({ggml_swiglu_split(context(), z_gate, z_up)});
+  EXPECT_FALSE(MulMatGluFusionAt(output, IndexOf(output, z_gate)).has_value());
+}
+
+TEST_F(GgmlFusionTest, TheGluGateNeedsTheGateProductFirstAndTheSameWeightsLayout) {
+  // The up product computed first: upstream's gate reads the pair by
+  // position and does not fuse.
+  ggml_tensor* x = Normed();
+  ggml_tensor* up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), x));
+  ggml_tensor* glu = Bound(ggml_swiglu_split(context(), gate, up));
+  const std::vector<ggml_tensor*> graph = Graph({up, glu});
+  ASSERT_EQ(IndexOf(graph, gate), IndexOf(graph, up) + 1);
+  EXPECT_FALSE(MulMatGluFusionAt(graph, IndexOf(graph, up)).has_value());
+  // Weights of different types.
+  ggml_tensor* y = Normed();
+  ggml_tensor* f32_up = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F32, kWidth, kFfn), y));
+  ggml_tensor* f16_gate = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kFfn), y));
+  const std::vector<ggml_tensor*> mixed = Graph({ggml_swiglu_split(context(), f16_gate, f32_up)});
+  EXPECT_FALSE(MulMatGluFusionAt(mixed, IndexOf(mixed, f16_gate)).has_value());
+}
+
+TEST_F(GgmlFusionTest, TheBiasGateTakesAnAddOfTheProductsShape) {
+  // Q with its bias, then its reshape for RoPE.
+  ggml_tensor* x = Normed();
+  ggml_tensor* q = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kWidth), x));
+  ggml_tensor* biased = Bound(ggml_add(context(), q, F32(kWidth)));
+  const std::vector<ggml_tensor*> graph =
+      Graph({ggml_reshape_3d(context(), biased, kHead, kHeads, 1)});
+  const auto fused = MulMatAddFusionAt(graph, IndexOf(graph, q));
+  if (!fused) {
+    FAIL() << "not fused";
+  }
+  EXPECT_TRUE(CheckMulMatVecBias(fused->mul_mat, fused->add).has_value());
+  // A broadcast bias over two columns is not fused; neither is a product
+  // with a second use.
+  ggml_tensor* rows = Normed(2);
+  ggml_tensor* q2 = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kWidth), rows));
+  const std::vector<ggml_tensor*> broadcast = Graph({Bound(ggml_add(context(), q2, F32(kWidth)))});
+  EXPECT_FALSE(MulMatAddFusionAt(broadcast, IndexOf(broadcast, q2)).has_value());
+  ggml_tensor* q3 = Bound(ggml_mul_mat(context(), Typed(GGML_TYPE_F16, kWidth, kWidth), x));
+  ggml_tensor* sum = Bound(ggml_add(context(), q3, F32(kWidth)));
+  const std::vector<ggml_tensor*> reused = Graph({sum, Bound(ggml_mul(context(), q3, q3))});
+  EXPECT_FALSE(MulMatAddFusionAt(reused, IndexOf(reused, q3)).has_value());
+}
+
+TEST_F(GgmlFusionTest, TheRopeGateFusesTheKWriteUnlessItOverlapsTheInput) {
+  constexpr std::int64_t kRows = 4;
+  const auto k_write = [&](ggml_tensor* cache, int mode) {
+    ggml_tensor* k = Bound(ggml_add(context(), F32(kKvWidth, kRows), F32(kKvWidth)));
+    ggml_tensor* positions = Typed(GGML_TYPE_I32, kRows);
+    ggml_tensor* rope = Bound(ggml_rope_ext(
+        context(), ggml_reshape_3d(context(), k, kHead, kKvHeads, kRows), positions, nullptr,
+        static_cast<int>(kHead), mode, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f));
+    ggml_tensor* view = ggml_view_2d(context(), rope, kKvWidth, kRows, rope->nb[2], 0);
+    return std::pair{rope, ggml_set_rows(context(), cache, view, Typed(GGML_TYPE_I64, kRows))};
+  };
+  ggml_tensor* cache = Typed(GGML_TYPE_F16, kKvWidth, kCells);
+  const auto [rope, write] = k_write(cache, GGML_ROPE_TYPE_NEOX);
+  const std::vector<ggml_tensor*> graph = Graph({write});
+  const auto fused = RopeSetRowsFusionAt(graph, IndexOf(graph, rope));
+  if (!fused) {
+    FAIL() << "not fused";
+  }
+  EXPECT_EQ(fused->set_rows, write);
+  EXPECT_TRUE(CheckRopeSetRows(fused->rope, fused->set_rows).has_value());
+  // The normal mode fuses upstream too; the implementation refuses it.
+  const auto [normal, normal_write] =
+      k_write(Typed(GGML_TYPE_F16, kKvWidth, kCells), GGML_ROPE_TYPE_NORMAL);
+  const std::vector<ggml_tensor*> normal_graph = Graph({normal_write});
+  ASSERT_TRUE(RopeSetRowsFusionAt(normal_graph, IndexOf(normal_graph, normal)).has_value());
+  Rejected(CheckRopeSetRows(normal, normal_write));
+  // A cache over the RoPE's (computed) input: upstream does not fuse.
+  ggml_tensor* overlapping = ggml_new_tensor_2d(context(), GGML_TYPE_F16, kKvWidth, kCells);
+  const auto [over_rope, over_write] = k_write(overlapping, GGML_ROPE_TYPE_NEOX);
+  TensorArena::Bind(overlapping, reinterpret_cast<std::uintptr_t>(over_rope->src[0]->data));
+  TensorArena::Bind(over_write, reinterpret_cast<std::uintptr_t>(over_rope->src[0]->data));
+  const std::vector<ggml_tensor*> over_graph = Graph({over_write});
+  EXPECT_FALSE(RopeSetRowsFusionAt(over_graph, IndexOf(over_graph, over_rope)).has_value());
+  // Q's RoPE is not followed by a write.
+  ggml_tensor* q = ggml_reshape_3d(context(), F32(kHead * kHeads, kRows), kHead, kHeads, kRows);
+  ggml_tensor* q_rope = Bound(QwenRope(context(), q, Typed(GGML_TYPE_I32, kRows)));
+  const std::vector<ggml_tensor*> q_graph = Graph({q_rope});
+  EXPECT_FALSE(RopeSetRowsFusionAt(q_graph, IndexOf(q_graph, q_rope)).has_value());
 }
 
 }  // namespace

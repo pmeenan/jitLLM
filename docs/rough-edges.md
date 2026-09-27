@@ -30,6 +30,18 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-021: GGML's graph object trips UBSan on creation  (2026-09-27, status: worked-around)
+
+In the `cross-asan` build on `spark-b` (address and undefined sanitizers,
+GGML's `ggml.c` instrumented too), `ggml_new_graph_custom` and
+`ggml_graph_overhead_custom` end the process: `ggml_graph_nbytes` sizes the
+graph by advancing a null pointer (`ggml.c:7424`, "applying non-zero offset
+96 to null pointer"). The plain builds never notice. So jitLLM builds no
+`ggml_cgraph`: the fusion gates (`src/kernels/ggml/fusion.h`) take a node
+list in GGML's order (`GraphOrder`) and count uses as GGML's graph does.
+Anything else that needs a `ggml_cgraph` (the graph allocator, CPU
+diagnostics) meets this first under the sanitizers.
+
 ## RE-020: The reference container denies io_uring setup  (2026-09-26, status: worked-around)
 
 On the workstation, the three `unit.UringTest.*` tests pass, but the

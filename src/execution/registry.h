@@ -46,6 +46,15 @@ enum class Operation : std::uint8_t {
   kAdd,
   kMul,
   kMatMul,
+  kGetRows,      // rows gathered by index
+  kSetRows,      // rows stored at indices: the KV write
+  kRope,         // rotary position embedding
+  kRopeSetRows,  // RoPE, then its rows stored at indices
+  kSoftMax,      // masked, scaled soft_max over rows
+  kCont,         // a copy into packed layout
+  kSwiGlu,       // silu(gate) * up
+  kMulMatAdd,    // a matrix product plus a bias (or residual) of its shape
+  kMulMatGlu,    // gate and up products of one input, then SwiGLU
 };
 
 std::string_view OperationName(Operation operation);

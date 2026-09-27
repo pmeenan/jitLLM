@@ -418,6 +418,44 @@ reservation policy) were recorded in M0.
           other there (reported, not gated). A stale or foreign declaration
           binds no kernel. BP-S1's exactness against the bridge arms closes
           in P2.
+      - **The FP16 plan's remaining operations.** Every GGML kernel that
+        `fp16-plan.json` records has an implementation over GGML's launcher
+        (`ops.h`): get_rows (both kernels), the KV write (set_rows, F32
+        into F16), NEOX RoPE, RoPE fused with the K write, soft_max (both
+        column variants), cont of the merged heads (a copy or the scalar
+        kernel), SwiGLU, and MMVF fused with a bias or residual add and
+        with gate, up and SwiGLU. Each refuses what its launcher asserts
+        on; the row indices get_rows, set_rows and the fused K write read
+        from device memory are the plan's to bound. The checks run in
+        every profile (`unit.GgmlOpsValidateTest.*`). The registry declares the nine
+        implementations (`implementations.h`). `fusion.h` reproduces
+        upstream's gates for the three fusions over a graph's nodes in
+        GGML's order, uses and data ranges included
+        (`unit.GgmlFusionTest.*`); the device's MMVF selection completes
+        the two MMVF gates (`MulMatVecFusible`). The gates build no GGML
+        graph object, which trips UBSan (RE-021). The
+        new launchers' sources hold no `throw`, `try` or `catch` at the
+        pin (D-066).
+        - On `spark-b`, `unit.GgmlOpsMemoryTest.*` shows each bit-identical
+          in cudaMalloc memory, device VMM and host VMM, and close to a CPU
+          reference. There the fused bias add equalled MMVF then add bit
+          for bit, and the fused K write equalled RoPE then set_rows; the
+          fused gate and up product, accumulating in F32, differed from the
+          unfused one in every element (reported, not gated).
+        - `unit.GgmlOpsPlanMatchTest.*` records each launch at the CUDA
+          runtime's entry points and compares it with the recorded plan at
+          the model's shapes and the recorded row counts (1, 16, 17, 32,
+          512): kernel name (NVCC's per-file hash normalized), grid, block
+          and dynamic shared memory, or copy size, on the context's stream.
+          It matches kernels 3, 6, 7, 8 and 24–28 at every row count the
+          plan launches them at, the one-row cont's 3,584-byte copy, the
+          fused decode products (17, 19, 20) and the unfused ones (16, 18,
+          and the bias add, 4). Not yet matched this way: attention's
+          products (9–15, 21), the norms (22, 23), mul (5) and the cuBLAS
+          path (0–2, 29–44).
+        - The test binary's SASS for kernels 3–28 has the bridge's recorded
+          text and encoding hashes (cuobjdump 13.0.85 on `spark-b`,
+          2026-09-27).
       - **Per-launch host cost (BP-F4, reported).** On `spark`, one
         decode-row RMSNorm-mul costs about 1.76 µs of host time in GGML's
         fused launcher alone and 1.88 µs through a bound plan; unfused,

@@ -13,7 +13,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,6 +26,7 @@ namespace {
 using jitllm::execution::Choice;
 using jitllm::execution::Implementation;
 using jitllm::execution::Operation;
+using jitllm::execution::OperationName;
 using jitllm::execution::Plan;
 using jitllm::execution::PlanError;
 using jitllm::execution::Registry;
@@ -56,6 +59,17 @@ std::vector<Choice> Layer(std::string norm, std::string mul_mat = "fake.mul_mat.
   return {{.operation = Operation::kRmsNormMul, .implementation = std::move(norm)},
           {.operation = Operation::kMatMul, .implementation = std::move(mul_mat)},
           {.operation = Operation::kAdd, .implementation = "fake.add"}};
+}
+
+// An implementation's and a plan's identities hash the operation's name, so
+// no two operations share one.
+TEST(PlanRegistryTest, EveryOperationHasItsOwnName) {
+  std::set<std::string_view> names;
+  for (int i = 0; i <= static_cast<int>(Operation::kMulMatGlu); ++i) {
+    const std::string_view name = OperationName(static_cast<Operation>(i));
+    EXPECT_NE(name, "unknown") << i;
+    EXPECT_TRUE(names.insert(name).second) << name;
+  }
 }
 
 TEST(PlanRegistryTest, ResolvesEveryOperationToTheImplementationItNames) {

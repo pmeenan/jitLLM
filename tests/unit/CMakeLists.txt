@@ -138,6 +138,19 @@ if(JITLLM_CUDA)
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/ggml_module_digest_test.cmake)
   set_tests_properties(unit.GgmlModuleDigest PROPERTIES LABELS unit)
 
+  # The remaining operations of the FP16 bridge's recorded plan. The test
+  # wraps the CUDA runtime's launch and copy entry points at link time, so
+  # that it can record each launch and compare it with the recorded plan;
+  # its wrappers call the runtime's own.
+  add_executable(ggml_ops_test ggml_ops_test.cc)
+  target_include_directories(ggml_ops_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  target_link_options(ggml_ops_test PRIVATE
+                      "LINKER:--wrap=__cudaLaunchKernel,--wrap=cudaLaunchKernelExC"
+                      "LINKER:--wrap=cudaMemcpyAsync,--wrap=cudaMemcpy2DAsync")
+  jitllm_gpu_gtest(ggml_ops_test)
+
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
