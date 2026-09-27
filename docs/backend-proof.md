@@ -483,6 +483,11 @@ before the native output it governs.
   is seen.
   The retained-backing criteria are pre-registered, with the trace's
   identity, [below](#retained-backing-comparison).
+  - *Pre-registered on 2026-09-27 (D-079):* BP-F1's rule, frozen before any
+    host-VMM timing ran: its 53 cases, operand placement, calibration and
+    `z`, with a passing holdout
+    ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry),
+    [report](experiments/backend-proof-p1/README.md)).
 
 Each part is approved, or pre-registered under D-079, before any native
 result it would judge is seen.
@@ -923,8 +928,8 @@ currently:
 The NVCC 13.0.88 build shares identical SASS with the 13.4.92 build for
 only 16 of its 1,506 kernels. So the rule was recalibrated and its holdout
 rerun on the 13.4.92 build (below).
-BP-F1 uses the same rule, but needs its own calibration sessions before its
-approval. The model cases (BP-F3) and BP-F4 are reported, not gated.
+BP-F1 uses the same rule with its own calibration, pre-registered below
+(D-079). The model cases (BP-F3) and BP-F4 are reported, not gated.
 
 This protocol extends the frozen rule of the
 [EXL3 reference](experiments/exl3-reference/README.md#memory-and-acceptance-limits).
@@ -1079,6 +1084,50 @@ reference container.
     BP-F1 is gated.
   - A regression reopens D-034 for the owner; it does not block other
     stages.
+  - **The frozen rule (pre-registered 2026-09-27, D-079),** fixed before
+    any host-VMM timing of these kernels ran
+    ([report](experiments/backend-proof-p1/README.md)):
+    - *Cases:* the 53 in
+      [`bpf1-cases.txt`](experiments/backend-proof-p1/bpf1-cases.txt)
+      (BP-F1 cases SHA-256: `fe78d03360b12824e1fad2f0d9e6f152b867d8c502aa6d451671684302e6a20c`),
+      derived by `bpf1_cases.py` from
+      `fp16-plan.json`: RMSNorm, fused RMSNorm-multiply, multiply, the
+      896- and 128-wide bias adds and the residual add, the q/o, k/v,
+      gate/up, down and output-head projections, and attention's KQ and
+      KQV, at 1, 16, 17 and 512 rows with the implementation and launches
+      the plan recorded (MMVF, MMF, GGML's cuBLAS path). Each block
+      verifies every captured launch against them before timing. BP-F1
+      judges these cases only: a kernel jitLLM adds later (RoPE, softmax,
+      the KV writes) needs its own calibration and holdout first.
+    - *Placement:* arm A (the reference) holds every buffer the kernels are
+      given in `cudaMalloc` memory; arm B (the candidate) in host-backed
+      VMM from jitLLM's provider. That is weights, activations, outputs,
+      GGML's scratch and the cuBLAS workspace. Each case rotates through a ring of
+      identical operand sets totalling more than four times the queried
+      L2.
+    - *Harness:* `jitllm_ggml_vmm_bench` with cuBLAS 13.8.0.4, run by
+      `bpf1_session.py`; the comparison uses this binary, kept with the
+      raw sessions. A rebuild elsewhere differs: the binary embeds its
+      source paths.
+      BP-F1 harness SHA-256: `05348df868e83768a441302bc2831df8ebbe4fa609a13c5b5cd874d9048f3b92`
+    - *Calibration:* `c1`–`c4` on `spark`, two in each order; median `σ`
+      1.23% (0.10–2.75%). BP-F1 calibration SHA-256: `aa1581271357e8c1bfeed2b8da98ae98ee35031b4160df6500cb8b6e991b1369`
+      ([`bpf1-calibration.json`](experiments/backend-proof-p1/bpf1-calibration.json)).
+      The session driver refuses a host-VMM arm unless its calibration
+      file, harness and case file have these hashes; every manifest
+      records them, and `bpf1_stats.py` checks them again.
+    - *Thresholds:* `z = 3.555`, the one-sided 1% family-wise quantile over
+      53 cases; the aggregate limit stays 3.143. Per-case thresholds
+      `z · σ · √½` are 0.25–6.9%, below 2% for 13 cases.
+    - *Holdout,* declared in advance to reject the rule if either session,
+      as the primary with the other as its confirmation, failed the stage:
+      `h1` (primary) passes alone (aggregate `t` 1.87); `h2` (mirrored)
+      needs `h1` as its confirmation for one case (fused RMSNorm-multiply
+      at 16 rows, d = 3.73) and passes. The rule stands.
+    - *Procedure:* a primary session in the order A1 B1 B2 A2 B3 A3 A4 B4;
+      if a case or the aggregate fails, a mirrored confirmation. A case
+      fails BP-F1 only when it fails both; the aggregate must pass in the
+      confirmation too. The stream-launched arm is reported, not gated.
 - **BP-F2: EXL3 kernels.**
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
     matched plan.

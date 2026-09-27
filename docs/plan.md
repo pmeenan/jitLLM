@@ -392,6 +392,16 @@ reservation policy) were recorded in M0.
         - The copied `k_compute_batched_ptrs` has the bridge's recorded
           SASS (`37c97848…`, 200 instructions; cuobjdump 13.0.85 on
           `spark`, 2026-09-26).
+      - **BP-F1's rule is calibrated and pre-registered** (D-079;
+        [report](experiments/backend-proof-p1/README.md)). A harness
+        (`benchmarks/ggml_vmm_bench.cc`) times 53 cases derived from the
+        FP16 plan (every GGML kernel jitLLM has, at 1, 16, 17 and 512
+        rows), verifying each captured launch against the recorded plan,
+        with all their memory in one kind per process. Four A/A
+        `cudaMalloc` sessions on `spark` gave a median `σ` of 1.23%; the
+        holdout declared in advance passed. The calibration's hash is
+        registered in backend-proof.md, and the session driver refuses a
+        host-VMM arm under any other. No host-VMM timing has run.
 
       - **Plan selection between implementations (D-053).** The
         implementation registry (`src/execution/registry.h`) holds each
@@ -464,7 +474,8 @@ reservation policy) were recorded in M0.
         against upstream's decode wait for a native decode step (P2).
 
       Remaining in P1:
-      - kernel times on host VMM versus cudaMalloc;
+      - BP-F1's gated comparison, host VMM against cudaMalloc, once the
+        pre-registration is reviewed and committed;
       - the allocation census;
       - the first native EXL3 linear.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
