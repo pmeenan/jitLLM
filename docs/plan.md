@@ -285,6 +285,35 @@ reservation policy) were recorded in M0.
       memory limits, BP-F1's calibration, the declared-departure
       contingency and the retained-backing criteria. cuBLAS links
       dynamically from the SDK (D-076).
+
+      *P1 started:*
+      - **GGML enters the build** as the locked llama.cpp archive, narrowed
+        by `archive.keep`, with two patches (D-077). jitLLM compiles only
+        the selected files and never `ggml-cuda.cu`, supplying the five
+        symbols its launchers need and the context destructor.
+      - **`src/kernels/ggml/`** holds:
+        - tensor descriptors over jitLLM memory, built with GGML's graph
+          functions;
+        - the K-C launch context: the provider's stream
+          (`DeviceExecution::Submission`), a scratch pool over declared
+          workspace, and launch errors returned as faults;
+        - the first implementations: RMSNorm, fused RMSNorm-mul, add, mul,
+          and matrix multiplication through MMVF and MMF. Each refuses what
+          its launcher would assert on; the checks run on the host in every
+          profile (`unit.GgmlValidateTest.*`).
+      - **On `spark`:** `unit.GgmlMemoryTest.*` shows device and host VMM
+        bit-identical to cudaMalloc for all of them, and close to a CPU
+        reference. `unit.GgmlKernelsTest.*` shows that launches bind to
+        the provider's primary context and its stream order, and that a
+        launch error comes back as a fault.
+
+      Remaining in P1:
+      - cuBLAS handle and workspace injection;
+      - kernel times on host VMM versus cudaMalloc;
+      - the allocation census;
+      - per-launch host cost;
+      - plan selection between implementations;
+      - the first native EXL3 linear.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

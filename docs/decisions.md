@@ -33,6 +33,116 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-078: Source archives are checked and unpacked by one parser, Python's tarfile  (2026-09-26, status: accepted; amends D-057's FetchContent script-mode population for unpacking only)
+
+**Decision.** `mise run prepare` unpacks a locked archive with Python's
+`tarfile`, the parser that has just checked it. The members it checked are
+the members it writes, through tarfile's `data` filter, into a new staging
+directory. As FetchContent did, it strips a single top-level directory. It
+writes only `archive.keep`'s paths and never writes discarded members.
+Only tar archives are accepted, plain or gzip-, xz- or bzip2-compressed,
+chosen by their leading bytes.
+
+Everything else in D-057 stands:
+- hash-pinned archives in the persistent cache, re-verified on every use;
+- a profile's closure selected before anything is acquired;
+- exact patches and the tree digest;
+- configure and build that never acquire source.
+
+`cmake/sources/populate.cmake` is removed.
+
+**Context.** The heavy-path challenge of D-077 made seven rounds of
+findings. Each was a tar header that Python's `tarfile` (the check) and
+CMake's libarchive (the extractor) read differently:
+- GNU long names;
+- repeated or unusual extended headers;
+- size fields with characters one parser skips;
+- data after a directory header;
+- a regular file named with a trailing slash;
+- a zip appended to a gzipped tar.
+
+Some let libarchive write through a symbolic link outside the staging
+directory before any later check ran. That needs a malicious archive at a
+reviewed, locked hash, but the check existed to stop exactly that. With
+one parser the class is gone. The owner chose this on 2026-09-26. For all
+three locked components (GGML, GoogleTest, toml++), Python unpacking
+produces the recorded tree digests unchanged.
+
+**Consequences.**
+- Preparation needs no CMake and spawns no extractor.
+- `prepare-sources` loses its `--cmake` argument and its handling of the
+  extractor's process group.
+- Zip archives are refused until a component needs one.
+- An unpacked tree must still hold only directories and singly linked
+  regular files.
+
+**Reopen if.** A needed component ships only in a format `tarfile` cannot
+read safely, or a Python release changes what the `data` filter admits.
+
+## D-077: GGML enters as the locked llama.cpp archive, narrowed and patched; jitLLM supplies what its launchers need from ggml-cuda.cu  (2026-09-26, status: accepted; amends D-057's curated vendoring for GGML; implements D-053's context adapter)
+
+**Decision.** GGML's source reaches the build as the source lock's `ggml`
+component: GitHub's archive of llama.cpp commit `b29c606e2` (tag
+`b10964`, the P0 bridge's revision), hash-pinned like any archive. A new
+optional `archive.keep` list keeps only the paths the build uses (GGML's
+headers, its base sources and `ggml/src/ggml-cuda/`, plus `LICENSE`),
+before patching and hashing. Two reviewed patches in
+`third_party/patches/ggml/` carry every local change:
+- `0001` adapts three upstream behaviours, only when `GGML_JITLLM` is
+  defined: `ggml_abort` never forks or executes a debugger;
+  `ggml_cuda_error` is no longer `[[noreturn]]`; the `GGML_CUDA_PDL`
+  environment switch is no longer read.
+- `0002` adds `jitllm/CMakeLists.txt`, jitLLM's own build of the selected
+  files with the bridge's flags. GGML's CMake never runs.
+
+jitLLM never compiles `ggml-cuda.cu`, GGML's CUDA backend runtime. The
+selected launchers need only five of its symbols; with the context
+destructor that jitLLM's own launch context needs, those are six
+functions that `src/kernels/ggml/ggml_support.cu` (MIT AND Apache-2.0,
+adapted from it) defines:
+- the error hook, which records the failure and returns;
+- device selection, set and get;
+- the device table, without upstream's process-wide
+  `cudaDeviceScheduleSpin`, peer access, environment or logging;
+- a context destructor that destroys nothing;
+- a pool factory that is fatal, since jitLLM always lends a pool.
+
+GGML is D-017 core implementation (MIT).
+
+**Context.** D-057 prescribed curated vendoring into `third_party/<id>/`
+for adapted units. For GGML that would have meant about 50 unchanged
+upstream files in Git, each with a D-071 sidecar, plus a new lock kind and
+tooling. The archive route needs neither and changes no mechanism beyond
+`keep`. It proves the upstream bytes by hash, and keeps local changes as
+diffs that can be reviewed on upgrade. The owner chose it on 2026-09-26.
+`keep` also answers the archive's web-UI paths (`(chat)`, `[id]`), whose
+names the prepared-tree rules refuse. Every member is still checked for
+a safe path and plain type, by the parser that then unpacks it (D-078).
+The archive holds no copyleft code:
+`tools/ui`'s npm lock names LGPL packages but contains none of them.
+Symbol analysis of the P0 bridge's objects found that the dense operation
+launchers need only five `ggml-cuda.cu` symbols.
+
+**Consequences.**
+- The K-C launch context (`src/kernels/ggml/launch.h`) lends GGML the
+  provider's native stream through `DeviceExecution::Submission`, and a
+  scratch pool over declared workspace. The context's CUDA errors return
+  as faults.
+- Operation wrappers mirror each launcher's assertions, so an unsupported
+  operand is refused, never an abort. Matrix multiplication is one
+  implementation per GGML kernel family, which the plan selects in place
+  of GGML's routing.
+- Upgrading GGML means a new archive pin, the patches rebased, the keep
+  list and file list reviewed, and the support file re-derived.
+- Adding a GGML operation adds its files to `jitllm/CMakeLists.txt`.
+- cuBLAS and every quantized kernel family stay outside the build until an
+  operation needs them.
+
+**Reopen if.** An upgrade makes the patches or the support file costlier
+to keep than vendored copies; a needed launcher depends on more of
+`ggml-cuda.cu` than a small adaptation can supply; or GGML's archive
+starts to carry code outside D-017's core allowlist in the kept paths.
+
 ## D-076: Link cuBLAS dynamically and ship its pinned shared libraries  (2026-09-25, status: accepted; amends D-060's "cuBLAS linked statically subject to its license and size review")
 
 **Decision.** jitLLM binaries that use cuBLAS link `libcublas.so.13` and

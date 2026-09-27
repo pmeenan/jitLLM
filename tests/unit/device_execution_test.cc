@@ -125,6 +125,27 @@ TEST_F(DeviceExecutionTest, AStreamWithUnfencedWorkIsNotDestroyed) {
   EXPECT_TRUE(execution_.DestroyStream(stream).has_value());
 }
 
+// A kernel implementation takes the stream's native handle to launch on
+// (D-053): distinct per stream, stable, and itself queued work that a
+// fence must cover before the stream can go.
+TEST_F(DeviceExecutionTest, ASubmissionHandleIsQueuedWork) {
+  const auto first = execution_.CreateStream().value();
+  const auto second = execution_.CreateStream().value();
+  const auto handle = execution_.Submission(first).value();
+  EXPECT_NE(handle.handle, nullptr);
+  EXPECT_EQ(execution_.Submission(first).value().handle, handle.handle);
+  EXPECT_NE(execution_.Submission(second).value().handle, handle.handle);
+  EXPECT_EQ(execution_.DestroyStream(first).error().error, ProviderError::kInvalid);
+  for (const auto stream : {first, second}) {
+    const auto fence = execution_.Record(stream).value();
+    execution_.Drain();
+    ASSERT_EQ(execution_.Query(fence).value(), FenceState::kComplete);
+    ASSERT_TRUE(execution_.Release(fence).has_value());
+    EXPECT_TRUE(execution_.DestroyStream(stream).has_value());
+  }
+  EXPECT_EQ(execution_.Submission(first).error().error, ProviderError::kInvalid);
+}
+
 // The submission lane records and releases while the completion lane
 // queries (D-048): no fence is lost, and each is released exactly once.
 TEST_F(DeviceExecutionTest, SubmissionAndCompletionLanesShareTheProvider) {

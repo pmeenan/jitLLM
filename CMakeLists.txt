@@ -51,9 +51,10 @@ if(JITLLM_CUDA)
 endif()
 
 # Sanitizer builds for D-061's check tiers (the `*-asan` and `*-tsan`
-# presets): every target, tests and third-party code included, is
-# instrumented. A UBSan report ends the process as an ASan one does; the
-# test presets make ThreadSanitizer's do so too. NVCC splits -Xcompiler
+# presets): every target, tests and third-party code included, C (GGML's
+# base sources) as well as C++ and CUDA, is instrumented. A UBSan report
+# ends the process as an ASan one does; the test presets make
+# ThreadSanitizer's do so too. NVCC splits -Xcompiler
 # values at commas, so each sanitizer gets its own flag.
 set(JITLLM_SANITIZE "" CACHE STRING "Sanitizers to build with (D-061): address;undefined, thread, or empty")
 set(_jitllm_sanitizers address undefined thread)
@@ -66,13 +67,13 @@ if("thread" IN_LIST JITLLM_SANITIZE AND "address" IN_LIST JITLLM_SANITIZE)
   message(FATAL_ERROR "JITLLM_SANITIZE cannot combine thread with address")
 endif()
 foreach(_jitllm_sanitizer IN LISTS JITLLM_SANITIZE)
-  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=${_jitllm_sanitizer}>"
+  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fsanitize=${_jitllm_sanitizer}>"
                       "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fsanitize=${_jitllm_sanitizer}>")
   add_link_options("-fsanitize=${_jitllm_sanitizer}")
 endforeach()
 if(JITLLM_SANITIZE)
   message(STATUS "Sanitizers: ${JITLLM_SANITIZE}")
-  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-sanitize-recover=all;-fno-omit-frame-pointer>"
+  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fno-sanitize-recover=all;-fno-omit-frame-pointer>"
                       "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fno-sanitize-recover=all,-fno-omit-frame-pointer>")
 endif()
 
@@ -97,11 +98,12 @@ endwhile()
 # D-059's warnings, for jitLLM's own targets only (link this to each one);
 # third-party code keeps its own warning settings. NVCC's host pass sees its
 # generated line markers and CUDA's own headers as ordinary source, so it
-# goes without -Wold-style-cast and allows GNU line markers.
+# goes without -Wold-style-cast and allows GNU line markers, and allows the
+# long string literal that holds the device code in NVCC's generated stub.
 add_library(jitllm_warnings INTERFACE)
 target_compile_options(jitllm_warnings INTERFACE
   "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wshadow;-Wconversion;-Wsign-conversion;-Wnon-virtual-dtor;-Wold-style-cast;-Wimplicit-fallthrough;-Werror>"
-  "$<$<COMPILE_LANGUAGE:CUDA>:-Werror=all-warnings;-Xcompiler=-Wall,-Wextra,-Wpedantic,-Wno-gnu-line-marker,-Wshadow,-Wconversion,-Wsign-conversion,-Wnon-virtual-dtor,-Wimplicit-fallthrough,-Werror>")
+  "$<$<COMPILE_LANGUAGE:CUDA>:-Werror=all-warnings;-Xcompiler=-Wall,-Wextra,-Wpedantic,-Wno-gnu-line-marker,-Wno-overlength-strings,-Wshadow,-Wconversion,-Wsign-conversion,-Wnon-virtual-dtor,-Wimplicit-fallthrough,-Werror>")
 
 # Marks a test executable: in a cross build, CTest runs it under qemu-user,
 # or on a Spark over SSH once deployed (tools/run-target, `mise run test`).

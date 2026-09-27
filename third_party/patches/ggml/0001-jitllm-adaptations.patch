@@ -1,0 +1,65 @@
+jitLLM adaptations of the pinned GGML sources (D-053, D-077), active only
+when GGML_JITLLM is defined (third_party/patches/ggml/0002-jitllm-build.patch
+defines it):
+
+- ggml.c: ggml_print_backtrace does nothing, so ggml_abort prints its
+  message and aborts without forking or executing a debugger.
+- ggml-cuda/common.cuh: ggml_cuda_error is not [[noreturn]]. jitLLM defines
+  it (src/kernels/ggml/) to record the failure and return, so a launcher
+  returns and its caller reports the error instead of the process aborting.
+- ggml-cuda/common.cuh: kernel launches use programmatic dependent launch
+  as the build decides, without reading GGML_CUDA_PDL from the environment.
+
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 5ef03e1..382d55f 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -156,6 +156,10 @@ static void ggml_print_backtrace_symbols(void) {
+ #endif
+ 
+ void ggml_print_backtrace(void) {
++#if defined(GGML_JITLLM)
++    // jitLLM: a served process never forks or execs a debugger. ggml_abort
++    // still prints its message and aborts.
++#else
+     const char * GGML_NO_BACKTRACE = getenv("GGML_NO_BACKTRACE");
+     if (GGML_NO_BACKTRACE) {
+         return;
+@@ -234,6 +238,7 @@ void ggml_print_backtrace(void) {
+ #endif
+         waitpid(child_pid, NULL, 0);
+     }
++#endif // !defined(GGML_JITLLM)
+ }
+ #else
+ void ggml_print_backtrace(void) {
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 2e78ae4..5e7c7d7 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -187,7 +187,11 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
+ 
+ #define GGML_CUDA_MAX_STREAMS 8
+ 
++// jitLLM defines ggml_cuda_error to record the error and return, so that
++// the launcher returns and its caller reports the failure (D-053, D-066).
++#if !defined(GGML_JITLLM)
+ [[noreturn]]
++#endif
+ void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg);
+ 
+ #define CUDA_CHECK_GEN(err, success, error_fn)                                      \
+@@ -1700,8 +1704,13 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+ #if defined(GGML_CUDA_USE_PDL)
+ 
+     static const bool env_pdl_enabled = []() {
++#if defined(GGML_JITLLM)
++        // jitLLM: launch attributes are fixed by the build, not the environment.
++        return true;
++#else
+         const char * env = getenv("GGML_CUDA_PDL");
+         return env == nullptr || std::atoi(env) != 0;
++#endif
+     }();
+ 
+     if (env_pdl_enabled && ggml_cuda_kernel_can_use_pdl(reinterpret_cast<const void *>(kernel))) {

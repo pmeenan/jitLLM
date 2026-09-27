@@ -6,7 +6,8 @@
 // steps it, so completion order is the test's to choose. Copies move bytes
 // between the fake device memory's addresses (which are host addresses)
 // when they run, so a consumer that reads before its fence completes sees
-// the old bytes. Releasing a fence before it was seen complete, or
+// the old bytes. A stream's native handle is a distinct token that nothing
+// dereferences. Releasing a fence before it was seen complete, or
 // destroying a stream with work not yet behind a released fence, is
 // refused, as the CUDA provider refuses them. Every call takes one lock, so
 // a completion lane may query while the submission lane submits.
@@ -33,6 +34,7 @@ class FakeDeviceExecution final : public DeviceExecution {
   std::expected<void, Failure> DestroyStream(StreamId stream) override;
   std::expected<void, Failure> Copy(StreamId stream, std::uint64_t destination,
                                     std::uint64_t source, Bytes size) override;
+  std::expected<NativeStream, Failure> Submission(StreamId stream) override;
   std::expected<void, Failure> Wait(StreamId stream, FenceId fence) override;
   std::expected<FenceId, Failure> Record(StreamId stream) override;
   std::expected<FenceState, Failure> Query(FenceId fence) override;
@@ -68,8 +70,9 @@ class FakeDeviceExecution final : public DeviceExecution {
   };
   struct Stream {
     std::deque<Queued> steps;
-    std::size_t fences = 0;  // unreleased fences recorded on it
-    bool unfenced = false;   // work queued since its last fence
+    std::size_t fences = 0;    // unreleased fences recorded on it
+    bool unfenced = false;     // work queued since its last fence
+    std::uint64_t native = 0;  // the token Submission hands out
   };
   struct Fence {
     StreamId stream;
@@ -83,6 +86,7 @@ class FakeDeviceExecution final : public DeviceExecution {
   base::SlotTable<StreamTag, Stream> streams_;
   base::SlotTable<FenceTag, Fence> fences_;
   std::optional<std::pair<FenceId, ProviderError>> fault_;
+  std::uint64_t next_native_ = 0;
 };
 
 }  // namespace jitllm::providers::fake

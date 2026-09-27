@@ -29,7 +29,10 @@ void* At(std::uint64_t address) {
 
 std::expected<StreamId, Failure> FakeDeviceExecution::CreateStream() {
   const std::scoped_lock lock(mutex_);
-  const StreamId id = streams_.Insert(Stream{});
+  // Tokens stay distinct and non-null, at no real address.
+  next_native_ += 16;
+  const StreamId id =
+      streams_.Insert(Stream{.steps = {}, .fences = 0, .unfenced = false, .native = next_native_});
   if (!id.valid()) {
     return std::unexpected(
         Failure{.error = ProviderError::kFailed, .detail = "the stream table is full"});
@@ -48,6 +51,16 @@ std::expected<void, Failure> FakeDeviceExecution::DestroyStream(StreamId stream)
   }
   (void)streams_.Erase(stream);
   return {};
+}
+
+std::expected<NativeStream, Failure> FakeDeviceExecution::Submission(StreamId stream) {
+  const std::scoped_lock lock(mutex_);
+  Stream* found = streams_.Find(stream);
+  if (found == nullptr) {
+    return Invalid("stale or unknown stream");
+  }
+  found->unfenced = true;
+  return NativeStream{.handle = At(found->native)};
 }
 
 std::expected<void, Failure> FakeDeviceExecution::Copy(StreamId stream, std::uint64_t destination,

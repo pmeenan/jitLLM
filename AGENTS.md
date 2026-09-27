@@ -135,9 +135,9 @@ affected docs. Until then, these govern.
 | `CHANGELOG.md` | Keep a Changelog; a change with user-visible effect adds its line (D-062) |
 | `mise.toml`, `mise.lock` | mise tasks (`setup`, `prepare`, `doctor`, `build`, `test`, `deploy`) and the pinned Python that runs `tools/` (D-070) |
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
-| `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057) |
+| `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057), and in `patches/` the reviewed changes to them (GGML's, D-077) |
 | `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
-| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe, a raw io_uring ring), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning) and `scheduler/` (admission and switching, the completion board, lanes, task trees) of the resource core, `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
+| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe, a raw io_uring ring), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning) and `scheduler/` (admission and switching, the completion board, lanes, task trees) of the resource core, `kernels/ggml/` (GGML tensor descriptors over jitLLM memory, the K-C launch context and GGML-derived operations, D-053, D-077), `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
 | `packaging/` | `jitllm.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
@@ -201,7 +201,9 @@ the commit gate.
    Commit only reviewed, checked work (docs/workflow.md), on the current
    branch, and say what the commit contains. No agent pushes, tags, amends
    or rewrites history. Otherwise all changes stay in the working tree for
-   human review.
+   human review. The main agent ends each plan task's final report with a
+   suggested commit title in the log's style: `[M<n>] <what landed>`, one
+   line, under about 72 characters.
 6. **C++23 conventions.** Clang-first. Ordinary `.cc` files use the host
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
@@ -237,7 +239,8 @@ and the providers (fake and CUDA) have landed, with their measurements
 ([docs/plan.md](docs/plan.md)). The backend proof's P0 is measured. The owner
 approved its profiles, the FP16 exactness gate and the EXL3 bounds (full
 model, reconstruction exactness, the operation plan and gate, the timing
-rule), so native FP16 work (P1, P2) can start. BP-F2's timing reference
+rule). P1 has started: GGML's launchers run under jitLLM's launch
+context on jitLLM memory (D-077). BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
 criteria are still drafts. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

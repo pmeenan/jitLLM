@@ -3,6 +3,48 @@
   "schema": 1,
   "modules": {},
   "components": {
+    "ggml": {
+      "version": "b10964",
+      "kind": "archive",
+      "category": "implementation",
+      "tier": "core",
+      "use": "test",
+      "machine": "target",
+      "upstream": {
+        "repository": "https://github.com/ggml-org/llama.cpp",
+        "release": "https://github.com/ggml-org/llama.cpp/releases/tag/b10964",
+        "tag": "b10964",
+        "commit": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4"
+      },
+      "archive": {
+        "file": "llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4.tar.gz",
+        "urls": ["https://github.com/ggml-org/llama.cpp/archive/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4.tar.gz"],
+        "sha256": "03fb04316eb32a7b7347004a79a8dd60531c02f5a064d853fed3b53828951723",
+        "size": 37437459,
+        "keep": ["LICENSE", "ggml/include", "ggml/src/ggml-alloc.c", "ggml/src/ggml-backend-impl.h", "ggml/src/ggml-backend-meta.cpp", "ggml/src/ggml-backend.cpp", "ggml/src/ggml-common.h", "ggml/src/ggml-cpu/ggml-cpu-impl.h", "ggml/src/ggml-cuda", "ggml/src/ggml-impl.h", "ggml/src/ggml-quants.c", "ggml/src/ggml-quants.h", "ggml/src/ggml-threading.cpp", "ggml/src/ggml-threading.h", "ggml/src/ggml-version.h.in", "ggml/src/ggml.c"]
+      },
+      "patches": [
+        {"path": "patches/ggml/0001-jitllm-adaptations.patch", "sha256": "57a5349cf7dcb1aadd1bf197cf23c05a5ad52508ff02935d4de7448067bb3291"},
+        {"path": "patches/ggml/0002-jitllm-build.patch", "sha256": "6712e49fbaf9c4e638eaae06b60c70a62a1a09ec201c05bfa80b1432ac3253e6"}
+      ],
+      "tree_sha256": "8a4d1968ddcebfcc0f965fb599ec3cb19696289acf20b7b1a0e4a6db387699d1",
+      "depends": [],
+      "cmake": {
+        "subdirectory": "jitllm",
+        "options": {},
+        "platform_packages": [],
+        "targets": ["jitllm_ggml_base", "jitllm_ggml_cuda"]
+      },
+      "license": {
+        "expression": "MIT",
+        "files": ["LICENSE"],
+        "notices": ["LICENSE", "ggml/src/ggml-cuda/rope.cu:20-21"],
+        "scope": "Compiled, by jitllm/CMakeLists.txt (added by patches/ggml/0002-jitllm-build.patch) and never by GGML's own CMake: ggml/src/ggml.c, ggml-alloc.c, ggml-backend.cpp, ggml-backend-meta.cpp, ggml-quants.c and ggml-threading.cpp (target jitllm_ggml_base, every profile), and in CUDA profiles ggml/src/ggml-cuda/binbcast.cu, convert.cu, cpy.cu, getrows.cu, mmf.cu, mmid.cu, mmvf.cu, norm.cu, rope.cu, set-rows.cu, softmax.cu, unary.cu and template-instances/mmf-instance-ncols_1.cu to _16.cu (target jitllm_ggml_cuda), with the headers they include from ggml/include, ggml/src (ggml-impl.h, ggml-common.h, ggml-quants.h, ggml-threading.h, ggml-backend-impl.h, ggml-cpu/ggml-cpu-impl.h) and ggml/src/ggml-cuda, and ggml-version.h generated from ggml/src/ggml-version.h.in; jitLLM's src/kernels/ggml/ includes the same headers. Executed at configure: jitllm/CMakeLists.txt only. archive.keep drops the rest of the archive (llama.cpp itself, GGML's CMake, CPU backend, other backends, ggml-cuda.cu's backend runtime is kept in ggml/src/ggml-cuda but not compiled). Not compiled from the kept tree: ggml-cuda.cu and every other ggml-cuda .cu file (flash attention, MMQ, MMVQ, the other operations); src/kernels/ggml/ggml_support.cu is jitLLM's adaptation of the ggml-cuda.cu functions the launchers need (MIT AND Apache-2.0).",
+        "evidence": "Root LICENSE (SHA-256 94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d) is MIT, Copyright (c) 2023-2026 The ggml authors; no compiled or included file carries its own license header, so all fall under it. ggml/src/ggml-cuda/rope.cu lines 20-21 attribute its YaRN rotation to https://github.com/jquesnelle/yarn, 'MIT licensed. Copyright (c) 2023 Jeffrey Quesnelle and Bowen Peng.' ggml/src/ggml-impl.h's FP16 conversion cites https://github.com/Maratyszcza/FP16 (MIT) by reference only, and its static_assert fallback cites a Stack Overflow answer for a one-line preprocessor idiom; neither retains a notice upstream. The archive's other trees (tools/ui's npm lock metadata names LGPL-3.0 packages; vendor/ holds MIT and public-domain code) are removed by archive.keep before patching and never built (checked 2026-09-26).",
+        "obligations": "Linked so far only into test executables (the backend proof's P1), which are never shipped. A shipped binary that links it must carry GGML's MIT notice (LICENSE) and the YaRN copyright and license line from ggml/src/ggml-cuda/rope.cu in the package's third-party notices; jitLLM's ggml_support.cu carries the same GGML notice in its header. No source offer is owed."
+      },
+      "verification": "Pinned to llama.cpp tag b10964 (also v0.4.1), commit b29c606e28a01b1bc8c1351026a0fa6e616bf6c4, the revision of the FP16 reference and toolchain bridge (docs/experiments/first-slice/pins.json, docs/experiments/backend-proof-p0/). GitHub's archive of that commit was downloaded twice on 2026-09-26 with identical SHA-256 and size. tree_sha256 is the kept, patched tree, computed by the shared tools/jitllm_sources.py validator during preparation, configure and build. The patches (third_party/patches/ggml/) change behaviour only when GGML_JITLLM is defined, which only jitllm/CMakeLists.txt defines. The build reproduces the bridge's flags for these files (-O3, sm_121a SASS, -use_fast_math, -extended-lambda, C11/C++17 host code, C++17 CUDA); the bridge's compile commands are the reference."
+    },
     "googletest": {
       "version": "1.18.0",
       "kind": "archive",

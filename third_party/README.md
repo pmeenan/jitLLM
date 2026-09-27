@@ -11,7 +11,7 @@ explains the mechanism and why it was chosen.
 
 | Step | Where | Does |
 | --- | --- | --- |
-| Prepare | `mise run prepare` ([tools/prepare-sources](../tools/prepare-sources)); `mise run setup` runs it after the SDK | Validates the lock, selects the profile's closure, then fetches each archive into the persistent cache (`~/.cache/jitllm/downloads/<sha256>/`, shared with the SDK and re-verified on every use). It refuses an archive with anything but plain files and directories, unpacks it with the SDK's CMake through FetchContent's script mode ([populate.cmake](../cmake/sources/populate.cmake)), applies the recorded patches and checks the tree digest before the tree appears as `build/sources/<id>-<tree>` |
+| Prepare | `mise run prepare` ([tools/prepare-sources](../tools/prepare-sources)); `mise run setup` runs it after the SDK | Validates the lock, selects the profile's closure, then fetches each archive into the persistent cache (`~/.cache/jitllm/downloads/<sha256>/`, shared with the SDK and re-verified on every use). One parser, Python's `tarfile`, both checks and unpacks it (D-078): it refuses an archive with anything but plain files and directories at safe paths, two members at one path or a member inside a file member, then writes the checked members through tarfile's `data` filter, stripping a single top-level directory and keeping only the `archive.keep` paths if the lock names any. The unpacked tree must hold only directories and singly linked regular files. It then applies the recorded patches and checks the tree digest before the tree appears as `build/sources/<id>-<tree>` |
 | Configure | [cmake/JitllmSources.cmake](../cmake/JitllmSources.cmake) | Validates the whole lock with the same Python code ([tools/inspect-sources](../tools/inspect-sources)), selects the same closure, checks each prepared tree's digest, and only then adds the components as `SYSTEM`, `EXCLUDE_FROM_ALL` subprojects with their locked options. It never downloads. It rejects `FETCHCONTENT_SOURCE_DIR_*`, dependency providers and project-include hooks, makes FetchContent population of a declared dependency fail inside components (whatever their policy level), and fails on any `find_package()` lookup the lock does not declare |
 | Build | [cmake/sources/verify.cmake](../cmake/sources/verify.cmake) | Checks each tree on every build before anything that uses it compiles, so an edit after configure (an added file, a mode change, an edit that keeps the timestamp) fails the build |
 | Receipt | `build/<preset>/jitllm-receipt.json` | Records what configure used: the lock's digest, the SDK identity, the license profile and modules, and each component's version, license, archive digest, patches, tree, options and source directory. It is official only when no component came from an override |
@@ -59,6 +59,11 @@ output. So:
 - the network-denied build (D-061's `check:full`, in the reference
   container with `--network none`) stops any download a build attempts.
 
+Preparation unpacks with the same parser that checked the archive
+(D-078), so what the check saw is what is written; an extractor that
+parsed the archive differently could have written members the check never
+saw.
+
 ## The lock (schema 1)
 
 `modules` names each optional module with a `description`. Each entry of
@@ -67,11 +72,11 @@ output. So:
 | Field | Meaning |
 | --- | --- |
 | `version`, `upstream` | The release, its repository, tag and full commit |
-| `kind` | `archive`, a hash-pinned upstream archive. Vendored units (`third_party/<id>/` in Git) arrive with M2's first adapted kernel |
+| `kind` | `archive`, a hash-pinned upstream archive. Adapted sources come as an archive with patches (D-077); vendored units (`third_party/<id>/` in Git) are not supported |
 | `category`, `tier`, `module` | D-017's classification. `implementation` is incorporated code. `core` needs an allowlisted license (Apache-2.0, BSD-2-Clause, BSD-3-Clause, MIT or MPL-2.0); `optional` needs a `module`. A core component never depends on an optional one |
 | `use` | `test` if only test executables link it (never shipped), else `product` |
 | `machine` | `target`: built with the profile's target toolchain. Build-host tools and generators are not supported until the first one needs a host build |
-| `archive` | `file`, `urls` (https), `sha256` and `size`. Bytes that change under the same URL are an error, not a lock update. Members must be plain files and directories |
+| `archive` | `file`, `urls` (https), `sha256` and `size`. Bytes that change under the same URL are an error, not a lock update. A tar archive, plain or gzip-, xz- or bzip2-compressed, judged by its leading bytes. Members must be plain files and directories, one per path, none inside a file member. Optional `keep`: the paths (files or directories, relative to the unpacked tree, sorted, none inside another) that preparation keeps; the rest is never written and never reaches the tree digest, configure or the build. Every kept path must hold a file; a discarded member's name need only be printable ASCII without `\`. `keep` narrows the tree, not the license review: an archive holding implementation outside the component's tier still cannot be fetched and filtered ([source-dependencies.md](../docs/source-dependencies.md)) |
 | `patches` | Ordered `path` (relative to this directory, conventionally `patches/<id>/`) and `sha256`, applied exactly: git-style unified diffs of text files with no fuzz, renames, mode changes or binary hunks. Text before the first file and git's signature are skipped; any other line between files is an error |
 | `tree_sha256` | The prepared tree's digest: SHA-256 over one `<sha256> <x or -> <path>` line per file, sorted by path, where `x` marks an owner-executable file. Symbolic links, special files and empty trees are refused |
 | `depends` | Other components that must be added first |
@@ -90,8 +95,10 @@ output. So:
    D-017 category and tier. A decision entry is needed where AGENTS.md
    rule 1 calls for one.
 3. Add the entry and lock every option the project declares, turning off
-   tests, examples, installers and downloads. `mise run prepare` then
-   reports the tree digest to record. Review that tree before recording it.
+   tests, examples, installers and downloads. Where the build uses only part
+   of the archive, `archive.keep` limits the prepared tree to that part (and
+   the license files). `mise run prepare` then reports the tree digest to
+   record. Review that tree before recording it.
 4. Build and test every workstation preset.
 
 ## Local development overrides

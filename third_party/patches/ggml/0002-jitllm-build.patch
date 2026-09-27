@@ -1,0 +1,94 @@
+jitLLM's build of the GGML subset it uses (D-053, D-057, D-077): adds
+jitllm/CMakeLists.txt, which the source lock adds as the component's
+project. It compiles only the files it names, with GGML_JITLLM defined.
+
+diff --git a/jitllm/CMakeLists.txt b/jitllm/CMakeLists.txt
+new file mode 100644
+index 0000000..f5e9f37
+--- /dev/null
++++ b/jitllm/CMakeLists.txt
+@@ -0,0 +1,84 @@
++# SPDX-FileCopyrightText: 2026 jitLLM contributors
++# SPDX-License-Identifier: Apache-2.0
++
++# jitLLM's build of the GGML subset it uses (D-053, D-057, D-077;
++# docs/backend-proof.md). third_party/patches/ggml/ adds this file to the
++# pinned llama.cpp tree, and the source lock adds this directory. It compiles
++# only the files named here, never GGML's own CMake, its CPU backend, its
++# backend registry or ggml-cuda.cu: jitLLM owns dispatch and supplies the
++# few ggml-cuda.cu symbols the launchers need (src/kernels/ggml/).
++#
++#   jitllm_ggml_base  GGML's tensor, allocator and backend-buffer code, for
++#                     tensor descriptors over jitLLM memory. Every profile.
++#   jitllm_ggml_cuda  ggml-cuda operation launchers and their kernels, for
++#                     sm_121a. CUDA profiles only; elsewhere an empty
++#                     placeholder, so the lock's targets exist in every build.
++#
++# GGML_JITLLM selects the reviewed adaptations in the patches beside this
++# one. The flags reproduce the FP16 toolchain bridge's (P0,
++# docs/experiments/backend-proof-p0/): -O3, C11/C++17 with GNU extensions
++# for the host code, C++17 CUDA with -use_fast_math and -extended-lambda,
++# SASS for sm_121a only. Not reproduced: the bridge's GGML_CUDA_USE_GRAPHS
++# and flash-attention instance definitions, which no file here reads.
++cmake_minimum_required(VERSION 4.4.3)
++project(jitllm_ggml LANGUAGES C CXX)
++
++set(ggml "${CMAKE_CURRENT_SOURCE_DIR}/../ggml")
++# The bridge's -O3 replaces the build type's optimization level here.
++foreach(lang IN ITEMS C CXX CUDA)
++  foreach(config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
++    string(REGEX REPLACE "(^| )-O[0-9s]( |$)" " " CMAKE_${lang}_FLAGS_${config} "${CMAKE_${lang}_FLAGS_${config}}")
++  endforeach()
++endforeach()
++set(definitions GGML_JITLLM GGML_SCHED_MAX_COPIES=4 _GNU_SOURCE _XOPEN_SOURCE=600)
++
++add_library(jitllm_ggml_base STATIC
++  "${ggml}/src/ggml.c"
++  "${ggml}/src/ggml-alloc.c"
++  "${ggml}/src/ggml-backend.cpp"
++  "${ggml}/src/ggml-backend-meta.cpp"
++  "${ggml}/src/ggml-quants.c"
++  "${ggml}/src/ggml-threading.cpp")
++# ggml.c's version header, which GGML's CMake would generate: its version
++# (ggml/CMakeLists.txt) and the pinned commit.
++set(GGML_VERSION 0.24.0)
++set(GGML_BUILD_COMMIT b29c606e28a01b1bc8c1351026a0fa6e616bf6c4)
++configure_file("${ggml}/src/ggml-version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/ggml-version.h" @ONLY)
++target_include_directories(jitllm_ggml_base PUBLIC "${ggml}/include" "${ggml}/src"
++                           PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
++target_compile_definitions(jitllm_ggml_base PUBLIC ${definitions})
++target_compile_options(jitllm_ggml_base PRIVATE -O3)
++set_target_properties(jitllm_ggml_base PROPERTIES
++  C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
++  CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
++# ggml.c uses the math library; glibc provides threads.
++target_link_libraries(jitllm_ggml_base PUBLIC m)
++
++if(CMAKE_CUDA_COMPILER)
++  set(cuda "${ggml}/src/ggml-cuda")
++  set(instances "")
++  foreach(ncols RANGE 1 16)
++    list(APPEND instances "${cuda}/template-instances/mmf-instance-ncols_${ncols}.cu")
++  endforeach()
++  add_library(jitllm_ggml_cuda STATIC
++    "${cuda}/binbcast.cu"
++    "${cuda}/convert.cu"
++    "${cuda}/cpy.cu"
++    "${cuda}/getrows.cu"
++    "${cuda}/mmf.cu"
++    "${cuda}/mmid.cu"
++    "${cuda}/mmvf.cu"
++    "${cuda}/norm.cu"
++    "${cuda}/rope.cu"
++    "${cuda}/set-rows.cu"
++    "${cuda}/softmax.cu"
++    "${cuda}/unary.cu"
++    ${instances})
++  target_include_directories(jitllm_ggml_cuda PUBLIC "${cuda}")
++  target_link_libraries(jitllm_ggml_cuda PUBLIC jitllm_ggml_base)
++  target_compile_options(jitllm_ggml_cuda PRIVATE -O3 -use_fast_math -extended-lambda -compress-mode=size)
++  set_target_properties(jitllm_ggml_cuda PROPERTIES
++    CUDA_ARCHITECTURES 121a-real CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++else()
++  add_library(jitllm_ggml_cuda INTERFACE)
++endif()

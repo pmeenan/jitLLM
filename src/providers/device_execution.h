@@ -43,6 +43,12 @@ using FenceId = base::Id<FenceTag>;
 
 enum class FenceState : std::uint8_t { kPending, kComplete };
 
+// A stream's native handle, opaque to the core: only a kernel module built
+// for the provider's device interprets it (D-053).
+struct NativeStream {
+  void* handle = nullptr;
+};
+
 class DeviceExecution {
  public:
   DeviceExecution() = default;
@@ -59,6 +65,14 @@ class DeviceExecution {
   // with access), after everything queued on the stream before it.
   virtual std::expected<void, Failure> Copy(StreamId stream, std::uint64_t destination,
                                             std::uint64_t source, Bytes size) = 0;
+  // The stream's native handle, for a kernel implementation about to queue
+  // work on it (D-053). Like Copy, it notes that work is being queued, so
+  // the stream needs a fence recorded after that work, seen complete and
+  // released, before it can be destroyed. The handle is valid until the
+  // stream is destroyed and is used on the submission lane only. The CUDA
+  // provider also makes its context current on the calling thread, which
+  // is the context runtime-API launches bind to.
+  virtual std::expected<NativeStream, Failure> Submission(StreamId stream) = 0;
   // Makes the stream wait for a fence recorded on another stream.
   virtual std::expected<void, Failure> Wait(StreamId stream, FenceId fence) = 0;
 

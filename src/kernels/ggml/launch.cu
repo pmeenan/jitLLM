@@ -1,0 +1,216 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/bytes.h"
+#include "base/check.h"
+#include "common.cuh"
+#include "kernels/ggml/ggml_support.h"
+#include "kernels/ggml/launch.h"
+
+namespace jitllm::kernels::ggml {
+
+// GGML's scratch pool over the caller's workspace: a stack of 256-byte
+// aligned blocks. GGML frees a block when the host launcher that took it
+// returns, while its kernels may still run; reusing the offset is safe in
+// stream order, and the workspace itself outlives the launches (launch.h).
+// GGML uses what alloc returns without checking it, so Run bounds each
+// operation's scratch first, and a request past the bound is a broken
+// invariant, not an error.
+class WorkspacePool final : public ggml_cuda_pool {
+ public:
+  WorkspacePool(std::uint64_t base, std::uint64_t size) : base_(base), size_(size) {}
+
+  void* alloc(std::size_t size, std::size_t* actual_size) override {
+    const std::uint64_t offset = (top_ + kAlign - 1) / kAlign * kAlign;
+    base::Check(offset <= limit_ && size <= limit_ - offset,
+                "a GGML launcher drew more scratch than its operation's bound");
+    blocks_.push_back(Block{.offset = offset, .end = offset + size, .live = true});
+    top_ = offset + size;
+    peak_ = std::max(peak_, top_);
+    *actual_size = size;
+    return reinterpret_cast<void*>(base_ + offset);  // NOLINT(performance-no-int-to-ptr)
+  }
+
+  void free(void* ptr, std::size_t size) override {
+    const std::uint64_t offset = reinterpret_cast<std::uintptr_t>(ptr) - base_;
+    bool found = false;
+    for (Block& block : blocks_) {
+      if (block.live && block.offset == offset && block.end - block.offset == size) {
+        block.live = false;
+        found = true;
+        break;
+      }
+    }
+    base::Check(found, "GGML freed a block the pool did not hand out");
+    while (!blocks_.empty() && !blocks_.back().live) {
+      blocks_.pop_back();
+    }
+    top_ = blocks_.empty() ? 0 : blocks_.back().end;
+  }
+
+  // Bounds the next operation's scratch.
+  void Limit(std::uint64_t limit) {
+    base::Check(limit <= size_, "an operation's scratch bound fits the workspace");
+    limit_ = limit;
+  }
+  bool empty() const { return blocks_.empty(); }
+  std::uint64_t peak() const { return peak_; }
+
+ private:
+  static constexpr std::uint64_t kAlign = 256;
+  struct Block {
+    std::uint64_t offset = 0;
+    std::uint64_t end = 0;
+    bool live = false;
+  };
+
+  std::uint64_t base_;
+  std::uint64_t size_;
+  std::uint64_t limit_ = 0;
+  std::uint64_t top_ = 0;
+  std::uint64_t peak_ = 0;
+  std::vector<Block> blocks_;
+};
+
+namespace {
+
+std::unexpected<KernelFailure> Rejected(std::string detail) {
+  return std::unexpected(
+      KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
+}
+
+}  // namespace
+
+std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
+    int device, providers::DeviceExecution& execution, providers::StreamId stream,
+    Workspace workspace) {
+  if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
+    return Rejected("a launch context needs a device");
+  }
+  // Also makes the provider's context current, where the runtime binds.
+  auto native = execution.Submission(stream);
+  if (!native || native->handle == nullptr) {
+    return Rejected("the provider refused the stream" +
+                    (native ? std::string() : ": " + native.error().detail));
+  }
+  if (workspace.size.value() > 0 && (workspace.base == 0 || workspace.base % 256 != 0 ||
+                                     workspace.base + workspace.size.value() < workspace.base)) {
+    return Rejected("the workspace is not a 256-byte aligned device range");
+  }
+  // GGML's device table, read once for the process; its failures are
+  // recorded like a launcher's. So is any error still pending on this
+  // thread, which refuses the context too.
+  const ggml_cuda_device_info& info = ggml_cuda_info();
+  if (auto error = internal::TakeCudaError()) {
+    return std::unexpected(KernelFailure{
+        .error = KernelError::kRejected,
+        .detail = "a CUDA error reading the device table, or pending before it: " + *error});
+  }
+  if (device >= info.device_count || info.devices[device].warp_size == 0) {
+    return Rejected(std::format("GGML sees no device {}", device));
+  }
+  int current = -1;
+  if (cudaGetDevice(&current) != cudaSuccess || current != device) {
+    return Rejected(std::format("device {} is not current on this thread", device));
+  }
+  auto context = std::make_unique<ggml_backend_cuda_context>(device);
+  auto pool = std::make_unique<WorkspacePool>(workspace.base, workspace.size.value());
+  context->streams[device][0] = static_cast<cudaStream_t>(native->handle);
+  context->pools[device][0].reset(pool.get());
+  return std::unique_ptr<LaunchContext>(new LaunchContext(
+      device, execution, stream, *native, std::move(context), std::move(pool), workspace));
+}
+
+LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
+                             providers::StreamId stream, providers::NativeStream native,
+                             std::unique_ptr<ggml_backend_cuda_context> context,
+                             std::unique_ptr<WorkspacePool> pool, Workspace workspace)
+    : device_(device),
+      execution_(execution),
+      stream_(stream),
+      native_(native),
+      pool_(std::move(pool)),
+      context_(std::move(context)),
+      workspace_(workspace) {}
+
+LaunchContext::~LaunchContext() {
+  // Take back what was lent, so GGML's destructor finds nothing to destroy.
+  context_->streams[device_][0] = nullptr;
+  (void)context_->pools[device_][0].release();
+}
+
+std::expected<void, KernelFailure> LaunchContext::Begin(base::Bytes scratch) {
+  if (faulted_) {
+    return Rejected("the launch context faulted earlier; its stream awaits recovery");
+  }
+  if (scratch > workspace_.size) {
+    return Rejected(std::format("the operation needs {} bytes of scratch; the workspace has {}",
+                                scratch.value(), workspace_.size.value()));
+  }
+  // The run is queued work on the stream, which the provider must know of
+  // before any launch (launch.h).
+  auto native = execution_.Submission(stream_);
+  if (!native) {
+    if (native.error().error == providers::ProviderError::kUnknown) {
+      // A device fault: the stream's state is undetermined, so the context
+      // faults and waits for recovery like after a launch error.
+      faulted_ = true;
+      return std::unexpected(
+          KernelFailure{.error = KernelError::kUnknown,
+                        .detail = "the stream faulted: " + native.error().detail});
+    }
+    return Rejected("the provider refused the stream: " + native.error().detail);
+  }
+  base::Check(native->handle == native_.handle, "a stream keeps its native handle");
+  // GGML checks each launch with cudaGetLastError, so an error left by
+  // another runtime call on this thread would be taken for the launch's.
+  if (const cudaError_t stale = cudaGetLastError(); stale != cudaSuccess) {
+    faulted_ = true;
+    return std::unexpected(KernelFailure{
+        .error = KernelError::kUnknown,
+        .detail = std::string("a CUDA error before the launch: ") + cudaGetErrorString(stale)});
+  }
+  if (auto stray = internal::TakeCudaError()) {
+    // Recorded outside a run: nothing of ours is known to be at fault.
+    faulted_ = true;
+    return std::unexpected(KernelFailure{.error = KernelError::kUnknown,
+                                         .detail = "a CUDA error outside a launch: " + *stray});
+  }
+  pool_->Limit(scratch.value());
+  return {};
+}
+
+std::expected<void, KernelFailure> LaunchContext::End() {
+  base::Check(pool_->empty(), "GGML launchers return their scratch before they return");
+  // Some launchers queue kernels without checking the launch (MMF's), so
+  // the runtime's record, clear since Begin, is read too. Reading it
+  // clears it, so it is not taken for a later launch's; a sticky error
+  // stays.
+  const cudaError_t unchecked = cudaGetLastError();
+  auto error = internal::TakeCudaError();
+  if (!error && unchecked != cudaSuccess) {
+    error = std::string("an unchecked kernel launch failed: ") + cudaGetErrorString(unchecked);
+  }
+  if (error) {
+    faulted_ = true;
+    return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = *error});
+  }
+  return {};
+}
+
+base::Bytes LaunchContext::scratch_peak() const { return base::Bytes(pool_->peak()); }
+
+}  // namespace jitllm::kernels::ggml

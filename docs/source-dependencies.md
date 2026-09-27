@@ -40,9 +40,10 @@ points and preparation scripts, plus the SDK's exact-version check.
 This selects `NEW` behavior for `CMP0168` (no FetchContent sub-build),
 `CMP0169` (reject deprecated single-argument population) and `CMP0170`
 (reject missing source directories in declared fully disconnected use).
-Preparation uses long-form `FetchContent_Populate(name ...options...)` in
-script mode. That form ignores both disconnected flags and `CMP0170`;
-only the explicit preparation step may acquire remote source. Under
+Preparation unpacked archives with long-form `FetchContent_Populate(name
+...options...)` in script mode until D-078 moved unpacking to the Python
+parser that checks the archive; configure and build still never acquire
+source. Under
 `CMP0168=NEW`, `DOWNLOAD_DIR` is ignored too: the setup layer owns the
 persistent archive cache and supplies verified local archives for reuse.
 See the pinned series' [FetchContent documentation](https://cmake.org/cmake/help/v4.4/module/FetchContent.html)
@@ -84,6 +85,12 @@ second full upstream tree in Git. Optional implementation payloads, including
 patches carrying their source, belong in separately selected bundles rather
 than the core checkout. This keeps D-017's no-fetch rule achievable.
 
+D-077 amends this for GGML, the first adapted source: its pinned archive,
+narrowed by `archive.keep` to the paths the build uses, with reviewed
+patches and a jitLLM build file added by patch. The archive's hash proves
+the origin bytes and the patches are the local changes, so nothing is
+vendored into Git.
+
 GGML and EXL3 reference revisions in D-051/D-052 are candidate origins, not
 an instruction to import their whole repositories or runtimes. The
 [licensing inventory](licensing.md) still blocks the untraced tokenizer
@@ -101,9 +108,9 @@ nor changes D-017's allowlist.
    and then filtered for the copyleft-disabled build; use an audited curated
    source bundle or permitted vendored units instead.
 2. **Prepare explicitly.** M1's mise setup task provisions the SDK and
-   prepares the selected sources as separate steps. Use FetchContent's
-   supported script-mode population with local archives or HTTPS URLs,
-   SHA-256 verification and TLS verification enabled. Do not execute an
+   prepares the selected sources as separate steps. Fetch local archives
+   or HTTPS URLs with SHA-256 and TLS verification, and unpack with the
+   parser that checked the archive (D-078). Do not execute an
    upstream build during acquisition. Keep downloaded archives in a
    persistent cache outside the checkout; create patched working sources in
    an isolated build area, never by modifying a shared cache in place.

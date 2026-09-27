@@ -295,6 +295,18 @@ two approaches and records the choice:
   provide. The launcher keeps upstream's launch-parameter selection (D-013)
   or records the difference in implementation identity.
 
+As built in P1 (D-077), K-C needs no destructor or device-flag patch.
+jitLLM never compiles `ggml-cuda.cu`: it defines the five symbols the
+launchers take from it, among them the device table, and the context
+destructor, in `src/kernels/ggml/ggml_support.cu`. One patch drops
+`ggml_cuda_error`'s `[[noreturn]]` so that errors propagate. Descriptors
+carry no buffer, since the selected launchers never read one; a launcher
+that does needs a wrapper buffer. Matrix multiplication does not reuse
+GGML's `static` routing: each kernel family (MMVF, MMF, later cuBLAS) is
+its own implementation, and it accepts only operands that upstream's
+selection would route to it. The cuBLAS path, `static` too, will be a
+recorded jitLLM copy.
+
 Either way, operation scratch must fit declared workspace (BP-A1/A2).
 Library handles and unavoidable driver/library allocations are separately
 bounded and charged; supplying a cuBLAS workspace does not account for all

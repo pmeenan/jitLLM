@@ -129,6 +129,17 @@ TEST_F(CudaExecutionFailureTest, ARefusedContextChangeDoesNotForgetTheFence) {
   EXPECT_TRUE(execution_->DestroyStream(stream_).has_value());
 }
 
+TEST_F(CudaExecutionFailureTest, ASubmissionHandleIsTheStreamAndCountsAsQueuedWork) {
+  driver.current = CUDA_ERROR_INVALID_CONTEXT;
+  EXPECT_EQ(execution_->Submission(stream_).error().error, ProviderError::kFailed);
+  driver.current = CUDA_SUCCESS;
+  EXPECT_EQ(execution_->Submission(stream_).value().handle,
+            reinterpret_cast<void*>(2));  // NOLINT(performance-no-int-to-ptr)
+  EXPECT_EQ(execution_->DestroyStream(stream_).error().error, ProviderError::kInvalid);
+  EXPECT_TRUE(execution_->Release(CompleteFence()).has_value());
+  EXPECT_TRUE(execution_->DestroyStream(stream_).has_value());
+}
+
 TEST_F(CudaExecutionFailureTest, AnUnknownEventDestructionQuarantinesItsHandle) {
   const FenceId fence = CompleteFence();
   driver.destroy_event = CUDA_ERROR_UNKNOWN;

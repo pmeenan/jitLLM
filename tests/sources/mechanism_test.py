@@ -12,7 +12,8 @@ exclusion of an optional module (with generated output) that is never
 fetched in the core profile; missing, changed or modified inputs rejected
 before third-party code runs; a lock change giving a new tree and outputs;
 switching a build from the optional profile back to core without reusing
-its payloads; and undeclared downloads, package lookups, system libraries,
+its payloads; an archive cut down to its `archive.keep` paths, whose
+discarded names could not be prepared; and undeclared downloads, package lookups, system libraries,
 source overrides and dependency providers failing the build or its checks.
 Every fixture is jitLLM-authored; the optional module's "copyleft" license
 is a label in the fixture lock, not a real dependency.
@@ -178,6 +179,37 @@ BAD_ARCHIVE = {
         add_library(fixture_bad_archive INTERFACE)
         """,
 }
+KEEP = {
+    # archive.keep holds the build and license; the rest, with names CMake's
+    # lists cannot carry and a path sharing a kept one's prefix, is dropped.
+    "CMakeLists.txt": """
+        cmake_minimum_required(VERSION 4.4.3)
+        project(keep_lib LANGUAGES CXX)
+        add_library(fixture_keep STATIC src/keep.cc)
+        """,
+    "LICENSE": """
+        fixture license text
+        """,
+    "src/keep.cc": """
+        #include "added.h"
+        int fixture_keep() { return FIXTURE_KEEP_ADDED; }
+        """,
+    "src-extra/dropped.cc": """
+        #error not kept
+        """,
+    "web/(group)/[id]/x.txt": """
+        dropped
+        """,
+}
+KEEP_PATHS = ["CMakeLists.txt", "LICENSE", "src"]
+KEEP_PATCH = """\
+diff --git a/src/added.h b/src/added.h
+new file mode 100644
+--- /dev/null
++++ b/src/added.h
+@@ -0,0 +1 @@
++#define FIXTURE_KEEP_ADDED 4
+"""
 PROJECT = {
     "CMakeLists.txt": """
         cmake_minimum_required(VERSION 4.4.3)
@@ -199,6 +231,9 @@ PROJECT = {
         endif()
         if("bad-exceptions" IN_LIST JITLLM_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_bad_exceptions)
+        endif()
+        if("keep-subset" IN_LIST JITLLM_MODULES)
+          target_link_libraries(fixture_app PRIVATE fixture_keep)
         endif()
         jitllm_sources_finalize()
         """,
@@ -271,7 +306,6 @@ class Fixture:
         for d in (self.archives, self.markers, self.lock_dir / "patches"):
             d.mkdir(parents=True)
         write_tree(self.project, PROJECT)
-        (self.lock_dir / "patches" / "core-lib.patch").write_text(CORE_PATCH)
         self.data = {"schema": 1, "modules": {
             "fixture-optional": {"description": "a synthetic optional module with generated output"},
             "bad-fetch": {"description": "tries an undeclared FetchContent download"},
@@ -279,6 +313,7 @@ class Fixture:
             "bad-link": {"description": "links a library from outside the closure"},
             "bad-exceptions": {"description": "turns C++ exceptions back on for one file"},
             "bad-archive": {"description": "an archive with a symbolic link member"},
+            "keep-subset": {"description": "an archive of which archive.keep prepares a part"},
         }, "components": {}}
         self.add("core-lib", "1", CORE_V1, tier="core", options=CORE_OPTIONS, patches=[CORE_PATCH])
         self.add("opt-lib", "1", OPTIONAL, module="fixture-optional", depends=["core-lib"])
@@ -288,23 +323,30 @@ class Fixture:
         self.add("bad-exceptions", "1", BAD_EXCEPTIONS, module="bad-exceptions")
         self.add("bad-archive", "1", BAD_ARCHIVE, module="bad-archive",
                  links={"escape": "../../../../outside", "CMakeLists-link.txt": "/etc/hostname"})
+        self.add("keep-lib", "1", KEEP, module="keep-subset", patches=[KEEP_PATCH], keep=KEEP_PATHS)
         self.save()
 
     def add(self, cid, version, files, *, tier="optional", module=None, depends=(), options=None,
-            patches=(), links=None) -> None:
+            patches=(), links=None, keep=None) -> None:
+        """patches holds at most one patch, recorded as patches/<cid>.patch."""
         archive = self.archives / f"{cid}-{version}.tar.gz"
         make_archive(archive, f"{cid}-{version}", files, links)
         data = archive.read_bytes()
+        for patch in patches:
+            (self.lock_dir / "patches" / f"{cid}.patch").write_text(patch)
+        kept = {name: text for name, text in files.items()
+                if keep is None or any(name == k or name.startswith(k + "/") for k in keep)}
         self.data["components"][cid] = {
             "version": version, "kind": "archive", "category": "implementation", "tier": tier,
             **({"module": module} if module else {}),
             "use": "product", "machine": "target",
             "upstream": {"repository": "https://example.invalid/fixture", "commit": "0" * 40},
             "archive": {"file": archive.name, "urls": [archive.as_uri()],
-                        "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)},
-            "patches": [{"path": "patches/core-lib.patch",
-                         "sha256": hashlib.sha256(CORE_PATCH.encode()).hexdigest()}] if patches else [],
-            "tree_sha256": expected_tree(self.work, files, list(patches)),
+                        "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+                        **({"keep": keep} if keep else {})},
+            "patches": [{"path": f"patches/{cid}.patch",
+                         "sha256": hashlib.sha256(patch.encode()).hexdigest()} for patch in patches],
+            "tree_sha256": expected_tree(self.work, kept, list(patches)),
             "depends": list(depends),
             "cmake": {"subdirectory": "", "options": options or {}, "platform_packages": [],
                       "targets": []},
@@ -314,7 +356,8 @@ class Fixture:
         }
         targets = {"core-lib": "fixture_core", "opt-lib": "fixture_opt", "bad-fetch": "fixture_bad_fetch",
                    "bad-find": "fixture_bad_find", "bad-link": "fixture_bad_link",
-                   "bad-exceptions": "fixture_bad_exceptions", "bad-archive": "fixture_bad_archive"}
+                   "bad-exceptions": "fixture_bad_exceptions", "bad-archive": "fixture_bad_archive",
+                   "keep-lib": "fixture_keep"}
         self.data["components"][cid]["cmake"]["targets"] = [targets[cid]]
 
     def save(self, data: dict | None = None, path: pathlib.Path | None = None) -> pathlib.Path:
@@ -337,7 +380,7 @@ def run(cmd: list, *, ok: bool, expect: str | None = None, env: dict | None = No
 def prepare(fx: Fixture, dest: pathlib.Path, cache: pathlib.Path, *, modules: str = "", lock=None, ok=True,
             expect=None) -> str:
     cmd = [sys.executable, TOOLS / "prepare-sources", "--lock", lock or fx.lock, "--dest", dest,
-           "--cache", cache, "--cmake", ARGS.cmake]
+           "--cache", cache]
     if modules:
         cmd += ["--modules", modules]
     return run(cmd, ok=ok, expect=expect)
@@ -610,6 +653,24 @@ def main() -> int:
     prepare(fx, work / "sources-links", cache, modules="bad-archive", ok=False, expect="is not a file or directory")
     check(not outside.exists() and not any((work / "sources-links").glob("*archive*")),
           "extraction wrote through a link member")
+
+    step("archive.keep prepares only the kept paths; names it discards never reach the tree")
+    keep_sources = work / "sources-keep"
+    keep_dir = keep_sources / f"keep-lib-{comps['keep-lib']['tree_sha256'][:16]}"
+    data = json.loads(json.dumps(fx.data))
+    del data["components"]["keep-lib"]["archive"]["keep"]
+    variant = fx.save(data, fx.lock_dir / "no-keep.lock.json")
+    prepare(fx, keep_sources, cache, modules="keep-subset", lock=variant, ok=False,
+            expect="has an unsafe or unsupported path")
+    check(not keep_dir.exists(), "the whole archive was prepared without archive.keep")
+    prepare(fx, keep_sources, cache, modules="keep-subset")
+    check(sorted(p.relative_to(keep_dir).as_posix() for p in keep_dir.rglob("*") if not p.is_dir())
+          == ["CMakeLists.txt", "LICENSE", "src/added.h", "src/keep.cc"], f"prepared {list(keep_dir.rglob('*'))}")
+    check(srclib.tree_digest(keep_dir) == comps["keep-lib"]["tree_sha256"], "the kept tree has the wrong digest")
+    bk = work / "build-keep"
+    configure(fx, bk, keep_sources, modules="keep-subset")
+    build(bk)
+    check(files_named(bk, "libfixture_keep.a"), "the kept component was not built")
 
     step("unrecorded source overrides and dependency providers are rejected; recorded ones are unofficial")
     configure(fx, work / "build-fc", sources, extra=[f"-DFETCHCONTENT_SOURCE_DIR_CORE-LIB={core_dir}"],

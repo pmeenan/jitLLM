@@ -89,3 +89,22 @@ if(JITLLM_CUDA)
   jitllm_gtest(cuda_device_memory_test TEST_PREFIX unit. PROPERTIES LABELS gpu
                ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
+
+# GGML tensor descriptors over jitLLM memory, in every profile, and GGML's
+# CUDA launchers under jitLLM's launch context on a real device (label
+# `gpu`, so only on a Spark).
+add_executable(ggml_tensors_test ggml_tensors_test.cc)
+target_link_libraries(ggml_tensors_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(ggml_tensors_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(ggml_validate_test ggml_validate_test.cc)
+target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+if(JITLLM_CUDA)
+  add_executable(ggml_kernels_test ggml_kernels_test.cc)
+  target_include_directories(ggml_kernels_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_kernels_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gtest(ggml_kernels_test TEST_PREFIX unit. PROPERTIES LABELS gpu)
+endif()

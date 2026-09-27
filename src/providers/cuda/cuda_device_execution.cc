@@ -111,6 +111,17 @@ class CudaDeviceExecution final : public DeviceExecution {
     return {};
   }
 
+  std::expected<NativeStream, Failure> Submission(StreamId stream) override {
+    auto handle = Queue(stream);
+    if (!handle) {
+      return std::unexpected(handle.error());
+    }
+    if (auto current = Current(); !current) {
+      return std::unexpected(current.error());
+    }
+    return NativeStream{.handle = *handle};
+  }
+
   std::expected<void, Failure> Wait(StreamId stream, FenceId fence) override {
     CUevent event = nullptr;
     {

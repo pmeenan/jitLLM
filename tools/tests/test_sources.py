@@ -6,6 +6,7 @@ tests/sources/ checks the same mechanism end to end with the SDK's CMake.
 """
 
 import contextlib
+import gzip
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -73,7 +74,7 @@ class CheckedInLock(unittest.TestCase):
                 self.assertTrue(url.startswith("https://"), f"{cid}: {url}")
 
     def test_core_selection(self):
-        self.assertEqual(srclib.select(srclib.load_lock(), []), ["googletest", "tomlplusplus"])
+        self.assertEqual(srclib.select(srclib.load_lock(), []), ["ggml", "googletest", "tomlplusplus"])
 
     def test_mise_tasks(self):
         tasks = tomllib.loads((REPO / "mise.toml").read_text())["tasks"]
@@ -172,6 +173,29 @@ class Validation(unittest.TestCase):
                 self.assertIn(text, self.problems(lock({"x": comp})))
         comp = component(cmake=dict(component()["cmake"], options={"gtest_build_tests": "OFF", "X_LEVEL": "3.1"}))
         self.assertEqual(self.problems(lock({"x": comp})), "")
+
+    def test_archive_keep(self):
+        def keep(value):
+            return lock({"x": component(archive=dict(component()["archive"], keep=value))})
+
+        self.assertEqual(self.problems(keep(["LICENSE", "ggml", "include/x.h"])), "")
+        for value, text in (
+                ("ggml", "must list relative paths"),
+                ([], "must list relative paths"),
+                ([1], "must list relative paths"),
+                ([""], "must list relative paths"),
+                (["/ggml"], "must list relative paths"),
+                (["../ggml"], "must list relative paths"),
+                (["ggml/../x"], "must list relative paths"),
+                (["ggml/"], "must list relative paths"),
+                (["./ggml"], "must list relative paths"),
+                (["web/[id]"], "must list relative paths"),
+                (["ggml", "LICENSE"], "must be sorted, without duplicates"),
+                (["ggml", "ggml"], "must be sorted, without duplicates"),
+                (["ggml", "ggml/src"], "entry 'ggml/src' lies inside 'ggml'")):
+            with self.subTest(value=value):
+                self.assertIn(text, self.problems(keep(value)))
+        self.assertEqual(self.problems(keep(["ggml", "ggml-extra"])), "")  # a shared prefix is not nesting
 
     def test_duplicate_json_keys_are_rejected(self):
         root = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -417,26 +441,164 @@ class Archives(unittest.TestCase):
                 (self.member("x-1.0/escape", tarfile.SYMTYPE, "../../outside"), "not a file or directory"),
                 (self.member("x-1.0/hard", tarfile.LNKTYPE, "x-1.0/file.txt"), "not a file or directory"),
                 (self.member("x-1.0/pipe", tarfile.FIFOTYPE), "not a file or directory"),
+                # libarchive extracts a regular-file member with a link name as a hard link.
+                (self.member("x-1.0/linked", tarfile.REGTYPE, "x-1.0/file.txt"), "not a file or directory"),
                 (self.member("../x-1.0/up.txt", tarfile.REGTYPE), "unsafe or unsupported path"),
                 (self.member("/abs.txt", tarfile.REGTYPE), "unsafe or unsupported path"),
                 (self.member("x-1.0/semi;colon", tarfile.REGTYPE), "unsafe or unsupported path")):
             with self.subTest(name=member.name), self.assertRaisesRegex(SourceError, text):
                 srclib.check_archive(self.tar(member))
 
-    def test_zip_links_are_refused(self):
+    def test_zip_archives_are_refused(self):
         path = self.tmp / "a.zip"
         with zipfile.ZipFile(path, "w") as z:
             z.writestr("x-1.0/file.txt", "x\n")
-            link = zipfile.ZipInfo("x-1.0/link")
-            link.external_attr = (0o120777 << 16)
-            z.writestr(link, "../../outside")
+        with self.assertRaisesRegex(SourceError, "is not a tar archive"):
+            srclib.check_archive(path)
+
+    def test_duplicate_paths_and_members_inside_files_are_refused(self):
+        data = tarfile.TarInfo("x-1.0/file.txt")
+        with self.assertRaisesRegex(SourceError, "same path"):
+            srclib.check_archive(self.tar(data))  # self.tar adds x-1.0/file.txt too
+        with self.assertRaisesRegex(SourceError, "inside a file member"):
+            srclib.check_archive(self.tar(self.member("x-1.0/file.txt/inner", tarfile.REGTYPE)))
+
+    def archive(self, kind: str, files: list[str], specials: tuple[str, ...] = ()) -> pathlib.Path:
+        """A tar archive of empty files, plus symbolic links at specials."""
+        path = self.tmp / f"k.{kind}"
+        path.unlink(missing_ok=True)
+        with tarfile.open(path, "w:gz") as tar:
+            for name in files:
+                tar.addfile(tarfile.TarInfo(name))
+            for name in specials:
+                tar.addfile(self.member(name, tarfile.SYMTYPE, "../../outside"))
+        return path
+
+    KEPT = ["x-1.0/LICENSE", "x-1.0/ggml/src/a.c", "x-1.0/ggml/include/a.h"]
+    WEB = "x-1.0/tools/ui/src/routes/(chat)/chat/[id]/+page.svelte"
+
+    def test_keep_allows_unsupported_names_only_where_discarded(self):
+        for kind in ("tar.gz",):
+            with self.subTest(kind=kind):
+                path = self.archive(kind, self.KEPT + [self.WEB, "x-1.0/web dir/@{x}!"])
+                srclib.check_archive(path, ["LICENSE", "ggml"])
+                with self.assertRaisesRegex(SourceError, "unsafe or unsupported path"):
+                    srclib.check_archive(path)
+                with self.assertRaisesRegex(SourceError, r"member '.*\[id\].*' has an unsafe"):
+                    srclib.check_archive(path, ["LICENSE", "ggml", "tools"])
+                path = self.archive(kind, self.KEPT + ["x-1.0/ggml/[id].c"])
+                with self.assertRaisesRegex(SourceError, "unsafe or unsupported path"):
+                    srclib.check_archive(path, ["ggml"])
+
+    def test_keep_still_refuses_links_and_unsafe_discarded_names(self):
+        for kind in ("tar.gz",):
+            for files, specials, text in (
+                    (self.KEPT, ("x-1.0/tools/link",), "not a file or directory"),
+                    (self.KEPT + ["x-1.0/tools/back\\slash"], (), "unsafe or unsupported path"),
+                    (self.KEPT + ["x-1.0/tools/new\nline"], (), "unsafe or unsupported path"),
+                    (self.KEPT + ["x-1.0/tools/caf\u00e9"], (), "unsafe or unsupported path"),
+                    (self.KEPT + ["x-1.0/tools/../../up"], (), "unsafe or unsupported path"),
+                    (self.KEPT + ["/abs"], (), "unsafe or unsupported path")):
+                with self.subTest(kind=kind, files=files, specials=specials):
+                    with self.assertRaisesRegex(SourceError, text):
+                        srclib.check_archive(self.archive(kind, files, specials), ["LICENSE", "ggml"])
         with self.assertRaisesRegex(SourceError, "not a file or directory"):
+            srclib.check_archive(self.tar(self.member("x-1.0/tools/fifo", tarfile.FIFOTYPE)), ["file.txt"])
+
+    def test_every_kept_path_must_name_a_file(self):
+        for kind in ("tar.gz",):
+            with self.subTest(kind=kind):
+                path = self.archive(kind, self.KEPT)
+                for keep, missing in ((["ggml", "src"], "src"), (["LICENSE/x"], "LICENSE/x"), (["ggm"], "ggm"),
+                                      (["x-1.0"], "x-1.0")):
+                    with self.assertRaisesRegex(SourceError, f"archive.keep entry '{missing}' names no file"):
+                        srclib.check_archive(path, keep)
+                srclib.check_archive(path, ["ggml/include/a.h", "ggml/src"])
+        path = self.tar(self.member("x-1.0/empty", tarfile.DIRTYPE))
+        with self.assertRaisesRegex(SourceError, "'empty' names no file"):
+            srclib.check_archive(path, ["empty"])
+
+    def test_keep_paths_are_relative_to_the_tree_population_makes(self):
+        # A single top-level directory is stripped (a top-level .DS_Store is
+        # dropped with it); anything else unpacks as it is.
+        srclib.check_archive(self.archive("tar.gz", self.KEPT + [".DS_Store"]), ["ggml"])
+        path = self.archive("tar.gz", ["LICENSE", "ggml/a.c", "web/[id]/x"])
+        srclib.check_archive(path, ["LICENSE", "ggml"])
+        path = self.archive("tar.gz", ["x-1.0/ggml/a.c", "y-1.0/web/[id]/x"])
+        srclib.check_archive(path, ["x-1.0/ggml"])
+        with self.assertRaisesRegex(SourceError, "'ggml' names no file"):
+            srclib.check_archive(path, ["ggml"])
+
+    def test_an_unpacked_tree_holds_only_plain_files_and_directories(self):
+        root = self.tmp / "unpacked"
+        (root / "d").mkdir(parents=True)
+        (root / "d" / "a.txt").write_text("a")
+        srclib.check_unpacked(root)
+        os.link(root / "d" / "a.txt", root / "hard.txt")
+        with self.assertRaisesRegex(SourceError, "hard.txt"):
+            srclib.check_unpacked(root)
+        (root / "hard.txt").unlink()
+        (root / "d" / "link").symlink_to(self.tmp)
+        with self.assertRaisesRegex(SourceError, "link"):
+            srclib.check_unpacked(root)
+
+    def test_unpacking_writes_only_kept_paths_from_the_checked_members(self):
+        path = self.archive("tar.gz", self.KEPT + [self.WEB, "x-1.0/tools/other.txt"])
+        dest = self.tmp / "unpacked"
+        srclib.unpack_archive(path, dest, ["LICENSE", "ggml/src"])
+        self.assertEqual(sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")),
+                         ["LICENSE", "ggml", "ggml/src", "ggml/src/a.c"])
+        with self.assertRaisesRegex(SourceError, "exists"):
+            srclib.unpack_archive(path, dest, ["LICENSE"])
+        # Without keep, everything under the stripped top directory.
+        whole = self.tmp / "whole"
+        srclib.unpack_archive(self.archive("tar.gz", self.KEPT), whole)
+        self.assertTrue((whole / "ggml" / "include" / "a.h").is_file())
+        # What the check refuses is never written.
+        refused = self.tmp / "refused"
+        with self.assertRaisesRegex(SourceError, "not a file or directory"):
+            srclib.unpack_archive(self.archive("tar.gz", self.KEPT, ("x-1.0/tools/link",)), refused)
+        self.assertEqual(list(refused.iterdir()), [])
+
+    def test_truncated_sparse_and_timeless_members_are_refused(self):
+        # tarfile ends an archive at the first unreadable header; the rest
+        # would silently go missing.
+        whole = self.archive("tar.gz", self.KEPT)
+        data = gzip.decompress(whole.read_bytes())
+        cut = self.tmp / "cut.tar"
+        cut.write_bytes(data[:512 * 3])
+        with self.assertRaisesRegex(SourceError, "does not end"):
+            srclib.check_archive(cut)
+        cut.write_bytes(data[:512 * 3] + bytes(512))  # one zero block, not two
+        with self.assertRaisesRegex(SourceError, "does not end"):
+            srclib.check_archive(cut)
+        bad = bytearray(data)
+        bad[512 + 148:512 + 156] = b"0000000\0"  # member 2's checksum: tarfile stops there
+        cut.write_bytes(bytes(bad))
+        with self.assertRaisesRegex(SourceError, "data or excess padding"):
+            srclib.check_archive(cut)
+        broken = self.tmp / "broken.tar.gz"
+        broken.write_bytes(whole.read_bytes()[:-4])  # the gzip trailer cut off
+        with self.assertRaisesRegex(SourceError, "cannot read the archive"):
+            srclib.check_archive(broken)
+        padded = self.tmp / "padded.tar"
+        padded.write_bytes(data + bytes(17 << 20))
+        with self.assertRaisesRegex(SourceError, "excess padding"):
+            srclib.check_archive(padded)
+        sparse = tarfile.TarInfo("x-1.0/sparse")
+        sparse.pax_headers = {"GNU.sparse.size": str(2**40), "GNU.sparse.map": "0,0"}
+        with self.assertRaisesRegex(SourceError, "not a file or directory"):
+            srclib.check_archive(self.tar(sparse))
+        timeless = tarfile.TarInfo("x-1.0/timeless")
+        timeless.pax_headers = {"mtime": "1e400"}
+        path = self.tar(timeless)
+        with self.assertRaisesRegex(SourceError, "modification time"):
             srclib.check_archive(path)
 
     def test_unreadable_archives_are_refused(self):
         path = self.tmp / "junk.tar.gz"
         path.write_bytes(b"not an archive")
-        with self.assertRaisesRegex(SourceError, "cannot read the archive"):
+        with self.assertRaisesRegex(SourceError, "is not a tar"):
             srclib.check_archive(path)
 
 
@@ -487,87 +649,6 @@ class PrepareSources(unittest.TestCase):
         with self.assertRaisesRegex(SourceError, "was modified"):
             prepare_sources.check_prepared(tree, "x", comp)
 
-    def test_termination_during_spawn_still_reaps_the_extractor(self):
-        root = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
-        processes = []
-        popen = subprocess.Popen
-
-        def interrupted_spawn(*args, **kwargs):
-            proc = popen(*args, **kwargs)
-            processes.append(proc)
-            prepare_sources._stop(signal.SIGTERM, None)
-            return proc
-
-        try:
-            with mock.patch.object(prepare_sources.subprocess, "Popen", side_effect=interrupted_spawn), \
-                    mock.patch.object(prepare_sources.signal, "signal"), self.assertRaises(SystemExit) as stopped:
-                prepare_sources.run_extractor([sys.executable, "-c", "import time; time.sleep(60)"],
-                                              cwd=root, env={})
-            self.assertEqual(stopped.exception.code, 128 + signal.SIGTERM)
-            self.assertEqual(len(processes), 1)
-            self.assertEqual(processes[0].returncode, -signal.SIGTERM)
-            self.assertFalse(prepare_sources._spawning_extractor)
-            self.assertIsNone(prepare_sources._pending_stop)
-        finally:
-            for proc in processes:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.communicate(timeout=10)
-
-    def test_termination_retires_extractor_children_before_removing_staging(self):
-        root = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
-        started, stopped = root / "worker.pid", root / "worker.stopped"
-        extractor_pid = root / "extractor.pid"
-        worker = root / "worker.py"
-        worker.write_text(
-            "import os, pathlib, signal, sys, time\n"
-            "def stop(signum, frame):\n"
-            f"    pathlib.Path({str(stopped)!r}).write_text('stopped')\n"
-            "    sys.exit(0)\n"
-            "signal.signal(signal.SIGTERM, stop)\n"
-            f"pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
-            "time.sleep(60)\n")
-        extractor = root / "cmake"
-        extractor.write_text(
-            f"#!{sys.executable}\nimport os, pathlib, subprocess, sys\n"
-            f"pathlib.Path({str(extractor_pid)!r}).write_text(str(os.getpid()))\n"
-            f"subprocess.run([sys.executable, {str(worker)!r}], check=True)\n")
-        extractor.chmod(0o755)
-        archive = root / "archive.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            data = b"x\n"
-            info = tarfile.TarInfo("x-1.0/file.txt")
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-        path = root / "sources.lock.json"
-        path.write_text(json.dumps(lock({"x": component(archive={
-            "file": archive.name, "urls": [archive.as_uri()], "size": archive.stat().st_size,
-            "sha256": srclib.sha256_file(archive)})})))
-        dest = root / "sources"
-        proc = subprocess.Popen([sys.executable, str(TOOLS / "prepare-sources"), "--lock", str(path),
-                                 "--dest", str(dest), "--cache", str(root / "cache"), "--cmake", str(extractor)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        retired = False
-        try:
-            deadline = time.monotonic() + 10
-            while not started.exists() and proc.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(started.exists(), "extractor worker did not start")
-            proc.send_signal(signal.SIGTERM)
-            stdout, stderr = proc.communicate(timeout=10)
-            self.assertEqual(proc.returncode, 128 + signal.SIGTERM, stdout + stderr)
-            self.assertTrue(stopped.exists(), "extractor child survived termination")
-            self.assertEqual(list(dest.glob(".staging-*")), [])
-            retired = True
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            if not retired:
-                for pid_file in (started, extractor_pid):
-                    if pid_file.exists():
-                        with contextlib.suppress(ProcessLookupError):
-                            os.kill(int(pid_file.read_text()), signal.SIGKILL)
-            proc.communicate(timeout=10)
 
 
 class Setup(unittest.TestCase):

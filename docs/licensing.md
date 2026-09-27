@@ -52,7 +52,11 @@ a test fails when any of them lacks a record. Third-party source code is
 recorded in the [source lock](../third_party/README.md) instead: GoogleTest
 links into tests alone, and toml++ (MIT, D-073) into the shipped binaries,
 whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
-from its UTF-8 decoder.
+from its UTF-8 decoder. GGML (MIT, D-077) links so far into the backend
+proof's tests only; a shipped binary that links it carries its MIT text
+and the YaRN attribution from its RoPE kernel, and jitLLM's
+`src/kernels/ggml/ggml_support.cu`, adapted from GGML, keeps GGML's notice
+in its header.
 
 | Unit (version) | Category | License | In a packaged binary |
 | --- | --- | --- | --- |

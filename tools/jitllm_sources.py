@@ -16,16 +16,18 @@ import contextlib
 import hashlib
 import http.client
 import json
+import lzma
 import os
 import pathlib
 import re
+import shutil
 import stat
 import tarfile
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
+import zlib
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 LOCK = REPO / "third_party" / "sources.lock.json"
@@ -55,6 +57,8 @@ _RESERVED_OPTION = re.compile(r"^(_|cmake_|jitllm_|fetchcontent_)|^build_shared_
 _CMAKE_PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9_.+-]*$")
 _TARGET = re.compile(r"^[A-Za-z0-9_.+-]+(::[A-Za-z0-9_.+-]+)?$")
 _OPTION_VALUE = re.compile(r"^[A-Za-z0-9_.+-]*$")  # plain words, never paths
+# A name archive.keep discards is never built from, but extraction still writes it.
+_DISCARDED_NAME = re.compile(r"^[\x20-\x5b\x5d-\x7e]+$")  # printable ASCII but '\\'
 
 
 class SourceError(Exception):
@@ -108,6 +112,21 @@ def _relative_path(value: object, *, root: bool = False) -> bool:
     path = pathlib.PurePosixPath(value)
     return (not path.is_absolute() and ".." not in path.parts
             and (root or bool(path.parts)) and all(_TREE_NAME.fullmatch(p) for p in path.parts))
+
+
+def _within(path: str, base: str) -> bool:
+    """True when the relative path is base or lies under it."""
+    return path == base or path.startswith(base + "/")
+
+
+def _keep_problems(where: str, keep: object) -> list[str]:
+    if (not isinstance(keep, list) or not keep
+            or not all(_relative_path(k) and pathlib.PurePosixPath(k).as_posix() == k for k in keep)):
+        return [f"{where}: archive.keep must list relative paths in the unpacked tree"]
+    if keep != sorted(set(keep)):
+        return [f"{where}: archive.keep must be sorted, without duplicates"]
+    return [f"{where}: archive.keep entry {inner!r} lies inside {outer!r}"
+            for inner in keep for outer in keep if inner != outer and _within(inner, outer)]
 
 
 def _patch_file_problems(cid: str, patches: list[dict], base: pathlib.Path) -> list[str]:
@@ -235,6 +254,8 @@ def validate_lock(lock: object, base: pathlib.Path, *, check_patch_files: bool =
                         valid = False
                     if not valid:
                         problems.append(f"{where}: {url!r} is not an https:// (or local file://) URL")
+            if "keep" in archive:
+                problems += _keep_problems(where, archive["keep"])
         if not isinstance(comp.get("tree_sha256"), str) or not _SHA256.fullmatch(comp["tree_sha256"]):
             problems.append(f"{where}: tree_sha256 must be the prepared tree's digest")
         patches = comp.get("patches")
@@ -554,34 +575,150 @@ def apply_patch(root: pathlib.Path, text: str) -> None:
 
 # Archives ------------------------------------------------------------------------------
 
-def check_archive(path: pathlib.Path) -> None:
-    """Refuses an archive with anything but plain files and directories at safe paths.
+def _archive_root(members: list[tuple[str, tuple[str, ...], bool, bool]]) -> str | None:
+    """The top-level directory population strips, if any.
 
-    Runs before extraction: a hash-matched archive is reviewed bytes, but a
-    link member would let extraction write outside the staging directory
-    before the tree digest could reject it.
+    Mirrors ExternalProject's extractfile.cmake.in, which FetchContent runs:
+    when the only top-level entry but `.DS_Store` is a directory, that
+    directory becomes the tree; otherwise the whole archive does.
     """
-    def check_name(name: str) -> None:
-        parts = pathlib.PurePosixPath(name).parts
-        if name.startswith("/") or ".." in parts or not all(_TREE_NAME.fullmatch(p) for p in parts if p != "."):
-            raise SourceError(f"{path.name}: member {name!r} has an unsafe or unsupported path")
+    tops = {parts[0] for _, parts, _, _ in members if parts} - {".DS_Store"}
+    if len(tops) != 1:
+        return None
+    top = tops.pop()
+    is_dir = any(parts[0] == top and (len(parts) > 1 or directory) for _, parts, directory, _ in members if parts)
+    return top if is_dir else None
 
+
+def check_unpacked(root: pathlib.Path) -> None:
+    """Refuses an unpacked tree holding anything but directories and singly linked regular files.
+
+    Runs after extraction, before pruning: whatever the extractor made of
+    the archive, a link or special file never reaches the prepared tree.
+    """
+    def failed_scan(error: OSError) -> None:
+        raise SourceError(f"cannot scan the unpacked tree {root}: {error}") from error
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=failed_scan):
+        for name in dirnames + filenames:
+            path = pathlib.Path(dirpath) / name
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise SourceError(f"extraction made {path.relative_to(root)}, which is not a plain file or directory")
+
+
+_TAR_TRAILING_LIMIT = 16 << 20
+# What a damaged compressed stream raises while tarfile reads it.
+_READ_ERRORS = (OSError, tarfile.TarError, OverflowError, ValueError, EOFError, zlib.error, lzma.LZMAError)
+
+
+def _open_tar(path: pathlib.Path) -> tarfile.TarFile:
+    """The archive as a tar, compressed or not, by its leading bytes."""
+    with open(path, "rb") as f:
+        magic = f.read(262)
+    for prefix, mode in ((b"\x1f\x8b", "r:gz"), (b"\xfd7zXZ\x00", "r:xz"), (b"BZh", "r:bz2")):
+        if magic.startswith(prefix):
+            return tarfile.open(path, mode)
+    if magic[257:262] == b"ustar":
+        return tarfile.open(path, "r:")
+    raise SourceError(f"{path.name} is not a tar archive (plain, gzip, xz or bzip2)")
+
+
+def _checked_members(path: pathlib.Path, tar: tarfile.TarFile,
+                     keep: list[str] | None) -> list[tuple[tarfile.TarInfo, str | None]]:
+    """Each member with its path in the unpacked tree: None when unpacking drops or discards it.
+
+    Refuses anything but plain files and directories at safe paths, two
+    members at one path, and a member inside a file member. With
+    archive.keep, members at or leading to a kept path must have names
+    CMake's lists can carry and the rest need only be printable ASCII
+    without backslashes; every kept path must hold at least one file.
+    """
+    members = tar.getmembers()
+    # tarfile ends an archive at the first header it cannot read, so a
+    # truncated or corrupt archive would unpack to a partial tree: require
+    # the end-of-archive blocks and nothing but zeros after them.
+    tar.fileobj.seek(tar.offset)
+    trailing = 0
+    while chunk := tar.fileobj.read(1 << 20):
+        trailing += len(chunk)
+        # Record padding is well under 1 MiB even at 2048-block records.
+        if chunk.count(0) != len(chunk) or trailing > _TAR_TRAILING_LIMIT:
+            raise SourceError(f"{path.name} has data or excess padding after its end-of-archive marker")
+    if trailing < 1024:
+        raise SourceError(f"{path.name} does not end with a tar end-of-archive marker")
+    # A sparse member would unpack to an arbitrarily large file of zeros.
+    listed = [(m.name, pathlib.PurePosixPath(m.name.rstrip("/")).parts, m.isdir(),
+               (m.isfile() or m.isdir()) and not m.linkname and not m.issparse()) for m in members]
+    root = _archive_root(listed)
+    seen = {tuple(p for p in parts if p != "."): directory for _, parts, directory, _ in listed}
+    if len(seen) != len(listed):
+        raise SourceError(f"{path.name}: two members have the same path")
+    for tree_path in seen:
+        for depth in range(1, len(tree_path)):
+            if seen.get(tree_path[:depth]) is False:
+                raise SourceError(f"{path.name}: member {'/'.join(tree_path)!r} lies inside a file member")
+    found, result = set(), []
+    for member, (name, parts, directory, plain) in zip(members, listed):
+        if name.startswith("/") or ".." in parts or not parts:
+            raise SourceError(f"{path.name}: member {name!r} has an unsafe or unsupported path")
+        if not plain:
+            raise SourceError(f"{path.name}: member {name!r} is not a file or directory")
+        if not (isinstance(member.mtime, (int, float)) and 0 <= member.mtime < 2**33):
+            raise SourceError(f"{path.name}: member {name!r} has an unusable modification time")
+        # The member's path in the unpacked tree; None when unpacking drops it.
+        rel = None if root is not None and parts[:1] != (root,) else "/".join(parts[1:] if root else parts)
+        kept = keep is None or (rel is not None and (
+            rel == "" or any(_within(rel, k) or k.startswith(rel + "/") for k in keep)))
+        if kept:
+            safe = all(_TREE_NAME.fullmatch(p) for p in parts if p != ".")
+        else:
+            safe = all(_DISCARDED_NAME.fullmatch(p) and p not in (".", "..") for p in parts)
+        if not safe:
+            raise SourceError(f"{path.name}: member {name!r} has an unsafe or unsupported path")
+        if keep is not None and rel is not None and not directory:
+            found.update(k for k in keep if _within(rel, k))
+        result.append((member, rel if kept else None))
+    for k in keep or ():
+        if k not in found:
+            raise SourceError(f"{path.name}: archive.keep entry {k!r} names no file in the archive")
+    return result
+
+
+def check_archive(path: pathlib.Path, keep: list[str] | None = None) -> None:
+    """Refuses an archive unpack_archive would refuse, without unpacking it (_checked_members)."""
     try:
-        if zipfile.is_zipfile(path):
-            with zipfile.ZipFile(path) as z:
-                for info in z.infolist():
-                    check_name(info.filename.rstrip("/"))
-                    kind = stat.S_IFMT(info.external_attr >> 16)
-                    if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
-                        raise SourceError(f"{path.name}: member {info.filename!r} is not a file or directory")
-            return
-        with tarfile.open(path, "r:*") as tar:
-            for member in tar:
-                check_name(member.name.rstrip("/"))
-                if not (member.isfile() or member.isdir()):
-                    raise SourceError(f"{path.name}: member {member.name!r} is not a file or directory")
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as e:
+        with _open_tar(path) as tar:
+            _checked_members(path, tar, keep)
+    except _READ_ERRORS as e:
         raise SourceError(f"cannot read the archive {path.name}: {e}") from None
+
+
+def unpack_archive(path: pathlib.Path, dest: pathlib.Path, keep: list[str] | None = None) -> None:
+    """Unpacks a checked archive into the new directory dest, keeping only archive.keep's paths.
+
+    One parser checks and extracts (D-078): the members tarfile read are
+    the members written, through tarfile's `data` filter, which refuses
+    links, special files and paths outside dest again. As FetchContent did,
+    a single top-level directory (ignoring a top-level .DS_Store) is
+    stripped. Discarded members are never written.
+    """
+    if dest.exists():
+        raise SourceError(f"{dest} exists; unpacking writes only into a new directory")
+    dest.mkdir(parents=True)
+    try:
+        with _open_tar(path) as tar:
+            for member, rel in _checked_members(path, tar, keep):
+                if rel:
+                    tar.extract(member.replace(name=rel, deep=False), dest, set_attrs=True, filter="data")
+    except _READ_ERRORS as e:
+        raise SourceError(f"cannot unpack the archive {path.name}: {e}") from None
+    check_unpacked(dest)
+    missing = [k for k in keep or () if not (dest / k).exists()]
+    if missing:
+        raise SourceError(f"archive.keep names {', '.join(missing)}, which the unpacked tree does not have")
 
 
 # Fetching -----------------------------------------------------------------------------
