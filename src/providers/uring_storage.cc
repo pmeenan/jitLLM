@@ -3,6 +3,11 @@
 
 #include "providers/uring_storage.h"
 
+#include <sys/eventfd.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -22,21 +27,72 @@ std::expected<std::unique_ptr<UringStorage>, std::error_code> UringStorage::Crea
   if (depth == 0 || depth > 4096) {
     return std::unexpected(std::make_error_code(std::errc::invalid_argument));
   }
-  // Room for every request and a cancellation of each.
-  auto ring = platform::IoUring::Create(static_cast<unsigned>(depth * 2));
+  // Room for every request, a cancellation of each, and the wake read.
+  auto ring = platform::IoUring::Create(static_cast<unsigned>((depth * 2) + 1));
   if (!ring) {
     return std::unexpected(ring.error());
   }
-  return std::make_unique<UringStorage>(*std::move(ring), depth);
+  // Blocking: a nonblocking eventfd would complete the wake read at once.
+  const int wake_fd = ::eventfd(0, EFD_CLOEXEC);
+  if (wake_fd < 0) {
+    return std::unexpected(std::error_code(errno, std::generic_category()));
+  }
+  return std::make_unique<UringStorage>(*std::move(ring), depth, wake_fd);
 }
 
-UringStorage::UringStorage(platform::IoUring ring, std::size_t depth)
-    : ring_(std::move(ring)), depth_(depth), scratch_(ring_.completion_entries()) {}
+UringStorage::UringStorage(platform::IoUring ring, std::size_t depth, int wake_fd)
+    : ring_(std::move(ring)),
+      depth_(depth),
+      scratch_(ring_.completion_entries()),
+      wake_fd_(wake_fd) {}
 
 UringStorage::~UringStorage() {
-  base::Check(in_flight_.empty() && cancels_in_flight_ == 0 && ring_.unconsumed() == 0 &&
-                  ring_.prepared() == 0,
+  base::Check(in_flight_.empty() && cancels_in_flight_ == 0,
               "a storage ring destroyed with requests in flight");
+  // The wake read is ours: end it and reap it before the ring and the
+  // eventfd go, since closing the ring does not stop it writing wake_count_.
+  if (wake_armed_) {
+    Signal();
+  }
+  while (wake_armed_) {
+    last_error_.clear();
+    Enter(1);
+    const std::size_t reaped = ring_.Reap(scratch_);
+    for (std::size_t i = 0; i < reaped; ++i) {
+      base::Check(scratch_[i].user_data == kWakeToken,
+                  "a storage ring destroyed with requests in flight");
+      wake_armed_ = false;
+    }
+    base::Check(reaped > 0 || !last_error_, "the storage ring cannot reap its wake read");
+  }
+  base::Check(ring_.unconsumed() == 0 && ring_.prepared() == 0,
+              "a storage ring destroyed with requests in flight");
+  (void)::close(wake_fd_);
+}
+
+void UringStorage::Signal() const {
+  const std::uint64_t one = 1;
+  ssize_t written = 0;
+  do {
+    written = ::write(wake_fd_, &one, sizeof(one));
+  } while (written < 0 && errno == EINTR);
+}
+
+void UringStorage::Wake() {
+  // Coalesced: one write until the lane reaps the wake read.
+  if (!woken_.exchange(true, std::memory_order_seq_cst)) {
+    Signal();
+  }
+}
+
+bool UringStorage::ArmWake() {
+  if (!wake_armed_) {
+    if (!ring_.PrepareRead(wake_fd_, &wake_count_, sizeof(wake_count_), 0, kWakeToken)) {
+      return false;
+    }
+    wake_armed_ = true;
+  }
+  return true;
 }
 
 Submission UringStorage::Hand() {
@@ -55,8 +111,8 @@ void UringStorage::Enter(unsigned wait_for) {
 
 Submission UringStorage::Submit(const IoRequest& request) {
   if (in_flight_.size() >= depth_ || (request.token & kCancelBit) != 0 ||
-      in_flight_.contains(request.token) || cancelling_.contains(request.token) ||
-      request.memory == nullptr || request.length == 0) {
+      (request.token | kCancelBit) == kWakeToken || in_flight_.contains(request.token) ||
+      cancelling_.contains(request.token) || request.memory == nullptr || request.length == 0) {
     return Submission::kNotStarted;
   }
   const bool prepared = request.kind == IoKind::kRead
@@ -82,9 +138,11 @@ Submission UringStorage::Cancel(std::uint64_t token) {
 }
 
 std::size_t UringStorage::Harvest(std::span<IoCompletion> out, bool wait) {
-  if (wait && (!in_flight_.empty() || cancels_in_flight_ > 0)) {
+  // Waits only with the wake read armed, so Wake can end the wait; with no
+  // room to arm it, it does not wait.
+  if (wait && (!in_flight_.empty() || cancels_in_flight_ > 0) && ArmWake()) {
     Enter(1);
-  } else if (ring_.unconsumed() > 0) {
+  } else if (ring_.unconsumed() > 0 || ring_.prepared() > 0) {
     Enter(0);
   }
   std::size_t produced = 0;
@@ -96,6 +154,13 @@ std::size_t UringStorage::Harvest(std::span<IoCompletion> out, bool wait) {
     }
     for (std::size_t i = 0; i < reaped; ++i) {
       const platform::Completion& completion = scratch_[i];
+      if (completion.user_data == kWakeToken) {
+        // Cleared before the lane looks for commands again: a wake after
+        // this writes the eventfd again.
+        wake_armed_ = false;
+        woken_.store(false, std::memory_order_seq_cst);
+        continue;
+      }
       if ((completion.user_data & kCancelBit) != 0) {
         --cancels_in_flight_;  // the cancellation's own result: never reported
         const std::uint64_t target = completion.user_data & ~kCancelBit;

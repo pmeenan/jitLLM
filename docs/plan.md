@@ -164,13 +164,13 @@ reservation policy) were recorded in M0.
       the catalog's (above). Tests: `unit.Admission.*`, including a
       randomized progress check under all three policies. A pause with
       several paused cohort peers waits for M4's concurrency.
-- [ ] **Task lanes** (D-048): scheduler, storage, device submission, device
+- [x] **Task lanes** (D-048): scheduler, storage, device submission, device
       completion and CPU workers, with bounded queues; measure worker
       counts, queue sizes and wakeup and polling behavior. Real
       multithreaded lost-wakeup and memory-ordering tests, with ARM stress
       on a Spark; the deterministic simulator does not prove them
       ([async model](async-model.md)).
-      *Partly landed:* the primitives. `base/` gains a bounded queue with a
+      *Landed:* first the primitives. `base/` gains a bounded queue with a
       cleanup reserve and a coalesced wake flag. `src/scheduler/` gains:
       - the completion board: per-operation mailboxes with
         generation-tagged acceptance and terminal words, closed only once
@@ -191,9 +191,58 @@ reservation policy) were recorded in M0.
         imminent;
       - a lane queue should have at most four workers.
 
-      Remaining: the scheduler thread's turn loop and storage and device
-      lanes wired to the providers, with an end-to-end cancellation test
-      through submission, completion and memory retirement.
+      Then the lanes and the loop. `services.h` wires the storage lane
+      (whole reads over any `Storage`, one per operation), the device
+      service's submission and completion lanes (copies on owned streams,
+      fences queried independently of submission, released only between
+      submission calls) and the CPU worker lane's handler to the
+      providers, each reporting through the board. `scheduler.h` is the
+      scheduler thread: each turn takes bounded batches of controls, board
+      observations and ready tasks, retries what a full lane refused, and
+      then polls within a window while a critical operation is in flight,
+      or sleeps on the wake flag. Tasks are explicit state machines that
+      materialize closures, submit device and CPU work, and spawn
+      children:
+      - page-ins are the scheduler's, one per extent with bounded waiters;
+      - work is prepared under the owner (leases, task hold, record)
+        before publication, and its leases retire only on proof of no
+        further access;
+      - unproven or contradictory results quarantine what they hold and
+        stop admission;
+      - cancellation rolls back only what no lane took;
+      - shutdown drains, or faults on quarantined work.
+
+      Tests:
+      - `unit.SchedulerTest.*` on the fakes, in every profile: cancellation
+        through submission, completion and memory retirement (extent state,
+        backing generation, leases and occupancy afterwards), shared
+        page-ins, full queues during cleanup, late, duplicate and
+        contradictory observations, unknown fences and unproven reads,
+        repeated cancellations sharing one queued intent, a tag started
+        again while an earlier start drains, a storage lane that makes
+        room without publishing, exhausted operation identities (which
+        stop admission; mailboxes and task slots are reused in rotation,
+        `unit.CompletionBoard.*`, `unit.TaskTable.*`), fence queries and
+        releases the provider keeps refusing, task-tree unwind and
+        shutdown; and
+        `unit.StorageLaneTest.*` (io_uring, skipped under qemu-user),
+        where a cancellation reaches a read that never completes.
+      - Its threaded cases, `TheOwnerLosesNoWakeupAmongManyPublishers`,
+        `ReusedTagsLoseNoCancellationAmongManyThreads` and
+        `ThreadedLanesKeepEveryHandoffOrdered`, run the owner with an
+        hour-long tick, so a lost wakeup or cancellation hangs, and send
+        data from storage to device to CPU worker with sources evicted (in
+        the catalog only: backing release is not wired) and reloaded and
+        requests cancelled. `unit.UringTest.NoWakeIsLostAmongManyProducers`
+        does the same for the storage lane's eventfd wake.
+      - `unit.CudaLanes.*` (`gpu`) do the same over io_uring, CUDA host
+        VMM and CUDA streams, and cancel a read and device work in flight.
+
+      All pass on a Spark (`spark-b`) in `check:spark` under the cross, ASan and TSan
+      builds, and the fake cases pass on the workstation and under
+      qemu-user in `check`. Not yet wired: the memory manager's mapping,
+      backing release and victim selection on the device lane, and
+      admission driving task starts.
 - [x] **Providers** (D-026): device-memory, device-execution and storage
       interfaces, each with a deterministic poison-filling fake; the CUDA VMM
       provider at D-033's 2 MiB extents; direct-I/O reads into host VMM

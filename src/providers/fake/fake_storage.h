@@ -51,6 +51,7 @@ class FakeStorage final : public Storage {
   // data); one already due completes as it would have.
   Submission Cancel(std::uint64_t token) override;
   std::size_t Harvest(std::span<IoCompletion> out, bool wait) override;
+  void Wake() override {}  // it never waits
 
   // What was submitted, in order, for tests to inspect.
   const std::vector<IoRequest>& submitted() const { return submitted_; }

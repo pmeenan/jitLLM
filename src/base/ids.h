@@ -11,12 +11,15 @@
 #define JITLLM_BASE_IDS_H_
 
 #include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "base/check.h"
 
 namespace jitllm::base {
 
@@ -43,14 +46,46 @@ class Id {
 // A table of slots addressed by Id<Tag>. Erasing a slot advances its
 // generation; a slot whose generation would wrap is retired, never reused
 // (D-048: exhaust the ID space by refusing, not by reuse).
+//
+// A default table grows as needed and reuses the most recently freed slot.
+// A bounded table has all its slots from the start, allocates nothing
+// more, and serves its free slots in rotation (the longest free first), so
+// every slot's generation advances at the same pace: exhaustion comes
+// after about capacity x 2^32 insertions, not one slot at a time from the
+// first 2^32 (docs/async-model.md).
 template <typename Tag, typename T>
 class SlotTable {
  public:
-  // The identity of the new element; invalid if the table is exhausted.
+  SlotTable() = default;
+  // A bounded table of `capacity` slots. `first_generation` (at least 1)
+  // is the generation every slot starts at: a test hook that reaches
+  // exhaustion quickly. Production code leaves it at 1; a larger value
+  // only brings retirement sooner, since a fresh table never issues an
+  // identity twice.
+  explicit SlotTable(std::size_t capacity, std::uint32_t first_generation = 1)
+      : bounded_(true), slots_(capacity), free_(capacity) {
+    Check(capacity > 0 && capacity <= kMaxSlots && first_generation > 0,
+          "a bounded slot table needs slots and a valid first generation");
+    for (std::size_t i = 0; i < capacity; ++i) {
+      slots_[i].generation = first_generation;
+      free_[i] = static_cast<std::uint32_t>(i);
+    }
+    free_count_ = capacity;
+  }
+
+  // The identity of the new element; invalid if the table is exhausted
+  // (a bounded table: every slot live or retired).
   template <typename... Args>
   Id<Tag> Insert(Args&&... args) {
     std::uint32_t index = 0;
-    if (!free_.empty()) {
+    if (bounded_) {
+      if (free_count_ == 0) {
+        return {};
+      }
+      index = free_[free_head_];
+      free_head_ = (free_head_ + 1) % free_.size();
+      --free_count_;
+    } else if (!free_.empty()) {
       index = free_.back();
       free_.pop_back();
     } else {
@@ -85,14 +120,23 @@ class SlotTable {
     slot.value.reset();
     --live_;
     if (slot.generation == UINT32_MAX) {
+      ++retired_;
       return true;  // retired: its generation cannot advance
     }
     ++slot.generation;
-    free_.push_back(id.index());
+    if (bounded_) {
+      // At most every slot is free, so the ring never overflows.
+      free_[(free_head_ + free_count_) % free_.size()] = id.index();
+      ++free_count_;
+    } else {
+      free_.push_back(id.index());
+    }
     return true;
   }
 
   std::size_t size() const { return live_; }
+  // Slots whose generation is exhausted: never issued again.
+  std::size_t retired() const { return retired_; }
 
   // Calls fn(id, value) for every live element, in index order.
   template <typename Fn>
@@ -112,9 +156,15 @@ class SlotTable {
     std::uint32_t generation = 1;
     std::optional<T> value;
   };
+  bool bounded_ = false;
   std::vector<Slot> slots_;
+  // Free slots: a stack, or in a bounded table a ring of free_count_
+  // entries from free_head_.
   std::vector<std::uint32_t> free_;
+  std::size_t free_head_ = 0;
+  std::size_t free_count_ = 0;
   std::size_t live_ = 0;
+  std::size_t retired_ = 0;
 };
 
 }  // namespace jitllm::base

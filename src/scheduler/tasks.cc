@@ -54,17 +54,16 @@ std::expected<TaskId, TaskError> TaskTable::Create(std::optional<TaskId> parent)
                                        .first_child = std::nullopt,
                                        .next_sibling = std::nullopt,
                                        .previous_sibling = std::nullopt});
-  // Indices stay below the capacity, so per-index tables sized to it (the
+  // The slots are fixed, so per-index tables sized to the capacity (the
   // ready queue's) cover every task. A slot whose generation is exhausted
-  // is retired, and the table eventually refuses instead of reusing it.
-  if (!id.valid() || id.index() >= capacity_) {
-    if (id.valid()) {
-      (void)tasks_.Erase(id);
-    }
+  // is retired: with every other slot live or retired, creation is refused
+  // instead of reusing an identity.
+  if (!id.valid()) {
     return std::unexpected(TaskError::kFull);
   }
+  base::Check(id.index() < capacity_, "a task slot beyond the table's capacity");
   if (parent) {
-    parent_task = tasks_.Find(*parent);  // the insert may have moved it
+    parent_task = tasks_.Find(*parent);
     Task& child = *tasks_.Find(id);
     child.next_sibling = parent_task->first_child;
     if (parent_task->first_child) {

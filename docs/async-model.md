@@ -211,6 +211,34 @@ does not select a new source dependency, implement CUDA/io_uring adapters,
 prove multithreaded publication, or validate reservation progress. M2 must
 add real concurrency/lost-wakeup tests, coalesced page-in waiters, task-tree
 unwind, full queues during cleanup, and the GGML host-VMM execution proof.
+M2's scheduler thread and lanes (`src/scheduler/scheduler.h`,
+`services.h`) implement this protocol over the fake and real providers,
+with those tests (plan.md, task lanes). Choices they settle:
+
+- A fence is released on the completion lane, but only while the
+  submission lane is between provider calls. The completion lane tries
+  that lane's lock and never waits for it, so harvesting stays independent
+  of a blocking submission.
+- The scheduler rolls back a command no lane has taken by publishing "not
+  started" to its own mailbox, so every retirement goes through the board.
+- Quarantine is sticky until process or device recovery: a late proof for
+  quarantined work does not release it.
+- Free mailboxes and task slots are reused in rotation, so their 32-bit
+  generations advance together. A board or task table of capacity N
+  issues about N x 2^32 identities before any slot retires, instead of
+  losing a slot for every 2^32 operations. A retired slot is skipped;
+  once every slot is retired, the scheduler admits no new request and
+  refuses new operations as unavailable.
+- A request's cancellation intent is coalesced: while one is queued with no
+  start of that request posted since, repeating it takes no queue entry.
+  A later start opens a new intent, so ordering against starts holds. A
+  page-in asks the storage lane to cancel at most once.
+- The storage lane waits in io_uring while reads are in flight. A queued
+  command wakes it through an eventfd read armed in the same ring, so a
+  cancellation never waits for a completion that may not come. A request
+  the kernel cannot cancel still keeps its memory until it completes.
+  Taking a cancellation publishes nothing, so the lane also wakes the
+  scheduler, which may hold a command that the full queue refused.
 M4a/M6 add transport registration, lost-node and collective-order validation.
 Shutdown must stop admission, cancel queued work, drain accepted operations
 and registrations, then release backing; unreconciled work faults shutdown

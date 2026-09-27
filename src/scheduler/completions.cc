@@ -32,21 +32,34 @@ Terminal CompletionBoard::Decode(std::uint8_t value, std::uint64_t bytes, bool p
                   .no_further_access = proven};
 }
 
-CompletionBoard::CompletionBoard(std::size_t mailboxes, base::WakeFlag& wake)
-    : mailboxes_(mailboxes), count_(mailboxes), wake_(wake), news_(mailboxes) {
-  base::Check(mailboxes > 0 && mailboxes <= UINT32_MAX, "a completion board needs mailboxes");
-  free_.reserve(mailboxes);
-  for (std::size_t i = mailboxes; i > 0; --i) {
-    free_.push_back(static_cast<std::uint32_t>(i - 1));
+CompletionBoard::CompletionBoard(std::size_t mailboxes, base::WakeFlag& wake,
+                                 std::uint32_t first_generation)
+    : mailboxes_(mailboxes),
+      count_(mailboxes),
+      wake_(wake),
+      free_(mailboxes),
+      free_count_(mailboxes),
+      news_(mailboxes) {
+  base::Check(mailboxes > 0 && mailboxes <= UINT32_MAX && first_generation > 0,
+              "a completion board needs mailboxes and a valid first generation");
+  for (std::size_t i = 0; i < mailboxes; ++i) {
+    Mailbox& mailbox = mailboxes_[i];
+    mailbox.generation = first_generation;
+    mailbox.acceptance.store(Word(first_generation, 0), std::memory_order_relaxed);
+    mailbox.terminal.store(Word(first_generation, kEmpty), std::memory_order_relaxed);
+    mailbox.proof.store(Word(first_generation, 0), std::memory_order_relaxed);
+    mailbox.contradictory.store(Word(first_generation, 0), std::memory_order_relaxed);
+    free_[i] = static_cast<std::uint32_t>(i);
   }
 }
 
 OperationId CompletionBoard::Open() {
-  if (free_.empty()) {
-    return {};
+  if (free_count_ == 0) {
+    return {};  // every mailbox open or retired
   }
-  const std::uint32_t index = free_.back();
-  free_.pop_back();
+  const std::uint32_t index = free_[free_head_];
+  free_head_ = (free_head_ + 1) % count_;
+  --free_count_;
   Mailbox& mailbox = mailboxes_[index];
   mailbox.open = true;
   ++open_count_;
@@ -90,7 +103,8 @@ bool CompletionBoard::Close(OperationId operation) {
   const std::uint32_t next = retired ? generation : generation + 1;
   std::uint64_t clean = Word(generation, 0);
   if (!mailbox.contradictory.compare_exchange_strong(
-          clean, retired ? Word(generation, 2) : Word(next, 0), std::memory_order_acq_rel)) {
+          clean, retired ? Word(generation, kRetiredMark) : Word(next, 0),
+          std::memory_order_acq_rel)) {
     if (not_started) {
       mailbox.terminal.store(Word(generation, kEmpty), std::memory_order_release);  // thaw
     }
@@ -99,6 +113,7 @@ bool CompletionBoard::Close(OperationId operation) {
   mailbox.open = false;
   --open_count_;
   if (retired) {
+    ++retired_;
     if (not_started) {
       // Release anyone waiting on the frozen word: they find the marker set
       // and report stale.
@@ -113,8 +128,15 @@ bool CompletionBoard::Close(OperationId operation) {
   mailbox.proof.store(Word(next, 0), std::memory_order_release);
   mailbox.acceptance.store(Word(next, static_cast<std::uint8_t>(Acceptance::kNone)),
                            std::memory_order_release);
-  free_.push_back(operation.index());
+  // Behind every other free mailbox: rotation spreads generations evenly.
+  // At most every mailbox is free, so the ring never overflows.
+  free_[(free_head_ + free_count_) % count_] = operation.index();
+  ++free_count_;
   return true;
+}
+
+bool CompletionBoard::IsRetired(const Mailbox& mailbox, std::uint32_t generation) {
+  return mailbox.contradictory.load(std::memory_order_acquire) == Word(generation, kRetiredMark);
 }
 
 std::optional<Terminal> CompletionBoard::ReadTerminal(const Mailbox& mailbox,
@@ -185,7 +207,7 @@ Published CompletionBoard::Accept(OperationId operation, Acceptance acceptance) 
     Announce(operation.index());
     return Published::kRecorded;
   }
-  if (GenerationOf(expected) != generation) {
+  if (GenerationOf(expected) != generation || IsRetired(mailbox, generation)) {
     return Published::kStale;
   }
   if (ValueOf(expected) == value) {
@@ -232,8 +254,8 @@ Published CompletionBoard::Complete(OperationId operation, const Terminal& termi
     return Published::kRecorded;
   }
   const std::optional<Terminal> recorded = ReadTerminal(mailbox, generation);
-  if (!recorded) {
-    return Published::kStale;  // closed and reused while we looked
+  if (!recorded || IsRetired(mailbox, generation)) {
+    return Published::kStale;  // closed (and reused, or retired) while we looked
   }
   if (recorded->outcome == terminal.outcome && recorded->bytes == terminal.bytes) {
     // The proof may follow the result; it is never withdrawn.

@@ -102,6 +102,11 @@ class BoundedQueue {
     const std::scoped_lock lock(mutex_);
     return count_;
   }
+  // Closed, with nothing left to pop: its consumer can stop.
+  bool drained() const {
+    const std::scoped_lock lock(mutex_);
+    return closed_ && count_ == 0;
+  }
   std::size_t capacity() const { return ring_.size(); }
 
  private:

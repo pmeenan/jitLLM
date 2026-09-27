@@ -15,6 +15,10 @@
 // Cancellation is a request with its own result: the original still
 // completes, and only its completion retires the memory (D-048).
 //
+// Wake is the one call any thread may make: it lets the lane leave a
+// waiting Harvest to take a new command, such as a cancellation, instead of
+// waiting for a completion that may never come (D-048).
+//
 // Requests carry file descriptors the caller opened for direct I/O beneath
 // a storage role (config/storage_roles.h), and memory that the caller
 // keeps leased until the completion arrives.
@@ -73,8 +77,12 @@ class Storage {
   virtual Submission Cancel(std::uint64_t token) = 0;
 
   // Completions, up to out.size(); with `wait`, blocks until at least one
-  // arrives if any request is in flight.
+  // arrives if any request is in flight, or until woken.
   virtual std::size_t Harvest(std::span<IoCompletion> out, bool wait) = 0;
+  // Any thread: a Harvest waiting now returns, possibly with nothing, and so
+  // does the next one to wait if none is. Wakes before the lane harvests
+  // coalesce into one.
+  virtual void Wake() = 0;
 };
 
 }  // namespace jitllm::providers

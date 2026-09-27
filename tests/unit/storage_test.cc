@@ -4,8 +4,9 @@
 // The storage provider and whole reads over it (D-034, D-048): short
 // transfers, alignment, retries, cancellation that drains, and coalesced
 // duplicate reads, on the scripted fake; and the io_uring provider
-// against a real direct-I/O file (skipped where there is no io_uring, as
-// under qemu-user or a container policy that denies the syscall).
+// against a real direct-I/O file and a pipe whose read never completes
+// (skipped where there is no io_uring, as under qemu-user or a container
+// policy that denies the syscall).
 
 #include "providers/storage.h"
 
@@ -15,7 +16,9 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -25,12 +28,21 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "platform/direct_io.h"
 #include "providers/direct_reader.h"
 #include "providers/fake/fake_storage.h"
 #include "providers/uring_storage.h"
+
+#ifdef __SANITIZE_THREAD__
+#define JITLLM_TEST_TSAN 1
+#elifdef __has_feature
+#if __has_feature(thread_sanitizer)
+#define JITLLM_TEST_TSAN 1
+#endif
+#endif
 
 namespace {
 
@@ -375,6 +387,151 @@ TEST_F(UringTest, DrainingIncludesCancellations) {
   EXPECT_EQ(originals, 1U);
   EXPECT_EQ(storage_->in_flight(), 0U);
   storage_.reset();  // drained: no abort
+}
+
+// A read of an empty pipe never completes on its own. Wake, from another
+// thread, ends the Harvest waiting for it, so the lane can take a new
+// command, such as the cancellation that then drains it.
+TEST_F(UringTest, WakeEndsAHarvestWaitingForAReadThatNeverCompletes) {
+  std::array<int, 2> pipe_fds{-1, -1};
+  ASSERT_EQ(::pipe2(pipe_fds.data(), O_CLOEXEC), 0);
+  Buffer buffer(kAlignment);
+  ASSERT_NE(storage_->Submit(IoRequest{.token = 9,
+                                       .kind = IoKind::kRead,
+                                       .fd = pipe_fds[0],
+                                       .offset = 0,
+                                       .memory = buffer.data,
+                                       .length = static_cast<std::uint32_t>(kAlignment)}),
+            Submission::kNotStarted);
+  std::atomic<bool> returned{false};
+  std::size_t harvested = 0;
+  std::array<IoCompletion, 4> completions{};
+  {
+    std::jthread waiter([&] {
+      harvested = storage_->Harvest(completions, true);
+      returned.store(true);
+    });
+    // Most likely waiting by now; the wake must end the wait either way.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    storage_->Wake();
+    storage_->Wake();  // coalesced
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!returned.load() && std::chrono::steady_clock::now() < give_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!returned.load()) {
+      ADD_FAILURE() << "Wake did not end the Harvest";
+      const std::vector<std::byte> fill(kAlignment);
+      ASSERT_EQ(::write(pipe_fds[1], fill.data(), fill.size()), static_cast<ssize_t>(kAlignment));
+    }
+  }
+  EXPECT_EQ(harvested, 0U);
+  ASSERT_EQ(storage_->in_flight(), 1U);
+  // The cancellation is what drains it.
+  ASSERT_NE(storage_->Cancel(9), Submission::kNotStarted);
+  std::int64_t result = 0;
+  for (int i = 0; i < 100 && storage_->in_flight() > 0; ++i) {
+    const std::size_t count = storage_->Harvest(completions, true);
+    for (std::size_t c = 0; c < count; ++c) {
+      if (completions.at(c).token == 9) {
+        result = completions.at(c).result;
+      }
+    }
+  }
+  EXPECT_EQ(storage_->in_flight(), 0U);
+  EXPECT_EQ(result, -ECANCELED);
+  (void)::close(pipe_fds[0]);
+  (void)::close(pipe_fds[1]);
+}
+
+// The lane's side of the wake protocol under many producers: each publishes
+// a command (here a counter), then wakes; the lane waits in Harvest for a
+// read that never completes, and after every return looks for commands
+// before it waits again. A wake lost among the coalesced ones leaves the
+// lane asleep with a command published, which shows as a producer that is
+// never answered (bounded: the test then ends the read itself).
+TEST_F(UringTest, NoWakeIsLostAmongManyProducers) {
+#ifdef JITLLM_TEST_TSAN
+  constexpr std::uint64_t kCommands = 2000;  // per producer
+#else
+  constexpr std::uint64_t kCommands = 20000;
+#endif
+  constexpr std::uint64_t kProducers = 4;
+  std::array<int, 2> pipe_fds{-1, -1};
+  ASSERT_EQ(::pipe2(pipe_fds.data(), O_CLOEXEC), 0);
+  Buffer buffer(kAlignment);
+  ASSERT_NE(storage_->Submit(IoRequest{.token = 5,
+                                       .kind = IoKind::kRead,
+                                       .fd = pipe_fds[0],
+                                       .offset = 0,
+                                       .memory = buffer.data,
+                                       .length = static_cast<std::uint32_t>(kAlignment)}),
+            Submission::kNotStarted);
+  std::atomic<std::uint64_t> published{0};
+  std::atomic<std::uint64_t> answered{0};
+  std::atomic<bool> stop{false};
+  std::atomic<bool> lost{false};
+  std::size_t completions_seen = 0;
+  {
+    std::jthread lane([&] {
+      std::array<IoCompletion, 4> completions{};
+      while (!stop.load()) {
+        const std::uint64_t now = published.load();
+        if (now > answered.load()) {
+          answered.store(now);  // "took the commands"
+          continue;
+        }
+        completions_seen += storage_->Harvest(completions, true);
+      }
+    });
+    {
+      std::vector<std::jthread> producers;
+      producers.reserve(kProducers);
+      for (std::uint64_t p = 0; p < kProducers; ++p) {
+        producers.emplace_back([&] {
+          for (std::uint64_t i = 0; i < kCommands && !lost.load(); ++i) {
+            if (i % 16 == 0) {
+              // Now and then, long enough for the lane to wait in the kernel.
+              std::this_thread::sleep_for(std::chrono::microseconds(20));
+            }
+            const std::uint64_t mine = published.fetch_add(1) + 1;
+            storage_->Wake();
+            const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            while (answered.load() < mine) {
+              if (std::chrono::steady_clock::now() > give_up) {
+                lost.store(true);
+                return;
+              }
+              std::this_thread::yield();
+            }
+          }
+        });
+      }
+    }
+    stop.store(true);
+    storage_->Wake();
+    if (lost.load()) {
+      // Release the lane so the test can end.
+      const std::vector<std::byte> fill(kAlignment);
+      EXPECT_EQ(::write(pipe_fds[1], fill.data(), fill.size()), static_cast<ssize_t>(kAlignment));
+    }
+  }
+  EXPECT_FALSE(lost.load()) << "a wake was lost: the lane slept with a command published";
+  if (!lost.load()) {
+    EXPECT_EQ(answered.load(), kCommands * kProducers);
+  }
+  // Drain the read: cancelled unless the test had to end it.
+  std::array<IoCompletion, 4> completions{};
+  if (storage_->in_flight() > 0) {
+    ASSERT_NE(storage_->Cancel(5), Submission::kNotStarted);
+  }
+  for (int i = 0; i < 100 && storage_->in_flight() > 0; ++i) {
+    completions_seen += storage_->Harvest(completions, true);
+  }
+  EXPECT_EQ(storage_->in_flight(), 0U);
+  EXPECT_EQ(completions_seen, 1U);
+  (void)::close(pipe_fds[0]);
+  (void)::close(pipe_fds[1]);
 }
 
 }  // namespace

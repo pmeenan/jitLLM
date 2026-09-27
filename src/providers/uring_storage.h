@@ -7,10 +7,17 @@
 // since the kernel may have consumed some. Cancellation completions are
 // consumed here and never reported: only the original's completion retires
 // its memory.
+//
+// Wake writes to an eventfd that a read in the same ring waits on, armed
+// only while Harvest waits: that read completing ends the wait. A flag
+// coalesces wakes; the lane clears it when it reaps that read, before it
+// looks for commands again, so a wake is either seen by that look or
+// writes the eventfd again.
 
 #ifndef JITLLM_PROVIDERS_URING_STORAGE_H_
 #define JITLLM_PROVIDERS_URING_STORAGE_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -29,10 +36,12 @@ namespace jitllm::providers {
 class UringStorage final : public Storage {
  public:
   // A ring for `depth` requests in flight, with room for a cancellation
-  // of each. std::errc::function_not_supported where there is no io_uring.
+  // of each and the wake read. std::errc::function_not_supported where
+  // there is no io_uring.
   static std::expected<std::unique_ptr<UringStorage>, std::error_code> Create(std::size_t depth);
 
-  explicit UringStorage(platform::IoUring ring, std::size_t depth);
+  // Takes ownership of `wake_fd`, a blocking eventfd.
+  UringStorage(platform::IoUring ring, std::size_t depth, int wake_fd);
   // Its owner must have harvested every request first (D-048): closing the
   // ring does not stop reads landing in memory, so anything left is fatal.
   ~UringStorage() override;
@@ -50,10 +59,19 @@ class UringStorage final : public Storage {
   Submission Submit(const IoRequest& request) override;
   Submission Cancel(std::uint64_t token) override;
   std::size_t Harvest(std::span<IoCompletion> out, bool wait) override;
+  void Wake() override;
 
  private:
   // Tokens with this bit are cancellations, never reported.
   static constexpr std::uint64_t kCancelBit = std::uint64_t{1} << 63;
+  // The wake read's token; the one request token whose cancellation would
+  // collide with it is refused.
+  static constexpr std::uint64_t kWakeToken = ~std::uint64_t{0};
+
+  // Arms the wake read unless it is armed; false if the ring has no room.
+  bool ArmWake();
+  // Adds one to the eventfd, completing the wake read.
+  void Signal() const;
 
   Submission Hand();
   // io_uring_enter, remembering a failure for diagnostics: what it consumed
@@ -70,6 +88,10 @@ class UringStorage final : public Storage {
   std::map<std::uint64_t, std::uint32_t> cancelling_;
   std::vector<platform::Completion> scratch_;
   std::error_code last_error_;
+  int wake_fd_ = -1;
+  std::atomic<bool> woken_{false};  // any thread sets it; the owner clears it
+  bool wake_armed_ = false;
+  std::uint64_t wake_count_ = 0;  // the wake read's destination
 };
 
 }  // namespace jitllm::providers

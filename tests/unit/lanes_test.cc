@@ -50,6 +50,7 @@ using jitllm::scheduler::TaskOutcome;
 using jitllm::scheduler::TaskTable;
 using jitllm::scheduler::Terminal;
 using ::testing::ElementsAre;
+using ::testing::Pair;
 
 constexpr auto kPatience = std::chrono::seconds(20);  // a hang, not a timing
 
@@ -225,6 +226,10 @@ TEST_F(BoardTest, StaleIdentitiesChangeNothing) {
   (void)board_.Harvest(8);
   ASSERT_TRUE(board_.Close(first));
   EXPECT_FALSE(board_.Close(first));
+  // The same mailbox comes back once every other free one has had its turn.
+  for (int others = 0; others < 3; ++others) {
+    ASSERT_NE(board_.Open().index(), first.index());
+  }
   const OperationId second = board_.Open();
   ASSERT_EQ(second.index(), first.index());  // the same mailbox, reused
   EXPECT_NE(second.generation(), first.generation());
@@ -316,6 +321,89 @@ TEST_F(BoardTest, EveryMailboxInUseRefusesANewOperation) {
   EXPECT_EQ(board_.open(), 4U);
 }
 
+// Free mailboxes are issued in rotation, the longest free first, so every
+// mailbox's generation advances at the same pace: exhaustion comes after
+// about capacity x 2^32 operations, not from one mailbox reused each time.
+TEST(CompletionBoard, FreeMailboxesAreIssuedInRotation) {
+  WakeFlag wake;
+  CompletionBoard board(3, wake);
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> issued;
+  for (int i = 0; i < 9; ++i) {
+    const OperationId op = board.Open();
+    ASSERT_TRUE(op.valid());
+    issued.emplace_back(op.index(), op.generation());
+    ASSERT_EQ(board.Accept(op, Acceptance::kNotStarted), Published::kRecorded);
+    ASSERT_TRUE(board.Close(op));
+  }
+  EXPECT_THAT(issued, ElementsAre(Pair(0, 1), Pair(1, 1), Pair(2, 1), Pair(0, 2), Pair(1, 2),
+                                  Pair(2, 2), Pair(0, 3), Pair(1, 3), Pair(2, 3)));
+  // A mailbox held open keeps its place; the others rotate around it.
+  const OperationId held = board.Open();
+  EXPECT_EQ(held.index(), 0U);
+  for (const std::uint32_t expected : {1U, 2U, 1U, 2U}) {
+    const OperationId op = board.Open();
+    EXPECT_EQ(op.index(), expected);
+    ASSERT_EQ(board.Accept(op, Acceptance::kNotStarted), Published::kRecorded);
+    ASSERT_TRUE(board.Close(op));
+  }
+}
+
+// A mailbox whose generation is exhausted retires: it is skipped, never
+// reissued, and a late publication for it is stale. Nothing aborts, and
+// the board refuses only once every mailbox has retired.
+TEST(CompletionBoard, AnExhaustedMailboxRetiresAndIsSkipped) {
+  WakeFlag wake;
+  CompletionBoard board(2, wake, UINT32_MAX - 1);
+  const auto run = [&board](Acceptance acceptance) {
+    const OperationId op = board.Open();
+    EXPECT_TRUE(op.valid());
+    EXPECT_EQ(board.Accept(op, acceptance), Published::kRecorded);
+    if (acceptance == Acceptance::kAccepted) {
+      EXPECT_EQ(board.Complete(
+                    op, {.outcome = Outcome::kSucceeded, .bytes = 1, .no_further_access = true}),
+                Published::kRecorded);
+    }
+    EXPECT_TRUE(board.Close(op));
+    return op;
+  };
+  (void)run(Acceptance::kNotStarted);  // mailbox 0 at UINT32_MAX - 1
+  (void)run(Acceptance::kAccepted);    // mailbox 1 at UINT32_MAX - 1
+  const OperationId last0 = run(Acceptance::kAccepted);
+  EXPECT_EQ(last0, OperationId(0, UINT32_MAX));
+  EXPECT_EQ(board.available(), 1U);  // mailbox 0 retired
+  EXPECT_FALSE(board.exhausted());
+  const OperationId next = board.Open();
+  EXPECT_EQ(next, OperationId(1, UINT32_MAX));  // skipped mailbox 0
+  EXPECT_FALSE(board.Open().valid());
+  // Late news for the retired mailbox changes nothing and reaches no one.
+  EXPECT_EQ(board.Accept(last0, Acceptance::kNotStarted), Published::kStale);
+  EXPECT_EQ(
+      board.Complete(last0, {.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = true}),
+      Published::kStale);
+  EXPECT_EQ(board.Accept(next, Acceptance::kNotStarted), Published::kRecorded);
+  ASSERT_TRUE(board.Close(next));
+  EXPECT_EQ(board.Accept(next, Acceptance::kNotStarted), Published::kStale);
+  EXPECT_EQ(
+      board.Complete(next, {.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = true}),
+      Published::kStale);
+  // Even one that matches whatever the retired words hold.
+  EXPECT_EQ(
+      board.Complete(next, {.outcome = Outcome::kSucceeded, .bytes = 1, .no_further_access = true}),
+      Published::kStale);
+  EXPECT_EQ(board.Complete(last0,
+                           {.outcome = Outcome::kSucceeded, .bytes = 1, .no_further_access = true}),
+            Published::kStale);
+  EXPECT_EQ(board.Accept(last0, Acceptance::kAccepted), Published::kStale);
+  EXPECT_EQ(board.available(), 0U);
+  EXPECT_EQ(board.open(), 0U);
+  EXPECT_TRUE(board.exhausted());
+  EXPECT_FALSE(board.Open().valid());
+  (void)wake.Consume();
+  for (const Observation& seen : board.Harvest(8)) {
+    ADD_FAILURE() << "news of a retired mailbox: " << seen.operation.ToString();
+  }
+}
+
 // Provider threads publish acceptance and completion in either order while
 // the owner harvests, closes and reopens mailboxes. Every operation's
 // result arrives exactly as published, and nothing is lost to a full queue
@@ -380,6 +468,89 @@ TEST(CompletionBoard, ThreadedPublicationReachesTheOwner) {
   EXPECT_EQ(finished, kOperations);
   EXPECT_FALSE(wrong);
   EXPECT_EQ(contradictions.load(), 0);
+}
+
+// Publishers race the owner closing a mailbox at its last generation. A
+// repeat of what was recorded is a duplicate before the close and stale
+// after it; a result for an operation that never started either
+// contradicts it, which keeps the mailbox open for the fault, or loses to
+// the close and is stale. Nothing retired is reported, nothing hangs, and
+// a retired mailbox is never issued again.
+TEST(CompletionBoard, PublishersRacingARetirementFindItStale) {
+  constexpr int kRounds = 400;
+  constexpr int kPublishers = 4;
+  for (int round = 0; round < kRounds; ++round) {
+    WakeFlag wake;
+    CompletionBoard board(1, wake, UINT32_MAX);
+    const OperationId op = board.Open();
+    const bool not_started = round % 2 == 0;
+    const Terminal done{.outcome = Outcome::kSucceeded, .bytes = 1, .no_further_access = true};
+    const Acceptance acceptance = not_started ? Acceptance::kNotStarted : Acceptance::kAccepted;
+    ASSERT_EQ(board.Accept(op, acceptance), Published::kRecorded);
+    if (!not_started) {
+      ASSERT_EQ(board.Complete(op, done), Published::kRecorded);
+    }
+    (void)wake.Consume();
+    (void)board.Harvest(1);
+    std::atomic<int> running{0};
+    std::atomic<bool> go{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> landed{0};  // a result recorded, or a contradiction
+    std::atomic<int> wrong{0};
+    std::vector<std::jthread> publishers;
+    publishers.reserve(kPublishers);
+    for (int p = 0; p < kPublishers; ++p) {
+      publishers.emplace_back([&, p] {
+        running.fetch_add(1);
+        // Results start when the owner is about to close.
+        while (p % 2 == 1 && !go.load(std::memory_order_acquire)) {
+        }
+        // Publishing while the owner closes, and a little after.
+        for (int after = 0; after < 20; after += stop.load(std::memory_order_acquire) ? 1 : 0) {
+          const Published published =
+              p % 2 == 0 ? board.Accept(op, acceptance) : board.Complete(op, done);
+          if (published == Published::kRecorded || published == Published::kContradiction) {
+            landed.fetch_add(1);
+            // Only a result for an operation that never started can land.
+            if (!not_started || p % 2 == 0) {
+              wrong.fetch_add(1);
+            }
+          }
+        }
+      });
+    }
+    while (running.load() < kPublishers) {
+      std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    // A varying head start, so a result sometimes beats the close.
+    for (int spin = 0; spin < (round / 2 % 16) * 64; ++spin) {
+      (void)running.load();
+    }
+    const bool closed = board.Close(op);
+    stop.store(true, std::memory_order_release);
+    publishers.clear();
+    EXPECT_EQ(wrong.load(), 0) << "round " << round;
+    if (closed) {
+      EXPECT_TRUE(board.exhausted());
+      EXPECT_FALSE(board.Open().valid());
+      // Whatever landed before the close was a duplicate; after it, stale.
+      EXPECT_EQ(board.Accept(op, acceptance), Published::kStale);
+      EXPECT_EQ(board.Complete(op, done), Published::kStale);
+      (void)wake.Consume();
+      EXPECT_TRUE(board.Harvest(8).empty()) << "round " << round;
+    } else {
+      // Only a result that beat the close to an operation never started.
+      ASSERT_TRUE(not_started) << "round " << round;
+      EXPECT_GT(landed.load(), 0);
+      EXPECT_FALSE(board.exhausted());
+      EXPECT_EQ(board.open(), 1U);
+      const std::vector<Observation> seen = board.Harvest(8);
+      ASSERT_EQ(seen.size(), 1U);
+      EXPECT_TRUE(seen[0].contradictory);
+      EXPECT_FALSE(board.Close(op));
+    }
+  }
 }
 
 TEST(Lane, RunsEveryAcceptedCommandAndDrainsOnClose) {
@@ -546,6 +717,45 @@ TEST(TaskTable, ANotStartedSubmissionReleasesThePreparedOperation) {
   ASSERT_TRUE(board.Close(op));
   ASSERT_TRUE(tasks.RetireOperation(task).has_value());
   EXPECT_TRUE(tasks.Retire(task).has_value());
+}
+
+// Free slots are reused in rotation, so generations advance evenly across
+// the table.
+TEST(TaskTable, FreeSlotsAreReusedInRotation) {
+  TaskTable tasks(3);
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> issued;
+  for (int i = 0; i < 6; ++i) {
+    const TaskId task = tasks.Create().value();
+    issued.emplace_back(task.index(), task.generation());
+    ASSERT_TRUE(tasks.Finish(task, TaskOutcome::kSucceeded).has_value());
+    ASSERT_TRUE(tasks.Retire(task).has_value());
+  }
+  EXPECT_THAT(issued,
+              ElementsAre(Pair(0, 1), Pair(1, 1), Pair(2, 1), Pair(0, 2), Pair(1, 2), Pair(2, 2)));
+}
+
+// A slot whose generation is exhausted retires and is skipped; the table
+// refuses only once every slot has retired, and never reuses an identity.
+TEST(TaskTable, AnExhaustedSlotRetiresAndIsSkipped) {
+  TaskTable tasks(2, 2, 4, UINT32_MAX);
+  const TaskId a = tasks.Create().value();
+  EXPECT_EQ(a, TaskId(0, UINT32_MAX));
+  EXPECT_TRUE(tasks.MakeReady(a, 1).value());
+  ASSERT_TRUE(tasks.Finish(a, TaskOutcome::kSucceeded).has_value());
+  ASSERT_TRUE(tasks.Retire(a).has_value());
+  EXPECT_FALSE(tasks.exhausted());
+  const TaskId b = tasks.Create().value();
+  EXPECT_EQ(b, TaskId(1, UINT32_MAX));  // slot 0 retired: skipped
+  EXPECT_EQ(tasks.Create().error(), TaskError::kFull);
+  EXPECT_EQ(tasks.MakeReady(a, 1).error(), TaskError::kUnknownTask);
+  EXPECT_TRUE(tasks.MakeReady(b, 1).value());
+  EXPECT_EQ(tasks.NextReady(), b);
+  ASSERT_TRUE(tasks.Finish(b, TaskOutcome::kSucceeded).has_value());
+  ASSERT_TRUE(tasks.Retire(b).has_value());
+  EXPECT_EQ(tasks.size(), 0U);
+  EXPECT_TRUE(tasks.exhausted());
+  EXPECT_EQ(tasks.Create().error(), TaskError::kFull);
+  EXPECT_FALSE(tasks.Describe(b).has_value());
 }
 
 TEST(ReadyQueue, CoalescesAndServesRoundRobinByClass) {

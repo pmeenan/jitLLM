@@ -3,10 +3,12 @@
 
 #include "providers/fake/fake_device_execution.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -110,16 +112,22 @@ std::expected<FenceId, Failure> FakeDeviceExecution::Record(StreamId stream) {
   return fence;
 }
 
+std::optional<ProviderError> FakeDeviceExecution::Take(Fault& fault, FenceId fence) {
+  if (fault.times == 0 || (fault.fence.valid() && fault.fence != fence)) {
+    return std::nullopt;
+  }
+  --fault.times;
+  return fault.error;
+}
+
 std::expected<FenceState, Failure> FakeDeviceExecution::Query(FenceId fence) {
   const std::scoped_lock lock(mutex_);
   Fence* found = fences_.Find(fence);
   if (found == nullptr) {
     return Invalid("stale or unknown fence");
   }
-  if (fault_ && fault_->first == fence) {
-    const ProviderError error = fault_->second;
-    fault_.reset();
-    return std::unexpected(Failure{.error = error, .detail = "scripted device fault"});
+  if (const auto error = Take(fault_, fence)) {
+    return std::unexpected(Failure{.error = *error, .detail = "scripted device fault"});
   }
   if (found->complete) {
     found->seen = true;
@@ -136,6 +144,9 @@ std::expected<void, Failure> FakeDeviceExecution::Release(FenceId fence) {
   }
   if (!found->seen) {
     return Invalid("the fence has not been seen complete");
+  }
+  if (const auto error = Take(release_fault_, fence)) {
+    return std::unexpected(Failure{.error = *error, .detail = "scripted release failure"});
   }
   Stream* stream = streams_.Find(found->stream);
   base::Check(stream != nullptr && stream->fences > 0, "a fence outlived its stream");

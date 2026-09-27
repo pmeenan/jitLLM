@@ -60,6 +60,12 @@ add_executable(lanes_test lanes_test.cc)
 target_link_libraries(lanes_test PRIVATE jitllm_scheduler)
 jitllm_gtest(lanes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The scheduler thread's turn loop and its lanes over the fake providers:
+# deterministic turns, and threaded lost-wakeup and memory-ordering stress.
+add_executable(scheduler_test scheduler_test.cc)
+target_link_libraries(scheduler_test PRIVATE jitllm_scheduler jitllm_fake_providers)
+jitllm_gtest(scheduler_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Storage and whole reads, on the fake and on io_uring with a real file.
 add_executable(storage_test storage_test.cc)
 target_link_libraries(storage_test PRIVATE jitllm_fake_providers jitllm_storage jitllm_platform)
@@ -83,6 +89,13 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(cuda_device_execution_test PRIVATE jitllm_cuda_device_memory)
   jitllm_gtest(cuda_device_execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  # The scheduler and its lanes over io_uring, CUDA host VMM and CUDA
+  # streams (label `gpu`).
+  add_executable(cuda_lanes_test cuda_lanes_test.cc)
+  target_link_libraries(cuda_lanes_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
+  jitllm_gtest(cuda_lanes_test TEST_PREFIX unit. PROPERTIES LABELS gpu
+               ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)
   target_link_libraries(cuda_device_memory_test PRIVATE jitllm_cuda_device_memory jitllm_storage)

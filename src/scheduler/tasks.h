@@ -20,6 +20,8 @@
 //
 // The table's capacity is fixed: when it is full, or a slot's generation is
 // exhausted, creation is refused (stop admitting; never reuse an identity).
+// Free slots are reused in rotation, so generations advance evenly across
+// the table and exhaustion comes after about capacity x 2^32 tasks.
 
 #ifndef JITLLM_SCHEDULER_TASKS_H_
 #define JITLLM_SCHEDULER_TASKS_H_
@@ -105,8 +107,13 @@ class ReadyQueue {
 class TaskTable {
  public:
   // At most `capacity` tasks, served from `classes` priority classes.
-  explicit TaskTable(std::size_t capacity, std::size_t classes = 2, std::uint32_t aging_limit = 4)
-      : capacity_(capacity), ready_(classes, capacity, aging_limit) {}
+  // Every slot's generation starts at `first_generation`: a test hook
+  // (base::SlotTable); production code leaves it at 1.
+  explicit TaskTable(std::size_t capacity, std::size_t classes = 2, std::uint32_t aging_limit = 4,
+                     std::uint32_t first_generation = 1)
+      : capacity_(capacity),
+        tasks_(capacity, first_generation),
+        ready_(classes, capacity, aging_limit) {}
 
   // A new task, under `parent` if given.
   std::expected<TaskId, TaskError> Create(std::optional<TaskId> parent = std::nullopt);
@@ -144,6 +151,8 @@ class TaskTable {
   std::optional<TaskView> Describe(TaskId task) const;
   std::size_t size() const { return tasks_.size(); }
   std::size_t ready() const { return ready_.size(); }
+  // Every slot's generation is exhausted: no task can be created again.
+  bool exhausted() const { return tasks_.retired() == capacity_; }
 
  private:
   struct Task {

@@ -27,8 +27,19 @@
 // closed) changes nothing: generations are part of every atomic state
 // word, so a late write cannot land in the mailbox's next operation.
 //
+// The board keeps a proof that follows its result, but the scheduler
+// (scheduler.h) reads a result harvested without its proof as unproven
+// and quarantines the operation for good: a lane publishes the proof with
+// the result, as every lane does today, or never.
+//
 // Publishing is release/acquire synchronized, and the board signals the
 // owner's WakeFlag after every publication that needs harvesting.
+//
+// Free mailboxes are issued in rotation (the longest free first), so every
+// mailbox's generation advances at the same pace. A mailbox whose
+// generation is exhausted is retired, never reused: with rotation that
+// comes after about capacity x 2^32 operations, not one mailbox at a time
+// from the first 2^32 (docs/async-model.md).
 
 #ifndef JITLLM_SCHEDULER_COMPLETIONS_H_
 #define JITLLM_SCHEDULER_COMPLETIONS_H_
@@ -85,7 +96,11 @@ enum class Published : std::uint8_t {
 class CompletionBoard {
  public:
   // `mailboxes` operations may be in flight at once; `wake` is the owner's.
-  CompletionBoard(std::size_t mailboxes, base::WakeFlag& wake);
+  // Every mailbox's generation starts at `first_generation` (at least 1):
+  // a test hook that reaches exhaustion quickly. Production code leaves it
+  // at 1; a larger value only brings retirement sooner, since a fresh
+  // board never issues an identity twice.
+  CompletionBoard(std::size_t mailboxes, base::WakeFlag& wake, std::uint32_t first_generation = 1);
   CompletionBoard(const CompletionBoard&) = delete;
   CompletionBoard& operator=(const CompletionBoard&) = delete;
   CompletionBoard(CompletionBoard&&) = delete;
@@ -113,7 +128,19 @@ class CompletionBoard {
   // "Not started" together with a terminal result is a contradiction.
   std::vector<Observation> Harvest(std::size_t limit);
 
+  // Any thread: wakes the owner with no news, for a lane that made room in
+  // its queue without publishing anything (a cancellation it took), so a
+  // command the owner kept because that queue was full is offered again.
+  void Nudge() { wake_.Signal(); }
+
   std::size_t open() const { return open_count_; }
+  std::size_t capacity() const { return count_; }
+  // The owner: mailboxes Open can issue now. A mailbox whose generation is
+  // exhausted is retired, so this can be zero with fewer than capacity()
+  // open.
+  std::size_t available() const { return free_count_; }
+  // The owner: every mailbox is retired, so Open never issues one again.
+  bool exhausted() const { return retired_ == count_; }
 
  private:
   // State words: the mailbox generation in the high bits, the rest in the
@@ -135,6 +162,9 @@ class CompletionBoard {
   static constexpr std::uint8_t kEmpty = 0;
   static constexpr std::uint8_t kWriting = 1;
   static constexpr std::uint8_t kWritten = 2;
+  // The contradiction word of a mailbox retired at its last generation: a
+  // value no publisher sets.
+  static constexpr std::uint8_t kRetiredMark = 2;
   static std::uint8_t Encode(const Terminal& terminal);
   static Terminal Decode(std::uint8_t value, std::uint64_t bytes, bool proven);
 
@@ -152,6 +182,9 @@ class CompletionBoard {
   // The terminal result recorded for `generation`, if it is complete and
   // still current.
   static std::optional<Terminal> ReadTerminal(const Mailbox& mailbox, std::uint32_t generation);
+  // The mailbox was closed at its last generation, `generation`: every
+  // publication for it is stale.
+  static bool IsRetired(const Mailbox& mailbox, std::uint32_t generation);
   void Announce(std::uint32_t index);
   // Marks the mailbox contradictory, if its generation is still current.
   Published Contradict(Mailbox& mailbox, std::uint32_t generation, std::uint32_t index);
@@ -162,9 +195,13 @@ class CompletionBoard {
   std::vector<Mailbox> mailboxes_;
   std::size_t count_;
   base::WakeFlag& wake_;
-  // Owner only.
+  // Owner only: free mailboxes, a ring of free_count_ entries from
+  // free_head_, in the order they were freed.
   std::vector<std::uint32_t> free_;
+  std::size_t free_head_ = 0;
+  std::size_t free_count_ = 0;
   std::size_t open_count_ = 0;
+  std::size_t retired_ = 0;
   // The news queue: each mailbox at most once, so it never overflows.
   std::mutex news_mutex_;
   std::vector<std::uint32_t> news_;

@@ -48,7 +48,18 @@ class FakeDeviceExecution final : public DeviceExecution {
   // The next query of `fence` reports this failure (a device fault).
   void FailNextQuery(FenceId fence, ProviderError error) {
     const std::scoped_lock lock(mutex_);
-    fault_ = {fence, error};
+    fault_ = {.fence = fence, .error = error, .times = 1};
+  }
+  // The next `times` queries of any fence report this failure; zero stops.
+  void FailNextQuery(ProviderError error, std::size_t times = 1) {
+    const std::scoped_lock lock(mutex_);
+    fault_ = {.fence = FenceId{}, .error = error, .times = times};
+  }
+  // The next `times` releases of any fence report this failure and change
+  // nothing; zero stops.
+  void FailNextRelease(ProviderError error, std::size_t times) {
+    const std::scoped_lock lock(mutex_);
+    release_fault_ = {.fence = FenceId{}, .error = error, .times = times};
   }
 
   std::size_t streams() const {
@@ -85,7 +96,15 @@ class FakeDeviceExecution final : public DeviceExecution {
   mutable std::mutex mutex_;
   base::SlotTable<StreamTag, Stream> streams_;
   base::SlotTable<FenceTag, Fence> fences_;
-  std::optional<std::pair<FenceId, ProviderError>> fault_;
+  struct Fault {
+    FenceId fence;  // invalid for any fence
+    ProviderError error = ProviderError::kFailed;
+    std::size_t times = 0;
+  };
+  // Takes one failure from `fault` for `fence`, if it applies.
+  static std::optional<ProviderError> Take(Fault& fault, FenceId fence);
+  Fault fault_;          // queries
+  Fault release_fault_;  // releases
   std::uint64_t next_native_ = 0;
 };
 
