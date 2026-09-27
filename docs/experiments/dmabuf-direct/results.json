@@ -1,0 +1,786 @@
+{
+ "coherence": {
+  "hvmm": {
+   "bytes_per_round": 4194304,
+   "cpu_after_l2_prime_bad": 0,
+   "dma_after_l2_prime_bad": 0,
+   "gpu_write_cpu_read_bad": 0,
+   "initial_bad": 0,
+   "rounds": 60
+  },
+  "udmabuf-4k": {
+   "bytes_per_round": 4194304,
+   "cpu_after_l2_prime_bad": 0,
+   "dma_after_l2_prime_bad": 0,
+   "gpu_write_cpu_read_bad": 0,
+   "initial_bad": 0,
+   "rounds": 60
+  }
+ },
+ "micro": {
+  "dvmm": {
+   "rand-2m": {
+    "gbps_median_of_process_medians": 208.2,
+    "process_medians": [
+     208.7,
+     206.1,
+     208.2
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 241.1
+   },
+   "rand-8m-span": {
+    "gbps_median_of_process_medians": 388.6,
+    "process_medians": [
+     388.6,
+     388.6,
+     388.8
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 129.4
+   },
+   "rand-all": {
+    "gbps_median_of_process_medians": 281.5,
+    "process_medians": [
+     282.0,
+     281.5,
+     278.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 178.8
+   },
+   "reread-16m": {
+    "gbps_median_of_process_medians": 1977.0,
+    "process_medians": [
+     1979.8,
+     1977.0,
+     1943.6
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 135.7
+   },
+   "reread-4m": {
+    "gbps_median_of_process_medians": 1979.4,
+    "process_medians": [
+     1979.4,
+     1979.8,
+     1926.2
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 135.6
+   },
+   "reread-64m": {
+    "gbps_median_of_process_medians": 382.4,
+    "process_medians": [
+     371.4,
+     382.4,
+     386.5
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 701.7
+   },
+   "scan16": {
+    "gbps_median_of_process_medians": 238.2,
+    "process_medians": [
+     237.7,
+     239.3,
+     238.2
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1124.7
+   },
+   "write-per-block": {
+    "gbps_median_of_process_medians": 6.3,
+    "process_medians": [
+     6.3,
+     6.3,
+     6.3
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 96.6
+   },
+   "write16": {
+    "gbps_median_of_process_medians": 197.2,
+    "process_medians": [
+     197.2,
+     197.2,
+     196.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1361.2
+   }
+  },
+  "hvmm": {
+   "rand-2m": {
+    "gbps_median_of_process_medians": 209.5,
+    "process_medians": [
+     211.4,
+     209.5,
+     208.1
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 240.0
+   },
+   "rand-8m-span": {
+    "gbps_median_of_process_medians": 225.0,
+    "process_medians": [
+     227.2,
+     218.9,
+     225.0
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 223.6
+   },
+   "rand-all": {
+    "gbps_median_of_process_medians": 214.4,
+    "process_medians": [
+     207.9,
+     215.0,
+     214.4
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 234.6
+   },
+   "reread-16m": {
+    "gbps_median_of_process_medians": 240.2,
+    "process_medians": [
+     240.2,
+     242.2,
+     238.7
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1115.5
+   },
+   "reread-4m": {
+    "gbps_median_of_process_medians": 248.4,
+    "process_medians": [
+     248.4,
+     255.6,
+     248.4
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1078.6
+   },
+   "reread-64m": {
+    "gbps_median_of_process_medians": 241.1,
+    "process_medians": [
+     241.1,
+     248.2,
+     240.3
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1112.8
+   },
+   "scan16": {
+    "gbps_median_of_process_medians": 243.1,
+    "process_medians": [
+     239.6,
+     243.8,
+     243.1
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1103.9
+   },
+   "write-per-block": {
+    "gbps_median_of_process_medians": 2.6,
+    "process_medians": [
+     2.6,
+     2.6,
+     2.4
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 233.8
+   },
+   "write16": {
+    "gbps_median_of_process_medians": 215.5,
+    "process_medians": [
+     215.5,
+     215.9,
+     215.3
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1245.4
+   }
+  },
+  "malloc": {
+   "rand-2m": {
+    "gbps_median_of_process_medians": 206.9,
+    "process_medians": [
+     206.9,
+     205.3,
+     207.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 243.2
+   },
+   "rand-8m-span": {
+    "gbps_median_of_process_medians": 388.6,
+    "process_medians": [
+     388.6,
+     388.5,
+     388.7
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 129.5
+   },
+   "rand-all": {
+    "gbps_median_of_process_medians": 281.5,
+    "process_medians": [
+     282.1,
+     281.5,
+     279.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 178.8
+   },
+   "reread-16m": {
+    "gbps_median_of_process_medians": 1923.6,
+    "process_medians": [
+     1979.8,
+     1923.6,
+     1923.1
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 137.7
+   },
+   "reread-4m": {
+    "gbps_median_of_process_medians": 1953.6,
+    "process_medians": [
+     1934.6,
+     1978.4,
+     1953.6
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 136.6
+   },
+   "reread-64m": {
+    "gbps_median_of_process_medians": 378.7,
+    "process_medians": [
+     379.2,
+     374.8,
+     378.7
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 708.8
+   },
+   "scan16": {
+    "gbps_median_of_process_medians": 243.1,
+    "process_medians": [
+     234.1,
+     243.1,
+     244.8
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1103.3
+   },
+   "write-per-block": {
+    "gbps_median_of_process_medians": 6.3,
+    "process_medians": [
+     6.3,
+     6.3,
+     6.3
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 96.5
+   },
+   "write16": {
+    "gbps_median_of_process_medians": 196.9,
+    "process_medians": [
+     197.1,
+     196.6,
+     196.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1362.3
+   }
+  },
+  "udmabuf-4k": {
+   "rand-2m": {
+    "gbps_median_of_process_medians": 3.1,
+    "process_medians": [
+     3.2,
+     3.1,
+     3.1
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 16336.3
+   },
+   "rand-8m-span": {
+    "gbps_median_of_process_medians": 212.3,
+    "process_medians": [
+     215.0,
+     212.3,
+     208.9
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 236.1
+   },
+   "rand-all": {
+    "gbps_median_of_process_medians": 2.6,
+    "process_medians": [
+     2.7,
+     2.6,
+     2.6
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 19022.1
+   },
+   "reread-16m": {
+    "gbps_median_of_process_medians": 231.7,
+    "process_medians": [
+     234.4,
+     231.7,
+     229.1
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1156.5
+   },
+   "reread-4m": {
+    "gbps_median_of_process_medians": 226.1,
+    "process_medians": [
+     233.4,
+     226.1,
+     224.5
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1186.5
+   },
+   "reread-64m": {
+    "gbps_median_of_process_medians": 234.0,
+    "process_medians": [
+     234.0,
+     239.9,
+     231.8
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1146.3
+   },
+   "scan16": {
+    "gbps_median_of_process_medians": 235.6,
+    "process_medians": [
+     245.4,
+     234.4,
+     235.6
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1137.1
+   },
+   "write-per-block": {
+    "gbps_median_of_process_medians": 2.4,
+    "process_medians": [
+     2.4,
+     2.1,
+     2.5
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 256.3
+   },
+   "write16": {
+    "gbps_median_of_process_medians": 213.9,
+    "process_medians": [
+     213.9,
+     214.7,
+     213.4
+    ],
+    "processes": 3,
+    "samples_per_process": 10,
+    "us_median_of_process_medians": 1254.7
+   }
+  }
+ },
+ "micro_content_bad": {
+  "dvmm": [
+   0,
+   0,
+   0
+  ],
+  "hvmm": [
+   0,
+   0,
+   0
+  ],
+  "malloc": [
+   0,
+   0,
+   0
+  ],
+  "udmabuf-4k": [
+   0,
+   0,
+   0
+  ]
+ },
+ "restore": {
+  "hvmm-inplace@2": {
+   "bad_words": 0,
+   "cpu_s_median": 0.13,
+   "gbps_median": 13.291,
+   "gbps_process_medians": [
+    13.291,
+    13.279,
+    13.342
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    311.0,
+    310.0,
+    310.0
+   ],
+   "p50_us_median": 310.0,
+   "p99_process_medians": [
+    402.0,
+    440.0,
+    411.0
+   ],
+   "p99_us_median": 434.0,
+   "passes": 9
+  },
+  "hvmm-inplace@4": {
+   "bad_words": 0,
+   "cpu_s_median": 0.13,
+   "gbps_median": 14.941,
+   "gbps_process_medians": [
+    14.941,
+    14.957,
+    14.936
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    558.0,
+    558.0,
+    558.0
+   ],
+   "p50_us_median": 558.0,
+   "p99_process_medians": [
+    617.0,
+    625.0,
+    640.0
+   ],
+   "p99_us_median": 638.0,
+   "passes": 9
+  },
+  "hvmm-inplace@8": {
+   "bad_words": 0,
+   "cpu_s_median": 0.13,
+   "gbps_median": 14.952,
+   "gbps_process_medians": [
+    14.953,
+    14.933,
+    14.952
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    1116.0,
+    1116.0,
+    1116.0
+   ],
+   "p50_us_median": 1116.0,
+   "p99_process_medians": [
+    1241.0,
+    1217.0,
+    1193.0
+   ],
+   "p99_us_median": 1217.0,
+   "passes": 9
+  },
+  "land-ce@2": {
+   "bad_words": 0,
+   "cpu_s_median": 0.18,
+   "gbps_median": 13.184,
+   "gbps_process_medians": [
+    13.198,
+    13.186,
+    13.154
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    0
+   ],
+   "p50_process_medians": [
+    349.0,
+    348.0,
+    347.0
+   ],
+   "p50_us_median": 348.0,
+   "p99_process_medians": [
+    547.0,
+    543.0,
+    546.0
+   ],
+   "p99_us_median": 546.0,
+   "passes": 9
+  },
+  "land-ce@4": {
+   "bad_words": 0,
+   "cpu_s_median": 0.18,
+   "gbps_median": 14.918,
+   "gbps_process_medians": [
+    14.918,
+    14.959,
+    14.817
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    597.0,
+    597.0,
+    597.0
+   ],
+   "p50_us_median": 597.0,
+   "p99_process_medians": [
+    805.0,
+    684.0,
+    897.0
+   ],
+   "p99_us_median": 805.0,
+   "passes": 9
+  },
+  "land-ce@8": {
+   "bad_words": 0,
+   "cpu_s_median": 0.18,
+   "gbps_median": 14.955,
+   "gbps_process_medians": [
+    14.942,
+    14.967,
+    14.955
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    1155.0,
+    1155.0,
+    1155.0
+   ],
+   "p50_us_median": 1155.0,
+   "p99_process_medians": [
+    1564.0,
+    1511.0,
+    1503.0
+   ],
+   "p99_us_median": 1505.0,
+   "passes": 9
+  },
+  "land-sm@2": {
+   "bad_words": 0,
+   "cpu_s_median": 0.14,
+   "gbps_median": 13.192,
+   "gbps_process_medians": [
+    13.302,
+    13.192,
+    13.181
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    339.0,
+    339.0,
+    339.0
+   ],
+   "p50_us_median": 339.0,
+   "p99_process_medians": [
+    489.0,
+    497.0,
+    561.0
+   ],
+   "p99_us_median": 497.0,
+   "passes": 9
+  },
+  "land-sm@4": {
+   "bad_words": 0,
+   "cpu_s_median": 0.13,
+   "gbps_median": 14.953,
+   "gbps_process_medians": [
+    14.94,
+    14.957,
+    14.959
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    587.0,
+    587.0,
+    587.0
+   ],
+   "p50_us_median": 587.0,
+   "p99_process_medians": [
+    666.0,
+    666.0,
+    665.0
+   ],
+   "p99_us_median": 666.0,
+   "passes": 9
+  },
+  "land-sm@8": {
+   "bad_words": 0,
+   "cpu_s_median": 0.14,
+   "gbps_median": 14.956,
+   "gbps_process_medians": [
+    14.956,
+    14.947,
+    14.956
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    1145.0,
+    1146.0,
+    1145.0
+   ],
+   "p50_us_median": 1145.0,
+   "p99_process_medians": [
+    1302.0,
+    1372.0,
+    1258.0
+   ],
+   "p99_us_median": 1289.0,
+   "passes": 9
+  },
+  "udmabuf-4k@2": {
+   "bad_words": 0,
+   "cpu_s_median": 0.15,
+   "gbps_median": 13.146,
+   "gbps_process_medians": [
+    13.022,
+    13.146,
+    13.178
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    309.0,
+    308.0,
+    308.0
+   ],
+   "p50_us_median": 308.0,
+   "p99_process_medians": [
+    566.0,
+    458.0,
+    437.0
+   ],
+   "p99_us_median": 454.0,
+   "passes": 9
+  },
+  "udmabuf-4k@4": {
+   "bad_words": 0,
+   "cpu_s_median": 0.15,
+   "gbps_median": 14.697,
+   "gbps_process_medians": [
+    14.703,
+    14.704,
+    14.658
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    558.0,
+    558.0,
+    558.0
+   ],
+   "p50_us_median": 558.0,
+   "p99_process_medians": [
+    646.0,
+    640.0,
+    706.0
+   ],
+   "p99_us_median": 656.0,
+   "passes": 9
+  },
+  "udmabuf-4k@8": {
+   "bad_words": 0,
+   "cpu_s_median": 0.14,
+   "gbps_median": 14.702,
+   "gbps_process_medians": [
+    14.725,
+    14.684,
+    14.681
+   ],
+   "negative_control_bad": [
+    1,
+    1,
+    1
+   ],
+   "p50_process_medians": [
+    1116.0,
+    1117.0,
+    1117.0
+   ],
+   "p50_us_median": 1117.0,
+   "p99_process_medians": [
+    1203.0,
+    1224.0,
+    1222.0
+   ],
+   "p99_us_median": 1203.0,
+   "passes": 9
+  }
+ }
+}

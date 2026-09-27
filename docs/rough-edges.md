@@ -30,6 +30,27 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-025: GB10 device memory cannot be exported as a dma-buf, and NVIDIA dma-buf mappings refuse direct I/O  (2026-09-27, status: open)
+
+On `spark` (GB10, driver 580.178.04, CUDA 13.0 toolkit, kernel
+7.0.0-1019-nvidia), `CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED` is 0.
+`cuMemGetHandleForAddressRange(..., CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, ...)`
+returns `CUDA_ERROR_INVALID_VALUE` (not `NOT_SUPPORTED`) for device VMM and
+host VMM, with or without the PCIe flag, and for `cuMemAlloc`. The CUDA 13.4
+header's `CU_DEVICE_ATTRIBUTE_DMA_BUF_MMAP_SUPPORTED` (152) is unknown to
+this driver (`INVALID_VALUE`), and its "cached mapping on coherent ARM" note
+does not apply. Only `cuMemAllocHost` exports. Its `mmap` is CPU-cached but
+is a PFN map (`VM_PFNMAP | VM_IO`, smaps `pf io`), so `O_DIRECT`, io_uring
+reads and `IORING_REGISTER_BUFFERS` into it fail with `EFAULT`.
+`pin_user_pages` refuses such VMAs, and the open module's `nv_dma_buf_mmap`
+says so; 610.57.04's source still maps by PFN (read, not tested). The
+reverse direction works outside the documentation: a `udmabuf` of a shmem
+`memfd` imports through `cuImportExternalMemory(..._DMABUF_FD)`
+(documented for Jetson Thor only), and a hugetlb one is refused. The GPU treats it as host-located memory: no
+L2 reuse, and 2.6 GB/s random reads with 4 KiB pages. Net: no route lands a
+direct read in L2-cacheable memory on the Spark. Evidence:
+[dmabuf-direct](experiments/dmabuf-direct/README.md).
+
 ## RE-024: MemAvailable misses host memory held on the per-CPU page lists  (2026-09-27, status: worked-around)
 
 Environment: `spark-b` (kernel 7.0.0-1019-nvidia, 4 KiB pages, 20 CPUs,
@@ -97,7 +118,8 @@ all their buffers there (BP-F1). Ordinary memory read through ATS
 ~165 GB/s. The CUDA 13.4 headers offer no allocation or access flag for
 caching, and a persisting access-policy window does not change it.
 `cuMemSetAccess` refuses to map device VMM for the CPU
-(`CUDA_ERROR_NOT_SUPPORTED`). Measurements, options and reproduction:
+(`CUDA_ERROR_NOT_SUPPORTED`), and it cannot be exported as a dma-buf
+either (RE-025). Measurements, options and reproduction:
 [host-vmm-diagnosis](experiments/host-vmm-diagnosis/README.md).
 Before placing any buffer the GPU re-reads in host-located memory on the
 Spark, measure it with a re-reading kernel, not a scan.
