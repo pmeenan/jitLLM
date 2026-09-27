@@ -1,0 +1,2588 @@
+{
+ "format": "jitllm-retained-backing-library",
+ "version": 1,
+ "planner": {
+  "path": "docs/experiments/artifact-layout/layout.py",
+  "sha256": "a0d1980a9eddd1adf60863cf7b825396700691fd17b3cd62ca063fda2e0b6809"
+ },
+ "chunk_bytes": 2097152,
+ "file_align": 4096,
+ "profiles": [
+  {
+   "profile": "qwen25",
+   "model": "Qwen2.5-0.5B-Instruct FP16 GGUF (D-051)",
+   "architecture": "qwen2",
+   "experts": 0,
+   "dense": [
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 29830656,
+     "stored": 29831168
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 272272896,
+     "stored": 272273408
+    }
+   ],
+   "expert_layers": [],
+   "totals": {
+    "groups": 25,
+    "chunks": 490,
+    "group_used_bytes": 988208640,
+    "disk_bytes": 988221440,
+    "handle_backing_bytes": 1027604480
+   }
+  },
+  {
+   "profile": "exl3-4.0bpw",
+   "model": "Qwen2.5-0.5B-Instruct EXL3 4.0 bpw (D-052)",
+   "architecture": "qwen2",
+   "experts": 0,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 272269312,
+     "stored": 272269312
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 7508224,
+     "stored": 7512064
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 136442368,
+     "stored": 136445952
+    }
+   ],
+   "expert_layers": [],
+   "totals": {
+    "groups": 26,
+    "chunks": 292,
+    "group_used_bytes": 588909056,
+    "disk_bytes": 589004800,
+    "handle_backing_bytes": 612368384
+   }
+  },
+  {
+   "profile": "exl3-4.5bpw",
+   "model": "Qwen2.5-0.5B-Instruct EXL3 4.5 bpw (D-052)",
+   "architecture": "qwen2",
+   "experts": 0,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 272269312,
+     "stored": 272269312
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 9601280,
+     "stored": 9605120
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 9601280,
+     "stored": 9605120
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 9371904,
+     "stored": 9375744
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 7737600,
+     "stored": 7741440
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 136442368,
+     "stored": 136445952
+    }
+   ],
+   "expert_layers": [],
+   "totals": {
+    "groups": 26,
+    "chunks": 302,
+    "group_used_bytes": 611215872,
+    "disk_bytes": 611311616,
+    "handle_backing_bytes": 633339904
+   }
+  },
+  {
+   "profile": "gemma",
+   "model": "Gemma 4 26B-A4B UD-Q4_K_M",
+   "architecture": "gemma4",
+   "experts": 128,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 784335120,
+     "stored": 784338944
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 72581376,
+     "stored": 72585216
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 72581376,
+     "stored": 72585216
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 72581376,
+     "stored": 72585216
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 72581376,
+     "stored": 72585216
+    },
+    {
+     "kind": "layer",
+     "layer": 24,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 25,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 26,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 27,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 28,
+     "used": 57260800,
+     "stored": 57262080
+    },
+    {
+     "kind": "layer",
+     "layer": 29,
+     "used": 72581376,
+     "stored": 72585216
+    },
+    {
+     "kind": "global",
+     "layer": null,
+     "used": 12288,
+     "stored": 12288
+    }
+   ],
+   "expert_layers": [
+    {
+     "layer": 0,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 1,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 2,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 3,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 4,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 5,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 6,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 7,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 8,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 9,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 10,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 11,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 12,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 13,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 14,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 15,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 16,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 17,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 18,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 19,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 20,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 21,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 22,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 23,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 24,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 25,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 26,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 27,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 28,
+     "count": 128,
+     "used": 3717520,
+     "stored": 3719168
+    },
+    {
+     "layer": 29,
+     "count": 128,
+     "used": 4337296,
+     "stored": 4337664
+    }
+   ],
+   "totals": {
+    "groups": 3872,
+    "chunks": 9059,
+    "group_used_bytes": 16933382416,
+    "disk_bytes": 16939601920,
+    "handle_backing_bytes": 18998099968
+   }
+  },
+  {
+   "profile": "ornith",
+   "model": "Ornith 1.5 35B Q4_K_M",
+   "architecture": "qwen35moe",
+   "experts": 256,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 286064640,
+     "stored": 286064640
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 19228672,
+     "stored": 19230720
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 19228672,
+     "stored": 19230720
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 19228672,
+     "stored": 19230720
+    },
+    {
+     "kind": "layer",
+     "layer": 24,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 25,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 26,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 27,
+     "used": 19228672,
+     "stored": 19230720
+    },
+    {
+     "kind": "layer",
+     "layer": 28,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 29,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 30,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 31,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 32,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 33,
+     "used": 22971392,
+     "stored": 22974464
+    },
+    {
+     "kind": "layer",
+     "layer": 34,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 35,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 36,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 37,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 38,
+     "used": 27567104,
+     "stored": 27570176
+    },
+    {
+     "kind": "layer",
+     "layer": 39,
+     "used": 19769344,
+     "stored": 19771392
+    },
+    {
+     "kind": "layer",
+     "layer": 40,
+     "used": 24512512,
+     "stored": 24514560
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 417185792,
+     "stored": 417185792
+    }
+   ],
+   "expert_layers": [
+    {
+     "layer": 0,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 1,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 2,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 3,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 4,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 5,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 6,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 7,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 8,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 9,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 10,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 11,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 12,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 13,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 14,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 15,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 16,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 17,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 18,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 19,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 20,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 21,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 22,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 23,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 24,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 25,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 26,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 27,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 28,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 29,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 30,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 31,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 32,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 33,
+     "count": 256,
+     "used": 1769472,
+     "stored": 1769472
+    },
+    {
+     "layer": 34,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 35,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 36,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 37,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 38,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 39,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    },
+    {
+     "layer": 40,
+     "count": 256,
+     "used": 2039808,
+     "stored": 2039808
+    }
+   ],
+   "totals": {
+    "groups": 10539,
+    "chunks": 11316,
+    "group_used_bytes": 21702479872,
+    "disk_bytes": 21702594560,
+    "handle_backing_bytes": 23731372032
+   }
+  },
+  {
+   "profile": "qwen38",
+   "model": "Qwen3.8 Flash Next UD-IQ3_XXS",
+   "architecture": "qwen4exp",
+   "experts": 512,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 28800138438,
+     "stored": 28800139264
+    },
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 521472000,
+     "stored": 521474048
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 107578368,
+     "stored": 107581440
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 83427328,
+     "stored": 83427328
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 24,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 25,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 26,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 27,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 28,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 29,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 30,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 31,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 32,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 33,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 34,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 35,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 36,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 37,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 38,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 39,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 40,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 41,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 42,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 43,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "layer",
+     "layer": 44,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 45,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 46,
+     "used": 72475648,
+     "stored": 72478720
+    },
+    {
+     "kind": "layer",
+     "layer": 47,
+     "used": 68156416,
+     "stored": 68157440
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 528476416,
+     "stored": 528478208
+    }
+   ],
+   "expert_layers": [
+    {
+     "layer": 0,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 1,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 2,
+     "count": 512,
+     "used": 2329856,
+     "stored": 2330624
+    },
+    {
+     "layer": 3,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 4,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 5,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 6,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 7,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 8,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 9,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 10,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 11,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 12,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 13,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 14,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 15,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 16,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 17,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 18,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 19,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 20,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 21,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 22,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 23,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 24,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 25,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 26,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 27,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 28,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 29,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 30,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 31,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 32,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 33,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 34,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 35,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 36,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 37,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 38,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 39,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 40,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 41,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 42,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 43,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 44,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 45,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 46,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    },
+    {
+     "layer": 47,
+     "count": 512,
+     "used": 1971456,
+     "stored": 1974272
+    }
+   ],
+   "totals": {
+    "groups": 24627,
+    "chunks": 41000,
+    "group_used_bytes": 81957145030,
+    "disk_bytes": 82025426944,
+    "handle_backing_bytes": 85983232000
+   }
+  },
+  {
+   "profile": "dsv4",
+   "model": "DeepSeek V4 Flash UD-Q2_K_XL",
+   "architecture": "deepseek4",
+   "experts": 256,
+   "dense": [
+    {
+     "kind": "table",
+     "layer": null,
+     "used": 364052480,
+     "stored": 364052480
+    },
+    {
+     "kind": "layer",
+     "layer": 0,
+     "used": 138867724,
+     "stored": 138870784
+    },
+    {
+     "kind": "layer",
+     "layer": 1,
+     "used": 138867724,
+     "stored": 138870784
+    },
+    {
+     "kind": "layer",
+     "layer": 2,
+     "used": 159993600,
+     "stored": 159993856
+    },
+    {
+     "kind": "layer",
+     "layer": 3,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 4,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 5,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 6,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 7,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 8,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 9,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 10,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 11,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 12,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 13,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 14,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 15,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 16,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 17,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 18,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 19,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 20,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 21,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 22,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 23,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 24,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 25,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 26,
+     "used": 161708800,
+     "stored": 161710080
+    },
+    {
+     "kind": "layer",
+     "layer": 27,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 28,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 29,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 30,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 31,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 32,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 33,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 34,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 35,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 36,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 37,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 38,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 39,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 40,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "layer",
+     "layer": 41,
+     "used": 140486668,
+     "stored": 140488704
+    },
+    {
+     "kind": "layer",
+     "layer": 42,
+     "used": 156891904,
+     "stored": 156893184
+    },
+    {
+     "kind": "head",
+     "layer": null,
+     "used": 298140160,
+     "stored": 298143744
+    }
+   ],
+   "expert_layers": [
+    {
+     "layer": 0,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 1,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 2,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 3,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 4,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 5,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 6,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 7,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 8,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 9,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 10,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 11,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 12,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 13,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 14,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 15,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 16,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 17,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 18,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 19,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 20,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 21,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 22,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 23,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 24,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 25,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 26,
+     "count": 256,
+     "used": 10878976,
+     "stored": 10878976
+    },
+    {
+     "layer": 27,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 28,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 29,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 30,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 31,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 32,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 33,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 34,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 35,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 36,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 37,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 38,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 39,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 40,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 41,
+     "count": 256,
+     "used": 8060928,
+     "stored": 8060928
+    },
+    {
+     "layer": 42,
+     "count": 256,
+     "used": 9306112,
+     "stored": 9306112
+    }
+   ],
+   "totals": {
+    "groups": 11053,
+    "chunks": 48171,
+    "group_used_bytes": 96827192840,
+    "disk_bytes": 96827269120,
+    "handle_backing_bytes": 101021908992
+   }
+  }
+ ]
+}

@@ -442,6 +442,8 @@ before the native output it governs.
   of EXL3-G's GEMM-only gap. Each is settled by the default D-079 records
   and written here, with its evidence, before any native result it judges
   is seen.
+  The retained-backing criteria are pre-registered, with the trace's
+  identity, [below](#retained-backing-comparison).
 
 Each part is approved, or pre-registered under D-079, before any native
 result it would judge is seen.
@@ -1245,13 +1247,16 @@ with dependency safety and bounded queues.
 - The measured expert-closure sizes (about 1.8–10.9 MB) and the per-model
   memory padding of per-chunk handles (3.49–10.87%) come from D-056's
   [worked examples](artifact-format.md#worked-examples-measured-plans-of-real-files).
-- **A cross-model swap trace that leaves holes in slabs does not exist
-  yet.** Build it before (a) runs, as an eviction/restore sequence across
-  several library models. Its extents are synthetic, drawn from D-056's
-  measured group and closure sizes. The reference A→B→A frozen trace and
-  the paging-feasibility routing captures are raw material for it. Like
-  other replay inputs, the trace stays outside Git; its generator and
-  verified identity are recorded.
+- **The cross-model swap trace** is
+  [built](experiments/retained-backing/README.md). It has:
+  - eight synthetic models with D-056's measured groups and closures;
+  - 16 episodes shaped like the frozen A→B→A trace, routed by the
+    paging-feasibility captures;
+  - a 1 GiB shrink probe at every outward switch;
+  - per budget, a fragmentation-free reference eviction/restore sequence.
+
+  Like other replay inputs, it stays outside Git; its generator,
+  parameters and identity are recorded.
 - **The proof fixtures cannot exercise realistic fragmentation.** The FP16
   artifact's groups total 988,208,640 bytes, under one 1 GiB slab, the EXL3
   fixtures are smaller, and none has experts. Compare hole policies by
@@ -1259,98 +1264,176 @@ with dependency safety and bounded queues.
   M2 memory manager and synthetic extents. Report end-to-end restore on the
   real fixtures. This uses synthetic extents only,
   not MoE execution, which stays in M5.
-- **Criteria before measurement.** As in P0, the metrics, budgets, trace
-  identity and the margins at which a slab or hybrid design would amend
-  D-033 are fixed before any candidate result is seen. Their approval is
-  delegated under D-079, whose default keeps D-033 unless a design beats it
-  by more than run-to-run noise with no worse waste, refusals or restore
-  latency.
 - **Expert compaction is partial at M2.** Relocation without VA remapping
   assumes pointer-table dispatch. For experts, the M5 GGML proof decides
   that. M2 evaluates compaction for dense groups, and the expert
   case is completed in M5.
 
-**Proposed criteria** (2026-09-25, second draft; approval delegated under
-D-079, and settled with the open points below before any design runs on
-the trace). The trace's identity is added and approved once the trace exists,
-before any design runs on it. Margins and budgets are proposals, not
-measurements.
+**Criteria** (pre-registered on 2026-09-26 under D-079, before any design
+has run on the trace; frozen). D-033 stays unless a slab or hybrid design
+meets all of them at every budget and on both seeds.
 
-Still needed:
-- define "the allowance" for (a) and (b), and an exact rule for
-  deterministic counts;
-- replace "end-to-end minus transfer", which is undefined where the two
-  overlap;
-- say which of the cold and warm restores each criterion applies to;
-- an interleaving design;
-- extent alignment of at least 4 KiB where direct reads land
-  (artifact-format.md), not 256 B.
-
+- **Trace** ([identity and retrieval](experiments/retained-backing/README.md#identity)):
+  - generator `swap_trace.py` `0145799a…`, `params.json` `d7e7d6b2…`,
+    `library.json` `1880e984…`;
+  - primary seed 20260926 (manifest `44f9f2b4…`);
+  - confirmation seed 926202601 (manifest `8aee64a5…`), never looked at
+    while choosing.
+- **Budgets.** Each budget is the largest multiple of 1 GiB not above the
+  trace's unique stored bytes divided by 5/4, 3/2 and 2. For the primary
+  that gives 64, 53 and 40 GiB. Held backing, handles in handoff
+  included, never exceeds the budget less any outstanding shrink.
 - **Designs.**
-  - The baseline is D-033: one 2 MiB handle per extent, no free pool.
+  - The baseline is D-033: one 2 MiB handle per chunk, no free pool, and
+    handoff on reclaim.
   - The alternatives are persistently mapped slabs of 32 MiB, 256 MiB and
-    1 GiB, each with software suballocation.
-  - Each slab size is tried with the four hole policies above.
-  - Suballocation keeps the validated alignment classes: the larger of the
-    kernels' (at least 256 B inside shared extents, "Source findings") and
-    the direct reads' (4 KiB). Rung 5 covers relocation within a slab.
-- **Trace.**
-  - A seeded generator, kept in Git, builds a library of synthetic models.
-    Their dense groups and expert closures take D-056's measured sizes.
-  - The switching sequence derives from the reference A→B→A frozen trace
-    and the paging-feasibility routing captures.
-  - Its identity is the generator's hash, its parameters, its seed and the
-    output's SHA-256.
-  - A second seed, never looked at while choosing, confirms the winner in a
-    fresh session.
-- **Budgets.** The physical budget is set so that the trace's unique bytes
-  are 1.25, 1.5 and 2 times the budget.
-- **Metrics, per design and budget.** Cold restores (backing created) and
-  warm restores (backing handed off) are reported separately.
-  - End-to-end restore latency per closure, from request to ready for its
-    consumer, at p50, p95 and p99. Its 95% interval comes from a bootstrap
-    over switch events.
-  - The part of that latency the design causes: the end-to-end time minus
-    the same run's measured transfer time for the closure's bytes.
-  - Driver calls and time per restored byte, and io_uring buffer
-    registration and unregistration.
-  - Stranded bytes (free inside slabs but unusable), as a time-weighted
-    mean and a peak, as a share of the budget.
-  - Admissions delayed or refused because of fragmentation, and the total
-    delay.
-  - The time to return 1 GiB to the OS on demand, and what it evicts.
-  - Decode inflation during restore or compaction, measured as EXL3-G
-    decode token time against a quiet control.
-  - Bytes moved by compaction.
-- **Amending D-033.** A slab or hybrid design replaces the baseline only if
-  it meets all of the following at every budget and on both seeds:
-  - its design-attributable p95 restore time is better by more than the
-    measurement allowance, the run-to-run noise (D-079);
-  - its end-to-end p95 is no worse, beyond the allowance;
-  - its total waste, stranded plus padding, is no more than the baseline's
-    padding, both as a time-weighted mean and at the peak;
-  - it has no more fragmentation-induced refusals than the baseline, and no
-    more total admission delay beyond the allowance;
-  - when shrinking, it evicts no more useful content than the baseline, and
-    its p95 shrink time is no worse, beyond the allowance;
-  - it inflates decode by no more than the baseline, beyond the allowance;
-  - if it moves addresses, it passes BP-P5, BP-L2 and BP-L6.
+    1 GiB with software suballocation. Each slab size is tried with the
+    four hole policies above, in that order, which makes 12 designs.
+  - Suballocation places every group at a 4 KiB-aligned offset, because
+    direct reads land at group starts (D-056). Resources keep their
+    256-byte alignment inside the group, which covers the kernels' (at
+    least 256 B, "Source findings"). Rung 5 covers relocation within a
+    slab.
+  - Every design evicts the reference's victims first. It evicts more, or
+    relocates, only when it cannot otherwise place a restore or meet a
+    shrink. Its resident set therefore stays within the reference's.
+    Its extra victims are the least recently used unleased groups, in the
+    reference's recency order, unless its hole policy chooses them.
+    Relocation moves dense groups only at M2.
+- **Replays.**
+  - *Deterministic:* every design runs on the fake backend, primary seed
+    first. Each replay runs twice, and the two must agree exactly, or the
+    run is void.
+  - *Timed:* sessions on `spark` with the M2 memory manager, for a design
+    that meets every deterministic criterion at that budget.
+    - Each block starts with an empty pool and replays one whole trace
+      file back to back, without idle time; arrival seconds are
+      informational.
+    - Restores read a synthetic artifact file with O_DIRECT, coalesced
+      as in D-056, into the design's backing. The file holds the trace's
+      groups in id order at 4 KiB alignment, on the internal NVMe.
+    - EXL3-G's decode runs alongside: the upstream reference arm, 4.0 bpw,
+      BP-F3's 64-token decode.
+- **Deterministic metrics** (exact). A tick is one lease, use or shrink.
+  - *Waste:* held backing minus the stored bytes of resident groups after
+    each tick, as a mean over ticks and a peak. For D-033 it is padding
+    plus any handoff; for slabs it is holes, slab tails and padding.
+  - *Useful content lost:* bytes restored beyond the reference's restores,
+    and bytes evicted at shrink probes beyond the reference's victims.
+  - *Refusals:* accesses the reference admits but the design cannot place,
+    even after evicting every unleased group and relocating if its policy
+    relocates. A replay stops at its first refusal.
+  - Reported, not gated (their latency is in the timed metrics, through
+    access wait):
+    - delayed admissions, accesses whose restore waits for a relocation;
+    - driver calls by kind per restored byte;
+    - io_uring registrations and unregistrations;
+    - bytes relocated.
 
-  Otherwise D-033 stays. A design that wins at only some budgets is reported
-  for the owner.
-- **Part (b).** The declared mixes are:
-  - all small transfers (64 KiB or less);
-  - all bulk transfers (2 MiB runs);
-  - small and bulk, one to one by count;
-  - the size distribution of D-056's measured closures.
-
-  Bounded asynchronous submission replaces serial submission if both hold
-  for every mix:
-  - the time to the last required completion improves by more than the
-    allowance;
-  - consumer-stall p95 is no worse, beyond the allowance.
-
-  The chosen depth is the smallest within the allowance of the best.
+    The timed runs' call counts must equal these.
+- **Timed metrics,** per block:
+  - *End-to-end restore latency:* for each access the reference restores
+    for, from its issue until its groups are ready for their consumer.
+    Every design is timed on the same accesses; its extra restores count
+    as useful content lost. Reported at p50, p95 and p99, by nearest rank.
+  - *Design time:* that latency minus the time during which at least one
+    of the access's reads is in flight, from its submission to its
+    completion. Backing work overlapped with a read in flight is not
+    charged; work while none is in flight is, wherever it falls, and work
+    that slows the transfer shows in end-to-end latency.
+  - Each restore is classed by the trace, the same for every design, and
+    reported separately:
+    - *warm* if the reference evicts for it (the pool is full);
+    - *cold* otherwise.
+  - *Access wait:* the sum, over every access in the block (hits
+    included), of the time from its issue until its groups are ready for
+    their consumer. It charges waits for relocation that the restores'
+    latency does not see.
+  - *Shrink time:* from a shrink probe to the return of the last release
+    that brings held backing within the reduced budget, at p95.
+  - *Decode inflation:* the median time of decode tokens that overlap a
+    restore or relocation, divided by the same block's quiet median before
+    the replay.
+  - Reported, not gated: driver time per restored byte.
+- **The allowance** is run-to-run noise, under P0's session rules.
+  - *Sessions:* one session per design, budget and seed.
+    - The baseline is A and the candidate B.
+    - A discarded baseline block runs first. Eight fresh-process blocks
+      follow, in the primary order A1 B1 B2 A2 B3 A3 A4 B4, or mirrored
+      for the confirmation seed.
+    - Sessions run budgets in the order 5/4, 3/2, 2, and designs in the
+      listed order. No comparison spans sessions.
+  - *σ,* per timed metric, restore class, budget and seed, comes from four
+    A/A calibration sessions: the baseline against itself, two in each
+    order. It is the relative standard deviation of block values within a
+    session, pooled over the sessions.
+  - *Statistic:* `d = (candidate median / baseline median − 1) / (σ · √½)`,
+    with each median over that arm's four blocks.
+  - *Threshold:* `z = 3.30`, the one-sided normal quantile for a 1%
+    family-wise false result over one design's 21 timed comparisons per
+    seed (seven criteria at three budgets).
+    - "Better beyond the allowance" means `d < −z`.
+    - "No worse beyond the allowance" means `d ≤ z`.
+  - *Holdout:* before any candidate is timed, two more A/A sessions per
+    budget on the primary seed (one in each order, not used for
+    calibration) must each pass their seven comparisons in both directions
+    (`|d| ≤ z`).
+    Otherwise the rule is rejected and redesigned, with a fresh holdout.
+  - Deterministic metrics carry no allowance: "no worse" means `≤`, and a
+    tie passes.
+- **Amending D-033.** A design replaces the baseline only if, at every
+  budget and on both seeds:
+  - its warm design-time p95 is better beyond the allowance;
+  - its cold design-time p95, and its warm and cold end-to-end p95, are
+    no worse beyond the allowance;
+  - its waste, mean and peak, is no more than the baseline's;
+  - it loses no more useful content than the baseline;
+  - it has no more refusals;
+  - its access wait, shrink-time p95 and decode inflation are no worse
+    beyond the allowance;
+  - if it moves addresses, it passes BP-P5, BP-L2 and BP-L6 and the alias
+    and captured-pointer checks.
+- **Winner and confirmation.**
+  - Among the designs that pass on the primary seed, the winner has the
+    lowest geometric mean, over the budgets, of its warm design-time p95
+    as a ratio to the baseline's. Ties go to the smaller slab, then to the
+    listed policy order.
+  - On the confirmation seed, the winner's deterministic replay runs, then
+    its timed sessions, fresh, after that seed's own calibration (four A/A
+    sessions per budget). If it fails anything there, D-033 stays. No other
+    design is tried on that seed.
+  - A design that passes at only some budgets is reported for the owner.
+- **Part (b).**
+  - *Mixes.* Each block is 256 batches, read with O_DIRECT from the
+    synthetic artifact file into held, registered backing:
+    - all small: 1,024 reads of 64 KiB per batch;
+    - all bulk: 32 reads of 2 MiB;
+    - small and bulk, one to one by count: 31 pairs of one 2 MiB and one
+      64 KiB read;
+    - D-056's closures: the primary trace's first 256 restores at the 3/2
+      budget that serve a `use`, one batch each, one read per group.
+  - *Depths.* Serial (depth 1) against depths 2, 4, 8, 16 and 32.
+    Submission follows batch order; a small-first order is reported, not
+    gated. The consumer takes reads in batch order.
+  - *Metrics,* per block:
+    - the median time to a batch's last completion;
+    - the p95, over batches, of the consumer's total wait per batch (the
+      stall).
+  - *Allowance:* as in (a), with one session per mix and depth and serial
+    submission as the baseline.
+    - σ per mix and metric comes from four A/A sessions of serial
+      submission.
+    - `z = 3.48`, for 40 comparisons: two metrics, four mixes and five
+      depths.
+    - *Holdout:* before any depth is timed, two more serial A/A sessions
+      per mix, one in each order, must each pass in both directions, as
+      in (a).
+  - Bounded asynchronous submission replaces serial if some depth, for
+    every mix, has a time to last completion that is better beyond the
+    allowance and a stall p95 that is no worse beyond it.
+  - The chosen depth is the smallest passing depth whose time to last
+    completion is within `z · σ · √½` of the best passing depth's for
+    every mix (both as ratios to serial).
 
 ## Evidence and limits
 

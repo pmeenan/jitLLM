@@ -1,0 +1,26 @@
+{
+ "format": "jitllm-swap-trace-params",
+ "version": 1,
+ "seeds": {"primary": 20260926, "confirmation": 926202601},
+ "ratios": [[5, 4], [3, 2], [2, 1]],
+ "budget_granule": 1073741824,
+ "shrink_bytes": 1073741824,
+ "rounds": 2,
+ "episode": {"roles": ["A", "A", "A", "B", "A", "B"], "arrival_s": [0, 30, 60, 120, 180, 240], "span_s": 300},
+ "captures": {"aba": "aba-capture-1", "varied": "small-capture-2", "large": "large-capture-2"},
+ "pools": {
+  "gemma": [["aba", "A-b512-r1-s1-t1"], ["varied", "A-b512-r1-s1-t1"]],
+  "ornith": [["aba", "B-b512-r1-s1-t1"], ["varied", "B-b512-r1-s1-t1"]],
+  "dsv4": [["large", "D-b512-r1-s1-t1"]]
+ },
+ "library": [
+  {"name": "gemma-1", "profile": "gemma"},
+  {"name": "gemma-2", "profile": "gemma"},
+  {"name": "ornith-1", "profile": "ornith"},
+  {"name": "ornith-2", "profile": "ornith"},
+  {"name": "dsv4-1", "profile": "dsv4", "layers": [2, 3, 26, 42]},
+  {"name": "qwen25-fp16", "profile": "qwen25"},
+  {"name": "exl3-4.0", "profile": "exl3-4.0bpw"},
+  {"name": "exl3-4.5", "profile": "exl3-4.5bpw"}
+ ]
+}

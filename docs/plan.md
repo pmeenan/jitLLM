@@ -402,9 +402,15 @@ reservation policy) were recorded in M0.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
-      The criteria are [proposed](backend-proof.md#retained-backing-comparison)
-      (a second draft), without the trace's identity; their approval is
-      delegated (D-079) and they are settled before any design runs.
+      *Landed:* the [swap trace](experiments/retained-backing/README.md)
+      and its seeded generator. It has eight synthetic models with D-056's
+      measured sizes, in episodes shaped like the frozen A→B→A trace, with
+      routes from the paging-feasibility captures. It holds a primary and a
+      confirmation seed at three budgets. The
+      [criteria](backend-proof.md#retained-backing-comparison) are
+      pre-registered under D-079 with the trace's identity; no design has
+      run. Next: the fake-backend replay of the 13 designs, then the timed
+      sessions on `spark`.
 - [ ] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.

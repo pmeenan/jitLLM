@@ -247,5 +247,6 @@ remaining proof thresholds, each pre-registered before the native result it
 judges, and allowed ExLlamaV3's GEMV into an optional module pending its
 provenance (D-079). BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
-criteria are still drafts. Keep this paragraph short and current
+criteria are pre-registered with the cross-model swap trace; no design has
+run on it yet. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).
