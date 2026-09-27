@@ -4,7 +4,8 @@
 // The CUDA device-memory provider (D-006, D-033, D-034): VmmProvider over
 // the driver's virtual memory management API. It retains the device's
 // primary context and makes it current for each call, so any lane thread
-// may call it (one at a time: the device submission lane owns it, D-048).
+// may call it (one at a time: the VMM lane, or the device submission lane
+// without one, owns it; device_memory.h, D-048).
 //
 // Its classes are the device's local memory and, where the device supports
 // host-NUMA VMM, GPU-accessible host memory on its NUMA node (D-034); each

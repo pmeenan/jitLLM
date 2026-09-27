@@ -30,6 +30,46 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-027: The Spark's SSD reads recently written data ~11% faster than data at rest  (2026-09-27, status: open)
+
+On `spark-b` (Samsung `MZALC4T0HBL1-00B07`, ext4 root, kernel
+7.0.0-1019-nvidia), 2 MiB `O_DIRECT` reads at four in flight ran at
+14.7–14.9 GB/s from files written minutes to an hour before, and at
+13.2–13.4 GB/s from files at rest, whatever read them (in place into host
+VMM or through the landing zone, the runtime or the standalone probe).
+In one run, a 9 GiB pattern file written seconds before read at
+14.65–14.80, and a 16 GiB one that had read at 14.7–14.9 for the hour
+after it was written read at 13.20–13.41, 90 minutes after; a GGUF shard
+written six days before read at 13.17–13.41, and the FP16 artifact's shard (installed four
+days before) at 12.2–13.3 against 14.3–14.9 for a `dd` copy of it.
+Not fragmentation: `filefrag` on `spark-b` found the six-day-old GGUF
+shards (32–49 GB) in 18–33 physical runs averaging 1.5–1.9 GB, the 16 GiB
+pattern file after it slowed in 22 runs (~745 MiB on average), and the
+FP16 artifact's shard in 15 runs for its 988 MB against 5 for the fresh
+`dd` copy: all effectively contiguous for 2 MiB reads. The drive's write
+cache (SLC) serving recent writes, displaced by later writes or by time,
+fits the timing but is inferred, not proven. So the device's bandwidth for artifacts
+at rest is ~13.3 GB/s, not the ~14.9 of earlier measurements, which all
+read files just written (io-path, storage-queue, dmabuf-direct). Compare
+paths on the same file in the same session, and state the file's age.
+Evidence: [pagein-perf](experiments/pagein-perf/README.md).
+
+## RE-026: The Spark's SSD reads 4 KiB-offset 2 MiB requests ~18% slower out of order  (2026-09-27, status: worked-around)
+
+On `spark-b` (Samsung `MZALC4T0HBL1-00B07`, ext4 root, kernel
+7.0.0-1019-nvidia, io_uring `O_DIRECT` reads of 2 MiB, four in flight),
+reads of a pattern file whose offsets were 2 MiB multiples ran at
+14.5–14.9 GB/s whether or not consecutive requests were in file order. With
+every offset 4 KiB past a 2 MiB multiple, as an artifact's chunks are
+(D-056 aligns groups to 4 KiB), the same reads ran at 14.4–14.8 GB/s in
+order but 11.9–12.4 GB/s when about 60% of consecutive submissions were
+locally swapped (a window of about eight). The runtime's direct reader
+started queued reads in the order of their keys, which are reused mailbox
+indices, so page-in through the zone hit this and in-place reads (fresh
+keys, in order) did not. Worked around: the reader starts reads in arrival
+order (`providers/direct_reader.h`). Keep reads of one load in file order.
+Evidence: [pagein-perf](experiments/pagein-perf/README.md).
+
 ## RE-025: GB10 device memory cannot be exported as a dma-buf, and NVIDIA dma-buf mappings refuse direct I/O  (2026-09-27, status: open)
 
 On `spark` (GB10, driver 580.178.04, CUDA 13.0 toolkit, kernel
@@ -207,7 +247,11 @@ the owner's approval.
 Impact: a scheduler that sleeps between a launch and its completion can add
 up to about half a millisecond per step at the tail. It should poll while a
 critical-path completion is imminent, and sleep only when idle. Measurement
-and harness: [task-lanes](experiments/task-lanes/README.md).
+and harness: [task-lanes](experiments/task-lanes/README.md). The storage and
+device submission lanes poll the same way: asleep between a load's reads
+and copies, they took ~100–200 µs, and at the tail ~380 µs, to
+wake for the next one, which kept the landing zone below depth
+([pagein-perf](experiments/pagein-perf/README.md)).
 
 ## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
 

@@ -20,6 +20,12 @@
 //     leaves, the read stops starting requests and asks the provider to
 //     cancel those in flight, but it still drains: it ends only when every
 //     request it started has completed, so its memory is then untouched.
+//   - Reads start in the order they arrived: a read's requests reach the
+//     provider before a later read's, and a continuation or retry goes
+//     ahead of reads that have not started. The device sees the ranges in
+//     the order the caller asked for them (sequential for a load), which
+//     matters: out-of-order 2 MiB reads at 4 KiB-aligned offsets ran about
+//     18% slower on the Spark's SSD (docs/experiments/pagein-perf/).
 //   - A request the provider could not start waits for the next Poll; one
 //     whose start is unknown is waited for like any other.
 // A read that fails or is cancelled has no usable contents: the caller
@@ -119,19 +125,32 @@ class DirectReader {
     ReadSpec spec;
     std::vector<std::uint64_t> waiters;
     std::vector<Piece> pieces;
+    std::uint64_t arrival = 0;  // its place in the start order
     std::uint32_t retries = 0;
+    bool queued = false;    // in queue_: it has a piece to start
     bool stopping = false;  // failed, cancelled or at end of file: start nothing more
     ReadOutcome outcome = ReadOutcome::kComplete;
     int error = 0;
   };
 
-  void Start(std::uint64_t key, Reading& reading);
+  // Starts what it can of the read's pieces; false if the provider refused
+  // one (it is full), true once nothing is left to start.
+  bool Start(std::uint64_t key, Reading& reading);
+  // Queues a read with a piece to start, in its arrival order.
+  void Queue(std::uint64_t key, Reading& reading);
+  // Starts queued reads, oldest first, until the provider is full.
+  void StartQueued();
   static void Stop(Reading& reading, ReadOutcome outcome, int error);
   static bool Finished(const Reading& reading);
 
   Storage& storage_;
   ReaderSettings settings_;
   std::map<std::uint64_t, Reading> reads_;  // by key
+  // Reads with a piece to start, by arrival: each at most once.
+  std::map<std::uint64_t, std::uint64_t> queue_;  // arrival -> key
+  std::uint64_t next_arrival_ = 0;
+  // Reads a completion or a withdrawal may have finished, for Poll to look at.
+  std::vector<std::uint64_t> settled_;
   // token -> (key, piece)
   std::map<std::uint64_t, std::pair<std::uint64_t, std::size_t>> tokens_;
   std::uint64_t next_token_ = 1;

@@ -3,7 +3,8 @@
 
 // The D-081 page-in path over the real providers on a Spark (label `gpu`):
 // io_uring reads a direct-I/O file into a host-VMM landing zone, the device
-// lane creates and maps device-VMM backing for each extent and copies the
+// lane (or, in the second instantiation, a VMM lane of its own) creates and
+// maps device-VMM backing for each extent, the device lane copies the
 // landed bytes in on a CUDA stream, and the scheduler publishes each extent
 // only once the copy's fence has completed. Device VMM is not CPU-mapped,
 // so the test checks each extent by copying it back to host VMM under a
@@ -27,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -230,7 +232,8 @@ bool WaitFor(const std::atomic<bool>& flag) {
   return flag.load();
 }
 
-class CudaPageIn : public ::testing::Test {
+// The parameter: whether VMM work runs on a VMM lane (BackingService).
+class CudaPageIn : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
     auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
@@ -315,15 +318,21 @@ class CudaPageIn : public ::testing::Test {
         DeviceSettings{.queue = {.capacity = 64, .reserved = 8, .batch = 16},
                        .handoff = 64,
                        .poll_sleep = std::chrono::microseconds(0)},
-        memory_.get());
+        GetParam() ? nullptr : memory_.get());  // one lane calls the provider
+    if (GetParam()) {
+      backing_lane_ = std::make_unique<jitllm::scheduler::BackingService>(
+          memory_.get(), board_, QueueSettings{.capacity = 64, .reserved = 8, .batch = 16});
+    }
     LandingZone landing{.slots = {}, .slot_bytes = Bytes(kExtent), .stream = 0};
     for (std::size_t i = 0; i < kSlots; ++i) {
       landing.slots.push_back(host_base_ + (i * kExtent));
     }
     scheduler_ = std::make_unique<Scheduler>(
         catalog_, board_, wake_,
-        jitllm::scheduler::Lanes{
-            .storage = storage_lane_.get(), .device = device_lane_.get(), .cpu = nullptr},
+        jitllm::scheduler::Lanes{.storage = storage_lane_.get(),
+                                 .device = device_lane_.get(),
+                                 .cpu = nullptr,
+                                 .backing = backing_lane_.get()},
         SchedulerSettings{
             .tasks = 8, .budget = Bytes(kExtent * (kExtents + kSlots + 1)), .landing = landing});
     Place(0);
@@ -331,6 +340,9 @@ class CudaPageIn : public ::testing::Test {
     threads_.emplace_back([this] { storage_lane_->Run(); });
     threads_.emplace_back([this] { device_lane_->RunSubmission(); });
     threads_.emplace_back([this] { device_lane_->RunCompletion(); });
+    if (backing_lane_ != nullptr) {
+      threads_.emplace_back([this] { backing_lane_->Run(); });
+    }
   }
 
   void TearDown() override {
@@ -360,6 +372,9 @@ class CudaPageIn : public ::testing::Test {
     threads_.front().join();
     storage_lane_->Close();
     device_lane_->Close();
+    if (backing_lane_ != nullptr) {
+      backing_lane_->Close();
+    }
     threads_.clear();
     EXPECT_EQ(storage_->in_flight(), 0U);
     EXPECT_TRUE(execution_->DestroyStream(stream_).has_value());
@@ -440,6 +455,7 @@ class CudaPageIn : public ::testing::Test {
   CompletionBoard board_{128, wake_};
   std::unique_ptr<StorageService> storage_lane_;
   std::unique_ptr<DeviceService> device_lane_;
+  std::unique_ptr<jitllm::scheduler::BackingService> backing_lane_;
   std::unique_ptr<Scheduler> scheduler_;
   std::optional<std::expected<void, Fault>> result_status_;
   std::vector<std::jthread> threads_;  // the scheduler first
@@ -460,7 +476,7 @@ class CudaPageIn : public ::testing::Test {
 
 // Loads land in the zone and reach device VMM intact; eviction releases
 // every backing, and reloads, in place and relocated, restore the bytes.
-TEST_F(CudaPageIn, LandedLoadsReachDeviceVmmAndReloadIdentically) {
+TEST_P(CudaPageIn, LandedLoadsReachDeviceVmmAndReloadIdentically) {
   Signals first;
   ASSERT_EQ(Load(1, true, first), static_cast<int>(TaskOutcome::kSucceeded));
   EXPECT_EQ(first.mismatches.load(), 0);
@@ -497,7 +513,7 @@ TEST_F(CudaPageIn, LandedLoadsReachDeviceVmmAndReloadIdentically) {
 // ends resident (its copy completed) or nonresident with its backing
 // released. Whether a read the cancellation met was cancelled by io_uring
 // or completed first is not observed here.
-TEST_F(CudaPageIn, CancellingWithLoadsInFlightDrainsThem) {
+TEST_P(CudaPageIn, CancellingWithLoadsInFlightDrainsThem) {
   Signals signals;
   constexpr std::uint64_t kRequest = 10;
   Post(StartRequest{
@@ -552,7 +568,7 @@ TEST_F(CudaPageIn, CancellingWithLoadsInFlightDrainsThem) {
 // each such load waits for its fence and publishes the whole extent; its
 // slot is freed only then. The extents it published hold exactly the
 // file's bytes.
-TEST_F(CudaPageIn, CancellingDuringACopyWaitsForItsFence) {
+TEST_P(CudaPageIn, CancellingDuringACopyWaitsForItsFence) {
   Signals signals;
   constexpr std::uint64_t kRequest = 20;
   Post(StartRequest{
@@ -620,5 +636,9 @@ TEST_F(CudaPageIn, CancellingDuringACopyWaitsForItsFence) {
   ASSERT_EQ(Load(91, true, after), static_cast<int>(TaskOutcome::kSucceeded));
   EXPECT_EQ(after.mismatches.load(), 0);
 }
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPageIn, ::testing::Bool(), [](const auto& info) {
+  return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
+});
 
 }  // namespace

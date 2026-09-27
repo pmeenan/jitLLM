@@ -3,7 +3,8 @@
 
 // The scheduler's D-081 page-in path and its evictions on the deterministic
 // fakes (scheduler.h; D-033, D-048, D-081): managed backing created and
-// mapped on the device lane, direct reads into a bounded landing zone, the
+// mapped on the device lane or, in the second instantiation of every test,
+// on a VMM lane of its own; direct reads into a bounded landing zone, the
 // copy into device backing, publication only after the copy's fence, and
 // slots reused only after it. Failed and short reads, backing failures,
 // cancellation in every stage, a full zone, unproven copies and unmaps,
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <functional>
@@ -25,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -68,6 +71,7 @@ using jitllm::providers::fake::FakeDeviceMemory;
 using jitllm::providers::fake::FakeStorage;
 using jitllm::providers::fake::kPoison;
 using jitllm::scheduler::BackingPlace;
+using jitllm::scheduler::BackingService;
 using jitllm::scheduler::CancelRequest;
 using jitllm::scheduler::CompletionBoard;
 using jitllm::scheduler::Control;
@@ -191,7 +195,9 @@ class EvictProgram final : public TaskProgram {
   std::size_t next_ = 0;
 };
 
-class PageInTest : public ::testing::Test {
+// The parameter: whether VMM work runs on a VMM lane (BackingService)
+// rather than on the device lane.
+class PageInTest : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
     // The zone: host backing the CPU and the device reach.
@@ -204,6 +210,9 @@ class PageInTest : public ::testing::Test {
     // space only, until a load maps backing.
     weights_ = memory_.Reserve(Bytes(kSize * kExtents)).value();
     moved_ = memory_.Reserve(Bytes(kSize * kExtents)).value();
+    zone_base_ = memory_.RangeOf(zone_).value().base;
+    weights_base_ = memory_.RangeOf(weights_).value().base;
+    moved_base_ = memory_.RangeOf(moved_).value().base;
     file_.resize(kSize * kExtents);
     for (std::size_t i = 0; i < file_.size(); ++i) {
       file_[i] = static_cast<std::byte>((i * 131) + (i >> 16) + 1);
@@ -237,27 +246,34 @@ class PageInTest : public ::testing::Test {
         DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
                        .handoff = 16,
                        .poll_sleep = std::chrono::microseconds(0)},
-        &memory_);
+        GetParam() ? nullptr : &memory_);  // one lane calls the provider
+    if (GetParam()) {
+      backing_lane_ = std::make_unique<BackingService>(
+          &memory_, *board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
+    }
     LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     for (std::size_t i = 0; i < slots; ++i) {
       landing.slots.push_back(Slot(i));
     }
-    scheduler_ = std::make_unique<Scheduler>(
-        catalog_, *board_, wake_,
-        Lanes{.storage = storage_lane_.get(), .device = device_lane_.get(), .cpu = nullptr},
-        SchedulerSettings{.tasks = 16,
-                          .priorities = 2,
-                          .aging_limit = 4,
-                          .controls = 64,
-                          .controls_reserved = 16,
-                          .controls_per_turn = 16,
-                          .observations_per_turn = 64,
-                          .steps_per_turn = 16,
-                          .waiters = 8,
-                          .budget = Bytes(kSize * 64),
-                          .poll_window = std::chrono::microseconds(200),
-                          .tick = std::chrono::milliseconds(100),
-                          .landing = landing});
+    scheduler_ =
+        std::make_unique<Scheduler>(catalog_, *board_, wake_,
+                                    Lanes{.storage = storage_lane_.get(),
+                                          .device = device_lane_.get(),
+                                          .cpu = nullptr,
+                                          .backing = backing_lane_.get()},
+                                    SchedulerSettings{.tasks = 16,
+                                                      .priorities = 2,
+                                                      .aging_limit = 4,
+                                                      .controls = 64,
+                                                      .controls_reserved = 16,
+                                                      .controls_per_turn = 16,
+                                                      .observations_per_turn = 64,
+                                                      .steps_per_turn = 16,
+                                                      .waiters = 8,
+                                                      .budget = Bytes(kSize * 64),
+                                                      .poll_window = std::chrono::microseconds(200),
+                                                      .tick = std::chrono::milliseconds(100),
+                                                      .landing = landing});
     for (std::size_t i = 0; i < kExtents; ++i) {
       ASSERT_TRUE(scheduler_->SetSource(extents_[i], Source(i, weights_)).has_value());
     }
@@ -288,8 +304,14 @@ class PageInTest : public ::testing::Test {
       EXPECT_TRUE(scheduler_->Stopped().has_value());
       storage_lane_->Close();
       device_lane_->Close();
+      if (backing_lane_ != nullptr) {
+        backing_lane_->Close();
+      }
       for (int i = 0; i < 100; ++i) {
         (void)storage_lane_->Turn(false);
+        if (backing_lane_ != nullptr) {
+          (void)backing_lane_->Turn();
+        }
         (void)device_lane_->SubmissionTurn();
         execution_.Drain();
         (void)device_lane_->CompletionTurn();
@@ -297,11 +319,12 @@ class PageInTest : public ::testing::Test {
     }
   }
 
-  std::uint64_t Slot(std::size_t i) const {
-    return memory_.RangeOf(zone_).value().base + (i * kSize);
-  }
+  std::uint64_t Slot(std::size_t i) const { return zone_base_ + (i * kSize); }
+  // From the bases noted at setup: a lane's thread (the threaded test's
+  // check) must not read the provider while the VMM lane changes it
+  // (device_memory.h).
   std::uint64_t Place(ReservationId reservation, std::size_t i) const {
-    return memory_.RangeOf(reservation).value().base + (i * kSize);
+    return (reservation == weights_ ? weights_base_ : moved_base_) + (i * kSize);
   }
   PageSource Source(std::size_t i, ReservationId reservation) const {
     return PageSource{
@@ -315,9 +338,13 @@ class PageInTest : public ::testing::Test {
   }
 
   // One turn of each lane and of the scheduler, in a fixed order. With
-  // `device`, the fake device runs what is queued on its streams.
-  bool Round(bool device = true) {
+  // `device`, the fake device runs what is queued on its streams; without
+  // `vmm`, the VMM lane (if there is one) does not turn.
+  bool Round(bool device = true, bool vmm = true) {
     bool progress = storage_lane_->Turn(false);
+    if (vmm && backing_lane_ != nullptr) {
+      progress = backing_lane_->Turn() || progress;
+    }
     progress = device_lane_->SubmissionTurn() || progress;
     if (device) {
       execution_.Drain();
@@ -377,12 +404,16 @@ class PageInTest : public ::testing::Test {
   std::unique_ptr<CompletionBoard> board_;
   std::unique_ptr<StorageService> storage_lane_;
   std::unique_ptr<DeviceService> device_lane_;
+  std::unique_ptr<BackingService> backing_lane_;
   std::unique_ptr<Scheduler> scheduler_;
 
   ReservationId zone_;
   jitllm::providers::BackingId zone_backing_;
   ReservationId weights_;
   ReservationId moved_;
+  std::uint64_t zone_base_ = 0;
+  std::uint64_t weights_base_ = 0;
+  std::uint64_t moved_base_ = 0;
   std::vector<std::byte> file_;
   int fd_ = -1;
   jitllm::catalog::DomainId domain_;
@@ -391,7 +422,7 @@ class PageInTest : public ::testing::Test {
   std::size_t baseline_ = 0;
 };
 
-TEST_F(PageInTest, ALandedLoadIsPublishedOnlyAfterItsCopysFence) {
+TEST_P(PageInTest, ALandedLoadIsPublishedOnlyAfterItsCopysFence) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -427,7 +458,7 @@ TEST_F(PageInTest, ALandedLoadIsPublishedOnlyAfterItsCopysFence) {
 // The zone bounds what is in flight: two slots, so at most two reads; the
 // window lets two more loads map backing ahead and wait for a slot, and
 // the rest wait unmapped. Slots are granted in the order loads asked.
-TEST_F(PageInTest, AFullZoneHoldsLoadsBackInOrder) {
+TEST_P(PageInTest, AFullZoneHoldsLoadsBackInOrder) {
   Build();
   HoldNext(64);
   LoadProgram::Report report;
@@ -472,7 +503,7 @@ TEST_F(PageInTest, AFullZoneHoldsLoadsBackInOrder) {
 }
 
 // A slot is not read into again until the copy out of it has completed.
-TEST_F(PageInTest, ASlotIsReusedOnlyAfterTheCopyOutOfItCompletes) {
+TEST_P(PageInTest, ASlotIsReusedOnlyAfterTheCopyOutOfItCompletes) {
   Build(1);
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0, 1}))).has_value());
@@ -494,7 +525,7 @@ TEST_F(PageInTest, ASlotIsReusedOnlyAfterTheCopyOutOfItCompletes) {
   EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
 }
 
-TEST_F(PageInTest, AFailedReadReleasesItsSlotAndItsBacking) {
+TEST_P(PageInTest, AFailedReadReleasesItsSlotAndItsBacking) {
   Build();
   storage_.ScriptNext({.submission = Submission::kAccepted, .result = -EIO, .hold = false});
   LoadProgram::Report report;
@@ -526,7 +557,7 @@ TEST_F(PageInTest, AFailedReadReleasesItsSlotAndItsBacking) {
   EXPECT_TRUE(Loaded(0, weights_));
 }
 
-TEST_F(PageInTest, CancellingDuringTheReadDrainsItThenUnwinds) {
+TEST_P(PageInTest, CancellingDuringTheReadDrainsItThenUnwinds) {
   Build();
   HoldNext(4);
   LoadProgram::Report report;
@@ -551,7 +582,7 @@ TEST_F(PageInTest, CancellingDuringTheReadDrainsItThenUnwinds) {
 
 // A copy cannot be cancelled: the load waits for its fence, then
 // publishes the whole contents, and only then frees the slot.
-TEST_F(PageInTest, CancellingMidCopyWaitsForTheFence) {
+TEST_P(PageInTest, CancellingMidCopyWaitsForTheFence) {
   Build(1);
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -577,7 +608,7 @@ TEST_F(PageInTest, CancellingMidCopyWaitsForTheFence) {
 // A request cancelled while its loads wait for the window or a slot
 // unwinds them at once: nothing was read, and backing mapped ahead is
 // released.
-TEST_F(PageInTest, CancellingWaitingLoadsReleasesWhatTheyMapped) {
+TEST_P(PageInTest, CancellingWaitingLoadsReleasesWhatTheyMapped) {
   Build(1);
   HoldNext(64);
   LoadProgram::Report report;
@@ -603,7 +634,7 @@ TEST_F(PageInTest, CancellingWaitingLoadsReleasesWhatTheyMapped) {
 // A copy whose fence cannot be proven leaves the slot it read and the
 // extent it wrote undetermined: both are quarantined, never reused, and
 // the node faults. Loads waiting for that slot can only be withdrawn.
-TEST_F(PageInTest, AnUnprovenCopyQuarantinesItsSlotAndItsExtent) {
+TEST_P(PageInTest, AnUnprovenCopyQuarantinesItsSlotAndItsExtent) {
   Build(1);
   execution_.FailNextQuery(ProviderError::kUnknown, 1000);
   LoadProgram::Report report;
@@ -619,7 +650,7 @@ TEST_F(PageInTest, AnUnprovenCopyQuarantinesItsSlotAndItsExtent) {
             jitllm::scheduler::StartError::kStopped);  // admission has stopped
 }
 
-TEST_F(PageInTest, BackingThatCannotBeMadeChangesNothing) {
+TEST_P(PageInTest, BackingThatCannotBeMadeChangesNothing) {
   Build();
   const std::uint64_t reads = storage_.submitted().size();
   memory_.FailNext(jitllm::providers::fake::Operation::kCreate, ProviderError::kOutOfMemory);
@@ -651,7 +682,7 @@ TEST_F(PageInTest, BackingThatCannotBeMadeChangesNothing) {
   EXPECT_FALSE(scheduler_->fault().has_value());
 }
 
-TEST_F(PageInTest, BackingOfUnknownOutcomeIsQuarantined) {
+TEST_P(PageInTest, BackingOfUnknownOutcomeIsQuarantined) {
   Build();
   memory_.FailNext(jitllm::providers::fake::Operation::kCreate, ProviderError::kUnknown, true);
   LoadProgram::Report report;
@@ -666,7 +697,7 @@ TEST_F(PageInTest, BackingOfUnknownOutcomeIsQuarantined) {
 // Eviction unmaps and releases the backing on the device lane (D-033); a
 // later load maps fresh backing and restores the same bytes, at the same
 // place or, registered again, at another (relocation, BP-P5).
-TEST_F(PageInTest, EvictionReleasesBackingAndReloadsAreIdentical) {
+TEST_P(PageInTest, EvictionReleasesBackingAndReloadsAreIdentical) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, All())).has_value());
@@ -720,7 +751,7 @@ TEST_F(PageInTest, EvictionReleasesBackingAndReloadsAreIdentical) {
 
 // A materialization that meets an eviction in flight waits for it, then
 // loads again.
-TEST_F(PageInTest, MaterializingDuringAnEvictionWaitsThenReloads) {
+TEST_P(PageInTest, MaterializingDuringAnEvictionWaitsThenReloads) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -741,7 +772,7 @@ TEST_F(PageInTest, MaterializingDuringAnEvictionWaitsThenReloads) {
 // An unmap refused with nothing changed abandons the eviction: the evictor
 // hears of the failure, and a task that met the eviction while
 // materializing finds the extent resident again, unharmed.
-TEST_F(PageInTest, ARefusedUnmapLeavesTheExtentResidentForItsReaders) {
+TEST_P(PageInTest, ARefusedUnmapLeavesTheExtentResidentForItsReaders) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -764,7 +795,7 @@ TEST_F(PageInTest, ARefusedUnmapLeavesTheExtentResidentForItsReaders) {
   EXPECT_FALSE(scheduler_->fault().has_value());
 }
 
-TEST_F(PageInTest, AnUnmapOfUnknownOutcomeQuarantinesTheEviction) {
+TEST_P(PageInTest, AnUnmapOfUnknownOutcomeQuarantinesTheEviction) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -785,7 +816,7 @@ TEST_F(PageInTest, AnUnmapOfUnknownOutcomeQuarantinesTheEviction) {
 // provider refuses every later call on it. Refusing an unmap there changed
 // nothing, but it proves nothing about the place either: the extent is
 // quarantined, still charged, never resident again for readers.
-TEST_F(PageInTest, AnUnmapRefusedAsUndeterminedQuarantinesTheEviction) {
+TEST_P(PageInTest, AnUnmapRefusedAsUndeterminedQuarantinesTheEviction) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0, 1}))).has_value());
@@ -815,7 +846,7 @@ TEST_F(PageInTest, AnUnmapRefusedAsUndeterminedQuarantinesTheEviction) {
 // A task that met an eviction in flight, and waits for it, hears of a
 // failure when that eviction is quarantined, and the extent stays
 // unavailable.
-TEST_F(PageInTest, ATaskWaitingOnAnEvictionThatIsQuarantinedFails) {
+TEST_P(PageInTest, ATaskWaitingOnAnEvictionThatIsQuarantinedFails) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
@@ -843,7 +874,7 @@ TEST_F(PageInTest, ATaskWaitingOnAnEvictionThatIsQuarantinedFails) {
 // the storage lane has room. Withdrawing both loads rolls that copy back,
 // which frees its slot: the second load, waiting for it and withdrawn in
 // the same step, must unwind, not start a read into it.
-TEST_F(PageInTest, AWithdrawnLoadStartsNoNewStage) {
+TEST_P(PageInTest, AWithdrawnLoadStartsNoNewStage) {
   Build(1);
   HoldNext(4);
   LoadProgram::Report report;
@@ -886,7 +917,7 @@ TEST_F(PageInTest, AWithdrawnLoadStartsNoNewStage) {
 // still unmap what it mapped: no mailbox will ever come, so the load is
 // quarantined (its backing stays charged) and the stop reports the fault
 // instead of waiting forever.
-TEST_F(PageInTest, AnUnwindThatCanNeverGetAMailboxFaultsTheStop) {
+TEST_P(PageInTest, AnUnwindThatCanNeverGetAMailboxFaultsTheStop) {
   Build(1, 2);
   LoadProgram::Report resident;
   ASSERT_TRUE(scheduler_->Start(1, Load(resident, Of({2}))).has_value());
@@ -934,7 +965,7 @@ TEST_F(PageInTest, AnUnwindThatCanNeverGetAMailboxFaultsTheStop) {
 // instead of being quarantined, and runs once the copy is concluded. (The
 // unmap of unknown outcome is in another reservation, which it leaves
 // undetermined; the withdrawn load's is unharmed.)
-TEST_F(PageInTest, AnUnwindWaitsForAMailboxThatWillFree) {
+TEST_P(PageInTest, AnUnwindWaitsForAMailboxThatWillFree) {
   Build(1, 2);
   ASSERT_TRUE(scheduler_->SetSource(extents_[2], Source(2, moved_)).has_value());
   LoadProgram::Report resident;
@@ -973,7 +1004,7 @@ TEST_F(PageInTest, AnUnwindWaitsForAMailboxThatWillFree) {
 // A withdrawal that lands in the same turn as its copy's completion: the
 // copy publishes whole bytes and frees the slot, the other withdrawn load
 // unwinds without a read, and the next request's queued load starts.
-TEST_F(PageInTest, AWithdrawalMeetingItsCopysCompletionHandsTheSlotOn) {
+TEST_P(PageInTest, AWithdrawalMeetingItsCopysCompletionHandsTheSlotOn) {
   Build(1);
   LoadProgram::Report withdrawn;
   ASSERT_TRUE(scheduler_->Start(1, Load(withdrawn, Of({0, 1}))).has_value());
@@ -1010,7 +1041,7 @@ TEST_F(PageInTest, AWithdrawalMeetingItsCopysCompletionHandsTheSlotOn) {
 // the next map into it, for another extent, is refused (kUndetermined)
 // before the driver is asked. That refusal changed nothing: its load fails
 // cleanly with the new backing released, and its extent is not quarantined.
-TEST_F(PageInTest, AMapRefusedAsUndeterminedFailsItsLoadCleanly) {
+TEST_P(PageInTest, AMapRefusedAsUndeterminedFailsItsLoadCleanly) {
   Build();
   memory_.FailNext(jitllm::providers::fake::Operation::kMap, ProviderError::kUnknown);
   LoadProgram::Report report;
@@ -1031,7 +1062,7 @@ TEST_F(PageInTest, AMapRefusedAsUndeterminedFailsItsLoadCleanly) {
 // A kernel job's lease holds its closure until the fence after it has
 // completed, even once its request is cancelled; eviction is refused
 // meanwhile (invariant 2). A job that queued nothing releases at once.
-TEST_F(PageInTest, AJobsLeaseHoldsUntilItsFence) {
+TEST_P(PageInTest, AJobsLeaseHoldsUntilItsFence) {
   Build();
   LoadProgram::Report report;
   ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}), JobResult::kQueued)).has_value());
@@ -1067,7 +1098,7 @@ TEST_F(PageInTest, AJobsLeaseHoldsUntilItsFence) {
 
 // A direct source reads into managed host backing the CPU maps (the token
 // table the embedding lookup reads, D-081): no slot, no copy.
-TEST_F(PageInTest, DirectSourcesReadIntoTheirOwnHostBacking) {
+TEST_P(PageInTest, DirectSourcesReadIntoTheirOwnHostBacking) {
   Build();
   const ReservationId host = memory_.Reserve(Bytes(kSize)).value();
   const std::uint64_t address = memory_.RangeOf(host).value().base;
@@ -1100,7 +1131,7 @@ TEST_F(PageInTest, DirectSourcesReadIntoTheirOwnHostBacking) {
   EXPECT_EQ(memory_.backings(), baseline_);
 }
 
-TEST_F(PageInTest, SourcesAreChecked) {
+TEST_P(PageInTest, SourcesAreChecked) {
   Build();
   PageSource source = Source(0, weights_);
   source.read.length = kSize + 4096;  // larger than a slot
@@ -1120,6 +1151,223 @@ TEST_F(PageInTest, SourcesAreChecked) {
   ReleaseReads();
   Settle();
   EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+}
+
+// On a VMM lane of its own, VMM work never holds up a copy: with the VMM
+// lane stopped and an eviction's unmap queued on it, a landed load into
+// backing mapped by hand is read, copied and published, while the evicted
+// extent stays EVICTING until the VMM lane runs again.
+class VmmLaneTest : public PageInTest {};
+
+TEST_P(VmmLaneTest, CopiesRunWhileVmmWorkWaits) {
+  Build();
+  LoadProgram::Report resident;
+  ASSERT_TRUE(scheduler_->Start(1, Load(resident, Of({2}))).has_value());
+  Settle();
+  ASSERT_EQ(resident.outcome, TaskOutcome::kSucceeded);
+  // Extent 0's backing, mapped by hand: its load maps nothing.
+  const auto backing = memory_.Create(kDeviceClass, Bytes(kSize)).value();
+  ASSERT_TRUE(memory_.Map(weights_, Bytes(0), backing).has_value());
+  ASSERT_TRUE(memory_.SetAccess(weights_, Bytes(0), Bytes(kSize), Access::kReadWrite).has_value());
+  PageSource premapped = Source(0, weights_);
+  premapped.backing.reset();
+  ASSERT_TRUE(scheduler_->SetSource(extents_[0], premapped).has_value());
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<EvictProgram>(evicted, std::vector{extents_[2]}))
+          .has_value());
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(3, Load(report, Of({0}))).has_value());
+  for (int i = 0; i < 50; ++i) {
+    (void)Round(true, false);  // the VMM lane does not turn
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kResident);
+  EXPECT_TRUE(Loaded(0, weights_));
+  EXPECT_EQ(View(extents_[2]).state, ExtentState::kEvicting);
+  EXPECT_FALSE(evicted.outcome.has_value());
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(extents_[2]).state, ExtentState::kNonresident);
+  // Extent 0 stays resident at its hand-mapped backing: evict it in the
+  // catalog, then release the backing here.
+  EvictProgram::Report dropped;
+  ASSERT_TRUE(
+      scheduler_->Start(4, std::make_unique<EvictProgram>(dropped, std::vector{extents_[0]}))
+          .has_value());
+  Settle();
+  EXPECT_EQ(dropped.outcome, TaskOutcome::kSucceeded);
+  ASSERT_TRUE(memory_.Unmap(weights_, Bytes(0), Bytes(kSize)).has_value());
+  ASSERT_TRUE(memory_.Release(backing).has_value());
+  EXPECT_EQ(memory_.backings(), baseline_);
+}
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, VmmLaneTest, ::testing::Values(true),
+                         [](const auto& /*info*/) { return std::string("OnAVmmLane"); });
+
+// The VMM lane refuses any other work as not started, and so does it all
+// without a device-memory provider.
+TEST(VmmLaneTest, OtherWorkAndMissingMemoryAreRefused) {
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{4, wake};
+  BackingService lane(nullptr, board, QueueSettings{.capacity = 4, .reserved = 1, .batch = 4});
+  const auto copy = board.Open();
+  const auto map = board.Open();
+  ASSERT_EQ(lane.Submit(jitllm::scheduler::DeviceCommand{.operation = copy,
+                                                         .work = jitllm::scheduler::DeviceWork{}}),
+            PushResult::kAccepted);
+  ASSERT_EQ(
+      lane.Submit(jitllm::scheduler::DeviceCommand{
+          .operation = map,
+          .work = jitllm::scheduler::BackingWork{.kind = jitllm::scheduler::BackingWork::Kind::kMap,
+                                                 .reservation = {},
+                                                 .offset = Bytes(0),
+                                                 .size = Bytes(kSize),
+                                                 .allocation_class = 0}}),
+      PushResult::kAccepted);
+  EXPECT_TRUE(lane.Turn());
+  const auto seen = board.Harvest(4);
+  ASSERT_EQ(seen.size(), 2U);
+  for (const auto& observation : seen) {
+    EXPECT_EQ(observation.acceptance, jitllm::scheduler::Acceptance::kNotStarted);
+    EXPECT_FALSE(observation.terminal.has_value());
+  }
+  lane.Close();
+  lane.Run();  // closed and drained: returns at once
+  EXPECT_FALSE(lane.Turn());
+}
+
+// A submission lane polling its queue (DeviceSettings::poll_window) still
+// takes every command and returns once closed, however long its window.
+TEST(DeviceLanePollTest, APollingSubmissionLaneTakesEveryCommandAndStopsOnClose) {
+  FakeDeviceExecution execution;
+  const StreamId stream = execution.CreateStream().value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{8, wake};
+  DeviceService lane(execution, std::span<const StreamId>(&stream, 1), board,
+                     DeviceSettings{.queue = {.capacity = 8, .reserved = 1, .batch = 4},
+                                    .handoff = 8,
+                                    .poll_sleep = std::chrono::microseconds(0),
+                                    .poll_window = SchedulerSettings::kLongest});
+  std::vector<std::byte> source(kSize, std::byte{7});
+  std::vector<std::byte> destination(kSize);
+  std::vector<jitllm::scheduler::OperationId> operations;
+  {
+    std::jthread submission([&] { lane.RunSubmission(); });
+    std::jthread completion([&] { lane.RunCompletion(); });
+    std::jthread device([&](const std::stop_token& stop) {
+      while (!stop.stop_requested()) {
+        execution.Drain();
+        std::this_thread::yield();
+      }
+    });
+    for (int i = 0; i < 4; ++i) {
+      jitllm::scheduler::DeviceWork work;
+      work.copies.at(0) = {.destination = reinterpret_cast<std::uint64_t>(destination.data()),
+                           .source = reinterpret_cast<std::uint64_t>(source.data()),
+                           .size = Bytes(kSize)};
+      work.count = 1;
+      operations.push_back(board.Open());
+      ASSERT_EQ(lane.Submit(
+                    jitllm::scheduler::DeviceCommand{.operation = operations.back(), .work = work}),
+                PushResult::kAccepted);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));  // polling, not asleep
+    }
+    std::size_t completed = 0;
+    const auto give_up = std::chrono::steady_clock::now() + kPatience;
+    while (completed < operations.size() && std::chrono::steady_clock::now() < give_up) {
+      for (const auto& seen : board.Harvest(8)) {
+        completed += seen.terminal &&
+                             seen.terminal->outcome == jitllm::scheduler::Outcome::kSucceeded &&
+                             seen.terminal->no_further_access
+                         ? 1
+                         : 0;
+      }
+      (void)wake.WaitFor(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(completed, operations.size());
+    lane.Close();  // the lanes return, although the window has not passed
+    submission.join();
+    completion.join();
+  }
+  EXPECT_EQ(destination, source);
+}
+
+// A storage lane polling (its poll window) takes every read and returns
+// once closed, however long its window.
+TEST(StorageLanePollTest, APollingStorageLaneTakesEveryReadAndStopsOnClose) {
+  FakeStorage storage{4, 4096};
+  std::vector<std::byte> contents(4 * kSize);
+  for (std::size_t i = 0; i < contents.size(); ++i) {
+    contents[i] = static_cast<std::byte>(i * 13);
+  }
+  const int fd = storage.AddFile(contents);
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{8, wake};
+  StorageService lane(
+      storage,
+      ReaderSettings{
+          .alignment = 4096, .request_bytes = 16 * 1024, .retries = 0, .reads = 8, .waiters = 2},
+      board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 4}, SchedulerSettings::kLongest);
+  auto* memory = static_cast<std::byte*>(
+      std::aligned_alloc(4096, contents.size()));  // NOLINT(cppcoreguidelines-no-malloc)
+  {
+    std::jthread thread([&] { lane.Run(); });
+    for (std::size_t i = 0; i < 4; ++i) {
+      ASSERT_EQ(lane.Submit(jitllm::scheduler::ReadCommand{.operation = board.Open(),
+                                                           .spec = {.fd = fd,
+                                                                    .offset = i * kSize,
+                                                                    .memory = memory + (i * kSize),
+                                                                    .length = kSize}}),
+                PushResult::kAccepted);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));  // polling, not asleep
+    }
+    std::size_t completed = 0;
+    const auto give_up = std::chrono::steady_clock::now() + kPatience;
+    while (completed < 4 && std::chrono::steady_clock::now() < give_up) {
+      for (const auto& seen : board.Harvest(8)) {
+        completed += seen.terminal &&
+                             seen.terminal->outcome == jitllm::scheduler::Outcome::kSucceeded &&
+                             seen.terminal->bytes == kSize
+                         ? 1
+                         : 0;
+      }
+      (void)wake.WaitFor(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(completed, 4U);
+    lane.Close();  // it returns, although the window has not passed
+  }
+  EXPECT_EQ(std::memcmp(memory, contents.data(), contents.size()), 0);
+  std::free(memory);  // NOLINT(cppcoreguidelines-no-malloc)
+}
+
+TEST(StorageLanePollDeathTest, AnUnboundedPollWindowIsRefused) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  FakeStorage storage{4, 4096};
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{4, wake};
+  const auto build = [&](std::chrono::microseconds window) {
+    const StorageService lane(storage, ReaderSettings{}, board, QueueSettings{}, window);
+  };
+  EXPECT_DEATH(build(std::chrono::microseconds(-1)), "storage poll window");
+  EXPECT_DEATH(build(std::chrono::hours(2)), "storage poll window");
+  build(std::chrono::microseconds(0));
+}
+
+TEST(DeviceLanePollDeathTest, AnUnboundedPollWindowIsRefused) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  FakeDeviceExecution execution;
+  const StreamId stream = execution.CreateStream().value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{4, wake};
+  const auto build = [&](std::chrono::microseconds window) {
+    DeviceSettings settings;
+    settings.poll_window = window;
+    const DeviceService lane(execution, std::span<const StreamId>(&stream, 1), board, settings);
+  };
+  EXPECT_DEATH(build(std::chrono::microseconds(-1)), "submission poll window");
+  EXPECT_DEATH(build(std::chrono::hours(2)), "submission poll window");
+  build(std::chrono::microseconds(0));
 }
 
 TEST(PageInZoneTest, ALandedSourceNeedsAZone) {
@@ -1173,7 +1421,7 @@ TEST(PageInZoneDeathTest, TheLandingStreamMustBeADeviceLaneStream) {
 // again, some cancelled, while the owner sleeps on its wake flag. A lost
 // wakeup hangs; a slot reused early or a publication before the copy's
 // fence shows as a mismatch, and a race under ThreadSanitizer.
-TEST_F(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
+TEST_P(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
   Build(1, 64);
   std::atomic<int> mismatches{0};
   std::atomic<int> done{0};
@@ -1264,6 +1512,11 @@ TEST_F(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
     std::jthread storage([&] { storage_lane_->Run(); });
     std::jthread submission([&] { device_lane_->RunSubmission(); });
     std::jthread completion([&] { device_lane_->RunCompletion(); });
+    std::jthread vmm([&] {
+      if (backing_lane_ != nullptr) {
+        backing_lane_->Run();
+      }
+    });
     std::jthread device([&](const std::stop_token& stop) {
       while (!stop.stop_requested()) {
         execution_.Drain();
@@ -1296,9 +1549,13 @@ TEST_F(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
     owner.join();
     storage_lane_->Close();
     device_lane_->Close();
+    if (backing_lane_ != nullptr) {
+      backing_lane_->Close();
+    }
     storage.join();
     submission.join();
     completion.join();
+    vmm.join();
   }
   EXPECT_FALSE(result.has_value() && !result->has_value());
   EXPECT_EQ(mismatches.load(), 0);
@@ -1316,5 +1573,9 @@ TEST_F(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
   EXPECT_EQ(memory_.backings(), baseline_ + (occupied.idle.value() / kSize));
   scheduler_.reset();  // stopped: TearDown has nothing more to drain
 }
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, PageInTest, ::testing::Bool(), [](const auto& info) {
+  return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
+});
 
 }  // namespace

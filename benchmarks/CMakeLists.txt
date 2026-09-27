@@ -19,6 +19,15 @@ if(JITLLM_CUDA)
   add_executable(jitllm_storage_bench storage_bench.cc)
   target_link_libraries(jitllm_storage_bench PRIVATE jitllm_cuda_device_memory jitllm_storage jitllm_warnings)
 
+  # Page-in throughput through the scheduler and its lanes: the landing
+  # zone into device VMM against direct reads in place into host VMM
+  # (D-081; docs/experiments/pagein-perf/).
+  add_executable(jitllm_pagein_bench pagein_bench.cc)
+  target_include_directories(jitllm_pagein_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_pagein_bench PRIVATE jitllm_cuda_device_memory
+                                                    jitllm_scheduler jitllm_storage jitllm_warnings)
+
   # Which OS counters include VMM backing (docs/experiments/vmm-counters/).
   add_executable(jitllm_vmm_counters vmm_counters.cc)
   target_include_directories(jitllm_vmm_counters SYSTEM PRIVATE

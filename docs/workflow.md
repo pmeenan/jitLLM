@@ -68,6 +68,10 @@ downgrade a heavy-path change to the light loop on their own.
   main agent commits, only what the user asked it to, and only reviewed,
   checked work. Subagents never commit, and no agent pushes, tags, amends or
   rewrites history. Otherwise the working tree is the handoff.
+- **One commit per completed task.** A plan task stays on its worktree
+  through build, review, challenge, fixes, checks and docs, then lands as
+  one commit. Separate commits are only for pre-registrations that a
+  protocol (D-079) needs fixed before the run it governs.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.

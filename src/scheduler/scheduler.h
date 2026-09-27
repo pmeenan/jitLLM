@@ -35,9 +35,9 @@
 //     every stage's completion proves no further access.
 //   - A page-in (docs/architecture.md#page-in-and-eviction-lifecycles-8)
 //     runs in stages, each one operation with its own mailbox:
-//       1. with managed backing (D-033), the device lane creates backing
-//          in the source's allocation class, maps it at its place and sets
-//          access;
+//       1. with managed backing (D-033), the VMM lane (Lanes::backing, or
+//          the device lane without one) creates backing in the source's
+//          allocation class, maps it at its place and sets access;
 //       2. a landed source (D-081) waits for a landing slot, in order;
 //       3. the storage lane reads the file range with direct I/O, into the
 //          slot, or for a direct source into the extent's own memory;
@@ -54,7 +54,7 @@
 //     releases the backing it mapped before the extent is nonresident
 //     again. A stage that can never get a mailbox (every one retired or
 //     held by quarantined work) quarantines its load instead of waiting.
-//   - Evict an extent: with managed backing the device lane unmaps and
+//   - Evict an extent: with managed backing the VMM lane unmaps and
 //     releases it (D-033) while the extent is EVICTING, and the task may
 //     wait for it; otherwise the catalog alone records it. An unmap
 //     refused with nothing changed leaves it resident; one of unknown
@@ -226,6 +226,27 @@ struct LandingZone {
   std::uint32_t stream = 0;
 };
 
+// What a page-in reached, reported to a PageInObserver.
+enum class PageInEvent : std::uint8_t {
+  kMapped,    // its managed backing is mapped
+  kReading,   // its read was issued (published, or held while the lane is full)
+  kResident,  // published resident
+  kFailed,    // ended without contents (a quarantined load is not reported)
+};
+
+// Watches page-ins for measurement: called on the scheduler thread, inside
+// a turn, so it must be quick and must not call the scheduler.
+class PageInObserver {
+ public:
+  PageInObserver() = default;
+  PageInObserver(const PageInObserver&) = delete;
+  PageInObserver& operator=(const PageInObserver&) = delete;
+  PageInObserver(PageInObserver&&) = delete;
+  PageInObserver& operator=(PageInObserver&&) = delete;
+  virtual ~PageInObserver() = default;
+  virtual void Staged(catalog::ExtentId extent, PageInEvent event) = 0;
+};
+
 struct SchedulerSettings {
   std::size_t tasks = 64;  // the admitted task bound
   std::size_t priorities = 2;
@@ -252,14 +273,18 @@ struct SchedulerSettings {
   // Where landed page-ins land; none by default (a landed source is then
   // refused).
   LandingZone landing = {};  // NOLINT(readability-redundant-member-init)
+  // Told of each page-in's progress; outlives the scheduler. Optional.
+  PageInObserver* observer = nullptr;
 };
 
 // The lanes the scheduler publishes to; any may be absent (its work is
-// then refused as invalid).
+// then refused as invalid). Managed backing's VMM work goes to `backing`
+// if there is one, and otherwise to the device lane.
 struct Lanes {
   StorageService* storage = nullptr;
   DeviceService* device = nullptr;
   Lane<CpuCommand>* cpu = nullptr;
+  BackingService* backing = nullptr;
 };
 
 // Controls from other threads.
@@ -369,8 +394,13 @@ class Scheduler {
   // or a task's device or CPU work.
   enum class Kind : std::uint8_t { kLoad, kEvict, kDevice, kCpu };
   // The lane an operation's command goes to.
-  enum class Route : std::uint8_t { kStorage, kDevice, kCpu };
-  static constexpr std::size_t kRoutes = 3;
+  enum class Route : std::uint8_t { kStorage, kDevice, kCpu, kBacking };
+  static constexpr std::size_t kRoutes = 4;
+  // Where VMM work goes: the VMM lane, or the device lane without one (in
+  // order with its other work, as before there was a VMM lane).
+  Route BackingRoute() const {
+    return lanes_.backing != nullptr ? Route::kBacking : Route::kDevice;
+  }
 
   // A page-in's stages (the header's list).
   enum class Stage : std::uint8_t {
@@ -396,7 +426,7 @@ class Scheduler {
     bool mapped = false;      // its managed backing is mapped
     bool failed = false;      // it will not publish
   };
-  // An eviction whose backing the device lane unmaps and releases.
+  // An eviction whose backing the VMM lane unmaps and releases.
   struct Eviction {
     catalog::Ticket ticket;
     OperationId operation;
@@ -579,7 +609,7 @@ class TaskContext {
   // A child, ready at once; its finishing wakes this task.
   std::expected<TaskId, WorkError> Spawn(std::unique_ptr<TaskProgram> program,
                                          std::size_t priority = 1);
-  // Evicts an unheld, evictable extent. With managed backing the device
+  // Evicts an unheld, evictable extent. With managed backing the VMM
   // lane unmaps and releases it first: kWaiting, and the task is woken
   // once the extent is nonresident (or, if the unmap failed, with a
   // failure). Otherwise at once, in the catalog only: its backing stays

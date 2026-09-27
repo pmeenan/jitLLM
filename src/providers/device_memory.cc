@@ -3,6 +3,7 @@
 
 #include "providers/device_memory.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -50,7 +51,13 @@ std::string ToString(ProviderError error) {
   return "unknown provider error";
 }
 
+VmmProvider::Exclusive::Exclusive(std::atomic<bool>& changing) : changing_(changing) {
+  base::Check(!changing_.exchange(true, std::memory_order_acquire),
+              "two threads changed a VMM provider at once: one thread calls it at a time");
+}
+
 std::expected<ReservationId, Failure> VmmProvider::Reserve(Bytes size) {
+  const Exclusive exclusive(changing_);
   if (size == Bytes() || !Aligned(size)) {
     return Invalid(std::format("a reservation of {} bytes is not a multiple of {}", size.value(),
                                granularity_.value()));
@@ -118,6 +125,7 @@ std::optional<BackingId> VmmProvider::MappedAt(ReservationId reservation, Bytes 
 }
 
 std::expected<void, Failure> VmmProvider::Free(ReservationId reservation) {
+  const Exclusive exclusive(changing_);
   Reservation* found = reservations_.Find(reservation);
   if (found == nullptr) {
     return Invalid("stale or unknown reservation");
@@ -137,6 +145,7 @@ std::expected<void, Failure> VmmProvider::Free(ReservationId reservation) {
 }
 
 std::expected<BackingId, Failure> VmmProvider::Create(std::size_t allocation_class, Bytes size) {
+  const Exclusive exclusive(changing_);
   const std::span<const AllocationClass> classes = Classes();
   if (allocation_class >= classes.size()) {
     return Invalid("no such allocation class");
@@ -175,6 +184,7 @@ std::expected<BackingId, Failure> VmmProvider::Create(std::size_t allocation_cla
 }
 
 std::expected<void, Failure> VmmProvider::Release(BackingId backing) {
+  const Exclusive exclusive(changing_);
   Backing* found = backings_.Find(backing);
   if (found == nullptr) {
     return Invalid("stale or unknown backing");
@@ -197,6 +207,7 @@ std::expected<void, Failure> VmmProvider::Release(BackingId backing) {
 
 std::expected<void, Failure> VmmProvider::Map(ReservationId reservation, Bytes offset,
                                               BackingId backing) {
+  const Exclusive exclusive(changing_);
   Reservation* place = reservations_.Find(reservation);
   Backing* found = backings_.Find(backing);
   if (place == nullptr || found == nullptr) {
@@ -260,6 +271,7 @@ std::expected<std::vector<std::uint64_t>, Failure> VmmProvider::Covered(
 
 std::expected<void, Failure> VmmProvider::SetAccess(ReservationId reservation, Bytes offset,
                                                     Bytes size, Access access) {
+  const Exclusive exclusive(changing_);
   Reservation* place = reservations_.Find(reservation);
   if (place == nullptr) {
     return Invalid("stale or unknown reservation");
@@ -312,6 +324,7 @@ std::expected<void, Failure> VmmProvider::SetAccess(ReservationId reservation, B
 
 std::expected<void, Failure> VmmProvider::Unmap(ReservationId reservation, Bytes offset,
                                                 Bytes size) {
+  const Exclusive exclusive(changing_);
   Reservation* place = reservations_.Find(reservation);
   if (place == nullptr) {
     return Invalid("stale or unknown reservation");

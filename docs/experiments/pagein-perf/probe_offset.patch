@@ -1,0 +1,24 @@
+Shifts dmabuf_probe restore reads by PROBE_OFFSET bytes (4 KiB-aligned), as an
+artifact's chunks are: git apply this in docs/experiments/dmabuf-direct/.
+With an offset the probe's own verification reports every word bad; the
+reads and copies are unchanged.
+
+--- a/dmabuf_probe.cu
++++ b/dmabuf_probe.cu
+@@ -1068,6 +1068,7 @@
+ // zone of 2 x depth slots copied into device VMM by the copy engine or an SM
+ // kernel), udmabuf-4k / udmabuf-2m (direct reads into the CPU mapping of an
+ // imported udmabuf; the GPU consumes the same pages in place).
++static std::uint64_t g_offset = getenv("PROBE_OFFSET") ? strtoull(getenv("PROBE_OFFSET"), nullptr, 0) : 0;
+ int cmd_restore(const char* file, const std::string& mode, unsigned depth, int passes, std::size_t gib) {
+   gpu_init();
+   const std::size_t bytes = gib * GiB;
+@@ -1130,7 +1131,7 @@
+         void* target = cpu_dest + next * kExtent;
+         if (nslots) { slot = free_slots.front(); free_slots.pop_front(); target = slot_ptr[slot]; }
+         started[next] = Clock::now();
+-        ring.prep_read(fd, target, kExtent, next * kExtent, (next << 8) | slot);
++        ring.prep_read(fd, target, kExtent, g_offset + next * kExtent, (next << 8) | slot);
+         ++next;
+       }
+       // Block for a read only when no copy is pending (as the diagnosis did).

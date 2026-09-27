@@ -541,6 +541,7 @@ class Harness {
   std::unique_ptr<sc::CompletionBoard> board_;
   std::unique_ptr<sc::StorageService> storage_lane_;
   std::unique_ptr<sc::DeviceService> device_lane_;
+  std::unique_ptr<sc::BackingService> backing_lane_;
   std::unique_ptr<sc::Scheduler> scheduler_;
   std::vector<std::jthread> threads_;  // the scheduler first
   std::optional<std::expected<void, sc::Fault>> stopped_;
@@ -835,6 +836,7 @@ void Harness::Check(const kg::Qwen2Graph& graph) {
 
 void Harness::Round() {
   (void)storage_lane_->Turn(false);
+  (void)backing_lane_->Turn();
   (void)device_lane_->SubmissionTurn();
   (void)device_lane_->CompletionTurn();
   (void)scheduler_->Turn();
@@ -1119,14 +1121,22 @@ Status Harness::Setup() {
       sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
                          .handoff = 256,
                          .poll_sleep = std::chrono::microseconds(0)},
-      memory_.get());
+      nullptr);
+  // Managed backing's VMM work on a lane of its own, so the zone's copies
+  // never wait behind it (docs/experiments/pagein-perf/); that lane alone
+  // calls the device-memory provider (device_memory.h).
+  backing_lane_ = std::make_unique<sc::BackingService>(
+      memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32});
   sc::LandingZone landing{.slots = {}, .slot_bytes = Bytes(kExtent), .stream = 1};
   for (std::size_t i = 0; i < o_.slots; ++i) {
     landing.slots.push_back(zone_.base + (i * kExtent));
   }
   scheduler_ = std::make_unique<sc::Scheduler>(
       catalog_, *board_, wake_,
-      sc::Lanes{.storage = storage_lane_.get(), .device = device_lane_.get(), .cpu = nullptr},
+      sc::Lanes{.storage = storage_lane_.get(),
+                .device = device_lane_.get(),
+                .cpu = nullptr,
+                .backing = backing_lane_.get()},
       sc::SchedulerSettings{
           .tasks = 16, .budget = Bytes(std::uint64_t{64} << 30U), .landing = landing});
   if (auto r = RegisterWeights(); !r) {
@@ -1159,6 +1169,7 @@ Status Harness::Setup() {
     threads_.emplace_back([this] { storage_lane_->Run(); });
     threads_.emplace_back([this] { device_lane_->RunSubmission(); });
     threads_.emplace_back([this] { device_lane_->RunCompletion(); });
+    threads_.emplace_back([this] { backing_lane_->Run(); });
   }
   return {};
 }
@@ -1548,9 +1559,11 @@ Status Harness::Teardown() {
     const bool driven = threads_.empty();
     storage_lane_->Close();
     device_lane_->Close();
+    backing_lane_->Close();
     if (driven) {
       for (int i = 0; i < 1000 && (storage_->in_flight() > 0 || i < 10); ++i) {
         (void)storage_lane_->Turn(false);
+        (void)backing_lane_->Turn();
         (void)device_lane_->SubmissionTurn();
         (void)device_lane_->CompletionTurn();
       }

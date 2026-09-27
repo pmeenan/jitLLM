@@ -55,8 +55,9 @@ struct QueueSettings {
 //
 // The reader must take as many reads as the scheduler can have operations
 // (ReaderSettings::reads), or an operation may be refused as not started.
-// While requests are in flight, the Run loop waits in the provider for a
-// completion; a queued command wakes it (Storage::Wake), so a new read or a
+// While requests are in flight and its poll window has passed, the Run loop
+// waits in the provider for a completion; a queued command wakes it
+// (Storage::Wake), so a new read or a
 // cancellation never waits for an unrelated completion, even one that never
 // comes. A cancellation the kernel cannot act on (a request stuck in an
 // uninterruptible wait) still leaves the read to drain: its memory stays
@@ -65,8 +66,16 @@ struct QueueSettings {
 // refused is offered again at once, not at the owner's next timer tick.
 class StorageService {
  public:
+  // `poll_window`: how long the Run loop keeps polling, for commands and
+  // completions alike, after its last progress before it waits in the
+  // provider or sleeps on its queue; zero never polls. A thread that
+  // sleeps wakes slowly on the Spark (RE-017): asleep in io_uring_enter,
+  // this lane took up to ~200 us (p90) to pick up a new read, so the
+  // landing zone ran below depth (docs/experiments/pagein-perf/). At most
+  // an hour.
   StorageService(providers::Storage& storage, providers::ReaderSettings reader,
-                 CompletionBoard& board, QueueSettings queue);
+                 CompletionBoard& board, QueueSettings queue,
+                 std::chrono::microseconds poll_window = std::chrono::microseconds(200));
 
   // Any thread.
   base::PushResult Submit(const StorageCommand& command,
@@ -99,6 +108,7 @@ class StorageService {
   providers::DirectReader reader_;
   CompletionBoard& board_;
   std::size_t batch_;
+  std::chrono::microseconds poll_window_;
 };
 
 struct DeviceSettings {
@@ -111,6 +121,14 @@ struct DeviceSettings {
   // pending: zero yields (a whole core, the fastest to notice); otherwise
   // it sleeps this long. A setting to measure, not a tuned value (RE-017).
   std::chrono::microseconds poll_sleep{0};
+  // How long the submission lane's Run loop keeps polling its queue (with
+  // yield) after its last command before it sleeps; zero never polls. A
+  // sleeping thread wakes slowly on the Spark (RE-017), and a page-in
+  // through the zone hands this lane a copy every ~140 us at disk speed:
+  // asleep between them, it took 94-199 us at the median to wake for the
+  // next (docs/experiments/pagein-perf/). The scheduler's window, not a tuned
+  // value; at most SchedulerSettings::kLongest.
+  std::chrono::microseconds poll_window{200};
   // Known failures (the call changed nothing) in a row, of a query or a
   // release of one fence, before the completion lane stops asking: a
   // refusal that persists (a lost context) must not keep the lane, and
@@ -126,9 +144,12 @@ struct DeviceSettings {
 // submission call that may block (D-048). Releasing a fence is a
 // submission-side call, so the completion lane releases only when the
 // submission lane is between calls (never waiting for it) and otherwise
-// tries again next turn. VMM work (BackingWork) runs on the submission
-// lane too, in order with the rest, and is published at once: there is
-// nothing to fence.
+// tries again next turn. VMM work (BackingWork) given to this service
+// runs on the submission lane too, in order with the rest, and is
+// published at once: there is nothing to fence. A program that pages
+// through the zone gives it to a BackingService instead (below), so a
+// load's copies never wait behind it, and then gives this service no
+// device-memory provider: one lane calls a provider (device_memory.h).
 //
 // A copy the provider refused queued nothing; if an operation's first copy
 // is refused it did not start. A later refusal leaves earlier copies
@@ -220,6 +241,48 @@ class DeviceService {
   // Completion lane only, together at most `handoff` (allocated once).
   std::vector<Watch> watches_;
   std::vector<Release> releases_;
+};
+
+// The VMM lane (D-033, D-081): managed backing's VMM work (BackingWork),
+// carried out as the device service's submission lane would, on a thread of
+// its own. Creating and mapping a 2 MiB extent of device backing took
+// ~110 us on the GB10 (cuMemCreate ~70-76, cuMemSetAccess ~40-43), and a
+// load maps one extent per ~140 us at disk speed: on the submission lane
+// the copies queued behind it (docs/experiments/pagein-perf/). Nothing
+// orders VMM work with device work through a queue: the scheduler
+// publishes a load's read or copy only once its mapping has completed, a
+// failed or withdrawn load's unmap only once its read or copy is proven
+// to touch the memory no more (else it is quarantined), and an eviction's unmap
+// only once every lease on the extent is released, so this lane changes
+// no ordering the protocol relies on. Each operation is published at once, with the
+// same outcomes as on the submission lane; any other work is refused as
+// not started. Without a device-memory provider everything is refused.
+// This lane is then the provider's one caller (device_memory.h): the
+// DeviceService beside it is given none, so VMM work that reached it by
+// mistake is refused rather than raced.
+class BackingService {
+ public:
+  BackingService(providers::DeviceMemory* memory, CompletionBoard& board, QueueSettings queue);
+
+  // Any thread. Moves from `command` only if it is accepted.
+  base::PushResult Submit(DeviceCommand&& command,
+                          base::PushKind kind = base::PushKind::kOrdinary) {
+    return queue_.TryPush(std::move(command), kind);
+  }
+  void Close() { queue_.Close(); }
+
+  // The lane's thread: one batch of commands. True if anything happened.
+  bool Turn();
+  // Until closed, with everything queued carried out.
+  void Run();
+
+ private:
+  void Handle(DeviceCommand& command);
+
+  providers::DeviceMemory* memory_;
+  CompletionBoard& board_;
+  base::BoundedQueue<DeviceCommand> queue_;
+  std::size_t batch_;
 };
 
 // The CPU worker lane (a Lane of CpuCommand, at most four workers per

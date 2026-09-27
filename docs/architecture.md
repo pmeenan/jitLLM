@@ -323,7 +323,8 @@ observations; they never change its records or run a continuation inline.
 | --- | --- | --- |
 | Scheduler | M2 | Bounded batches of observations and ready tasks per turn; never blocks on disk, GPU, network or a full queue |
 | Storage | M2 | Direct-I/O submission and completion harvesting |
-| Device submission | M2 | VMM calls and ordered launches on owned streams |
+| Device submission | M2 | Ordered copies and launches on owned streams (and VMM calls when there is no VMM lane) |
+| VMM | M2 | Creating, mapping and releasing managed backing, so a page-in's copies never wait behind it |
 | Device completion | M2 | Fence queries, independent of any blocking submission call |
 | CPU workers | M2 | Plan preparation, hashing and verification, then rendering and tokenization in M3; other long host work |
 | Network | M3 (front door), M4a (cluster) | Listeners, TLS, protocol parsing and writing, cluster sessions, backpressure |
@@ -339,7 +340,12 @@ worst-case wire bytes, which are part of its output credits; the buffer is
 sized at admission to hold at least the largest phase's worst-case output.
 When the buffer fills, the scheduler stops production at the next completed
 boundary, while completion harvesting continues (D-048). Worker counts, queue
-sizes and polling intervals are M2 settings to measure. Durations use
+sizes and polling intervals are M2 settings to measure. A sleeping thread
+wakes slowly on the Spark (RE-017), so the scheduler, storage and device
+submission lanes poll for a bounded window (200 µs, not tuned) after their
+last progress before they sleep; page-in through the zone reached the
+in-place reads' bandwidth only with them
+([pagein-perf](experiments/pagein-perf/README.md)). Durations use
 monotonic clocks.
 
 ## Request path
@@ -700,9 +706,11 @@ publish resident → grant lease. Duplicate requests for one content generation
 are coalesced.
 
 The scheduler runs each page-in in stages, each an operation of its own
-whose proven completion alone moves it on (`scheduler.h`): the device lane
+whose proven completion alone moves it on (`scheduler.h`): the VMM lane
 creates the extent's backing, maps it and sets access; the load waits, in
-order, for a landing slot; the storage lane reads the chunk into the slot;
+order, for a landing slot; the storage lane reads the chunk into the slot,
+starting reads in the order they were published, so a load reaches the
+device sequentially (RE-026);
 the device lane copies it into place on the zone's stream; and the extent
 is published, and the slot freed, only once that copy's fence has
 completed. At most twice the zone's slots of landed loads are in flight,
@@ -719,7 +727,7 @@ Eviction: select specific eligible extents → atomically exclude new leases →
 wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation. The unmap and
-release run on the device lane while the extent is EVICTING (D-033: the
+release run on the VMM lane while the extent is EVICTING (D-033: the
 backing is released, not pooled); write-back, the reverse path through the
 zone, is not built yet, so preserved state is not yet evictable.
 

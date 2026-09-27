@@ -10,7 +10,18 @@
 // This header holds no vendor types. A CUDA build implements it through the
 // driver's VMM API (providers/cuda/), and every build has the
 // deterministic fake (providers/fake/). Calls can block: they run on the
-// device submission lane, never on the scheduler thread (D-048).
+// VMM lane, or the device submission lane without one, never on the
+// scheduler thread (D-048).
+//
+// One thread calls a provider at a time; nothing inside is synchronized.
+// While the lanes run that is the one lane given the provider (a program
+// with a VMM lane gives its device lane none), and the program's own
+// thread calls it only when that lane has nothing in flight: at setup, at
+// teardown, or after the work it waited for. A call that changes the
+// provider (Reserve, Free, Create, Release, Map, SetAccess, Unmap) while
+// another is under way is fatal; a read (RangeOf, MappedAt, Undetermined,
+// the counts) must not overlap one either, which nothing checks. The
+// driver's own calls may run alongside the device lanes' copies and fences.
 //
 // VmmProvider holds the rules every implementation shares, so the fake and
 // CUDA reject the same misuse the same way:
@@ -38,6 +49,7 @@
 #ifndef JITLLM_PROVIDERS_DEVICE_MEMORY_H_
 #define JITLLM_PROVIDERS_DEVICE_MEMORY_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -204,6 +216,21 @@ class VmmProvider : public DeviceMemory {
     bool undetermined = false;
   };
 
+  // Held by each call that changes the provider: a second at once is fatal
+  // (one thread at a time, the header's contract).
+  class Exclusive {
+   public:
+    explicit Exclusive(std::atomic<bool>& changing);
+    ~Exclusive() { changing_.store(false, std::memory_order_release); }
+    Exclusive(const Exclusive&) = delete;
+    Exclusive& operator=(const Exclusive&) = delete;
+    Exclusive(Exclusive&&) = delete;
+    Exclusive& operator=(Exclusive&&) = delete;
+
+   private:
+    std::atomic<bool>& changing_;
+  };
+
   // The mappings exactly covering [offset, offset + size), or nothing if
   // the range splits a mapping, leaves a hole, or runs outside.
   static std::expected<std::vector<std::uint64_t>, Failure> Covered(const Reservation& reservation,
@@ -211,6 +238,7 @@ class VmmProvider : public DeviceMemory {
   bool Aligned(Bytes value) const { return value.value() % granularity_.value() == 0; }
 
   Bytes granularity_;
+  std::atomic<bool> changing_{false};
   base::SlotTable<ReservationTag, Reservation> reservations_;
   base::SlotTable<BackingTag, Backing> backings_;
 };

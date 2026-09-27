@@ -10,10 +10,15 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <limits>
+#include <span>
+#include <thread>
 
 #include "base/bytes.h"
 #include "expected_error.h"
@@ -222,6 +227,77 @@ TEST_F(DeviceMemoryDeathTest, AddressOnlyBackingKeepsTheRulesAndFaults) {
   EXPECT_EQ(memory.in_use(), Bytes());
   EXPECT_EQ(memory.backings(), 0U);
   EXPECT_EQ(memory.reservations(), 0U);
+}
+
+// A provider whose Create waits inside the driver until let go, so that a
+// second caller can arrive while it is under way.
+class BlockingProvider final : public jitllm::providers::VmmProvider {
+ public:
+  BlockingProvider() : VmmProvider(2_MiB) {}
+  std::span<const jitllm::providers::AllocationClass> Classes() const override { return classes_; }
+
+  bool Inside() const { return inside_.load(); }  // Create is under way
+  void Go() { go_.store(true); }                  // lets it return
+
+ protected:
+  using Failure = jitllm::providers::Failure;
+  std::expected<std::uint64_t, Failure> DoReserve(Bytes size) override {
+    const std::uint64_t base = next_;
+    next_ += size.value();
+    return base;
+  }
+  std::expected<void, Failure> DoFree(std::uint64_t /*base*/, Bytes /*size*/) override {
+    return {};
+  }
+  std::expected<Handle, Failure> DoCreate(
+      const jitllm::providers::AllocationClass& /*allocation_class*/, Bytes /*size*/) override {
+    inside_.store(true);
+    while (!go_.load()) {
+      std::this_thread::yield();
+    }
+    return Handle{1};
+  }
+  std::expected<void, Failure> DoRelease(Handle /*handle*/, Bytes /*size*/) override { return {}; }
+  std::expected<void, Failure> DoMap(std::uint64_t /*address*/, Bytes /*size*/,
+                                     Handle /*handle*/) override {
+    return {};
+  }
+  std::expected<void, Failure> DoSetAccess(std::uint64_t /*address*/, Bytes /*size*/,
+                                           Access /*access*/, bool /*host*/) override {
+    return {};
+  }
+  std::expected<void, Failure> DoUnmap(std::uint64_t /*address*/, Bytes /*size*/) override {
+    return {};
+  }
+
+ private:
+  std::array<jitllm::providers::AllocationClass, 1> classes_{jitllm::providers::AllocationClass{
+      .kind = BackingKind::kDevice, .location = 0, .granularity = 2_MiB}};
+  std::uint64_t next_ = std::uint64_t{1} << 40U;
+  std::atomic<bool> inside_{false};
+  std::atomic<bool> go_{false};
+};
+
+// One thread calls a provider at a time (device_memory.h): a change made
+// while another is under way (the VMM lane's Create, say) is fatal, not a
+// silent race on the provider's tables. One after the other from two
+// threads is fine.
+TEST(DeviceMemoryCallerDeathTest, ChangesFromTwoThreadsAtOnceAreFatal) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const auto overlap = [] {
+    BlockingProvider provider;
+    std::jthread lane([&] { (void)provider.Create(0, 2_MiB); });
+    while (!provider.Inside()) {
+      std::this_thread::yield();
+    }
+    (void)provider.Reserve(2_MiB);  // while the lane's Create is under way
+    provider.Go();
+  };
+  EXPECT_DEATH(overlap(), "one thread calls it at a time");
+  BlockingProvider provider;
+  provider.Go();
+  std::jthread([&] { EXPECT_TRUE(provider.Create(0, 2_MiB).has_value()); }).join();
+  EXPECT_TRUE(provider.Reserve(2_MiB).has_value());
 }
 
 }  // namespace

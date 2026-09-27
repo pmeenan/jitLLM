@@ -208,6 +208,23 @@ The copier (copy engine or SM kernel) is a provider tuning choice. Not
 measured: the copy's effect on concurrently running kernels, which matters
 for partial paging during decode, not for cold loads.
 
+**Update (2026-09-27).** Backend proof P2 measured the runtime's loads
+through the zone below in-place reads (11.9 against 13.8 GB/s with backing
+mapped once), which met the second reopen condition below. The gap was the
+runtime's lanes, not the copy: reads reached the SSD out of order (RE-026),
+lanes slept between reads and copies (RE-017), and VMM work delayed the
+copies. With those fixed, loads through the zone are within 1% of in-place
+reads, and 2% of the standalone probe, at two and four in flight, with backing
+mapped once or made per load (at four, idle `spark`, freshly written file:
+14.93 mapped once and 14.69 made per load, against 14.70 in place and
+14.90 for the probe), and at eight with backing mapped once. At eight
+with backing made per load they varied widely on `spark` (median 13.91,
+12.98–14.70, against 14.71 in place; 14.62 against 14.63 on `spark-b`).
+On a file at rest every path read at 13.2–13.4 (`spark-b`, four in
+flight, RE-027). Evidence: [pagein-perf](experiments/pagein-perf/README.md).
+On these measurements the condition no longer holds at D-034's two to
+four in flight; the decision is unchanged.
+
 **Reopen if.** BP-F1's rerun against device VMM fails, or the runtime's
 loads through the zone measurably fall below in-place direct reads (the
 owner's conditions were that the copy fix the L2 issue and not degrade

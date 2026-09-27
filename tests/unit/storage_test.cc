@@ -216,6 +216,87 @@ TEST_F(ReaderTest, AlignmentIsCheckedAndAFullProviderWaits) {
   EXPECT_EQ(finished[0].outcome, ReadOutcome::kComplete);
 }
 
+TEST(ReaderOrderTest, ReadsStartInArrivalOrderAndContinuationsGoFirst) {
+  // One request at a time, so every read after the first waits for room.
+  FakeStorage storage{1, static_cast<std::uint32_t>(kAlignment)};
+  DirectReader reader{storage, Settings()};
+  const int fd = storage.AddFile(Pattern(16 * kAlignment));
+  Buffer buffer{16 * kAlignment};
+  const auto spec = [&](std::uint64_t block) {
+    return ReadSpec{.fd = fd,
+                    .offset = block * kAlignment,
+                    .memory = buffer.data + (block * kAlignment),
+                    .length = 2 * kAlignment};
+  };
+  // The first read's request moves only one block: its remainder must
+  // start before the later reads.
+  storage.ScriptNext({.submission = Submission::kAccepted,
+                      .result = static_cast<std::int64_t>(kAlignment),
+                      .hold = false});
+  // Keys in an order unlike their arrival (the storage lane's keys are
+  // mailbox indices, which are reused out of order).
+  ASSERT_TRUE(reader.Read(9, spec(0), 100).has_value());
+  ASSERT_TRUE(reader.Read(2, spec(2), 100).has_value());
+  ASSERT_TRUE(reader.Read(7, spec(4), 100).has_value());
+  ASSERT_TRUE(reader.Read(4, spec(6), 100).has_value());
+  const auto finished = PollUntilDone(reader);
+  ASSERT_EQ(finished.size(), 4U);
+  std::vector<std::uint64_t> offsets;
+  for (const auto& request : storage.submitted()) {
+    offsets.push_back(request.offset / kAlignment);
+  }
+  EXPECT_THAT(offsets, ElementsAre(0, 1, 2, 4, 6));
+  std::vector<std::uint64_t> keys;
+  for (const auto& read : finished) {
+    EXPECT_EQ(read.outcome, ReadOutcome::kComplete);
+    keys.push_back(read.key);
+  }
+  EXPECT_THAT(keys, ElementsAre(9, 2, 7, 4));
+}
+
+TEST(ReaderOrderTest, AWithdrawnReadThatNeverStartedEndsWithoutHoldingUpTheOthers) {
+  // One request at a time, and the first read's is held: the two later
+  // reads wait, in order, and nothing of them has started.
+  FakeStorage storage{1, static_cast<std::uint32_t>(kAlignment)};
+  DirectReader reader{storage, Settings()};
+  const int fd = storage.AddFile(Pattern(16 * kAlignment));
+  Buffer buffer{16 * kAlignment};
+  const auto spec = [&](std::uint64_t block) {
+    return ReadSpec{.fd = fd,
+                    .offset = block * kAlignment,
+                    .memory = buffer.data + (block * kAlignment),
+                    .length = 2 * kAlignment};
+  };
+  storage.ScriptNext({.submission = Submission::kAccepted, .result = std::nullopt, .hold = true});
+  ASSERT_TRUE(reader.Read(1, spec(0), 100).has_value());
+  ASSERT_TRUE(reader.Read(2, spec(2), 100).has_value());
+  ASSERT_TRUE(reader.Read(3, spec(4), 100).has_value());
+  ASSERT_EQ(storage.submitted().size(), 1U);
+  // The last read, queued behind one that cannot start, is withdrawn: with
+  // nothing in flight it ends at the next poll, and leaves the queue.
+  ASSERT_TRUE(reader.Withdraw(3, 100).has_value());
+  auto finished = reader.Poll(false);
+  ASSERT_EQ(finished.size(), 1U);
+  EXPECT_EQ(finished[0].key, 3U);
+  EXPECT_EQ(finished[0].outcome, ReadOutcome::kCancelled);
+  EXPECT_EQ(finished[0].bytes, 0U);
+  EXPECT_EQ(storage.submitted().size(), 1U);
+  ASSERT_TRUE(storage.Release(storage.submitted().back().token));
+  finished = PollUntilDone(reader);
+  std::vector<std::uint64_t> keys;
+  for (const auto& read : finished) {
+    EXPECT_EQ(read.outcome, ReadOutcome::kComplete);
+    keys.push_back(read.key);
+  }
+  EXPECT_THAT(keys, ElementsAre(1, 2));
+  std::vector<std::uint64_t> offsets;
+  for (const auto& request : storage.submitted()) {
+    offsets.push_back(request.offset / kAlignment);
+  }
+  EXPECT_THAT(offsets, ElementsAre(0, 2));
+  EXPECT_EQ(reader.reads(), 0U);
+}
+
 TEST_F(ReaderTest, OverflowingRangesAreRefusedBeforeAnyIo) {
   const ReadSpec wrapped_file{
       .fd = fd_,

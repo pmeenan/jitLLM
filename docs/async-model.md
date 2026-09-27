@@ -40,8 +40,10 @@ The initial service roles are:
 | Bounded CPU workers | Tokenization, hashing, plan preparation and other potentially long host work; no catalog mutation |
 
 Start with a dedicated scheduler thread and separate storage, device
-submission and device-completion lanes. The network role arrives with M3/M4a.
-Worker counts and sleep/poll intervals are implementation settings to measure,
+submission and device-completion lanes; paging through the landing zone
+(D-081) adds a VMM lane, so creating and mapping backing never delays a
+page-in's copies ([pagein-perf](experiments/pagein-perf/README.md)).
+The network role arrives with M3/M4a. Worker counts and sleep/poll intervals are implementation settings to measure,
 not performance claims or new pins. A lane can contain multiple workers only
 if its provider's ordering/context contract permits it. Keep completion
 harvesting independent of submission waits. In particular, serializing all
@@ -233,7 +235,8 @@ with those tests (plan.md, task lanes). Choices they settle:
   start of that request posted since, repeating it takes no queue entry.
   A later start opens a new intent, so ordering against starts holds. A
   page-in asks the storage lane to cancel at most once.
-- The storage lane waits in io_uring while reads are in flight. A queued
+- The storage lane waits in io_uring while reads are in flight (after
+  polling for a bounded window since its last progress, RE-017). A queued
   command wakes it through an eventfd read armed in the same ring, so a
   cancellation never waits for a completion that may not come. A request
   the kernel cannot cancel still keeps its memory until it completes.
@@ -249,10 +252,14 @@ with those tests (plan.md, task lanes). Choices they settle:
   copying cannot be recalled, so they complete first. A stage that can
   never get a mailbox (every one retired or held by quarantined work)
   quarantines its load, so shutdown reports the fault instead of waiting.
-- VMM work runs on the device submission lane, in order with copies and
-  launches, and is published at once: create, map and access are undone
-  on a known failure, and anything left undetermined is published without
-  proof, so the scheduler quarantines it. That includes an unmap the
+- VMM work runs on the VMM lane when the program has one (D-081's zone
+  path), otherwise on the device submission lane in order with copies
+  and launches. Either way it is published at once: create, map and
+  access are undone on a known failure, and anything left undetermined
+  is published without proof, so the scheduler quarantines it. No queue
+  orders it against copies: each stage starts only on the previous
+  one's proven completion, and an eviction's unmap only once every lease
+  is released. That includes an unmap the
   provider refuses (`kUndetermined`) because an earlier unknown outcome
   left its reservation undetermined: nothing changed, but nothing is
   proven, so the extent is quarantined, never resident again.

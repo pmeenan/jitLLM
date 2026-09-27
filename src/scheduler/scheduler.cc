@@ -461,6 +461,9 @@ base::PushResult Scheduler::Push(Operation& operation) const {
     case Route::kStorage:
       return lanes_.storage != nullptr ? lanes_.storage->Submit(operation.read)
                                        : base::PushResult::kClosed;
+    case Route::kBacking:
+      return lanes_.backing != nullptr ? lanes_.backing->Submit(std::move(operation.device))
+                                       : base::PushResult::kClosed;
     case Route::kDevice:
       return lanes_.device != nullptr ? lanes_.device->Submit(std::move(operation.device))
                                       : base::PushResult::kClosed;

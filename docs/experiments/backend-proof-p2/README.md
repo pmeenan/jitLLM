@@ -347,6 +347,20 @@ loads (the first includes the lanes' warm-up and ran 8.6–13.5):
   the device weights (9.3–10.5 GB/s) and 37–51 ms for the host table's
   272 MB (managed host backing).
 
+**Since closed** ([pagein-perf](../pagein-perf/README.md), 2026-09-27).
+The gap was the runtime's, not the copy's: the direct reader started a
+load's reads out of file order, which this SSD serves ~18% slower at the
+artifact's 4 KiB-aligned offsets (RE-026); the storage and device
+submission lanes slept between reads and copies (RE-017); and VMM work
+held up the copies on the submission lane. With reads in order, polling
+lanes and a VMM lane of its own, this harness's loads through the zone
+matched in-place reads, and both, on this artifact's file, run ~11% below
+a fresh copy of it (RE-027); the numbers are in that report. The harness
+now gives VMM work to that lane. Rungs 4 and 5 were re-run on `spark-b`
+with it (binary `a60ec0cd…`): `threads` on all four arms gave the recorded
+hashes, zero bit differences and no coverage violation, and `plan` on
+`control-fused` matched every chunk.
+
 ## Not covered here
 
 - **The cache is not evicted at the restore point:** spilling state takes

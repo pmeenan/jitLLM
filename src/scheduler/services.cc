@@ -3,6 +3,7 @@
 
 #include "scheduler/services.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -41,16 +42,103 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
   return Outcome::kFailed;
 }
 
+// Carries out VMM work and publishes its acceptance and result at once
+// (DeviceService and BackingService alike).
+void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, OperationId operation,
+              const BackingWork& work) {
+  if (memory == nullptr) {
+    (void)board.Accept(operation, Acceptance::kNotStarted);
+    return;
+  }
+  const auto not_started = [&] { (void)board.Accept(operation, Acceptance::kNotStarted); };
+  // The provider's state is not what either outcome needs: the backing,
+  // or the place, is left in a state nobody may reuse.
+  const auto unproven = [&](Acceptance acceptance) {
+    (void)board.Accept(operation, acceptance);
+    (void)board.Complete(
+        operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
+  };
+  const auto unknown = [](const providers::Failure& failure) {
+    return failure.error == providers::ProviderError::kUnknown;
+  };
+  if (work.kind == BackingWork::Kind::kMap) {
+    const auto created = memory->Create(work.allocation_class, work.size);
+    if (!created) {
+      unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
+      return;
+    }
+    const auto mapped = memory->Map(work.reservation, work.offset, *created);
+    if (!mapped) {
+      if (unknown(mapped.error())) {
+        unproven(Acceptance::kUnknown);
+      } else {
+        memory->Release(*created) ? not_started() : unproven(Acceptance::kAccepted);
+      }
+      return;
+    }
+    const auto access =
+        memory->SetAccess(work.reservation, work.offset, work.size, providers::Access::kReadWrite);
+    if (!access) {
+      if (unknown(access.error())) {
+        unproven(Acceptance::kUnknown);
+      } else if (memory->Unmap(work.reservation, work.offset, work.size) &&
+                 memory->Release(*created)) {
+        not_started();
+      } else {
+        unproven(Acceptance::kAccepted);
+      }
+      return;
+    }
+  } else {
+    const std::optional<providers::BackingId> backing =
+        memory->MappedAt(work.reservation, work.offset);
+    if (!backing) {
+      not_started();  // nothing is mapped there: nothing changed
+      return;
+    }
+    const auto unmapped = memory->Unmap(work.reservation, work.offset, work.size);
+    if (!unmapped) {
+      if (unknown(unmapped.error())) {
+        unproven(Acceptance::kUnknown);
+      } else if (unmapped.error().error == providers::ProviderError::kUndetermined) {
+        // Refused because an earlier unknown outcome left the place
+        // undetermined: nothing changed, but nothing about the place is
+        // proven either, so it must never be handed back as resident.
+        unproven(Acceptance::kAccepted);
+      } else {
+        not_started();
+      }
+      return;
+    }
+    // Unmapped, but the backing still exists until it is released: a
+    // refusal here leaves it charged.
+    if (const auto released = memory->Release(*backing); !released) {
+      unproven(unknown(released.error()) ? Acceptance::kUnknown : Acceptance::kAccepted);
+      return;
+    }
+  }
+  (void)board.Accept(operation, Acceptance::kAccepted);
+  (void)board.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
+                                           .bytes = work.size.value(),
+                                           .no_further_access = true});
+}
+
 }  // namespace
 
 StorageService::StorageService(providers::Storage& storage, providers::ReaderSettings reader,
-                               CompletionBoard& board, QueueSettings queue)
+                               CompletionBoard& board, QueueSettings queue,
+                               std::chrono::microseconds poll_window)
     : queue_(queue.capacity, queue.reserved),
       storage_(storage),
       reader_(storage, reader),
       board_(board),
-      batch_(queue.batch) {
+      batch_(queue.batch),
+      poll_window_(poll_window) {
   base::Check(batch_ > 0, "a lane turn takes at least one command");
+  // Compared in the clock's nanoseconds, where an unbounded value overflows.
+  base::Check(
+      poll_window_ >= std::chrono::microseconds::zero() && poll_window_ <= std::chrono::hours(1),
+      "a storage poll window must be non-negative and at most an hour");
 }
 
 void StorageService::Handle(const StorageCommand& command) {
@@ -93,15 +181,23 @@ bool StorageService::Turn(bool wait) {
 
 void StorageService::Run() {
   const std::stop_token never;
+  auto last = std::chrono::steady_clock::now();
   while (true) {
-    if (reads() == 0) {
+    // Within the window after its last progress the lane polls: it neither
+    // waits in the provider nor sleeps on its queue (RE-017).
+    const bool polling = std::chrono::steady_clock::now() - last < poll_window_;
+    if (reads() == 0 && !polling) {
       std::optional<StorageCommand> command = queue_.Pop(never);
       if (!command) {
         return;  // closed and drained, with nothing in flight
       }
       Handle(*command);
+    } else if (reads() == 0 && queue_.drained()) {
+      return;
     }
-    if (!Turn(true)) {
+    if (Turn(!polling)) {
+      last = std::chrono::steady_clock::now();
+    } else {
       std::this_thread::yield();
     }
   }
@@ -119,6 +215,10 @@ DeviceService::DeviceService(providers::DeviceExecution& execution,
       handoff_(settings.handoff, 0) {
   base::Check(settings_.queue.batch > 0 && !streams_.empty() && settings_.refusals > 0,
               "a device service needs streams, a turn of at least one command and a refusal bound");
+  // Compared in the clock's nanoseconds, where an unbounded value overflows.
+  base::Check(settings_.poll_window >= std::chrono::microseconds::zero() &&
+                  settings_.poll_window <= std::chrono::hours(1),
+              "a submission poll window must be non-negative and at most an hour");
   watches_.reserve(settings_.handoff);
   releases_.reserve(settings_.handoff);
 }
@@ -209,81 +309,7 @@ void DeviceService::Fence(OperationId operation, providers::StreamId stream, boo
 }
 
 void DeviceService::Back(OperationId operation, const BackingWork& work) {
-  if (memory_ == nullptr) {
-    (void)board_.Accept(operation, Acceptance::kNotStarted);
-    return;
-  }
-  const auto not_started = [&] { (void)board_.Accept(operation, Acceptance::kNotStarted); };
-  // The provider's state is not what either outcome needs: the backing,
-  // or the place, is left in a state nobody may reuse.
-  const auto unproven = [&](Acceptance acceptance) {
-    (void)board_.Accept(operation, acceptance);
-    (void)board_.Complete(
-        operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
-  };
-  const auto unknown = [](const providers::Failure& failure) {
-    return failure.error == providers::ProviderError::kUnknown;
-  };
-  if (work.kind == BackingWork::Kind::kMap) {
-    const auto created = memory_->Create(work.allocation_class, work.size);
-    if (!created) {
-      unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
-      return;
-    }
-    const auto mapped = memory_->Map(work.reservation, work.offset, *created);
-    if (!mapped) {
-      if (unknown(mapped.error())) {
-        unproven(Acceptance::kUnknown);
-      } else {
-        memory_->Release(*created) ? not_started() : unproven(Acceptance::kAccepted);
-      }
-      return;
-    }
-    const auto access =
-        memory_->SetAccess(work.reservation, work.offset, work.size, providers::Access::kReadWrite);
-    if (!access) {
-      if (unknown(access.error())) {
-        unproven(Acceptance::kUnknown);
-      } else if (memory_->Unmap(work.reservation, work.offset, work.size) &&
-                 memory_->Release(*created)) {
-        not_started();
-      } else {
-        unproven(Acceptance::kAccepted);
-      }
-      return;
-    }
-  } else {
-    const std::optional<providers::BackingId> backing =
-        memory_->MappedAt(work.reservation, work.offset);
-    if (!backing) {
-      not_started();  // nothing is mapped there: nothing changed
-      return;
-    }
-    const auto unmapped = memory_->Unmap(work.reservation, work.offset, work.size);
-    if (!unmapped) {
-      if (unknown(unmapped.error())) {
-        unproven(Acceptance::kUnknown);
-      } else if (unmapped.error().error == providers::ProviderError::kUndetermined) {
-        // Refused because an earlier unknown outcome left the place
-        // undetermined: nothing changed, but nothing about the place is
-        // proven either, so it must never be handed back as resident.
-        unproven(Acceptance::kAccepted);
-      } else {
-        not_started();
-      }
-      return;
-    }
-    // Unmapped, but the backing still exists until it is released: a
-    // refusal here leaves it charged.
-    if (const auto released = memory_->Release(*backing); !released) {
-      unproven(unknown(released.error()) ? Acceptance::kUnknown : Acceptance::kAccepted);
-      return;
-    }
-  }
-  (void)board_.Accept(operation, Acceptance::kAccepted);
-  (void)board_.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
-                                            .bytes = work.size.value(),
-                                            .no_further_access = true});
+  CarryOut(memory_, board_, operation, work);
 }
 
 void DeviceService::Hand(const Watch& watch) {
@@ -334,6 +360,7 @@ bool DeviceService::SubmissionTurn() {
 
 void DeviceService::RunSubmission() {
   const std::stop_token never;
+  auto last = std::chrono::steady_clock::now();
   while (true) {
     if (unhanded_) {
       if (!SubmissionTurn()) {
@@ -341,12 +368,25 @@ void DeviceService::RunSubmission() {
       }
       continue;
     }
-    std::optional<DeviceCommand> command = queue_.Pop(never);
+    std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
-      break;
+      if (queue_.drained()) {
+        break;
+      }
+      if (std::chrono::steady_clock::now() - last < settings_.poll_window) {
+        std::this_thread::yield();  // more is likely soon: stay awake (RE-017)
+        continue;
+      }
+      command = queue_.Pop(never);
+      if (!command) {
+        break;  // closed and drained
+      }
     }
-    const std::scoped_lock lock(submitting_);
-    Launch(*command);
+    {
+      const std::scoped_lock lock(submitting_);
+      Launch(*command);
+    }
+    last = std::chrono::steady_clock::now();
   }
   Finish();
 }
@@ -436,6 +476,40 @@ void DeviceService::RunCompletion() {
         std::this_thread::yield();
       }
     }
+  }
+}
+
+BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard& board,
+                               QueueSettings queue)
+    : memory_(memory), board_(board), queue_(queue.capacity, queue.reserved), batch_(queue.batch) {
+  base::Check(batch_ > 0, "a lane turn takes at least one command");
+}
+
+void BackingService::Handle(DeviceCommand& command) {
+  if (const auto* work = std::get_if<BackingWork>(&command.work)) {
+    CarryOut(memory_, board_, command.operation, *work);
+    return;
+  }
+  (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work
+}
+
+bool BackingService::Turn() {
+  bool progress = false;
+  for (std::size_t i = 0; i < batch_; ++i) {
+    std::optional<DeviceCommand> command = queue_.TryPop();
+    if (!command) {
+      break;
+    }
+    Handle(*command);
+    progress = true;
+  }
+  return progress;
+}
+
+void BackingService::Run() {
+  const std::stop_token never;
+  while (std::optional<DeviceCommand> command = queue_.Pop(never)) {
+    Handle(*command);
   }
 }
 

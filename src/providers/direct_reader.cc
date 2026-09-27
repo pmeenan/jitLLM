@@ -85,6 +85,7 @@ std::expected<bool, ReadError> DirectReader::Read(std::uint64_t key, const ReadS
   }
   Reading reading;
   reading.spec = spec;
+  reading.arrival = next_arrival_++;
   reading.waiters.push_back(waiter);
   for (std::uint64_t start = 0; start < spec.length; start += settings_.request_bytes) {
     reading.pieces.push_back(
@@ -94,7 +95,8 @@ std::expected<bool, ReadError> DirectReader::Read(std::uint64_t key, const ReadS
               .in_flight = false,
               .token = 0});
   }
-  Start(key, reads_.emplace(key, std::move(reading)).first->second);
+  Queue(key, reads_.emplace(key, std::move(reading)).first->second);
+  StartQueued();  // behind any older read still waiting for room
   return false;
 }
 
@@ -116,6 +118,7 @@ std::expected<void, ReadError> DirectReader::Withdraw(std::uint64_t key, std::ui
         (void)storage_.Cancel(piece.token);  // best effort: it still completes
       }
     }
+    settled_.push_back(key);  // with nothing in flight, it has ended
   }
   return {};
 }
@@ -128,9 +131,28 @@ void DirectReader::Stop(Reading& reading, ReadOutcome outcome, int error) {
   }
 }
 
-void DirectReader::Start(std::uint64_t key, Reading& reading) {
+void DirectReader::Queue(std::uint64_t key, Reading& reading) {
+  if (!reading.queued && !reading.stopping) {
+    reading.queued = true;
+    queue_.emplace(reading.arrival, key);
+  }
+}
+
+void DirectReader::StartQueued() {
+  while (!queue_.empty()) {
+    const auto oldest = queue_.begin();
+    Reading& reading = reads_.at(oldest->second);
+    if (!Start(oldest->second, reading)) {
+      return;  // the provider is full: the rest wait, in order
+    }
+    reading.queued = false;
+    queue_.erase(oldest);
+  }
+}
+
+bool DirectReader::Start(std::uint64_t key, Reading& reading) {
   if (reading.stopping) {
-    return;
+    return true;
   }
   for (std::size_t i = 0; i < reading.pieces.size(); ++i) {
     Piece& piece = reading.pieces[i];
@@ -148,13 +170,14 @@ void DirectReader::Start(std::uint64_t key, Reading& reading) {
         .length = static_cast<std::uint32_t>(piece.length - piece.done),
     };
     if (storage_.Submit(request) == Submission::kNotStarted) {
-      return;  // the provider is full: the next Poll tries again
+      return false;  // the provider is full: the next Poll tries again
     }
     // Accepted or unknown: either way a completion is owed.
     piece.in_flight = true;
     piece.token = token;
     tokens_.emplace(token, std::pair(key, i));
   }
+  return true;
 }
 
 bool DirectReader::Finished(const Reading& reading) {
@@ -164,9 +187,7 @@ bool DirectReader::Finished(const Reading& reading) {
 }
 
 std::vector<FinishedRead> DirectReader::Poll(bool wait) {
-  for (auto& [key, reading] : reads_) {
-    Start(key, reading);
-  }
+  StartQueued();
   std::array<IoCompletion, 64> completions{};
   std::size_t harvested = storage_.Harvest(completions, wait);
   while (harvested > 0) {
@@ -181,13 +202,15 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
       Reading& reading = reads_.at(key);
       Piece& piece = reading.pieces[index];
       piece.in_flight = false;
+      settled_.push_back(key);
       const std::int64_t result = completion.result;
       if (result < 0) {
         const int error = static_cast<int>(-result);
         if (error == ECANCELED) {
           Stop(reading, ReadOutcome::kCancelled, 0);
         } else if ((error == EINTR || error == EAGAIN) && reading.retries < settings_.retries) {
-          ++reading.retries;  // transient: started again below
+          ++reading.retries;  // transient: started again below, ahead of later reads
+          Queue(key, reading);
         } else {
           Stop(reading, ReadOutcome::kFailed, error);
         }
@@ -198,17 +221,22 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
       const bool aligned = (piece.done % settings_.alignment) == 0;
       if (piece.done < piece.length && (transferred == 0 || !aligned)) {
         Stop(reading, ReadOutcome::kEndOfFile, 0);  // the file ended here
+      } else if (piece.done < piece.length) {
+        Queue(key, reading);  // a short transfer continues, ahead of later reads
       }
     }
     harvested = storage_.Harvest(completions, false);
   }
+  StartQueued();
   std::vector<FinishedRead> finished;
-  for (auto it = reads_.begin(); it != reads_.end();) {
+  for (const std::uint64_t key : settled_) {
+    const auto it = reads_.find(key);
+    if (it == reads_.end() || !Finished(it->second)) {
+      continue;  // ended already (listed twice), or still reading
+    }
     Reading& reading = it->second;
-    Start(it->first, reading);
-    if (!Finished(reading)) {
-      ++it;
-      continue;
+    if (reading.queued) {
+      queue_.erase(reading.arrival);  // stopping: nothing more will start
     }
     std::uint64_t bytes = 0;
     for (const Piece& piece : reading.pieces) {
@@ -220,8 +248,9 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
                      .bytes = bytes,
                      .error = reading.error,
                      .waiters = std::move(reading.waiters)});
-    it = reads_.erase(it);
+    reads_.erase(it);
   }
+  settled_.clear();
   return finished;
 }
 

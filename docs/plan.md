@@ -651,17 +651,20 @@ reservation policy) were recorded in M0.
       ([report](experiments/backend-proof-p2/README.md#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone)):
       - **The page-in path** (`scheduler.h`, `pagein.cc`). A page-in runs
         in stages, each an operation proven complete before the next: the
-        device lane creates, maps and opens the extent's backing (D-033);
+        VMM lane (or, without one, the device lane) creates, maps and
+        opens the extent's backing (D-033);
         the load waits in order for a slot of the landing zone, a
         persistent host-VMM pool; the storage lane reads the chunk into it
-        with direct I/O; the device lane copies it into device VMM on the
+        with direct I/O, in the order loads were published; the device
+        lane copies it into device VMM on the
         zone's stream; and the extent is published, and the slot freed,
         only once the copy's fence completes. Failed or withdrawn loads
         unmap and release what they mapped; unproven reads, copies or
         unmaps quarantine the extent and its slot. Eviction unmaps and
-        releases the backing on the device lane. The device lane also runs
+        releases the backing on the same lane. The device lane also runs
         kernel jobs (`LaunchWork`) whose leases hold until their fence.
-        `unit.PageInTest.*` (every profile) covers stage order,
+        `unit.VmmWork/PageInTest.*` (every profile, with VMM work on the
+        device lane and on a VMM lane) covers stage order,
         publication only after the fence, slot reuse only after the copy,
         a full zone's order, failed and short reads, backing failures and
         unknown outcomes (an unmap refused because an earlier unknown
@@ -671,9 +674,10 @@ reservation policy) were recorded in M0.
         copy completes in the same turn), a stage that can never get a
         mailbox (quarantined, so the stop reports the fault; one that
         will free is waited for), eviction, reload and relocation, and
-        a threaded stress; `unit.CudaPageIn.*` (`gpu`) runs io_uring into
-        host VMM and the copy into device VMM on `spark-b`, with eviction,
-        relocation, and cancellation met during a read and during a copy.
+        a threaded stress; `unit.VmmWork/CudaPageIn.*` (`gpu`, both
+        ways) runs io_uring into host VMM and the copy into device VMM on
+        `spark-b`, with eviction, relocation, and cancellation met during
+        a read and during a copy.
       - **Rungs 4 and 5 pass on all four FP16 arms** (2026-09-27,
         `spark-b`). `benchmarks/fp16_paged.cc` pages the artifact into
         device VMM through that path (the token table's host copy read in
@@ -688,7 +692,24 @@ reservation policy) were recorded in M0.
         class. Page-in through the zone ran at 11.4 GB/s (median) against
         13.8 in place with backing mapped once, and 6.9 in place with
         backing made per load: a measured shortfall against D-081's
-        in-place condition with like backing, for the owner.
+        in-place condition with like backing.
+      - **Page-in at disk speed**
+        ([report](experiments/pagein-perf/README.md), 2026-09-27,
+        `spark` and `spark-b`). The shortfall was the runtime's: the direct reader
+        started a load's reads out of file order (RE-026), the storage and
+        device submission lanes slept between reads and copies (RE-017),
+        and VMM work queued ahead of the copies. The reader now starts
+        reads in arrival order, both lanes poll for 200 µs after their last
+        progress, and a VMM lane (`BackingService`) makes and releases
+        managed backing. Over 8 GiB at four in flight on an idle `spark`
+        the zone ran at 14.93 GB/s with backing mapped once and 14.69 made
+        per load, against 14.70 in place and 14.90 for the standalone
+        probe (before: 12.35, 12.04 and 14.54); rungs 4 and 5 re-ran
+        exact. That file was freshly
+        written: this SSD reads files at rest, the FP16 artifact's
+        among them, at ~13.3 GB/s by any path (RE-027). Coalesced
+        chunk-closure reads (BP-P1) remain open: they would cut
+        operations, not raise bandwidth.
       - **Rows this closes or advances:** BP-N3 (FP16), BP-A1's in-process
         pointer coverage (FP16), BP-A3 for FP16 (no F32 conversion and no
         CPU extra buffer type; every weight once in device VMM, and the

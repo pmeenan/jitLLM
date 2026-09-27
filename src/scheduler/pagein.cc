@@ -138,7 +138,8 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
       case catalog::ExtentState::kNonresident: {
         const auto source = sources_.find(extent);
         if (source == sources_.end() || lanes_.storage == nullptr ||
-            ((source->second.landed || source->second.backing) && lanes_.device == nullptr)) {
+            (source->second.landed && lanes_.device == nullptr) ||
+            (source->second.backing && lanes_.device == nullptr && lanes_.backing == nullptr)) {
           return std::unexpected(WorkError::kUnavailable);
         }
         if (found->content_generation != generation) {
@@ -271,7 +272,7 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
     case Stage::kUnmapping: {
       base::Check(source.backing.has_value(), "mapping backing a source does not manage");
       const BackingPlace place = source.backing.value_or(BackingPlace{});
-      operation.route = Route::kDevice;
+      operation.route = BackingRoute();
       operation.device = DeviceCommand{
           .operation = operation.id,
           .work = BackingWork{.kind = load.stage == Stage::kMapping ? BackingWork::Kind::kMap
@@ -292,6 +293,9 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
       }
       operation.route = Route::kStorage;
       operation.read = ReadCommand{.operation = operation.id, .spec = spec};
+      if (settings_.observer != nullptr) {
+        settings_.observer->Staged(extent, PageInEvent::kReading);
+      }
       break;
     }
     case Stage::kCopying: {
@@ -331,6 +335,9 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
         return;
       }
       load.mapped = load.source.backing.has_value();
+      if (load.mapped && settings_.observer != nullptr) {
+        settings_.observer->Staged(extent, PageInEvent::kMapped);
+      }
       if (load.cancelling) {
         Unwind(extent, load);
         return;
@@ -430,6 +437,9 @@ void Scheduler::EndLoad(catalog::ExtentId extent, bool loaded) {
   base::Check(loaded ? catalog_.CompleteLoad(load.ticket).has_value()
                      : catalog_.FailLoad(load.ticket, true).has_value(),
               "settling a page-in's load");
+  if (settings_.observer != nullptr) {
+    settings_.observer->Staged(extent, loaded ? PageInEvent::kResident : PageInEvent::kFailed);
+  }
   // A task that joined after every other waiter left was waiting for the
   // drain, not the contents: it is not told of a failure it did not cause.
   for (const TaskId waiter : load.waiters) {
@@ -575,14 +585,14 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
     base::Check(catalog_.CompleteEvict(*ticket).has_value(), "completing a fresh eviction");
     return Readiness::kReady;
   }
-  if (lanes_.device == nullptr) {
+  if (lanes_.device == nullptr && lanes_.backing == nullptr) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (board_.available() == 0) {
     return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
   }
   // Excludes new leases at once; the backing is released only on the
-  // device lane, after every consumer has retired (the lease rule).
+  // VMM lane, after every consumer has retired (the lease rule).
   const auto ticket = catalog_.BeginEvict(extent);
   if (!ticket) {
     return std::unexpected(ErrorOf(ticket.error()));
@@ -590,7 +600,7 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
   const BackingPlace place = source->second.backing.value_or(BackingPlace{});
   Operation& operation = Open(Kind::kEvict);
   operation.extent = extent;
-  operation.route = Route::kDevice;
+  operation.route = BackingRoute();
   operation.device = DeviceCommand{.operation = operation.id,
                                    .work = BackingWork{.kind = BackingWork::Kind::kUnmap,
                                                        .reservation = place.reservation,
