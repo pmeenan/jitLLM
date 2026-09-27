@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# The GGML module's implementation identities follow its sources (D-053;
-# src/kernels/ggml/module_digest.cmake):
+# A kernel module's implementation identities follow its sources (D-053;
+# src/kernels/ggml/module_digest.cmake, and the EXL3 module's copy of it):
 # - the digest names every file in the module's directory;
 # - the build's generated digest is the digest of the sources as they are;
 # - changing any one file, in a copy, changes the digest.
 #
-#   cmake -DBASE=<src/kernels/ggml> -DNAMES=<a:b:...> -DGENERATED=<module_digest.cc>
+#   cmake -DBASE=<src/kernels/ggml or exl3> -DNAMES=<a:b:...> -DGENERATED=<module_digest.cc>
 #         -DWORK=<scratch dir> -P ggml_module_digest_test.cmake
 
 foreach(variable IN ITEMS BASE NAMES GENERATED WORK)

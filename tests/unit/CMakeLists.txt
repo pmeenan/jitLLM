@@ -229,13 +229,18 @@ add_dependencies(artifact_test artifact_corpus)
 jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The locked ExLlamaV3 subset: the device context's sizes in every profile;
-# the GEMM kernels' tables link in every CUDA profile, and on a GB10 (label
-# `gpu`) every kernel loads and the recorded ones use the P0 launch record's
-# registers.
+# The locked ExLlamaV3 subset: the device context's sizes and the
+# launchers' host checks in every profile; the kernels' tables and lookups
+# link in every CUDA profile, and on a GB10 (label `gpu`) every kernel loads,
+# the recorded ones use the P0 launch record's registers, and jitLLM's
+# launchers run each path of the native linear.
 add_executable(exl3_context_test exl3_context_test.cc)
 target_link_libraries(exl3_context_test PRIVATE jitllm_exl3)
 jitllm_gtest(exl3_context_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(exl3_validate_test exl3_validate_test.cc)
+target_link_libraries(exl3_validate_test PRIVATE jitllm_exl3)
+jitllm_gtest(exl3_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(JITLLM_CUDA)
   add_executable(exl3_tables_test exl3_tables_test.cc)
@@ -245,4 +250,23 @@ if(JITLLM_CUDA)
   add_executable(exl3_kernels_test exl3_kernels_test.cc)
   target_link_libraries(exl3_kernels_test PRIVATE jitllm_exl3_kernels)
   jitllm_gpu_gtest(exl3_kernels_test)
+
+  # The launchers, the linear's paths and the registry on a GB10: operands
+  # in cudaMalloc memory and device VMM alike, every operand flush against
+  # unmapped VMM granules (the over-read probe), and every refusal.
+  add_executable(exl3_linear_test exl3_linear_test.cc)
+  target_link_libraries(exl3_linear_test PRIVATE jitllm_exl3_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(exl3_linear_test)
+
+  # The module's implementation identities follow every one of its source
+  # files (src/kernels/exl3/module_digest.cmake), checked as the GGML
+  # module's are.
+  get_property(exl3_module_names GLOBAL PROPERTY JITLLM_EXL3_MODULE_NAMES)
+  add_test(NAME unit.Exl3ModuleDigest
+           COMMAND ${CMAKE_COMMAND} "-DBASE=${PROJECT_SOURCE_DIR}/src/kernels/exl3"
+                   "-DNAMES=${exl3_module_names}"
+                   "-DGENERATED=${PROJECT_BINARY_DIR}/src/kernels/exl3/module_digest.cc"
+                   "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/exl3_module_digest"
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/ggml_module_digest_test.cmake)
+  set_tests_properties(unit.Exl3ModuleDigest PROPERTIES LABELS unit)
 endif()

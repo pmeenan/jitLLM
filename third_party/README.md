@@ -10,12 +10,12 @@ else enters the build. [source-dependencies.md](../docs/source-dependencies.md)
 explains the mechanism and why it was chosen.
 
 It holds four core components: GoogleTest, toml++, GGML (D-077) and
-ExLlamaV3's GEMM kernels; all but toml++ link only into tests so far
-(`use: test`). The last two are adapted sources:
-each is its upstream archive narrowed by `archive.keep`, with the reviewed
-patches in [patches/](patches/)`<id>/` that add jitLLM's build of the
-files it compiles. [licensing.md](../docs/licensing.md) records their
-audits.
+ExLlamaV3's kernels for the native EXL3 linear; all but toml++ link only
+into tests and benchmarks so far (`use: test`). The last two are adapted
+sources: each is its upstream archive narrowed by `archive.keep`, with the
+reviewed patches in [patches/](patches/)`<id>/` that add jitLLM's build of
+the files it compiles (and, for ExLlamaV3, reduce three of them to their
+kernels). [licensing.md](../docs/licensing.md) records their audits.
 
 | Step | Where | Does |
 | --- | --- | --- |

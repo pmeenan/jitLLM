@@ -497,12 +497,12 @@ reservation policy) were recorded in M0.
         (D-077). Patch 0001 removes `util.cuh`'s exiting error checks
         and drops four no-op `register` specifiers that NVCC rejects with
         a Clang host compiler; 0002 adds jitLLM's build, which reproduces
-        the P0 reference's device flags. Neither the GEMV family (not yet
-        ported) nor any ATen host wrapper is kept; a tooling test fails if `keep`
-        differs from the units' include closure (quoted and angle
-        includes) or a kept file can end the process. The reconstruction,
-        Hadamard and bias-add kernels share their `.cu` files with ATen
-        wrappers and come with the launchers. The per-file audit is in
+        the P0 reference's device flags. No ATen host wrapper is kept; a
+        tooling test fails if `keep` differs from the units' include
+        closure (quoted and angle includes) or a kept file can end the
+        process. The GEMV and the reconstruction, Hadamard and bias-add
+        kernels (whose `.cu` files they share with ATen wrappers) came with
+        the launchers in P3 (below). The per-file audit is in
         [licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2).
         The owner cleared the kernels and `ptx.cuh`'s direct libcu++
         include on 2026-09-27 (D-080). Only tests link them so far (the
@@ -526,22 +526,16 @@ reservation policy) were recorded in M0.
         - Each CUDA profile compiles the four units in 75 to 113
           CPU-seconds (19 to 28 s each; the workstation idle, then loaded).
 
-      Remaining in P1:
-      - the allocation census, under the pre-registered rule;
-      - the first native EXL3 linear (its launchers, and the
-        reconstruction, Hadamard and bias-add kernels). The launchers
-        include and keep `src/kernels/exl3/launch_contract.h`, which a
-        tooling test requires to name every kept kernel: launch each
-        cooperatively, within the co-resident block limit, as upstream's
-        `exl3_gemm.cu` does, and give each launch lock slots (and the
-        multi-GEMM kernel's selection state) that no concurrently running
-        launch shares. `cooperative_groups`' grid sync traps (`_CG_ABORT`)
-        when the launch was not cooperative, and a trap loses the CUDA
-        context; the split-K locks and, from sm_90 on, the multi-GEMM
-        kernel's group barrier spin instead, so a grid whose blocks are not
-        all resident hangs, and on sm_121 some multi-GEMM launches reach no
-        grid sync at all. The kept files hold no trap of their own; all
-        160 in the four units' SASS are that sync's (checked 2026-09-27).
+      Remaining in P1: the allocation census, under the pre-registered
+      rule. The first native EXL3 linear landed with P3 (below). Its
+      launchers keep `src/kernels/exl3/launch_contract.h`: every
+      cooperative kernel (`cooperative_groups`' grid sync traps when the
+      launch was not, and the split-K locks and the multi-GEMM's group
+      barrier spin forever if the grid is not all resident) launches
+      cooperatively within the co-resident limit, on lock slots no
+      concurrently running launch shares. The kept files hold no trap of
+      their own; all 160 in the four GEMM units' SASS are that sync's
+      (checked 2026-09-27).
 
       *P2 prerequisites* ([scope](backend-proof.md#p2-prerequisites)):
       - **FP16 memory limits and the census rule,** pre-registered under
@@ -713,6 +707,43 @@ reservation policy) were recorded in M0.
       binding and negative controls. Next for the pager: write-back and
       state spill through the zone (BP-P4), coalesced vectored reads, and
       the D-033 handoff of a victim's backing.
+
+      *P3 started: native EXL3 linears exact against upstream*
+      ([report](experiments/backend-proof-p3/README.md)):
+      - **The lock** adds to the `exllamav3` component the K = 4 GEMV
+        kernel (core since D-080) and the reconstruction, Hadamard and
+        bias-add kernels, whose `.cu` files patch 0003 reduces to their
+        kernels (removing the ATen wrappers). jitLLM's instance unit
+        (patch 0002) instantiates only what the linear launches, with the
+        reference's device flags; every ExLlamaV3 function in the build has
+        the reference's SASS. The per-file records are in
+        [licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2).
+      - **`src/kernels/exl3/`** holds the launchers (K-L): a launch context
+        on a provider stream with a declared, zeroed lock area no other
+        live context shares, cooperative launches bounded by the device's
+        co-resident limit, faults returned; host checks of every launch in
+        every profile (`unit.Exl3ValidateTest.*`); the reconstruction GEMM
+        on cuBLASLt with its pinned algorithms; each path of the linear;
+        a recorded copy of upstream's GEMV choice; and five registry
+        declarations whose identities cover the module's files.
+      - **BP-N5 passes** (2026-09-27, `spark-b`): every real projection of
+        both fixtures at rows 1, 8, 9, 16, 32, 33, 144, 145, 1,023 and
+        1,024, in EXL3-G and EXL3-O (6,280 cases, 268 through the GEMV),
+        is bit-identical to upstream's extension at the same forced plan
+        and inputs, every intermediate buffer included, and so are every
+        linear's reconstructed weights. It holds with operands in
+        `cudaMalloc` memory, at their minimum alignments, and flush against
+        unmapped VMM granules: no kernel the sweep launches over-reads at
+        these rates, shapes and plans (tile shape 4 never ran), so
+        v0 needs no over-read reservation for these fixtures' EXL3
+        resources ([artifact-format.md](artifact-format.md)).
+      - On `spark-b`, `unit.Exl3LinearTest.*` runs every path in
+        `cudaMalloc` memory and device VMM, the over-read probe, and the
+        refusals (a non-co-resident grid, a shared lock area, a fault).
+
+      Next (P3 part 2): both fixtures end to end under the operation plan
+      (`exl3-op-plan.json`) and Tier C, then BP-F2 once its P3-entry
+      approvals are in.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

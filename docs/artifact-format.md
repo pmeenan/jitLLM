@@ -210,9 +210,16 @@ Readable ranges of resources never overlap, and bytes between `bytes` and
   `in_features`), `svh` (length `out_features`) and marker, and no side
   vector or marker may appear without its trellis. Packed-sign `su`/`sv`,
   other codebooks and other rates are rejected by the importer and the
-  verifier until their own fixtures exist (exl3-bringup.md). EXL3 kernel
-  over-read is not yet established, so `readable_bytes` = `bytes` until
-  the M2 proof measures it.
+  verifier until their own fixtures exist (exl3-bringup.md). **Over-read:**
+  none, so `readable_bytes` = `bytes`. Backend-proof P3 ran every
+  projection of both fixtures, on every path upstream takes (packed GEMM
+  and GEMV, fused gate/up, reconstruction and its fused form) at its
+  forced plans, with each trellis, side vector, bias and activation flush
+  against an unmapped VMM granule on either side: no kernel faulted, and
+  every output was upstream's
+  ([report](experiments/backend-proof-p3/README.md#placements-alignment-and-over-read)).
+  Other rates, codebooks, kernels or tile shapes (the plans used GEMM
+  shapes 1 and 2 and multi-GEMM shapes 2 and 3) need their own probe.
 - **Plain:** `{family: "plain", dtype, shape}`, for non-quantized EXL3-side
   tensors (BF16 embedding, norms). A name ending in an EXL3 part suffix
   (`.trellis`, `.suh`, `.svh`, `.su`, `.sv`, `.mcg`, `.mul1`) must have the

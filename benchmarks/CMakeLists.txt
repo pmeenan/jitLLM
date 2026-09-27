@@ -72,6 +72,17 @@ if(JITLLM_CUDA)
                                                   jitllm_launch_recorder jitllm_warnings)
   target_link_options(jitllm_fp16_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
+  # an EXL3 fixture through jitLLM's launchers at upstream's forced plans,
+  # hashed for comparison with upstream's outputs
+  # (docs/experiments/backend-proof-p3/). Finds the SDK's cuBLAS in
+  # build/<preset>/cublas.
+  add_executable(jitllm_exl3_linear_sweep exl3_linear_sweep.cc)
+  target_link_libraries(jitllm_exl3_linear_sweep PRIVATE jitllm_exl3_kernels jitllm_cuda_device_memory
+                                                         jitllm_artifact jitllm_warnings)
+  target_link_options(jitllm_exl3_linear_sweep PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Why host VMM slowed BP-F1's products, and what the alternatives cost:
   # microkernels over each kind of memory, copies between them, and GGML
   # products with each buffer group placed separately

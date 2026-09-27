@@ -85,24 +85,32 @@ class CheckedInLock(unittest.TestCase):
 
 
 class ExllamaV3Component(unittest.TestCase):
-    """The locked ExLlamaV3 subset: the pin, and a keep set that is exactly the GEMM kernels' closure.
+    """The locked ExLlamaV3 subset: the pin, and a keep set that is exactly the native linear's closure.
 
-    The GEMV family is core-eligible since D-080 but not ported yet; until its port changes this
-    test, neither it nor anything that includes it may be kept. The closure test
-    reads the prepared tree (`mise run prepare`) and is skipped where none exists.
+    That is upstream's GEMM compilation units and what jitLLM's instance unit (jitllm/
+    jitllm_exl3_kernels.cu, added by patch 0002) includes: the GEMV kernel's header (core since
+    D-080) and the reconstruction, Hadamard and bias-add sources that patch 0003 reduces to their
+    kernels. The closure test reads the prepared tree (`mise run prepare`) and is skipped where
+    none exists.
     """
 
     COMMIT = "6b84a21b6f1e5da3f291b9e1019061f0de788279"
     EXT = "exllamav3/exllamav3_ext/"
-    # The four compilation units the build compiles: the mcg codebook (cb1) at the M2 fixtures' rates.
+    # The compilation units the build compiles: the mcg codebook (cb1) at the M2 fixtures' rates,
+    # and jitLLM's instance unit.
     UNITS = [EXT + "quant/comp_units/exl3_comp_unit_4_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_5_cb1.cu",
-             EXT + "quant/comp_units/exl3_comp_unit_6_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_8_cb1.cu"]
-    # Upstream files the core component does not keep: the GEMV family and what includes or
-    # dispatches to it (not ported yet, D-080), the ATen host wrappers and bits_k.cuh's c10 include.
-    EXCLUDED = ["quant/exl3_gemv_kernel.cuh", "quant/exl3_gemv.cu", "quant/exl3_gemv.cuh",
-                "quant/comp_units/exl3_gemv_half_inst.cu", "quant/exl3_moe_coop_kernel.cuh",
+             EXT + "quant/comp_units/exl3_comp_unit_6_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_8_cb1.cu",
+             "jitllm/jitllm_exl3_kernels.cu"]
+    # Kept sources the instance unit includes rather than compiles on their own.
+    INCLUDED_SOURCES = [EXT + "add.cu", EXT + "quant/hadamard.cu", EXT + "quant/reconstruct.cu"]
+    # Upstream files the core component does not keep: the ATen host wrappers (jitLLM's launchers
+    # replace them, with recorded copies of what they decide), bits_k.cuh's c10 include, the int8
+    # GEMV and the MoE kernels.
+    EXCLUDED = ["quant/exl3_gemv.cu", "quant/exl3_gemv.cuh", "quant/comp_units/exl3_gemv_half_inst.cu",
+                "quant/exl3_gemv_int8.cu", "quant/exl3_gemv_int8_kernel.cuh", "quant/exl3_moe_coop_kernel.cuh",
                 "quant/exl3_moe_coop.cu", "quant/exl3_gemm.cu", "quant/exl3_kernel_map.cu",
-                "quant/exl3_devctx.cu", "quant/bits_k.cuh", "quant/reconstruct.cu", "quant/hadamard.cu"]
+                "quant/exl3_devctx.cu", "quant/bits_k.cuh", "quant/reconstruct.cuh", "quant/hadamard.cuh",
+                "add.cuh", "hgemm.cu"]
 
     def setUp(self):
         self.comp = srclib.load_lock()["components"]["exllamav3"]
@@ -128,22 +136,25 @@ class ExllamaV3Component(unittest.TestCase):
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), patch["sha256"])
             self.assertTrue(path.with_name(path.name + ".license").is_file(), patch["path"])
 
-    def test_keep_excludes_the_gemv_family(self):
+    def test_keep_holds_the_gemv_kernel_but_no_host_wrapper(self):
         self.assertIn("LICENSE", self.keep)
         for path in self.keep:
-            self.assertNotIn("gemv", path)
             self.assertNotIn("moe", path)
+            self.assertNotIn("int8", path)
+            if "gemv" in path:
+                self.assertEqual(path, self.EXT + "quant/exl3_gemv_kernel.cuh")
             # Single files only: a kept directory would take whatever upstream adds to it.
             self.assertTrue(path == "LICENSE" or (path.startswith(self.EXT) and path.endswith((".cu", ".cuh", ".h"))),
                             path)
         for path in self.EXCLUDED:
             self.assertNotIn(self.EXT + path, self.keep)
         units = [p for p in self.keep if p.endswith(".cu")]
-        self.assertEqual(sorted(units), sorted(self.UNITS))
+        self.assertEqual(sorted(units), sorted([u for u in self.UNITS if u.startswith(self.EXT)] +
+                                               self.INCLUDED_SOURCES))
 
-    # Names from licensing.md's GEMV gate list (the GEMV kernel, its wrapper and instances, the MoE
-    # cooperative kernels and their derivatives) and the source it cites. No kept file may name one.
-    GATED = re.compile(r"gemv|moe_coop|cooperative_moe|qtip", re.I)
+    # The MoE cooperative kernels and their derivatives, which still need their own audit (D-080); no
+    # kept file may name one. The GEMV and the QTIP citation in its header are cleared (D-080).
+    GATED = re.compile(r"moe_coop|cooperative_moe", re.I)
     # Calls that end the process (D-066; a served process never exits from inside a kernel library):
     # host exits, aborts, asserts and fatal signals, and device traps, breakpoints and asserts
     # (compiler builtins and cooperative_groups' _CG_ABORT among them), as calls or as PTX.
@@ -196,11 +207,11 @@ class ExllamaV3Component(unittest.TestCase):
             self.assertEqual(seen, {self.EXT + p for p in ("quant/unit.cu", "util.cuh", "quant/other.cuh",
                                                            "quant/deep.cuh")})
             (tree / self.EXT / "quant/deep.cuh").write_text("#pragma once\n#include <quant/exl3_moe_coop_kernel.cuh>\n")
-            (tree / self.EXT / "quant/exl3_moe_coop_kernel.cuh").write_text("// derived from QTIP\n")
+            (tree / self.EXT / "quant/exl3_moe_coop_kernel.cuh").write_text("// cooperative_moe dispatch\n")
             seen, problems = self.include_closure(tree, [self.EXT + "quant/unit.cu"], [self.EXT.rstrip("/")])
             self.assertIn(self.EXT + "quant/exl3_moe_coop_kernel.cuh", seen)
             self.assertTrue(any("includes quant/exl3_moe_coop_kernel.cuh" in p for p in problems), problems)
-            self.assertTrue(any("names a gated file or source (QTIP)" in p for p in problems), problems)
+            self.assertTrue(any("names a gated file or source (cooperative_moe)" in p for p in problems), problems)
 
     def test_keep_is_exactly_the_compiled_closure(self):
         tree = srclib.prepared_dir(srclib.SOURCES_DIR, "exllamav3", self.comp)
@@ -211,13 +222,18 @@ class ExllamaV3Component(unittest.TestCase):
         build = (tree / "jitllm" / "CMakeLists.txt").read_text()
         self.assertIn('set(ext "${CMAKE_CURRENT_SOURCE_DIR}/../exllamav3/exllamav3_ext")', build)
         self.assertEqual(re.findall(r"target_include_directories\(([^)]*)\)", build),
-                         ['jitllm_exl3_headers INTERFACE "${ext}"'])
+                         ['jitllm_exl3_headers INTERFACE "${ext}" "${CMAKE_CURRENT_SOURCE_DIR}"'])
         self.assertIn('foreach(bits IN ITEMS 4 5 6 8)', build)
         self.assertIn('exl3_comp_unit_${bits}_cb1.cu', build)
+        self.assertIn('list(APPEND units "${CMAKE_CURRENT_SOURCE_DIR}/jitllm_exl3_kernels.cu")', build)
         # Every include, quoted or angle, that resolves in the tree is followed; nothing gated is reached.
         seen, problems = self.include_closure(tree, self.UNITS, [self.EXT.rstrip("/")])
         self.assertEqual(problems, [])
-        self.assertEqual(sorted(seen | {"LICENSE"}), self.keep)
+        # jitLLM's own files (patch 0002) are the build's, not upstream's kept ones.
+        self.assertEqual(sorted({p for p in seen if not p.startswith("jitllm/")} | {"LICENSE"}), self.keep)
+        # The three kept sources are included, never compiled as units of their own.
+        for source in self.INCLUDED_SOURCES:
+            self.assertNotIn(source.removeprefix(self.EXT), build)
 
     def test_exiting_pattern_finds_every_way_to_end_the_process(self):
         # Host exits, aborts and asserts, and device traps and asserts: a trapped kernel leaves the
@@ -250,17 +266,26 @@ class ExllamaV3Component(unittest.TestCase):
             self.skipTest(f"{tree} is not prepared (mise run prepare)")
         kernels = set()
         for rel in self.keep:
-            text = (tree / rel).read_text()
+            # Line continuations join a macro's lines, as the preprocessor does.
+            text = (tree / rel).read_text().replace("\\\n", " ")
             for match in re.finditer(r"\b__global__\b", text):
                 end = min(i for i in (text.find("{", match.end()), text.find(";", match.end()), len(text)) if i >= 0)
                 declarator = re.sub(r"__launch_bounds__\s*\([^)]*\)", "", text[match.end():end])
                 kernels.add(re.search(r"(\w+)\s*\(", declarator)[1])
-        self.assertEqual(kernels, {"exl3_gemm_kernel", "exl3_mgemm_kernel"})
+            # add.cu defines its kernels through a macro whose fourth argument names each.
+            if re.search(r"^#define KERNEL_DEF\(", text, re.M):
+                kernels.discard("kernel")
+                kernels.update(re.findall(r"^KERNEL_DEF\(\s*\w+,\s*\w+,\s*\w+,\s*(\w+)\s*,", text, re.M))
+        self.assertTrue({"exl3_gemm_kernel", "exl3_mgemm_kernel", "exl3_gemv_kernel", "reconstruct_kernel",
+                         "reconstruct_had_kernel", "had_hf_r_128_kernel", "had_ff_r_128_kernel",
+                         "add_kernel_hhh"} <= kernels, kernels)
+        self.assertEqual(len(kernels), 24, sorted(kernels))
         contract = (REPO / self.CONTRACT).read_text()
         for kernel in kernels:
             self.assertRegex(contract, rf"\b{kernel}\b")
-        self.assertIn(f'#include "{self.CONTRACT.removeprefix("src/")}"',
-                      (REPO / "tests/unit/exl3_tables.h").read_text())
+        include = f'#include "{self.CONTRACT.removeprefix("src/")}"'
+        self.assertIn(include, (REPO / "tests/unit/exl3_tables.h").read_text())
+        self.assertIn(include, (REPO / "src/kernels/exl3/launch.h").read_text())
 
     def test_no_kept_file_can_end_the_process(self):
         # Patch 0001 removes upstream's exiting error checks from util.cuh outright: they are inline

@@ -99,6 +99,10 @@ std::string_view OperationName(Operation operation) {
       return "mul_mat_add";
     case Operation::kMulMatGlu:
       return "mul_mat_glu";
+    case Operation::kQuantLinear:
+      return "quant_linear";
+    case Operation::kQuantMultiLinear:
+      return "quant_multi_linear";
   }
   return "unknown";
 }

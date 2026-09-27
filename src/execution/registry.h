@@ -39,22 +39,25 @@
 
 namespace jitllm::execution {
 
-// The operations the P1 implementations cover (kernels/ggml/ops.h).
+// The operations the implementations cover (kernels/ggml/ops.h,
+// kernels/exl3/linear.h).
 enum class Operation : std::uint8_t {
   kRmsNorm,     // rows scaled to unit root mean square
   kRmsNormMul,  // the same, then scaled by a weight
   kAdd,
   kMul,
   kMatMul,
-  kGetRows,      // rows gathered by index
-  kSetRows,      // rows stored at indices: the KV write
-  kRope,         // rotary position embedding
-  kRopeSetRows,  // RoPE, then its rows stored at indices
-  kSoftMax,      // masked, scaled soft_max over rows
-  kCont,         // a copy into packed layout
-  kSwiGlu,       // silu(gate) * up
-  kMulMatAdd,    // a matrix product plus a bias (or residual) of its shape
-  kMulMatGlu,    // gate and up products of one input, then SwiGLU
+  kGetRows,           // rows gathered by index
+  kSetRows,           // rows stored at indices: the KV write
+  kRope,              // rotary position embedding
+  kRopeSetRows,       // RoPE, then its rows stored at indices
+  kSoftMax,           // masked, scaled soft_max over rows
+  kCont,              // a copy into packed layout
+  kSwiGlu,            // silu(gate) * up
+  kMulMatAdd,         // a matrix product plus a bias (or residual) of its shape
+  kMulMatGlu,         // gate and up products of one input, then SwiGLU
+  kQuantLinear,       // a product with quantized weights and their transforms
+  kQuantMultiLinear,  // several such products of one input
 };
 
 std::string_view OperationName(Operation operation);

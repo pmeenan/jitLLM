@@ -212,7 +212,10 @@ shared with QTIP beyond identical PTX `mma` operand strings. The
 format name does not imply an
 AGPL module or clear third-party patches and calibration data. Preserve
 per-file provenance and notices. The reference includes an attributed MIT-source
-patch for external ARM host helpers; no upstream implementation has entered
-the native application. Native builds retain the CPU-only/fake-backend guardrail and no
-runtime plugin ABI. The experimental artifact schema is settled separately
+patch for external ARM host helpers. The selected kernels entered jitLLM's
+build through the source lock in backend-proof P1 (GEMM) and P3 (GEMV,
+reconstruction, Hadamard, bias add), behind jitLLM's own launchers
+(`src/kernels/exl3/`); only tests and benchmarks link them so far.
+Native builds retain the CPU-only/fake-backend guardrail and no runtime
+plugin ABI. The experimental artifact schema is settled separately
 (D-056), informed by both real representations.

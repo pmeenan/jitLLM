@@ -223,7 +223,8 @@ They also list what adapted launchers must not inherit.
   headers with no ATen types. The host wrappers use ATen tensors, the current
   PyTorch stream and blas handle, `TORCH_CHECK` and `at::empty`, so they are
   rewritten, not ported. The reconstruct and Hadamard kernels share `.cu`
-  files with their wrappers and must be split. Kernel headers rely on the
+  files with their wrappers and must be split (done in P3 by a patch that
+  removes the wrappers, below). Kernel headers rely on the
   including file for some macros. Upstream's
   [`cuda_check` calls `exit`](https://github.com/turboderp-org/exllamav3/blob/6b84a21b6f1e5da3f291b9e1019061f0de788279/exllamav3/exllamav3_ext/util.cuh#L92-L100);
   native wrappers return errors.
@@ -251,7 +252,12 @@ They also list what adapted launchers must not inherit.
   transformed input and FP32 outputs, and 8 B for side vectors, activations
   and FP16 outputs. Upstream packs small tensors at 256 B. Use at least
   256 B inside shared extents unless the proof shows cuBLAS and kernel
-  selection are unchanged at smaller alignment.
+  selection are unchanged at smaller alignment. *Measured in P3:* every
+  linear of both fixtures gives upstream's bits with every operand at
+  exactly those minimums (biases at 2 B, the reconstruction GEMM's
+  operands at the 16 B its pinned algorithms assume), and no kernel reads
+  or writes outside its operands
+  ([report](experiments/backend-proof-p3/README.md#placements-alignment-and-over-read)).
 - **Numerics.** Accumulation is FP32 on GB10, and split-K partials are
   combined in a fixed lock-ordered sequence. The GEMV kernel accumulates in
   FP16 and folds into FP32. There are no floating-point atomics. For a fixed
@@ -270,7 +276,8 @@ They also list what adapted launchers must not inherit.
   cases and reference arm are set at P3 entry), so the native plan needs
   the GEMV port. A native GEMV-on plan's GEMV linears are
   judged exactly against EXL3-O's at the same forced plan, and its full
-  model against Tier C.
+  model against Tier C. The port landed in P3, exact against EXL3-O
+  ([report](experiments/backend-proof-p3/README.md)).
 
 ## Dispatch and implementations (D-053)
 
@@ -342,6 +349,31 @@ ranges.
 **EXL3-derived operations.** Lifted kernels behind jitLLM launchers
 (exl3-bringup.md). The dispatcher sequences them and GGML-derived operations
 on the same stream. No segment boundaries or cross-stream events are needed.
+
+As built in P3, the kernels are the source lock's, built with the
+reference's device flags: upstream's GEMM units and jitLLM's instance unit
+(`jitllm/jitllm_exl3_kernels.cu`, patch 0002) over the GEMV header and the
+reconstruction, Hadamard and bias-add sources, which patch 0003 reduces to
+their kernels. Their SASS equals the reference extension's. The launchers
+(`src/kernels/exl3/`) replace upstream's ATen wrappers:
+- a launch context on a provider stream holds a declared lock area,
+  zeroed on that stream before its first launch and shared with no other
+  live context, and the device's co-resident limit per cooperative
+  kernel; a launch error faults it (`launch.h`);
+- host checks in every profile refuse, before anything is queued, operands
+  a kernel would read or write out of bounds, under-aligned or overlapping
+  operands, and cooperative grids the device cannot hold at once
+  (`validate.h`);
+- the forced plan is data: tile shape and grid (and concurrency) as the
+  decoded tuning record gives them, the GEMV's configuration and grid, and
+  each reconstruction slice's pinned cuBLASLt algorithm (`recon_gemm.h`);
+  a recorded copy of upstream's GEMV choice says where EXL3-O takes the
+  GEMV (`upstream_gemv.h`);
+- each linear path runs upstream's kernels in upstream's order, with the
+  bias through `add_kernel_hhh` on every path (`linear.h`);
+- the registry declares the GEMM, the GEMV (the pair of implementations of
+  one operation at up to eight rows), both reconstruction paths and the
+  fused gate/up multi-GEMM (`implementations.h`).
 
 **Coexistence and swapping** are proof obligations, not later features.
 
@@ -462,7 +494,11 @@ before the native output it governs.
     - time ExLlamaV3's bias add in the reference, not PyTorch's;
     - have one frozen tuning cache govern both the model plan and the
       timing cases;
-    - check that the port's build reproduces the reference's SASS.
+    - check that the port's build reproduces the reference's SASS. *Done
+      in P3:* every ExLlamaV3 function the port's binary holds, the 27 the
+      per-linear sweep launches among them, has the SASS of its namesake in
+      the NVCC 13.4.92 reference (`aa8b9f16…`)
+      ([report](experiments/backend-proof-p3/README.md#sass)).
 
     The changed case set needs a new calibration and holdout under the
     approved rule. The NVCC 13.4.92 calibration and holdout below validate
@@ -587,7 +623,12 @@ never bounded. Logits and restored storage must be bit-identical.
   for P3.
 - **EXL3 packed linears (up to 144 rows) (approved)** against upstream's kernel at the
   same forced plan and inputs, and reconstructed FP16 weights against
-  upstream's reconstruction.
+  upstream's reconstruction. *Applied 2026-09-27 (`spark-b`, BP-N5):* every
+  packed case of both fixtures in EXL3-G and EXL3-O (GEMM, GEMV and the
+  fused gate/up multi-GEMM at rows 1 to 144) and every linear's full
+  reconstructed weights, rotated and fused, are bit-identical to upstream's,
+  every intermediate buffer included, in `cudaMalloc` memory and device VMM
+  ([P3 report](experiments/backend-proof-p3/README.md)).
 - **EXL3 reconstruction-path linears (145 rows and more) (approved
   2026-09-26).** These are compared against upstream running cuBLAS
   13.8.0.4 (the report's substitution arm), at the same forced plan and
@@ -615,11 +656,18 @@ never bounded. Logits and restored storage must be bit-identical.
   - Reconstructed FP16 weights must equal upstream's, and each GEMM's
     output must equal the arm's bit for bit. The per-linear harness maps
     only cuBLAS 13.8.0.4.
-  - Native's cuBLAS kernel names and grids must equal the arm's.
+  - Native's cuBLAS kernel names and grids must equal the arm's. *Checked
+    in P3* on an nsys trace of the per-linear sweep: every launch, cuBLAS's
+    and ExLlamaV3's, is the arm's.
   - Under PyTorch's cuBLAS 13.1.1 the resolved algorithms differ for 19 of
     the 21 GEMMs, so the cuBLAS version is part of the plan.
   - No contingency is needed: pinning is shown to work. A future cuBLAS
     change requires a new record and approval.
+  - *Applied 2026-09-27 (`spark-b`, BP-N5):* every reconstruction-path case
+    of both fixtures (145, 1,023 and 1,024 rows, both arms) is
+    bit-identical to upstream's at every step: the input transform, each
+    slice's reconstructed weights, the GEMM, the output transform and the
+    bias ([P3 report](experiments/backend-proof-p3/README.md)).
 - **GGML-derived operations inside the EXL3 plan (approved
   2026-09-26).**
   - *Coverage.* Every native kernel in an EXL3 plan is either ExLlamaV3's
