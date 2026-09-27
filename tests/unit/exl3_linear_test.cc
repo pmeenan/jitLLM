@@ -594,7 +594,7 @@ TEST_F(Exl3LinearTest, EveryPathIsExactAcrossMemoryKindsAndThePathsAgree) {
 
 TEST_F(Exl3LinearTest, TheRegistryBindsEachPathToItsOwnCalls) {
   const auto declared = exl3::Implementations();
-  ASSERT_EQ(declared.size(), 5U);
+  ASSERT_EQ(declared.size(), 6U);
   auto registry = jitllm::execution::Registry::Create(declared);
   ASSERT_TRUE(registry.has_value());
   for (const auto& implementation : declared) {

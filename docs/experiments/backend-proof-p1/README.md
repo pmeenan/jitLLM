@@ -5,7 +5,7 @@
 
 BP-F1 asks whether jitLLM's GGML kernels run slower when their memory is
 host VMM than when it is `cudaMalloc` memory (D-034's reopen condition;
-[backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry)).
+[backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry)).
 The approved kernel-timing rule needs BP-F1's own noise calibration and
 holdout before any comparison. This report records that calibration, which
 settles BP-F1's rule under D-079, and then the gated comparison, run once

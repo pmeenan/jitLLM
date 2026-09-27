@@ -330,11 +330,11 @@ reservation policy) were recorded in M0.
       - the operation-level gate;
       - the persistent-workspace limit.
 
-      Deferred to P3 entry, once the ExLlamaV3 port exists: BP-F2's
-      reference arm (EXL3-O with GEMV on since D-080, fused gate/up
-      cases, ExLlamaV3's bias add, one tuning cache, and a SASS-match
-      check against the port), and the
-      EXL3 phase memory limits, tightened against native's buffer plan.
+      Pre-registered at P3 entry (D-079, 2026-09-27), once the ExLlamaV3
+      port existed: BP-F2's reference arm (EXL3-O with GEMV on since
+      D-080, fused gate/up cases, ExLlamaV3's bias add, one tuning cache,
+      and the port's SASS match), and the EXL3 phase memory limits,
+      tightened against native's buffer plan.
 
       The rest (the FP16 memory limits, BP-F1's calibration, the
       declared-departure contingency, the P3-entry items, the
@@ -747,9 +747,38 @@ reservation policy) were recorded in M0.
         (a non-co-resident grid, a shared lock area, a fault, a pin
         recorded for another GEMM, stale multi-GEMM tables).
 
-      Next (P3 part 2): both fixtures end to end under the operation plan
-      (`exl3-op-plan.json`) and Tier C, then BP-F2 once its P3-entry
-      approvals are in.
+      *P3 part 2: native EXL3 end to end*
+      ([report](experiments/backend-proof-p3/README.md#part-2-the-native-model)):
+      - **`src/model/qwen2_exl3.h`** binds an EXL3 artifact and plans each
+        phase in the approved record's order (every operation, owner,
+        implementation and dtype, each linear's forced launch plan from the
+        frozen tuning caches and pins), refusing unrecorded phase kinds
+        and missing cases, and places each phase's tensors by lifetime;
+        **`src/kernels/exl3/qwen2.h`** binds a phase through the registry
+        (plan identity: every implementation's identity and the launch
+        plan) and runs it on one stream. New GGML implementations: the
+        casts, the BF16 embedding and the forced vector attention; new
+        EXL3 declaration: the bias add. The launch recorder wraps the EXL3
+        launch entry points and cuBLASLt.
+      - **Pre-registered at P3 entry (D-079), before any native EXL3
+        timing or memory result:** BP-F2's reference arm and its 184 cases
+        (EXL3-O, the fused gate/up cases, ExLlamaV3's bias add, one frozen
+        tuning cache per case set, new calibration and holdout), and the
+        EXL3 phase memory limits tightened to native's itemized buffer plan;
+        a phase kind the trajectories reach (the step with K padded to
+        1,024) recorded, with EXL3-O's record, before native ran it.
+      - **Results** (2026-09-27, `spark-b`), both fixtures in EXL3-G and
+        EXL3-O: the executed plan equals the record (85 phases of 8 kinds);
+        Tier E at operation level exact (EXL3-G, every GGML operation
+        recomputed by the bridge's library); Tier C passes (all 750
+        statistics within bounds); rung 3 repeats, and rungs 4 and 5 (paged
+        into device VMM through the zone, evicted, restored, relocated) are
+        bit-identical to rung 3.
+
+      Next: BP-F2 on an idle `spark` (the missing tuning records, the
+      launch record, calibration, holdout, harness equivalence, then the
+      sessions), after writing the native candidate's timing harness and
+      its session driver; the EXL3 census with its `F` cap set first.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

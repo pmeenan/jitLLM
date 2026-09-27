@@ -4,12 +4,16 @@
 // Records the kernel launches, copies, memsets and cuBLAS calls a thread
 // makes, for tests and benchmarks that compare an executed plan with a
 // recorded one (plan_record.h). Linking jitllm_launch_recorder wraps the
-// CUDA runtime's launch, copy and memset entry points, the driver's copy
-// and cuBLAS's matrix products at link time (--wrap); each wrapper notes
-// the call while a Recording is open on its thread, then makes it. What
-// cuBLAS launches inside itself is not seen here (an nsys trace of the run
-// supplies it; plan_compare.py --nsys). Never linked into a production
-// binary (tests/support/CMakeLists.txt checks).
+// CUDA runtime's launch entry points (<<<>>>'s __cudaLaunchKernel,
+// cudaLaunchKernelExC, and the C cudaLaunchKernel and
+// cudaLaunchCooperativeKernel that jitLLM's EXL3 launchers call), its
+// copy and memset entry points, the driver's copy, and cuBLAS's and
+// cuBLASLt's matrix products at link time (--wrap); each wrapper notes the
+// call while a Recording is open on its thread, then makes it. A wrapped
+// entry point called from inside another is recorded once, by the outer
+// one. What cuBLAS launches inside itself is not seen here (an nsys trace
+// of the run supplies it; plan_compare.py --nsys). Never linked into a
+// production binary (tests/support/CMakeLists.txt checks).
 
 #ifndef JITLLM_TESTS_SUPPORT_LAUNCH_RECORDER_H_
 #define JITLLM_TESTS_SUPPORT_LAUNCH_RECORDER_H_

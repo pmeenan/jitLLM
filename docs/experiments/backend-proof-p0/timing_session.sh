@@ -27,8 +27,11 @@
 # PyTorch's, as exl3_run.sh's substitution arm does). CUDA, CUDA_MOUNT and
 # EXT_CACHE choose the toolkit that builds the extension, as in exl3_run.sh:
 # the NVCC 13.4.92 reference mounts the SDK's tree (cuda-bridge-torch) at
-# /cuda with EXT_CACHE=build-cache-nvcc134. timing_stats.py summarizes a
-# session.
+# /cuda with EXT_CACHE=build-cache-nvcc134. MEASURE names another harness
+# with measure.py's arguments in its place, as the container sees it
+# (BP-F2's P3-entry case set: ../backend-proof-p3/bpf2_measure.py, with
+# BPF2_CASES passed through DOCKER_EXTRA; every process gets its case set as
+# BPF2_SET). timing_stats.py summarizes a session.
 set -eu
 : "${EXL_RUN:?} ${P0:?} ${CUDA:=/usr/local/cuda-13.0} ${CUDA_MOUNT:=/usr/local/cuda-13.0} ${EXT_CACHE:=build-cache}"
 session=$1
@@ -65,8 +68,8 @@ measure() {  # ARM BLOCK SET CACHE
     -e "TORCH_EXTENSIONS_DIR=/p0/$EXT_CACHE" -e PYTHONPATH=/experiment/source \
     -e CXX=/experiment/cxx-target -e CUDAHOSTCXX=/experiment/cxx-target \
     -e CUDA_DISABLE_PTX_JIT=1 -e OMP_NUM_THREADS=4 -e HOME=/tmp \
-    -e "EXLLAMAV3_TUNE_CACHE=/p0/timing/$session/$cache" \
-    --entrypoint python3 jitllm-exl3-reference:20260922 /experiment/experiment/measure.py \
+    -e "EXLLAMAV3_TUNE_CACHE=/p0/timing/$session/$cache" -e "BPF2_SET=$set" \
+    --entrypoint python3 jitllm-exl3-reference:20260922 "${MEASURE:-/experiment/experiment/measure.py}" \
     --model "/experiment/models/$model" --mode "$mode" --protocol "/p0/timing/$session/protocol-$arm.json" \
     --pins /experiment/experiment/pins.json --output "/p0/timing/$session/$arm-$block-$set" \
     > "$out/$arm-$block-$set.log" 2>&1

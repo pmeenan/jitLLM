@@ -488,29 +488,32 @@ before the native output it governs.
   - the native EXL3 operation plan and its record, `exl3-op-plan.json`;
   - the operation-level Tier E item;
   - the persistent-workspace limit.
-- **Deferred to P3 entry.** These are approved once the ExLlamaV3 port
-  exists, and before any native EXL3 timing or memory result is seen:
-  - *BP-F2's reference arm.* Five things are open:
-    - gate against EXL3-O, GEMV on, and add its GEMV kernels to the timed
-      cases (D-079's GEMM-only acceptance expired with the gate, D-080);
-    - add the fused gate/up kernel (`exl3_mgemm_kernel`) to the timed
-      cases;
-    - time ExLlamaV3's bias add in the reference, not PyTorch's;
-    - have one frozen tuning cache govern both the model plan and the
-      timing cases;
-    - check that the port's build reproduces the reference's SASS. *Done
-      in P3:* every ExLlamaV3 function the port's binary holds, the 27 the
-      per-linear sweep launches among them, has the SASS of its namesake in
-      the NVCC 13.4.92 reference (`aa8b9f16…`)
-      ([report](experiments/backend-proof-p3/README.md#sass)).
-
-    The changed case set needs a new calibration and holdout under the
-    approved rule. The NVCC 13.4.92 calibration and holdout below validate
-    the rule's mechanics on the current cases.
+- **The P3-entry items: pre-registered under D-079 (2026-09-27),** once
+  the ExLlamaV3 port existed and before any native EXL3 timing or memory
+  result was seen:
+  - *BP-F2's reference arm,*
+    [with the performance protocol](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry):
+    gated against EXL3-O (GEMV on; D-079's GEMM-only acceptance expired
+    with the gate, D-080), the fused gate/up kernel added to the cases,
+    ExLlamaV3's bias add timed rather than PyTorch's, one frozen tuning
+    cache governing the model plan and the timing cases, and the SASS
+    match of the port (done in P3: every ExLlamaV3 function the port's
+    binary holds has the SASS of its namesake in the NVCC 13.4.92
+    reference, `aa8b9f16…`,
+    [report](experiments/backend-proof-p3/README.md#sass)). The changed
+    case set gets a new calibration and holdout under the approved rule,
+    run with BP-F2 on `spark`; the NVCC 13.4.92 calibration and holdout
+    below validated the rule's mechanics on the earlier cases.
   - *The EXL3 phase memory limits,* tightened against native's itemized
-    buffer plan. The allowance below adds per-layer intermediates to a
-    peak set when the logits are allocated, when those intermediates are
-    already dead, so it is loose.
+    buffer plan
+    ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
+    The EXL3 `F` cap is set from a reference census before any native
+    EXL3 census.
+  - *A recorded phase kind* the trajectories reach but P0's record lacked:
+    the single-token step with K padded to 1,024 (the first step after
+    the 1,023-row prefix), recorded from a reference-only run, with
+    EXL3-O's record
+    ([native EXL3 operation plan](#native-exl3-operation-plan-approved-2026-09-26)).
 - **Delegated by the owner on 2026-09-26 (D-079):** the declared-departure
   contingency, the FP16 memory limits, BP-F1's calibration, the
   retained-backing criteria, the P3-entry items above and the M2 acceptance
@@ -522,7 +525,7 @@ before the native output it governs.
   - *Pre-registered on 2026-09-27 (D-079):* BP-F1's rule, frozen before any
     host-VMM timing ran: its 53 cases, operand placement, calibration and
     `z`, with a passing holdout
-    ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry),
+    ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry),
     [report](experiments/backend-proof-p1/README.md)). Applied on
     2026-09-27, it fails: host VMM is slower. The owner answered with
     D-081 (device VMM); BP-F1 is rerun against device VMM under a newly
@@ -623,8 +626,13 @@ never bounded. Logits and restored storage must be bit-identical.
   second relocated), evaluation 1 has the bridge's logits, and the rest
   equal it bit for bit
   ([P2 report](experiments/backend-proof-p2/README.md#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone)).
-  The cache stays resident at the restore point (no spill yet); EXL3 waits
-  for P3.
+  The cache stays resident at the restore point (no spill yet).
+  *Applied 2026-09-27 for EXL3 (`spark-b`):* both fixtures in EXL3-G and
+  EXL3-O, paged into device VMM through the landing zone: evaluation 1
+  has rung 3's logits bit for bit, and the repeat and two restores after
+  every prefill (the second relocated, the multi-GEMM tables rewritten)
+  equal it; the executed plan of evaluation 1 matches the record
+  ([P3 report](experiments/backend-proof-p3/README.md#rungs-4-and-5)).
 - **EXL3 packed linears (up to 144 rows) (approved)** against upstream's kernel at the
   same forced plan and inputs, and reconstructed FP16 weights against
   upstream's reconstruction. *Applied 2026-09-27 (`spark-b`, BP-N5):* every
@@ -740,6 +748,29 @@ never bounded. Logits and restored storage must be bit-identical.
     PyTorch's add (the native EXL3 operation plan below).
   - This gate is what catches the subtle faults the Tier C bound cannot
     see: a wrong scale, or a lower-precision intermediate in one layer.
+  - *Applied 2026-09-27 (`spark-b`):* the plan first, on both fixtures in
+    EXL3-G and EXL3-O: native's executed plan equals the record
+    (`exl3-op-plan-g.json`, `-o.json`) in all 85 phases of 8 kinds
+    (`op_plan_compare.py` exit 0). Then in EXL3-G, both fixtures: every
+    GGML-derived operation of every phase and layer (30,855 per fixture),
+    recomputed by the bridge's library from native's recorded inputs, is
+    bit-identical; the wiring (80,166 inputs, K/V cells included) and the
+    dtype chain (135,841 tensors) hold, and the recording reproduces the
+    uninstrumented logits. The harness (`op_tier_e.py`) sits in P3's
+    experiment directory. It was reviewed before any native numerical
+    output was looked at (the native runs had completed; only their exit
+    codes, the plan gate and native-to-native equality had been read), and
+    changed after: it refused the first 4.5 bpw run (exit 2, before
+    any verdict) by reading the fixture from `config.json`, and now reads
+    it from the checkpoint's hash; and review and challenge added checks,
+    never relaxed one: every weight an operation reads is recorded by the
+    load-time hash of what lies at the address native bound for it and
+    must be the artifact's tensor of that name, linear and layer (the
+    embedding, norms and biases; every linear's trellis and side vectors;
+    what each multi-GEMM table points at; none for an operation that reads
+    no linear: 95,899 checks per fixture). Both
+    fixtures were recorded and judged again after each change
+    ([P3 report](experiments/backend-proof-p3/README.md#tier-e-operation-level-and-tier-c)).
 - **BP-S1 (approved, part of the FP16 gate).** Each of the two
   implementations is exact against the bridge arm that uses it: fused
   RMSNorm against the fused arm, unfused against the unfused arm.
@@ -780,6 +811,23 @@ lists in order:
 
 The Tier E item above requires native's executed plan to equal the record
 per phase kind before any comparison.
+
+**P3's records** ([report](experiments/backend-proof-p3/README.md#part-2s-reference-side)),
+made from reference-only runs in the same way before native ran them, under
+D-079's delegation:
+- [`exl3-op-plan-g.json`](experiments/backend-proof-p3/exl3-op-plan-g.json)
+  adds the one phase kind the trajectories reach that P0's record lacks:
+  the single-token step with K padded to 1,024, the first step after the
+  1,023-row prefix. P0's seven kinds are unchanged in it but for step 32's
+  `K_by_linear`, which no longer lists the next prefill's gate and up (P0's
+  probe had appended them; no launch changed). The exhaustive bias-add
+  check stays P0's; it was not rerun.
+- [`exl3-op-plan-o.json`](experiments/backend-proof-p3/exl3-op-plan-o.json)
+  is the same plan under EXL3-O: upstream's GEMV where it takes it in
+  single-token steps, P0's EXL3-O tuning caches; everything else equals
+  EXL3-G's.
+
+Native's plan gate compares against these two.
 
 In summary (the record has the kernels and launches):
 
@@ -913,6 +961,13 @@ EXL3 weights (`oracle.py`). Its calibration is in the report's
   one layer, and one layer's MLP output rounded to BF16. The
   operation-level exactness gate and its dtype-chain check catch them
   (Tier E).
+- *Applied 2026-09-27 (`spark-b`):* native passes on both fixtures in
+  EXL3-G and in EXL3-O: none of the 750 statistics exceeds its bound
+  (largest ratios to the legitimate median 1.145 averaged and 1.781
+  extreme at 4.0 bpw, 1.099 and 1.351 at 4.5 bpw), every logit finite, the
+  captured run's logits equal the uninstrumented run's; top-1 agreement
+  with the oracle 2,423 (4.0 bpw) and 2,425 (4.5 bpw) of 2,448 rows
+  ([P3 report](experiments/backend-proof-p3/README.md#tier-e-operation-level-and-tier-c)).
 
 ### Memory and workspace (the M2 gate in exl3-bringup.md)
 
@@ -1040,6 +1095,63 @@ They are identical under cuBLAS 13.1.1 and 13.8.0.4.
     it with its own 16 MiB before every call, so the recorded plan never
     uses it.
 - **No permanent FP16 shadow** (BP-A3).
+
+**The EXL3 phase limits, tightened against native's itemized buffer plan:
+pre-registered under D-079 (2026-09-27), from the plan, before any native
+EXL3 model run.** The approved limits above add one layer's F32
+intermediates to a peak upstream reaches with its logits, when those
+intermediates are already dead. Native's plan
+(`model/qwen2_exl3.h` PlanPhase) places every tensor a phase computes, each
+linear's scratch and the F16 logits in one region by lifetime (the same
+slots in every layer), so its own need is known without running it:
+- *Region:* the placement's extent, 256-byte aligned slots. The logits
+  share bytes with layer tensors that are dead by the head; the residual
+  stream, positions and mask live through every layer. Pinned by
+  `unit.Qwen2Exl3Test.RegionsAreThePreRegisteredBufferPlan`; the same in
+  EXL3-G and EXL3-O, since the GEMV takes the GEMM's transformed-input
+  scratch.
+- *Pool:* the GGML pool scratch of the forced vector attention, the only
+  pool draw of the plan: from 1,024 rows the mask pre-pass's KV_max, then
+  the partial results and their metadata, each block from a 256-byte
+  boundary as jitLLM's pool hands it out (`ops.h` PlanFlashAttnVec, whose
+  parallel blocks equal the record's in six of the eight kinds in
+  `unit.GgmlExl3OpsTest.VectorAttentionMatchesTheRecordAndAnFp64Reference`,
+  and in all eight in the plan gate's attention grids).
+- *Limit `E`* is region plus pool: the tightened limit each phase's census
+  is judged against. Every one is below the approved limit.
+
+  | Phase kind | Region | Pool | Limit `E` (bytes) | Approved limit |
+  | --- | ---: | ---: | ---: | ---: |
+  | prefill, 32 rows (Npad 256) | 9,838,592 | 354,816 | 10,193,408 | 11,553,792 |
+  | prefill, 144 rows (Npad 256) | 44,273,664 | 1,596,672 | 45,870,336 | 51,990,272 |
+  | prefill, 145 rows (Npad 256) | 103,301,376 | 1,607,936 | 104,909,312 | 111,072,336 |
+  | prefill, 1,023 rows (Npad 1,024) | 373,247,744 | 11,343,104 | 384,590,848 | 429,636,784 |
+  | prefill, 1,024 rows (Npad 1,024) | 371,720,192 | 11,356,160 | 383,076,352 | 428,165,632 |
+  | single-token step, Npad 256 | 307,456 | 14,848 | 322,304 | 399,280 |
+  | single-token step, Npad 1,024 (the P3 addendum's kind) | 307,456 | 48,128 | 355,584 | 399,280 |
+  | single-token step, Npad 1,280 | 307,456 | 48,128 | 355,584 | 399,280 |
+
+- *Outside `E`,* each exactly its bytes and reported:
+  - the host inputs' pinned staging (ids, positions and the F16 mask, each
+    from a 256-byte boundary) and the logits' host copy (rows × 151,936 ×
+    2), which upstream's peak does not count either;
+  - the persistent library workspace: ExLlamaV3's lock area, 4,202,760
+    bytes, within the approved 20,979,976; the pinned cuBLASLt GEMMs use
+    none;
+  - KV in the declared layout: 24 layers × K and V × 4,096 cells × 256
+    bytes, 50,331,648;
+  - weights equal to the artifact's bytes, padding reported separately,
+    and two derived items the plan declares: the norms widened exactly to
+    F32 (the record's `attn_norm.w`, `mlp_norm.w`, `final_norm.w`: 49 ×
+    3,584 = 175,616 bytes) and each layer's multi-GEMM tables (24 × 48 =
+    1,152 bytes), rewritten when the weights move;
+  - the GGML pool is allocated once at the run's largest phase: what a
+    smaller phase does not draw is pool-held occupancy, as the census rule
+    reports backing kept between phases.
+- *Not set here:* the EXL3 `F` cap. It is the reference's own unexplained
+  growth per step, measured with the census rule's counters and controls
+  as the FP16 bridge's was, and is set, from a reference-only census,
+  before any native EXL3 census result is seen.
 
 **The census rule for M2: pre-registered under D-079 (2026-09-27).** It
 covers BP-A1, BP-A2 and BP-A5 for both representations. The SDK has no
@@ -1199,12 +1311,12 @@ An nsys trace with `--cuda-memory-usage=true`, taken in a separate run,
 may attribute an unexplained delta in the report. It does not replace the
 counters' run, because its own instrumentation allocates.
 
-### Performance protocol (rule approved 2026-09-26; BP-F2's reference deferred to P3 entry)
+### Performance protocol (rule approved 2026-09-26; BP-F2's reference pre-registered at P3 entry)
 
 The owner approved the kernel rule below (the statistic, thresholds,
 aggregate test and confirmation procedure) for BP-F2, the EXL3 kernels.
-BP-F2's reference arm, deferred to P3 entry (see the status above), is
-currently:
+BP-F2's reference arm, pre-registered at P3 entry (the BP-F2 item
+below), is EXL3-O:
 - upstream's extension built with the SDK's NVCC 13.4.92, as native's port
   is (`exllamav3_ext.so` `aa8b9f16…`);
 - cuBLAS 13.8.0.4.
@@ -1440,6 +1552,62 @@ reference container.
     M2 as an explicit tradeoff (D-079), to expire when the GEMV provenance
     gate closed. It closed on 2026-09-27 (D-080): BP-F2 is gated against
     EXL3-O, with the case set and reference arm fixed at P3 entry.
+  - **BP-F2's reference arm and cases: pre-registered under D-079
+    (2026-09-27), at P3 entry, before any native EXL3 kernel was timed.**
+    No timing session has run under them; they run on an idle `spark`
+    once this is committed. (The plan gate's nsys traces of native runs
+    carry kernel timestamps; no tool or report reads their durations.)
+    - *Reference arm:* EXL3-O: upstream's extension built with the SDK's
+      NVCC 13.4.92 (`exllamav3_ext.so` `aa8b9f16…`), the SDK's cuBLAS
+      13.8.0.4 bind-mounted as the only cuBLAS mapped,
+      `EXL3_HGEMM_F16ACC=0`, and upstream's default GEMV (on). Each case
+      is upstream's own call, so upstream chooses the GEMV, the GEMM or
+      the reconstruction.
+    - *Cases:* the 184 of
+      [`bpf2-cases.txt`](experiments/backend-proof-p3/bpf2-cases.txt)
+      (BP-F2 cases SHA-256:
+      `8cb178044c6f55b6ad0bf65fd4ae148c13c1bd485d97ec754f9ced2086e2c777`),
+      written by `bpf2_cases.py` from the M0 protocol: the 176 cases
+      unchanged (`LinearEXL3.forward` under EXL3-O), and the fused gate/up
+      multi-GEMM (`exl3_mgemm`, as the gated MLP calls it) of each
+      fixture's layer 0 at 1, 8, 16 and 32 rows.
+    - *Bias add:* in the q and k projection cases the timed work includes
+      the bias through ExLlamaV3's `add_kernel_hhh` on every path, the
+      native plan's owner: on the reconstruction path the reference
+      harness calls upstream's `add` kernel where upstream's module calls
+      PyTorch's, as the operation plan's probe did.
+    - *One frozen tuning cache per case set,* governing the model plan
+      and the timing cases alike. For each fixture it is P3 part 1's final
+      EXL3-O cache (`results.json`, `4.0bpw EXL3-O` `69775060…` and
+      `4.5bpw EXL3-O` `64cf8ecd…`): P0's frozen `tune-40` or `tune-45`,
+      every record unchanged, with the 8-row bucket's records that
+      upstream's tuner added in P3 part 1's discarded tuning pass. The
+      8-row decision is those records, from reference data only; no
+      trajectory of the model plan reaches 8 rows, and `model_plan.py`
+      checks that every record the model plan uses is P0's. A key a BP-F2
+      case needs and the cache lacks (the lone gate, up or down linear at
+      a small bucket, the synthetic shapes' set) is tuned once by
+      upstream's tuner in one discarded reference process on `spark` before
+      the first calibration session and appended; no existing record may
+      change (checked by byte comparison). From then on the cache is
+      frozen: its SHA-256 goes into every session's manifest, and the
+      sessions check it unchanged after every block.
+    - *SASS:* the port's build reproduces the reference's SASS for every
+      ExLlamaV3 function it holds (P3 part 1, above).
+    - *Launches:* re-recorded for this case set on the reference arm
+      (`exl3_launch_record.py`, EXL3-O settings, the frozen caches) before
+      calibration; the native case's launches must equal them as the rule
+      above requires.
+    - *Calibration and holdout,* since the case set and arm changed: four
+      A/A sessions of the reference arm on `spark`, two in each order,
+      set every case's `σ` under the approved rule unchanged
+      (`timing_protocol.py`; `z` for a 1% family-wise rate over the 184
+      cases, 3.870; aggregate limit 3.143). Then a holdout pair, primary
+      and mirrored, declared in advance to reject the rule if the pair
+      fails the stage. Then the harness-equivalence session, which must
+      pass before any native kernel is timed. Only then BP-F2's primary
+      session, and its mirrored confirmation if a case or the aggregate
+      fails.
 - **BP-F4: host submission time.**
   - Reported per launch and per token, against both upstreams' decode:
     llama.cpp with CUDA graphs on and off, and ExLlamaV3's graph-captured

@@ -83,6 +83,26 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_exl3_linear_sweep PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Backend-proof P3, the native EXL3 model: an EXL3 fixture through the
+  # native operation plan, for the plan gate, Tier E (operation level) and
+  # Tier C (docs/experiments/backend-proof-p3/). Links the launch recorder.
+  add_executable(jitllm_exl3_exec exl3_exec.cc exl3_common.cc)
+  target_link_libraries(jitllm_exl3_exec PRIVATE jitllm_exl3_qwen2 jitllm_cuda_device_memory
+                                                 jitllm_artifact jitllm_model
+                                                 jitllm_launch_recorder jitllm_warnings)
+  target_link_options(jitllm_exl3_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # Backend-proof P3, rungs 4 and 5 for EXL3: the same fixture paged into
+  # device VMM through the landing zone by the scheduler and its lanes,
+  # executed as device jobs under leases, evicted and restored
+  # (docs/experiments/backend-proof-p3/). Links the launch recorder.
+  add_executable(jitllm_exl3_paged exl3_paged.cc exl3_common.cc)
+  target_link_libraries(jitllm_exl3_paged PRIVATE jitllm_exl3_qwen2 jitllm_scheduler
+                                                  jitllm_cuda_device_memory jitllm_artifact
+                                                  jitllm_model jitllm_launch_recorder
+                                                  jitllm_warnings)
+  target_link_options(jitllm_exl3_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Why host VMM slowed BP-F1's products, and what the alternatives cost:
   # microkernels over each kind of memory, copies between them, and GGML
   # products with each buffer group placed separately

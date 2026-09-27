@@ -1,0 +1,136 @@
+// SPDX-FileCopyrightText: 2023-2026 The ggml authors
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: MIT AND Apache-2.0
+
+// GGML's vector flash-attention kernel for the EXL3 plan (ops.h
+// FlashAttnVec; docs/backend-proof.md, "Native EXL3 operation plan"). The
+// kernel, launch_fattn and the combine and mask pre-pass kernels are
+// GGML's own, from fattn-vec.cuh and fattn-common.cuh at llama.cpp
+// b29c606e2: this unit instantiates the one case the plan launches,
+// ggml_cuda_flash_attn_ext_vec_case<64, F16, F16>, as GGML's
+// template-instances/fattn-vec-instance-f16-f16.cu does, and is built with
+// GGML's device flags (CMakeLists.txt), so that its SASS is the bridge's.
+//
+// PlanFlashAttnVec is a recorded copy of launch_fattn's host arithmetic
+// (fattn-common.cuh:1106-1197, stream-k off, not sparse), so the pool
+// scratch the launch draws is known and checked before it is queued.
+//
+// ggml_cuda_flash_attn_ext_compact_mask is jitLLM's definition of the
+// fattn.cu function launch_fattn names for sparse attention, which this
+// case never takes (use_sparse is false): it records an error and
+// launches nothing, where upstream's would compact the mask.
+
+#include <algorithm>
+#include <cstdint>
+#include <expected>
+#include <string>
+#include <utility>
+
+#include "base/bytes.h"
+#include "fattn-vec.cuh"
+#include "kernels/ggml/ops.h"
+#include "kernels/ggml/validate.h"
+
+DECL_FATTN_VEC_CASE(64, GGML_TYPE_F16, GGML_TYPE_F16);
+
+void ggml_cuda_flash_attn_ext_compact_mask(const ggml_tensor* mask, int32_t* indices,
+                                           int32_t n_kv_max, cudaStream_t stream) {
+  GGML_UNUSED_VARS(mask, indices, n_kv_max, stream);
+  ggml_cuda_error("ggml_cuda_flash_attn_ext_compact_mask", __func__, __FILE__, __LINE__,
+                  "sparse flash attention is not built into jitLLM");
+}
+
+namespace jitllm::kernels::ggml {
+namespace {
+
+std::unexpected<KernelFailure> Rejected(std::string detail) {
+  return std::unexpected(
+      KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
+}
+
+constexpr int kHead = 64;              // D, and nbatch_fa for the vector case
+constexpr int kKqStride = 256;         // FATTN_KQ_STRIDE
+constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
+
+std::uint64_t Round(std::uint64_t bytes) { return (bytes + kBlock - 1) / kBlock * kBlock; }
+
+}  // namespace
+
+std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec(const LaunchContext& launch,
+                                                             const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnVec(node); !checked) {
+    return std::unexpected(checked.error());
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const auto& device = ggml_cuda_info().devices[launch.device()];
+  FlashAttnPlan plan;
+  plan.columns_per_block = q->ne[1] == 1 ? 1 : 2;
+  // ggml_cuda_flash_attn_ext_vec_case_impl: 128 threads, no dynamic shared
+  // memory (fattn-vec.cuh:532-541).
+  const int threads = ggml_cuda_fattn_vec_get_nthreads_host(device.cc);
+  int per_sm = 0;
+  const cudaError_t occupancy =
+      plan.columns_per_block == 1
+          ? cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                &per_sm, flash_attn_ext_vec<kHead, 1, GGML_TYPE_F16, GGML_TYPE_F16, false>, threads,
+                0)
+          : cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                &per_sm, flash_attn_ext_vec<kHead, 2, GGML_TYPE_F16, GGML_TYPE_F16, false>, threads,
+                0);
+  if (occupancy != cudaSuccess || per_sm <= 0) {
+    return std::unexpected(
+        KernelFailure{.error = KernelError::kUnknown,
+                      .detail = std::string("the vector kernel's occupancy query failed: ") +
+                                cudaGetErrorString(occupancy)});
+  }
+  // launch_fattn<D, ncols1 = columns per block, ncols2 = 1>.
+  const std::int64_t ntiles_x = (q->ne[1] + plan.columns_per_block - 1) / plan.columns_per_block;
+  const std::int64_t gqa = q->ne[2] / k->ne[2];
+  const std::int64_t ntiles_dst = ntiles_x * gqa * k->ne[2] * q->ne[3];
+  const std::int64_t ntiles_kv = (k->ne[1] + kHead - 1) / kHead;
+  std::int64_t parallel = std::min<std::int64_t>(per_sm, ntiles_kv);
+  const std::int64_t per_wave = static_cast<std::int64_t>(device.nsm) * per_sm;
+  std::int64_t best_waves = 0;
+  std::int64_t best_efficiency = 0;
+  for (std::int64_t test = parallel; test <= ntiles_kv; ++test) {
+    const std::int64_t total = ntiles_dst * test;
+    const std::int64_t waves = (total + per_wave - 1) / per_wave;
+    const std::int64_t efficiency = 100 * total / (waves * per_wave);
+    if (best_efficiency >= 95 && waves > best_waves) {
+      break;
+    }
+    if (efficiency > best_efficiency) {
+      best_waves = waves;
+      best_efficiency = efficiency;
+      parallel = test;
+    }
+  }
+  plan.parallel_blocks = static_cast<int>(parallel);
+  plan.mask_prepass = k->ne[1] % kKqStride == 0 && (q->ne[1] >= 1024 || q->ne[3] > 1);
+  if (plan.mask_prepass) {
+    plan.scratch += Round(static_cast<std::uint64_t>(ntiles_x * q->ne[3]) * sizeof(int));
+  }
+  if (plan.parallel_blocks > 1) {
+    plan.scratch += Round(static_cast<std::uint64_t>(parallel) *
+                          static_cast<std::uint64_t>(ggml_nelements(node)) * sizeof(float));
+    plan.scratch += Round(static_cast<std::uint64_t>(parallel) *
+                          static_cast<std::uint64_t>(ggml_nrows(node)) * sizeof(float2));
+  }
+  return plan;
+}
+
+std::expected<void, KernelFailure> FlashAttnVec(LaunchContext& launch, ggml_tensor* node) {
+  auto plan = PlanFlashAttnVec(launch, node);
+  if (!plan) {
+    return std::unexpected(plan.error());
+  }
+  if (plan->parallel_blocks < 1) {
+    return Rejected("no parallel blocks");
+  }
+  return launch.Run(base::Bytes(plan->scratch), [node](ggml_backend_cuda_context& context) {
+    ggml_cuda_flash_attn_ext_vec_case<kHead, GGML_TYPE_F16, GGML_TYPE_F16>(context, node);
+  });
+}
+
+}  // namespace jitllm::kernels::ggml

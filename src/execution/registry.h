@@ -40,7 +40,7 @@
 namespace jitllm::execution {
 
 // The operations the implementations cover (kernels/ggml/ops.h,
-// kernels/exl3/linear.h).
+// kernels/exl3/linear.h and launch.h).
 enum class Operation : std::uint8_t {
   kRmsNorm,     // rows scaled to unit root mean square
   kRmsNormMul,  // the same, then scaled by a weight
@@ -58,6 +58,9 @@ enum class Operation : std::uint8_t {
   kMulMatGlu,         // gate and up products of one input, then SwiGLU
   kQuantLinear,       // a product with quantized weights and their transforms
   kQuantMultiLinear,  // several such products of one input
+  kConvert,           // an element-type conversion of a dense tensor (a cast)
+  kFlashAttn,         // masked, scaled attention over a K/V cache, never materializing scores
+  kBiasAdd,           // a bias broadcast over rows, added in the operands' own type
 };
 
 std::string_view OperationName(Operation operation);

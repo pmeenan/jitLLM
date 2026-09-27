@@ -685,9 +685,13 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
   }
   const ggml_tensor* rows = node->src[0];
   const ggml_tensor* ids = node->src[1];
-  if (!IsF32(rows) || !IsF32(node) || ids->type != GGML_TYPE_I32) {
-    return Rejected("get_rows gathers F32 rows by I32 ids into F32");
+  // F32 rows (the FP16 plan's output rows) or BF16 rows (the EXL3 plan's
+  // embedding table, widened exactly), gathered into F32.
+  const bool bf16 = rows->type == GGML_TYPE_BF16;
+  if ((!IsF32(rows) && !bf16) || !IsF32(node) || ids->type != GGML_TYPE_I32) {
+    return Rejected("get_rows gathers F32 or BF16 rows by I32 ids into F32");
   }
+  const std::uint64_t element = bf16 ? sizeof(ggml_bf16_t) : sizeof(float);
   if (AnyEmpty({node, rows, ids}) || !AllSane({node, rows, ids})) {
     return Rejected("get_rows on an empty or unmeasurable tensor");
   }
@@ -698,7 +702,7 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
       node->ne[3] != ids->ne[2]) {
     return Rejected("get_rows whose shape does not follow from its operands");
   }
-  if (rows->nb[0] != sizeof(float) || ids->nb[0] != sizeof(std::int32_t) ||
+  if (rows->nb[0] != element || ids->nb[0] != sizeof(std::int32_t) ||
       node->nb[0] != sizeof(float) || !ElementStrides(rows) || !ElementStrides(ids) ||
       !ElementStrides(node)) {
     return Rejected("get_rows needs contiguous rows and whole-element strides");
@@ -710,7 +714,7 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
       *planes > std::numeric_limits<std::uint32_t>::max()) {
     return Rejected("get_rows ids beyond the launcher's grid");
   }
-  if (!Aligned(rows, sizeof(float)) || !Aligned(ids, sizeof(std::int32_t)) ||
+  if (!Aligned(rows, element) || !Aligned(ids, sizeof(std::int32_t)) ||
       !Aligned(node, sizeof(float))) {
     return Rejected("get_rows operands at misaligned addresses");
   }
@@ -724,6 +728,10 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
 bool GetRowsVectorized(const ggml_tensor* node) {
   const ggml_tensor* rows = node->src[0];
   const ggml_tensor* ids = node->src[1];
+  // Only a copy that keeps the element type vectorizes (getrows.cu:250).
+  if (rows->type != node->type) {
+    return false;
+  }
   constexpr std::int64_t kVector = 16 / sizeof(float);
   const std::int64_t vectors = rows->ne[0] / kVector;
   const std::int64_t blocks_y = (vectors + 255) / 256;
@@ -1045,6 +1053,109 @@ std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, co
   }
   if (!Current(gate_weights) || !Disjoint(glu, gate_weights, /*in_place=*/false)) {
     return Rejected("stale gate weights, or an output overlapping them");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_CPY || !Bound(node) || !Bound(node->src[0]) ||
+      !Bound(node->src[1])) {
+    return Rejected("not a bound cpy node");
+  }
+  // ggml_cpy's result is a view of its destination, src[1]; the launcher
+  // writes src[1] (ggml_cuda_cpy(ctx, src[0], src[1])).
+  const ggml_tensor* src = node->src[0];
+  const ggml_tensor* dst = node->src[1];
+  const bool widen = src->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F32;
+  const bool narrow = src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F16;
+  if (!widen && !narrow) {
+    return Rejected("this implementation converts F32 to F16 or F16 to F32");
+  }
+  if (AnyEmpty({node, src, dst}) || !AllSane({node, src, dst})) {
+    return Rejected("a conversion of an empty or unmeasurable tensor");
+  }
+  // Both contiguous and of one element count: the launcher's
+  // cpy_scalar_contiguous (cpy.cu:495-499, 552-555), one thread per element
+  // in 64-thread blocks whose count it asserts fits an int (cpy.cu:199-200).
+  if (!ggml_are_same_shape(src, dst) || !Packed(src) || !Packed(dst) || node->data != dst->data ||
+      !ggml_are_same_shape(node, dst) || std::cmp_greater(ggml_nelements(src), kInt32Max)) {
+    return Rejected("a conversion between packed tensors of one shape");
+  }
+  if (!Aligned(src, ggml_type_size(src->type)) || !Aligned(dst, ggml_type_size(dst->type))) {
+    return Rejected("conversion operands at misaligned addresses");
+  }
+  if (!AllCurrent({node, src, dst}) || Overlap(src, dst)) {
+    return Rejected("a stale view, or a destination overlapping its source");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node)) {
+    return Rejected("not a bound flash_attn_ext node");
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const ggml_tensor* v = node->src[2];
+  const ggml_tensor* mask = node->src[3];
+  if (!Bound(q) || !Bound(k) || !Bound(v) || !Bound(mask) || node->src[4] != nullptr) {
+    return Rejected("attention over bound Q, K, V and mask, without sinks");
+  }
+  // The instance this implementation compiles:
+  // ggml_cuda_flash_attn_ext_vec_case<64, F16, F16> (fattn-vec.cuh:545-573)
+  // through launch_fattn (fattn-common.cuh:975-1215): F32 Q and output, F16
+  // K, V and mask (fattn-common.cuh:1000-1011).
+  if (!IsF32(q) || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16 ||
+      mask->type != GGML_TYPE_F16) {
+    return Rejected("vector attention takes F32 Q, F16 K, V and mask, and writes F32");
+  }
+  if (AnyEmpty({node, q, k, v, mask}) || !AllSane({node, q, k, v, mask})) {
+    return Rejected("attention over an empty or unmeasurable tensor");
+  }
+  constexpr std::int64_t kHead = 64;
+  constexpr std::int64_t kKqStride = 256;  // FATTN_KQ_STRIDE
+  // ggml_flash_attn_ext's shapes (ggml.c:5502-5544) at head size 64: Q
+  // [64, rows, heads], K and V [64, cells, kv heads], one sample, a whole
+  // number of query heads per KV head, the output [64, heads, rows].
+  if (q->ne[0] != kHead || k->ne[0] != kHead || v->ne[0] != kHead || q->ne[3] != 1 ||
+      k->ne[3] != 1 || v->ne[3] != 1 || !ggml_are_same_shape(k, v) || q->ne[2] % k->ne[2] != 0 ||
+      node->ne[0] != kHead || node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] ||
+      node->ne[3] != 1) {
+    return Rejected("attention at head size 64 whose shapes do not follow from its operands");
+  }
+  // The attended cells padded to 256, as llama.cpp pads its cache and the
+  // vector kernel requires (fattn.cu's selection); one F16 mask row per
+  // query over them, contiguous.
+  if (k->ne[1] % kKqStride != 0 || mask->ne[0] != k->ne[1] || mask->ne[1] < q->ne[1] ||
+      mask->ne[2] != 1 || mask->ne[3] != 1 || !ggml_is_contiguous(mask)) {
+    return Rejected("attention over cells padded to 256 with one mask row per query");
+  }
+  // From 1,024 query rows launch_fattn runs the mask pre-pass
+  // (flash_attn_mask_to_KV_max<2>, fattn-common.cuh:666-706), which reads
+  // two mask rows per tile with no bound: an odd row count needs one more.
+  if (q->ne[1] >= 1024 && mask->ne[1] < q->ne[1] + (q->ne[1] % 2)) {
+    return Rejected("attention from 1,024 odd query rows without the mask row the pre-pass reads");
+  }
+  // Upstream's parameters: a finite positive scale, no ALiBi, no soft cap;
+  // the precision llama.cpp sets (no CUDA kernel reads it).
+  const float scale = ParamF32(node, 0);
+  if (!(scale > 0.0f) || !(scale < std::numeric_limits<float>::infinity()) ||
+      ParamF32(node, 1) != 0.0f || ParamF32(node, 2) != 0.0f ||
+      node->op_params[3] != GGML_PREC_F32) {
+    return Rejected("attention with a positive scale, no ALiBi or soft cap, F32 precision");
+  }
+  // Element-contiguous rows, 16-byte aligned bases and row strides (the
+  // kernel's vector loads), and 32-bit indexing.
+  if (q->nb[0] != sizeof(float) || k->nb[0] != sizeof(ggml_fp16_t) ||
+      v->nb[0] != sizeof(ggml_fp16_t) || !Packed(node) || !AlignedEverywhere(q, 16) ||
+      !AlignedEverywhere(k, 16) || !AlignedEverywhere(v, 16) || !AlignedEverywhere(mask, 16) ||
+      !Aligned(node, 16) || Span(q) > kInt32Max || Span(k) > kInt32Max || Span(v) > kInt32Max ||
+      Span(mask) > kInt32Max || Span(node) > kInt32Max) {
+    return Rejected("attention operands beyond the kernel's alignment or 32-bit indexing");
+  }
+  if (!AllCurrent({node, q, k, v, mask}) || Overlap(node, q) || Overlap(node, k) ||
+      Overlap(node, v) || Overlap(node, mask)) {
+    return Rejected("a stale view, or an output overlapping an operand");
   }
   return {};
 }

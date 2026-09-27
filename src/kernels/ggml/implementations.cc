@@ -79,7 +79,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 15> kKernels = {{
+constexpr std::array<Kernel::Entry, 17> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -124,8 +124,9 @@ constexpr std::array<Kernel::Entry, 15> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return MulMatCublas(launch, n[0]); }},
     {.name = "ggml.get_rows",
      .operation = execution::Operation::kGetRows,
-     .variant = "ggml_cuda_op_get_rows: k_get_rows_float_vec on 16-byte vectors, aligned rows "
-                "and at least 128 blocks, else k_get_rows_float; upstream launch configuration",
+     .variant = "ggml_cuda_op_get_rows: F32 rows through k_get_rows_float_vec on 16-byte "
+                "vectors, aligned rows and at least 128 blocks, else k_get_rows_float; BF16 rows "
+                "through k_get_rows_float<nv_bfloat16, float>; upstream launch configuration",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGetRows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return GetRows(launch, n[0]); }},
@@ -178,6 +179,22 @@ constexpr std::array<Kernel::Entry, 15> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckSwiGlu(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return SwiGlu(launch, n[0]); }},
+    {.name = "ggml.convert",
+     .operation = execution::Operation::kConvert,
+     .variant = "ggml_cuda_cpy between packed tensors: cpy_scalar_contiguous<float, half> or "
+                "<half, float>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckConvert(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Convert(launch, n[0]); }},
+    {.name = "ggml.flash_attn_ext.vec",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ggml_cuda_flash_attn_ext_vec_case<64, F16, F16>, forced: "
+                "flash_attn_mask_to_KV_max<ncols> from 1,024 query rows, flash_attn_ext_vec<64, "
+                "1 or 2, F16, F16, false>, flash_attn_combine_results<64> over parallel blocks; "
+                "launch_fattn's launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnVec(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnVec(launch, n[0]); }},
     {.name = "ggml.mul_mat_add.mmvf_fused",
      .operation = execution::Operation::kMulMatAdd,
      .variant = "ggml_cuda_mul_mat_vec_f with x_bias, writing the add: mul_mat_vec_f<T, "

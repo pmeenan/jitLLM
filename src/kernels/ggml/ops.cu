@@ -226,6 +226,15 @@ std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node
                     [node](ggml_backend_cuda_context& context) { ggml_cuda_dup(context, node); });
 }
 
+std::expected<void, KernelFailure> Convert(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckConvert(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    ggml_cuda_cpy(context, node->src[0], node->src[1]);
+  });
+}
+
 std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckSwiGlu(node); !checked) {
     return checked;

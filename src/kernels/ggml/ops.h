@@ -20,6 +20,7 @@
 #ifndef JITLLM_KERNELS_GGML_OPS_H_
 #define JITLLM_KERNELS_GGML_OPS_H_
 
+#include <cstdint>
 #include <expected>
 
 #include "ggml.h"
@@ -104,6 +105,36 @@ std::expected<void, KernelFailure> SoftMax(LaunchContext& launch, ggml_tensor* n
 std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node);
 // A ggml_swiglu_split node over F32.
 std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* node);
+
+// The EXL3 plan's operations beyond those above
+// (docs/experiments/backend-proof-p0/exl3-op-plan.json).
+
+// A ggml_cpy node converting F32 to F16 or F16 to F32 (validate.h
+// CheckConvert): ggml_cuda_cpy's cpy_scalar_contiguous. Draws no scratch.
+std::expected<void, KernelFailure> Convert(LaunchContext& launch, ggml_tensor* node);
+
+// What the vector attention's launch_fattn (fattn-common.cuh:975-1215)
+// computes on the context's device before it launches: its parallel
+// blocks, from the kernel's occupancy and the tail-effect search, whether
+// the mask pre-pass runs (1,024 query rows or more), and the pool scratch
+// it draws, each block from a 256-byte boundary in its allocation order
+// (the pre-pass's KV_max, then the partial results and their metadata).
+struct FlashAttnPlan {
+  int columns_per_block = 0;  // 1 for one query row, else 2
+  int parallel_blocks = 0;
+  bool mask_prepass = false;
+  std::uint64_t scratch = 0;
+};
+std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec(const LaunchContext& launch,
+                                                             const ggml_tensor* node);
+// A ggml_flash_attn_ext node (validate.h CheckFlashAttnVec) through GGML's
+// vector kernel, forced as the EXL3 plan forces it for every phase:
+// ggml_cuda_flash_attn_ext_vec_case<64, F16, F16> (flash_attn_ext_vec
+// with one column per block for one query row, else two; the mask
+// pre-pass flash_attn_mask_to_KV_max from 1,024 rows; then
+// flash_attn_combine_results over the parallel blocks), drawing
+// PlanFlashAttnVec's scratch from the context's pool.
+std::expected<void, KernelFailure> FlashAttnVec(LaunchContext& launch, ggml_tensor* node);
 
 // MMVF with GGML's fusion arguments, for one activation column, as the
 // FP16-F plan runs it: a product and its bias (or residual) add, written to

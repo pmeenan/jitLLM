@@ -103,6 +103,12 @@ std::string_view OperationName(Operation operation) {
       return "quant_linear";
     case Operation::kQuantMultiLinear:
       return "quant_multi_linear";
+    case Operation::kConvert:
+      return "convert";
+    case Operation::kFlashAttn:
+      return "flash_attn";
+    case Operation::kBiasAdd:
+      return "bias_add";
   }
   return "unknown";
 }

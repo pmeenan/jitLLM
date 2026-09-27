@@ -26,6 +26,13 @@
 //                                                     slice, bias
 //   exl3.multi_linear.mgemm        kQuantMultiLinear  gate and up through
 //                                                     exl3_mgemm_kernel
+//   exl3.bias_add                  kBiasAdd           add_kernel_hhh: the
+//                                                     q/k/v bias, as the
+//                                                     native EXL3 plan's own
+//                                                     operation (its record
+//                                                     lists it apart from the
+//                                                     linear); the linears
+//                                                     then run without one
 //
 // linear.h has each path's kernels. The GEMM and the GEMV are the natural
 // pair of implementations of one operation at up to eight rows
@@ -81,6 +88,7 @@ class Kernel {
                                          std::span<const LtAlgorithm> algorithms) const;
   std::expected<void, KernelFailure> Run(LaunchContext& launch, const MultiLinearOperands& operands,
                                          const MultiGemmPlan& plan) const;
+  std::expected<void, KernelFailure> Run(LaunchContext& launch, const BiasOperands& operands) const;
 
   std::string_view name() const;
   execution::Operation operation() const;

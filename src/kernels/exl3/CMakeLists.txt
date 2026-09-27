@@ -22,6 +22,8 @@
 #                        jitLLM's instances of the rest,
 #                        jitllm_exl3_kernels.h), built as the P0 reference
 #                        was. CUDA builds only.
+#   jitllm_exl3_qwen2    one phase of the native EXL3 plan (qwen2.h), with
+#                        GGML's operations. CUDA builds only.
 add_library(jitllm_exl3 STATIC upstream_gemv.cc validate.cc)
 target_include_directories(jitllm_exl3 PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_exl3 PUBLIC jitllm_exl3_headers PRIVATE jitllm_warnings)
@@ -64,8 +66,9 @@ if(JITLLM_CUDA)
   # the GGML module does. A file added here without being listed fails the
   # next configure.
   set(module_files CMakeLists.txt implementations.cc implementations.h launch.cc launch.h
-                   launch_contract.h linear.cc linear.h module_digest.cmake recon_gemm.cc
-                   recon_gemm.h upstream_gemv.cc upstream_gemv.h validate.cc validate.h)
+                   launch_contract.h linear.cc linear.h module_digest.cmake qwen2.cc qwen2.h
+                   recon_gemm.cc recon_gemm.h upstream_gemv.cc upstream_gemv.h validate.cc
+                   validate.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)
@@ -86,4 +89,12 @@ if(JITLLM_CUDA)
     COMMENT "Hashing the EXL3 module's sources for its implementation identities (D-053)"
     VERBATIM)
   target_sources(jitllm_exl3_kernels PRIVATE "${module_digest}")
+
+  # One phase of the native EXL3 plan (model/qwen2_exl3.h) under jitLLM's
+  # dispatch: the module's linears and bias adds, and GGML's operations
+  # (kernels/ggml, the layer's module before this one), bound through the
+  # registry (qwen2.h).
+  add_library(jitllm_exl3_qwen2 STATIC qwen2.cc)
+  target_link_libraries(jitllm_exl3_qwen2 PUBLIC jitllm_exl3_kernels jitllm_ggml_kernels
+                                                 jitllm_model PRIVATE jitllm_warnings)
 endif()

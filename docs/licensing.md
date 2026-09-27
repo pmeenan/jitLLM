@@ -57,8 +57,10 @@ whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
 from its UTF-8 decoder. GGML (MIT, D-077) links so far into the backend
 proof's tests only; a shipped binary that links it carries its MIT text
 and the YaRN attribution from its RoPE kernel, and jitLLM's
-`src/kernels/ggml/ggml_support.cu`, adapted from GGML, keeps GGML's notice
-in its header. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
+`src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
+`src/kernels/ggml/fattn.cu`, which instantiates GGML's vector
+flash-attention case and copies `launch_fattn`'s host arithmetic, keep
+GGML's notice in their headers. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)).
 

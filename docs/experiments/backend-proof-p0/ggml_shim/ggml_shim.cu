@@ -338,6 +338,24 @@ int ggml_shim_get_rows(const void * table, int table_type, int64_t n_rows, int64
     return sync_all("get_rows exit");
 }
 
+// out[n] = x[n] converted by a GGML cpy (the plan's casts, P3's operation-level
+// check): F32 to F16 rounds to nearest even, F16 to F32 is exact.
+int ggml_shim_cpy(const void * x, int in_type, void * out, int out_type, int64_t n) {
+    if (!((in_type == GGML_TYPE_F32 && out_type == GGML_TYPE_F16) ||
+          (in_type == GGML_TYPE_F16 && out_type == GGML_TYPE_F32))) {
+        return fail("cpy: F32 to F16 or F16 to F32 only");
+    }
+    if (sync_all("cpy entry")) return -1;
+    call_ctx c;
+    ggml_tensor * tx = input(c.ctx, (ggml_type) in_type, n);
+    ggml_tensor * o = as_type(c.ctx, tx, out_type);
+    ggml_set_output(o);
+    ggml_cgraph * graph = ggml_new_graph_custom(c.ctx, 64, false);
+    ggml_build_forward_expand(graph, o);
+    if (alloc(graph) || copy_in(tx, x) || compute(graph) || copy_out(out, o)) return -1;
+    return sync_all("cpy exit");
+}
+
 // Causal attention of n_q queries at positions q_pos0 .. q_pos0 + n_q - 1 over
 // the first n_kv cache positions. q [n_q, n_head, dim] F32, k and v
 // [n_kv, n_head_kv, dim] F16 (the cache layout), out [n_q, n_head, dim] F32 or

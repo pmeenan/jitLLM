@@ -29,9 +29,13 @@
 //   ggml.mul_mat_add.mmvf_fused  {mul_mat, add}          ops.h MulMatVecBias
 //   ggml.mul_mat_glu.mmvf_fused  {gate, up, glu}         ops.h MulMatVecGlu
 // The three fused ones are FP16-F's; FP16-U runs their parts as separate
-// operations (ops.h). Which kernel variant each launches follows from its
-// operands, as upstream's launcher chooses it, so a variant names the
-// launcher and its rule rather than one kernel.
+// operations (ops.h). The native EXL3 plan (exl3-op-plan.json) also runs
+// ggml.get_rows over its BF16 embedding table and
+//   ggml.convert                 {cpy}                   ops.h Convert
+//   ggml.flash_attn_ext.vec      {flash_attn_ext}        ops.h FlashAttnVec
+// Which kernel variant each launches follows from its operands, as
+// upstream's launcher chooses it, so a variant names the launcher and its
+// rule rather than one kernel.
 //
 // Each identity covers everything that decides what an implementation
 // computes and launches:

@@ -12,7 +12,7 @@
 #                        (qwen2_graph.h). Every profile.
 #   jitllm_ggml_kernels  the K-C launch context (launch.h), jitLLM's cuBLAS
 #                        handle (cublas.h), the operation implementations
-#                        (ops.h, mul_mat_cublas.cu) and jitLLM's definitions
+#                        (ops.h, mul_mat_cublas.cu, fattn.cu) and jitLLM's definitions
 #                        of the ggml-cuda.cu symbols GGML's launchers use
 #                        (ggml_support.cu), and the module's declarations
 #                        in the implementation registry
@@ -47,7 +47,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         cublas.cc executor.cc implementations.cc)
+                                         fattn.cu cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -92,8 +92,8 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fusion.cc fusion.h
-                   ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
+  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fattn.cu fusion.cc
+                   fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h launch.cu launch.h module_digest.cmake mul_mat_cublas.cu
                    ops.cu ops.h qwen2_graph.cc qwen2_graph.h tensors.cc tensors.h validate.cc
                    validate.h)
@@ -122,4 +122,9 @@ if(JITLLM_CUDA)
   # kernel's SASS compares with the bridge's. (NVCC's -O sets only the host
   # optimization level; device code is always -O3.)
   set_source_files_properties(mul_mat_cublas.cu PROPERTIES COMPILE_OPTIONS "-use_fast_math")
+  # The vector flash-attention instance (fattn.cu) likewise, with the rest
+  # of GGML's flags for its files, as GGML's own instance unit
+  # (template-instances/fattn-vec-instance-f16-f16.cu) builds in the bridge.
+  set_source_files_properties(fattn.cu PROPERTIES COMPILE_OPTIONS
+                              "-use_fast_math;-extended-lambda")
 endif()

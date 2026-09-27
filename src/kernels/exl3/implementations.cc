@@ -32,7 +32,7 @@
 namespace jitllm::kernels::exl3 {
 namespace {
 
-enum class Path : std::uint8_t { kGemm, kGemv, kReconstruct, kReconstructFused, kMultiGemm };
+enum class Path : std::uint8_t { kGemm, kGemv, kReconstruct, kReconstructFused, kMultiGemm, kBias };
 
 }  // namespace
 
@@ -63,7 +63,7 @@ constexpr std::string_view kLibraryAsserts = "libstdc++ assertions";
 constexpr std::string_view kLibraryAsserts = "no libstdc++ assertions";
 #endif
 
-constexpr std::array<Kernel::Entry, 5> kEntries = {{
+constexpr std::array<Kernel::Entry, 6> kEntries = {{
     {.name = "exl3.linear.gemm",
      .operation = execution::Operation::kQuantLinear,
      .path = Path::kGemm,
@@ -93,6 +93,12 @@ constexpr std::array<Kernel::Entry, 5> kEntries = {{
      .variant = "exl3_mgemm_kernel<K, false, fp32, 1, shape> for two matrices of one input at "
                 "the plan's tile shape, grid and concurrency, cooperative, no indices, weights, "
                 "range or slices"},
+    {.name = "exl3.bias_add",
+     .operation = execution::Operation::kBiasAdd,
+     .path = Path::kBias,
+     .variant = "add_kernel_hhh as add_gr launches it (grid ceil(rows x columns / 1024), 1024 "
+                "threads): F16 + F16, one rounding; the linear's bias on every path, as its own "
+                "operation of the plan"},
 }};
 
 bool Reconstructs(Path path) {
@@ -184,6 +190,14 @@ std::expected<void, KernelFailure> Kernel::Run(LaunchContext& launch,
     return takes;
   }
   return MultiLinear(launch, operands, plan);
+}
+
+std::expected<void, KernelFailure> Kernel::Run(LaunchContext& launch,
+                                               const BiasOperands& operands) const {
+  if (auto takes = Takes(*entry_, Path::kBias, "a bias add"); !takes) {
+    return takes;
+  }
+  return launch.Bias(operands);
 }
 
 std::string_view Kernel::name() const { return entry_->name; }

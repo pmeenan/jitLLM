@@ -159,6 +159,13 @@ add_executable(qwen2_test qwen2_test.cc)
 target_link_libraries(qwen2_test PRIVATE jitllm_model)
 jitllm_gtest(qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The EXL3 Qwen2 adapter and its native operation plan (model/qwen2_exl3.h):
+# binding synthetic resource lists, the recorded phase kinds, the order of
+# operations, placement and the launch digest, and the pinned regions.
+add_executable(qwen2_exl3_test qwen2_exl3_test.cc)
+target_link_libraries(qwen2_exl3_test PRIVATE jitllm_model)
+jitllm_gtest(qwen2_exl3_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The Qwen2 chunk graph, its plan with and without fusion, and activation
 # placement (kernels/ggml/qwen2_graph.h, graph_plan.h).
 add_executable(ggml_graph_test ggml_graph_test.cc)
@@ -198,6 +205,16 @@ if(JITLLM_CUDA)
   target_link_libraries(ggml_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
                                               jitllm_launch_recorder jitllm_plan_record_sample)
   jitllm_gpu_gtest(ggml_ops_test)
+
+  # The GGML operations the native EXL3 plan adds (casts, the BF16
+  # embedding, the forced vector attention): exact against the host or
+  # close to FP64, launching what exl3-op-plan.json records.
+  add_executable(ggml_exl3_ops_test ggml_exl3_ops_test.cc)
+  target_include_directories(ggml_exl3_ops_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_exl3_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                   jitllm_launch_recorder)
+  jitllm_gpu_gtest(ggml_exl3_ops_test)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
@@ -257,6 +274,12 @@ if(JITLLM_CUDA)
   add_executable(exl3_linear_test exl3_linear_test.cc)
   target_link_libraries(exl3_linear_test PRIVATE jitllm_exl3_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(exl3_linear_test)
+
+  # One phase of the native EXL3 plan (kernels/exl3/qwen2.h) over zeroed
+  # weights of the model's shapes: binding, refusals and a run.
+  add_executable(exl3_qwen2_test exl3_qwen2_test.cc)
+  target_link_libraries(exl3_qwen2_test PRIVATE jitllm_exl3_qwen2 jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(exl3_qwen2_test)
 
   # The module's implementation identities follow every one of its source
   # files (src/kernels/exl3/module_digest.cmake), checked as the GGML

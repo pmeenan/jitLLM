@@ -109,6 +109,18 @@ class GGMLOps:
                                                 ctypes.c_void_p(ids32.data_ptr()), ids32.numel(), self._ptr(out)))
         return out
 
+    def cast(self, x, out_dtype):
+        """x converted to out_dtype by GGML's cpy (F32 to F16, or F16 to F32), a new tensor.
+
+        The symbol is looked up here, not in __init__, so libraries built before it (cuda134)
+        still load."""
+        fn = self.lib.ggml_shim_cpy
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int64]
+        x = x.contiguous()
+        out = torch.empty(x.shape, dtype=out_dtype, device=x.device)
+        self._check(fn(self._ptr(x), TYPES[x.dtype], self._ptr(out), TYPES[out_dtype], x.numel()))
+        return out
+
     def attention(self, q, k, v, n_kv, q_pos0, scale, path, out_dtype=torch.float32):
         """q [n_q, n_head, dim] (converted to F32 exactly); k, v [>= n_kv, n_head_kv, dim] F16."""
         q = q.float().contiguous()

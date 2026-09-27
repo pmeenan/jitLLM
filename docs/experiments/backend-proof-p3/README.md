@@ -1,9 +1,16 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Backend proof P3, part 1: native EXL3 linears — 2026-09-27
+# Backend proof P3: native EXL3 — 2026-09-27
 
-This is the first part of P3 of the [backend proof](../../backend-proof.md#stages):
+P3 of the [backend proof](../../backend-proof.md#stages) in two parts:
+[part 1](#part-1-the-linears), the native linears, and
+[part 2](#part-2-the-native-model), both fixtures end to end under the
+native operation plan.
+
+## Part 1: the linears
+
+This is the first part of P3:
 jitLLM's own launchers of ExLlamaV3's kernels, judged per linear by the
 approved Tier E items for EXL3 packed linears (up to 144 rows) and
 reconstruction-path linears (145 rows and more). It is BP-N5, the
@@ -40,7 +47,7 @@ launched, with the same grid and block ([below](#launches)), and the SASS
 of every ExLlamaV3 kernel native launches equals the reference build's
 ([below](#sass)).
 
-## What runs
+### What runs
 
 **Kernels.** The source lock's `exllamav3` component now holds, besides
 upstream's GEMM compilation units, the K = 4 GEMV kernel's header and the
@@ -138,7 +145,7 @@ the registry binds for its path. [`compare.py`](compare.py) holds every
 stage, every weight hash and the full reconstructed weights, rotated and
 fused, to the reference's.
 
-## Placements: alignment and over-read
+### Placements: alignment and over-read
 
 The sweep ran four times per fixture and arm, with every operand placed:
 - **malloc**: `cudaMalloc`, 256-byte aligned (rung 3);
@@ -177,7 +184,7 @@ fault and gave the `cudaMalloc` run's bits (`spark-b`, 2026-09-27). The
 verdict covers those kernels at these rates and shapes, not other
 shapes, rates, codebooks or kernel variants.
 
-## Launches
+### Launches
 
 An nsys trace (`-t cuda`) of each sweep in `malloc` placement records
 every kernel native launched. [`launches_compare.py`](launches_compare.py)
@@ -192,7 +199,7 @@ the arm's, as the reconstruction-path Tier E item requires (13 distinct
 cuBLAS kernels: nvjet and three CUTLASS kernels), and the GEMM, multi-GEMM
 and GEMV grids are the decoded plans'.
 
-## SASS
+### SASS
 
 [`sass_compare.py`](sass_compare.py) hashes each function's SASS as
 P0's `fp16_plan.py` does (instruction text with addresses stripped, and
@@ -213,7 +220,7 @@ The port therefore runs the reference's own machine code, which is what
 the bit-exact outputs above rely on, and what BP-F2's P3-entry item asks
 ("check that the port's build reproduces the reference's SASS").
 
-## GPU unit tests
+### GPU unit tests
 
 `unit.Exl3LinearTest.*` (label `gpu`, `spark-b`) runs every path on a
 synthetic q_proj-shaped linear: bit-identical in `cudaMalloc` memory and
@@ -235,19 +242,273 @@ row stride); and each identity recording libstdc++'s assertions (D-083).
 every profile, the multi-GEMM's refusal of tables written for tensors
 that have since moved (BP-P5) among them.
 
-## Not covered here
+### Not covered by part 1
 
-- The full-model run of both fixtures (Tier C) and the operation-level
-  gate's recorded plan (`exl3-op-plan.json`), and BP-F2's reference arm
-  and timing, which P3-entry approvals govern: part 2.
-- The launch recorder (`tests/support/`) does not wrap
-  `cudaLaunchCooperativeKernel` or `cudaLaunchKernel`'s C entry point;
-  native launches are checked here through nsys instead. Part 2's plan
-  comparison against `exl3-op-plan.json` needs one or the other.
 - The over-read verdict holds for the kernels and shapes swept and
   probed ([above](#placements-alignment-and-over-read)); the artifact
   format keeps it as a measured fact of these fixtures, not a rule for
   other rates, codebooks or kernels.
+
+## Part 2: the native model
+
+Both fixtures end to end under the approved native operation plan, in
+EXL3-G and EXL3-O, on the held-out trajectories: for each prefix of 32,
+144, 145, 1,023 and 1,024 IDs, every prefill row's logits, then 16
+single-token steps (85 phases per fixture and arm).
+
+**Results in brief** (2026-09-27, `spark-b`; each judged only after the
+plan gate's exit 0):
+
+| Fixture | Arm | Plan gate | Rung 3 repeat | Tier E, operation level | Tier C (750 statistics) | Rungs 4 and 5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4.0 bpw | EXL3-G | exit 0, 85 phases of 8 kinds | identical | exact: 30,855 GGML operations, 80,166 wirings, 135,841 dtypes, 95,899 weight checks | pass; worst ratio 1.145 averaged, 1.781 extreme; top-1 2,423 of 2,448 | identical to rung 3, every evaluation |
+| 4.0 bpw | EXL3-O | exit 0 | identical | — (the gate is EXL3-G's) | pass; 1.145, 1.781; 2,423 of 2,448 | identical |
+| 4.5 bpw | EXL3-G | exit 0 | identical | exact: 30,855, 80,166, 135,841, 95,899 | pass; 1.063, 1.332; 2,425 of 2,448 | identical |
+| 4.5 bpw | EXL3-O | exit 0 | identical | — | pass; 1.099, 1.351; 2,425 of 2,448 | identical |
+
+Every instrumented run (the launch recording, Tier C's captures, Tier
+E's operation recording) gave the uninstrumented run's logits bit for bit
+(RE-010).
+
+### What runs
+
+- **The adapter and plan** (`src/model/qwen2_exl3.h`, every profile):
+  `BindQwen2Exl3` binds an EXL3 artifact's resources (mcg trellises at
+  K = 4, 5, 6 or 8, F16 side vectors, the mcg flag, F16 q/k/v biases, BF16
+  norms and embedding), refusing anything missing, mis-shaped or unread.
+  `PlanPhase` gives a phase its operations in the record's order, each
+  with its owner, registry implementation, tensors (the record's names and
+  dtypes) and, for a linear, the forced launch plan of the fixture's
+  table: tile shape and grid from the frozen tuning cache, the GEMV's
+  configuration and grid where EXL3-O takes it, each reconstruction
+  slice's pinned cuBLASLt algorithm with the GEMM it was pinned for. It
+  refuses a phase kind the record lacks (`RecordedPhase`) and a case the
+  table lacks or that is not upstream's path. It places every tensor, the
+  linears' scratch and the logits in one region by lifetime; the regions
+  are the pre-registered buffer plan
+  ([backend-proof.md](../../backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
+  The launch digest covers every operation, tensor and launch plan and the
+  tuning data's identity.
+- **The executor** (`src/kernels/exl3/qwen2.h`): binds a phase plan through
+  the registry (GGML's norms, casts, RoPE, attention, adds, SwiGLU and
+  embedding; ExLlamaV3's linears, multi-GEMM and the new `exl3.bias_add`),
+  runs every host check before anything is queued, checks in EXL3-O that
+  jitLLM's copy of upstream's GEMV choice picks exactly the table's plan,
+  and runs the phase on one stream. The plan identity is the registry
+  plan's identity (every implementation's) with the launch digest.
+- **New GGML implementations** (`src/kernels/ggml/`): `ggml.convert`
+  (`cpy_scalar_contiguous`, F32↔F16), `ggml.get_rows` over a BF16 table,
+  and `ggml.flash_attn_ext.vec`, the forced vector attention
+  (`ggml_cuda_flash_attn_ext_vec_case<64, F16, F16>` instantiated in
+  `fattn.cu` with GGML's flags; `PlanFlashAttnVec` copies
+  `launch_fattn`'s arithmetic, so its parallel blocks and pool scratch are
+  known before launch). The SASS of all eleven GGML kernels of the plan,
+  the four flash-attention ones included, equals the record's.
+- **The harnesses** (`benchmarks/`): `jitllm_exl3_exec` runs the
+  trajectories from the artifact on `cudaMalloc` memory (rung 3), with
+  `--record`, `--capture` or `--record-ops`; `jitllm_exl3_paged` runs them
+  paged into device VMM through the landing zone by the scheduler and its
+  lanes (rungs 4 and 5), as `jitllm_fp16_paged` does for FP16. The launch
+  recorder (`tests/support/`) now wraps `cudaLaunchKernel`,
+  `cudaLaunchCooperativeKernel` and `cublasLtMatmul`, and the recording
+  marks each operation (`OpLine`).
+- **Launch plans:** the four model plans (`model_plan.py`, below) use only
+  P0's frozen caches' records: `plan-40-G` `b34fe49d…`, `plan-40-O`
+  `9665fd29…`, `plan-45-G` `153e8662…`, `plan-45-O` `45a1fa5b…`.
+
+### The plan gate
+
+[`op_plan_compare.py`](op_plan_compare.py) holds native's recording and an
+nsys trace of the same run to the record (`exl3-op-plan-g.json` for
+EXL3-G, `exl3-op-plan-o.json` for EXL3-O): every operation in order, every
+launch's kernel (GGML's by normalized mangled name, SASS encoding hash,
+registers and static shared memory; ExLlamaV3's and cuBLAS's by demangled
+name), grid, block and shared memory, the copies' sizes, and nothing else
+queued. All four arms: exit 0, 85 phases of 8 kinds (per fixture and arm,
+53,646 recorded operations and 57,087 launches). The paged harness's
+first evaluation also matches, for 4.0 bpw EXL3-G and 4.5 bpw EXL3-O
+(rung 4's executed plan is rung 3's). Its tests
+(`tools/tests/test_op_plan_compare.py`) synthesize runs from the records
+and catch each forbidden departure.
+
+### Tier E, operation level, and Tier C
+
+Judged by the reference-side tools below, which were written and then
+reviewed by a separate agent (who fixed four defects: the RE-010 control
+made mandatory in both, the fixture tied to the bounds, the shim pinned)
+before any native numerical output was looked at. One more defect showed
+on the first native 4.5 bpw run and was fixed before its verdict: the
+harness took the fixture from `config.json`'s quantization bits, which say
+4 for the mixed 4.5 bpw checkpoint, and refused the run (exit 2); it now
+takes it from the checkpoint's SHA-256.
+
+- **Tier E:** in EXL3-G, every GGML operation of every phase, layer and
+  prefix (the embedding, the three norms, every cast, both RoPEs, the
+  attention, both residual adds, SwiGLU) recomputed by the bridge's GGML
+  library from native's recorded inputs is bit-identical to native's
+  output; every input equals its producer's output, attention's K and V
+  over `[0, Npad)` equal the layer's KV writes and zeros; every tensor has
+  the record's dtype and shape; the host-built inputs equal the harness's
+  own. Both fixtures, 85 phases each. Every weight an operation reads is
+  recorded by the load-time hash of what lies at the address the program
+  bound for it (`Qwen2Program::BoundWeights`): the embedding, norms and
+  biases, every linear's trellis and side vectors, and what the two
+  addresses in each of the multi-GEMM's three device tables point at.
+  Each must be the artifact's tensor of that name, linear and layer, so
+  an operation bound to another layer's or tensor's weights, or a stale
+  table, fails. The weights were added to the recording in review and
+  challenge (after the first verdicts; checks added, none relaxed), and
+  both fixtures were recorded and judged again with the final binaries
+  (`spark-b`, 2026-09-27, under `p3b-challenge-20260927`).
+- **Tier C:** every one of the 750 statistics within its approved bound,
+  all four fixture and arm pairs (table above). EXL3-O is judged against
+  the same bounds, whose legitimate arms include GEMV on (D-079).
+
+### Rungs 4 and 5
+
+`jitllm_exl3_paged --restores 2 --relocate`: every weight chunk (292
+extents at 4.0 bpw, 302 at 4.5 bpw) paged into device VMM through the
+zone. Evaluation 1 has rung 3's logits bit for bit; the repeat, and two
+evaluations that evict every weight after each prefill (releasing its
+backing) and page it back before the steps, the second at another
+reservation with the multi-GEMM tables rewritten and every phase bound
+anew, equal it. Every address a bound program reads or writes lay in
+cataloged, resident device memory of its class (723,904 ranges, no
+violation). Each full restore took 53–121 ms (reported, not gated).
+
+### Not covered here
+
+- BP-F2's timing (pre-registered; below) and the EXL3 census (its `F` cap
+  first).
+- Tier E's operation-level recomputation runs on EXL3-G, as the approved
+  item says; EXL3-O's GGML operations are the same launches (the plan
+  gate).
+- Allocations inside a phase, which quiescent census readings cannot see.
+  The plan-gate runs' nsys API traces (all four arms, one evaluation) and
+  the paged harness's (two evaluations) show no allocation call after the
+  first launch (no `cudaMalloc`, `cuMemAlloc`, `cuMemCreate`,
+  `cudaMallocAsync` or pool call), and GGML's pool is bounded per
+  operation (only the attention draws). They do show 30 lazy module loads
+  (`cuLibraryLoadData`, cuBLASLt's kernels) in the first evaluation's
+  reconstruction-path prefills, and none in the second: warm-up growth
+  that the census charges to `F`, whose EXL3 cap is not set yet.
+
+### BP-F2, prepared
+
+Pre-registered in [backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry)
+before any native EXL3 kernel was timed. [`bpf2_cases.py`](bpf2_cases.py)
+writes [`bpf2-cases.txt`](bpf2-cases.txt) (184 cases, `8cb17804…`).
+[`bpf2_measure.py`](bpf2_measure.py) is the reference arm's harness:
+M0's `measure.py` with its kernel modes over the new cases (upstream's
+`LinearEXL3.forward` under EXL3-O, ExLlamaV3's add kernel for the
+reconstruction path's bias, `exl3_mgemm` for the fused gate/up), run by P0's
+`timing_session.sh` in `measure.py`'s place (`MEASURE`, with each
+process's case set as `BPF2_SET`). Not yet written: the native
+candidate's timing harness and the session driver that times it beside
+the reference.
+
+
+### Part 2's reference side
+
+Written and checked on `spark-b` on 2026-09-27, before any native
+full-model output was seen. None of it shares code with native.
+
+**Operation plan records.** [`op_plan_record.py`](op_plan_record.py) runs
+P0's probe and build unchanged, with one more phase kind. The trajectory
+"prefix 1,023, then 16 steps" takes its first step at position 1,023, with
+N = 1,024 and K padded to 1,024. P0's record lacks that kind. The probes ran
+as P0's did: the reference container, P0's `cuda134` shim, the container's
+extension build (`7c9d383f…`) and cuBLAS 13.8.0.4. Every tuning cache was
+unchanged by its probe, and the SASS inputs equal P0's (`424c3d89…`,
+`73aa268c…`).
+- [`exl3-op-plan-g.json`](exl3-op-plan-g.json) is EXL3-G with eight phase
+  kinds. Its logits equal the `ggml_ops` arm's in all eight, on both
+  fixtures. P0's seven kinds are identical to P0's record in every entry
+  (kernels compared by identity) but one. P0's probe appended the next
+  kind's prefill calls to a single-token kind's call list, so P0's
+  `K_by_linear` for step 32 also lists gate and up. This record keeps each
+  phase's own calls; no launch was affected. The new kind launches what
+  step 1,024 does. The probes ran without `--bias-exhaustive`, so the
+  record's `bias_add.exhaustive` is null: the all-pairs result its text
+  cites is P0's record's. Its `dtype_chain_checks` cover each phase's own
+  calls: 8,560, against P0's 9,768 over P0's call lists.
+- [`exl3-op-plan-o.json`](exl3-op-plan-o.json) is EXL3-O: GEMV on, caches
+  `tune-40` and `tune-45`. Its prefill logits equal the EXL3-G arm's; its
+  single-token steps differ, as expected. It differs from the G record in
+  48 entries, all single-token linear launches. `exl3_gemv_kernel` replaces
+  `exl3_gemm_kernel` for q, k, v, o and down at 4.0 bpw, and for the K = 4
+  down projections at 4.5 bpw. The GEMV runs 28 blocks (4 for k and v) with
+  2,048 bytes of shared memory. Everything else is identical: GGML launches,
+  gate/up, `lm_head`, prefills, dtypes and transfers.
+
+**Operation-level Tier E.** [`op_tier_e.py`](op_tier_e.py) reads native's
+`--record-ops` recording (format in its help). It checks:
+- the operation sequence and names against the G record;
+- the dtype chain;
+- wiring, including attention's K/V over `[0, Npad)`;
+- the weights each operation read, by the load-time hash of what lay at
+  the address native bound: the embedding, norms and biases, every
+  linear's trellis and side vectors, and what the multi-GEMM's tables
+  point at, each against the artifact's tensor of that name, linear and
+  layer;
+- the host inputs, against its own construction;
+- each GGML operation, recomputed by P0's shim and required to be
+  bit-identical;
+- RE-010: every phase's logits equal those of an uninstrumented run,
+  whose manifest must say so (no capture, no operation recording, the
+  same fixture, arm and artifact). The control is required.
+
+P0's shim gained a cast (`ggml_shim_cpy`, `GGMLOps.cast`). Rebuilt against
+P0's `cuda134` build tree as `ggmlops/cuda134b` (`libggml_shim.so`
+`70904fc3…`), it loads P0's libraries (`libggml-cuda` `86ea9b4d…`), and
+`op_tier_e.py` checks them in its process map. Two clean rebuilds of
+`libggml-cuda` gave other bytes (`2893f943…`, `c2609e11…`), so the rebuild
+reuses P0's build tree. `op_tier_e.py` pins the shim itself to that
+build too. [`test_op_tier_e.py`](test_op_tier_e.py) runs it on
+a synthetic 32-row trajectory built with the same kernels. The unaltered
+recording passes. Fifteen alterations are each caught at the right place: a
+flipped output bit, corrupt bytes, a mis-wired input, a wrong dtype, a
+missing layer, a stale K cell, a wrong mask, wrong KV cells, a norm scale
+and a linear's trellis bound to another layer's, a multi-GEMM table
+pointing at another layer's weights, a recording without the linears'
+weights, a changed uninstrumented logit, an instrumented control and a
+missing control.
+
+**Tier C.** [`pack_run.py`](pack_run.py) packs native's `.npy` output into
+the reference runs' layout. A reference run unpacked and packed again is
+identical, array for array. It also writes `native.json`: the capture
+run's fixture and arm, and whether its logits equal the uninstrumented
+run's byte for byte (RE-010). The fixture is the artifact's
+([`fixture_identity.py`](fixture_identity.py): the checkpoint it was
+prepared from, as `op_tier_e.py` reads it), never the run's command-line
+label, which must agree. `tierc_check.py` requires that file and the
+artifact, checks that fixture and the oracle's (by its recorded SHA-256)
+against the bounds it loads, and fails a run whose captured
+logits differ (`--reference` judges P0's arms, which have none). [`tierc_check.py`](tierc_check.py) applies
+`tierc.json`'s bounds with P0's `oracle_compare.score` and `tierc.flatten`:
+
+| Arm (both fixtures) | Verdict | Largest ratio to the median, averaged / extreme |
+| --- | --- | --- |
+| `g`, `o`, `cublas138b`, `ggml_ops_cublas138b` | pass | ≤ 1.17 / ≤ 1.79 |
+| `f_norm_eps` | fail, first layer 0 | 25.5 / 57.6 (4.0 bpw), 23.3 / 59.0 (4.5 bpw) |
+| `f_q_rope_offset_l10`, `f_rope_offset_l10`, `f_one_key_l10` | fail, first layer 10 | as `tierc.json` |
+| `f_decode_rope_l12` | fail, first layer 12 | as `tierc.json` |
+| `f_softmax_scale_l8`, `f_bf16_mlp_l16` | pass (the subtle faults Tier E catches) | ≤ 1.41 / ≤ 2.51 |
+
+A run with one capture removed is incomplete (exit 2). One with a NaN logit
+fails.
+
+**Model plans.** [`model_plan.py`](model_plan.py) restricts the sweep's
+plans (`native_plan.py`) to the trajectories' row counts. It checks three
+things:
+- every tuning record used equals the arm's frozen P0 cache, so no 8-row
+  record is used;
+- every case is present, on upstream's path;
+- every packed grid equals the operation plan record's.
+
+The four plans (966 cases each) are on `spark-b` under
+`p3b-20260927/plans/`: `plan-40-G` `b34fe49d…`, `plan-40-O` `9665fd29…`,
+`plan-45-G` `153e8662…` and `plan-45-O` `45a1fa5b…`.
 
 ## Reproduction
 
@@ -279,3 +540,33 @@ tuning cache (bytes and SHA-256), every case's plan and final-output
 SHA-256, the comparisons and the launch verdict; and the SASS comparison. Raw runs (every
 stage's hash, the launch profiles) stay on `spark-b` under
 `~/.local/share/jitllm/p3a-20260927`.
+
+Part 2's reference side, on `spark-b` (each script's help has the
+details; `run_container.sh` runs a script in the reference container,
+with `GPUS=""` for the CPU-only ones):
+1. P0's `ggml_shim/build.sh cuda134` on a copy of P0's `cuda134` build tree,
+   then install its `libggml_shim.so` as `p0-20260925/ggmlops/cuda134b`.
+2. `op_plan_record.py probe --arm G|O` per fixture, with P0's probe
+   options, the `cuda134` shim and a copy of the arm's frozen cache. Then
+   `cuobjdump -sass` and `-res-usage` of `libggml-cuda.so.0.24.0`
+   (`fp16_plan.py sass-hash`), and `op_plan_record.py build`.
+3. `test_op_tier_e.py`, with the artifact store mounted at `/artifacts`.
+4. `tierc_check.py --reference` over the reference arms. For
+   `pack_run.py`, unpack a reference run into native's layout with
+   capture and control manifests, pack it with `--uninstrumented` and
+   `--artifact`, and
+   compare; then `tierc_check.py` on the packed run, on one whose control
+   has a changed logit (fails), against the other fixture's bounds, and
+   with a run or oracle whose fixture is not its artifact's
+   (malformed).
+5. `model_plan.py --record exl3-op-plan-g.json|-o.json` per fixture and arm.
+
+Raw outputs stay on `spark-b` under `~/.local/share/jitllm/p3b-20260927`.
+
+Part 2's native side, on `spark-b` with the `spark-native` build and the
+model plans: [`run_model.sh`](run_model.sh) `40|45 G|O` runs, for one
+fixture and arm, the recorded run under nsys and the plan gate, rung 3,
+the captured run with `pack_run.py` and `tierc_check.py`, in EXL3-G the
+operation recording with `op_tier_e.py`, and the paged run (rungs 4 and
+5), printing each step's exit status. Read the plan gate's `gate 0` before
+any other verdict.

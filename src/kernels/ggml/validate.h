@@ -53,8 +53,8 @@ std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node);
 // outside is an out-of-bounds access, so the plan that uploads them owns
 // that bound.
 
-// A ggml_get_rows node: F32 rows gathered by I32 ids into F32
-// (ggml_cuda_op_get_rows, getrows.cu:442-459).
+// A ggml_get_rows node: F32 or BF16 rows gathered by I32 ids into F32
+// (ggml_cuda_op_get_rows, getrows.cu:442-459); BF16 is widened exactly.
 std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node);
 // Which kernel get_rows' launcher chooses for a node CheckGetRows accepts:
 // k_get_rows_float_vec when rows are whole 16-byte vectors on 16-byte
@@ -102,6 +102,22 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node);
 // A ggml_swiglu_split node over F32 (ggml_cuda_op_swiglu, unary.cu:287-350):
 // silu(gate) * up, element by element.
 std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node);
+
+// A ggml_cpy node converting a packed F32 tensor into a packed F16 one of
+// its shape (rounding to nearest even) or F16 into F32 (exactly):
+// ggml_cuda_cpy's cpy_scalar_contiguous<src, dst> (cpy.cu:195-203,
+// 495-499, 552-555). The EXL3 plan's casts.
+std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node);
+
+// A ggml_flash_attn_ext node as the EXL3 plan's vector attention takes it
+// (docs/experiments/backend-proof-p0/exl3-op-plan.json, `attention`): F32 Q
+// viewed [64, rows, heads], F16 K and V viewed [64, cells, KV heads] over
+// cells padded to 256, an F16 mask [cells, rows] (rows rounded up to even
+// from 1,024, which the mask pre-pass reads), F32 output [64, heads, rows],
+// scale only, precision F32. What the forced launcher
+// (ggml_cuda_flash_attn_ext_vec_case<64, F16, F16>) and launch_fattn read
+// and assert; the scratch it draws is ops.h PlanFlashAttnVec's.
+std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node);
 
 // MMVF with GGML's fusion arguments (ggml_cuda_mul_mat_vec_f,
 // mmvf.cu:634-729), for one activation column. Beyond CheckMulMat's rules

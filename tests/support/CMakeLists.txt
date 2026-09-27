@@ -45,6 +45,8 @@ if(JITLLM_CUDA)
                         PRIVATE jitllm_base jitllm_warnings)
   target_link_options(jitllm_launch_recorder INTERFACE
                       "LINKER:--wrap=__cudaLaunchKernel,--wrap=cudaLaunchKernelExC"
+                      "LINKER:--wrap=cudaLaunchKernel,--wrap=cudaLaunchCooperativeKernel"
+                      "LINKER:--wrap=cublasLtMatmul"
                       "LINKER:--wrap=cudaMemcpyAsync,--wrap=cudaMemcpy2DAsync,--wrap=cudaMemsetAsync"
                       "LINKER:--wrap=cuMemcpyAsync"
                       "LINKER:--wrap=cublasSgemm_v2,--wrap=cublasGemmEx"
