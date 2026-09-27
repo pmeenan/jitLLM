@@ -302,10 +302,17 @@ destructor, in `src/kernels/ggml/ggml_support.cu`. One patch drops
 `ggml_cuda_error`'s `[[noreturn]]` so that errors propagate. Descriptors
 carry no buffer, since the selected launchers never read one; a launcher
 that does needs a wrapper buffer. Matrix multiplication does not reuse
-GGML's `static` routing: each kernel family (MMVF, MMF, later cuBLAS) is
-its own implementation, and it accepts only operands that upstream's
-selection would route to it. The cuBLAS path, `static` too, will be a
-recorded jitLLM copy.
+GGML's `static` routing: each kernel family (MMVF, MMF, cuBLAS) is its own
+implementation, and it accepts only operands that upstream's selection
+would route to it. The cuBLAS path, `static` too, is a recorded jitLLM
+copy (`src/kernels/ggml/mul_mat_cublas.cu`). One host plan drives it,
+fixing its conversions, entry point and scratch bound before launch. It
+runs on a handle jitLLM creates as upstream sets it up (TF32 math, the
+context's stream, a declared workspace, whose size the FP16 gate fixes at
+upstream's) and lends to the context. The handle refuses a cuBLAS other
+than the pinned one and cuBLAS's own numerics switches in the environment.
+A context without a handle refuses the path, so GGML never creates a
+handle or workspace of its own.
 
 Either way, operation scratch must fit declared workspace (BP-A1/A2).
 Library handles and unavoidable driver/library allocations are separately

@@ -14,7 +14,8 @@
 // Matrix multiplication comes as separate implementations, one per GGML
 // kernel family, since the plan, not GGML's routing, selects among them.
 // Each accepts only operands that upstream's selection would route to it,
-// which is where upstream validated it.
+// which is where upstream validated it. The cuBLAS implementation is a
+// recorded jitLLM copy of upstream's (mul_mat_cublas.cu).
 
 #ifndef JITLLM_KERNELS_GGML_OPS_H_
 #define JITLLM_KERNELS_GGML_OPS_H_
@@ -24,6 +25,7 @@
 #include "ggml.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate.h"
 
 namespace jitllm::kernels::ggml {
 
@@ -44,6 +46,20 @@ std::expected<void, KernelFailure> Mul(LaunchContext& launch, ggml_tensor* node)
 // (MMVF) and its tensor-core kernel for up to 16 columns (MMF).
 std::expected<void, KernelFailure> MulMatVecF(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatF(LaunchContext& launch, ggml_tensor* node);
+
+// GGML's cuBLAS path for a ggml_mul_mat node, as it would run on the
+// context's device: what it converts, which cuBLAS call it makes and the
+// scratch it draws (validate.h). Refused unless upstream would route the
+// node to cuBLAS.
+std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext& launch,
+                                                            const ggml_tensor* node);
+// Runs that plan on the context's lent cuBLAS handle (cublas.h), drawing
+// its conversions, compute-type output and pointer arrays from the
+// context's scratch; refused if the context lends no handle or an operand
+// overlaps either workspace. A node marked GGML_PREC_F32 computes in F32,
+// which converts F16 or BF16 weights whole into scratch: a plan uses that
+// only for activations (BP-A3).
+std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tensor* node);
 
 }  // namespace jitllm::kernels::ggml
 

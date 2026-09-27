@@ -32,8 +32,9 @@ and checks:
 - every link input from outside the SDK and platform is, by its content, an
   object file or archive (audited as above): never a shared library (D-064),
   a linker script or anything else; and the only shared libraries linked
-  from the SDK are the sysroot's glibc and NVIDIA's driver stub, libcuda.so,
-  which binaries resolve to the driver's libcuda.so.1 at run time (D-072).
+  from the SDK are the sysroot's glibc, NVIDIA's driver stub, libcuda.so,
+  which binaries resolve to the driver's libcuda.so.1 at run time (D-072),
+  and the pinned cuBLAS, libcublas.so.13 and libcublasLt.so.13 (D-076).
 """
 
 import argparse
@@ -51,6 +52,10 @@ import sys
 HOST_PLATFORM_PACKAGES = ("libc6", "libc6-dev", "linux-libc-dev")
 # Libraries a link may name with -l: glibc's and the static CUDA runtime's.
 PLATFORM_LIBRARIES = ("c", "m", "dl", "rt", "pthread", "cudart_static", "cudadevrt")
+# The SDK's cuBLAS, linked dynamically (D-076): the SDK-relative path of the
+# file its libcublas.so or libcublasLt.so resolves to, inside the unpacked libcublas package
+# (toolchains/manifest.toml, component cublas or cublas-sbsa-target).
+CUBLAS = re.compile(r"^/pkgs/cuda/usr/local/cuda-[0-9.]+/targets/[^/]+/lib/libcublas(Lt)?\.so\.13\.[0-9.]+$")
 
 
 def within(path: str, root: str) -> bool:
@@ -369,16 +374,18 @@ def main() -> int:
     # name: the linker reads any object or archive, whatever it is called.
     # The SDK's runtimes and the host's glibc are the declared platform
     # (D-017, D-060). No build here makes a shared library (D-064), and the
-    # only one linked is the CUDA driver, through its stub in the SDK (D-072).
+    # only ones linked are the CUDA driver, through its stub in the SDK
+    # (D-072), and the SDK's cuBLAS (D-076).
     for path in link_inputs:
         full = os.path.realpath(path if os.path.isabs(path) else os.path.join(build, path))
         if within(full, sdk):
             # The cross build's glibc lives in the SDK's sysroot.
             platform_shared = (within(full, os.path.join(sdk, "sysroot"))
-                               or full.endswith("/lib/stubs/libcuda.so"))
+                               or full.endswith("/lib/stubs/libcuda.so")
+                               or CUBLAS.search(full[len(sdk):]) is not None)
             if not platform_shared and os.path.isfile(full) and link_input_kind(full) == "shared":
-                problems.append(f"a link uses the SDK's shared library {path}; only glibc and the "
-                                "CUDA driver stub may be linked shared (D-060, D-072)")
+                problems.append(f"a link uses the SDK's shared library {path}; only glibc, the "
+                                "CUDA driver stub and cuBLAS may be linked shared (D-060, D-072, D-076)")
             continue
         if platform is not None and ({path, full, usr_merged(path)} & platform):
             continue

@@ -91,8 +91,8 @@ if(JITLLM_CUDA)
 endif()
 
 # GGML tensor descriptors over jitLLM memory, in every profile, and GGML's
-# CUDA launchers under jitLLM's launch context on a real device (label
-# `gpu`, so only on a Spark).
+# CUDA launchers and the cuBLAS path under jitLLM's launch context on a
+# real device (label `gpu`, so only on a Spark).
 add_executable(ggml_tensors_test ggml_tensors_test.cc)
 target_link_libraries(ggml_tensors_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_tensors_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -106,5 +106,11 @@ if(JITLLM_CUDA)
   target_include_directories(ggml_kernels_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_kernels_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gtest(ggml_kernels_test TEST_PREFIX unit. PROPERTIES LABELS gpu)
+  jitllm_gpu_gtest(ggml_kernels_test)
+
+  add_executable(ggml_cublas_test ggml_cublas_test.cc)
+  target_include_directories(ggml_cublas_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_cublas_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(ggml_cublas_test)
 endif()

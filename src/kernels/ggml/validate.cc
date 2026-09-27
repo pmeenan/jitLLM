@@ -273,6 +273,13 @@ std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node) {
        weights->type != GGML_TYPE_BF16)) {
     return Rejected("F16, BF16 or F32 weights with F32 activations and output");
   }
+  // A hint (op_params[1]) lets upstream route the node to another
+  // operation, such as a Hadamard transform.
+  std::int32_t hint = 0;
+  std::memcpy(&hint, &node->op_params[1], sizeof(hint));
+  if (hint != GGML_HINT_NONE) {
+    return Rejected("a mul_mat node with a routing hint");
+  }
   if (input->ne[3] != node->ne[3] || weights->nb[0] != ggml_type_size(weights->type) ||
       input->nb[0] != sizeof(float) || node->nb[0] != sizeof(float) || !ElementStrides(weights) ||
       !ElementStrides(input) || !ElementStrides(node)) {
@@ -394,6 +401,146 @@ std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node) {
     return Rejected("MMF needs even weight row and activation column strides");
   }
   return {};
+}
+
+std::expected<void, KernelFailure> CheckClearOf(const ggml_tensor* node, std::uint64_t base,
+                                                std::uint64_t size) {
+  if (size == 0) {
+    return {};
+  }
+  for (const ggml_tensor* tensor :
+       std::initializer_list<const ggml_tensor*>{node, node->src[0], node->src[1]}) {
+    if (tensor == nullptr) {
+      continue;
+    }
+    const auto extent = Extent(tensor);
+    if (!extent) {
+      return Rejected("an operand that cannot be measured");
+    }
+    const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(tensor->data));
+    if (begin < base + size && base < begin + *extent) {
+      return Rejected("an operand overlaps a workspace the launch writes");
+    }
+  }
+  return {};
+}
+
+std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* node,
+                                                             ggml_type compute, bool f32_output) {
+  if (auto checked = CheckMulMat(node); !checked) {
+    return std::unexpected(checked.error());
+  }
+  if (compute != GGML_TYPE_F32 && compute != GGML_TYPE_F16 && compute != GGML_TYPE_BF16) {
+    return Rejected("cuBLAS computes in F32, F16 or BF16");
+  }
+  const ggml_tensor* src0 = node->src[0];
+  const ggml_tensor* src1 = node->src[1];
+  // The launcher asserts a contiguous output and indexes it as packed.
+  if (!Packed(node)) {
+    return Rejected("cuBLAS writes a packed output");
+  }
+  // CheckMulMat bounds every extent and element stride to 32 bits, so the
+  // products below cannot overflow 64.
+  const std::uint64_t compute_size = ggml_type_size(compute);
+  const std::uint64_t ts0 = ggml_type_size(src0->type);
+  const std::uint64_t ts1 = ggml_type_size(src1->type);
+  CublasMulMat plan{.compute = compute, .f32_output = f32_output};
+  plan.s01 = static_cast<std::int64_t>(src0->nb[1] / ts0);
+  plan.s02 = static_cast<std::int64_t>(src0->nb[2] / ts0);
+  plan.s03 = static_cast<std::int64_t>(src0->nb[3] / ts0);
+  plan.s11 = static_cast<std::int64_t>(src1->nb[1] / ts1);
+  plan.s12 = static_cast<std::int64_t>(src1->nb[2] / ts1);
+  plan.s13 = static_cast<std::int64_t>(src1->nb[3] / ts1);
+  bool src0_cont_2 = ggml_is_contiguous_2(src0);
+  bool src1_cont_2 = ggml_is_contiguous_2(src1);
+
+  // The pool hands out blocks from 256-byte boundaries (launch.cu), in the
+  // launcher's order: weights, input, output, then the pointer arrays.
+  const auto draw = [&plan](std::uint64_t bytes) {
+    plan.scratch = ((plan.scratch + 255) / 256 * 256) + bytes;
+  };
+  // Each operand that is not already the compute type is converted into
+  // scratch: element by element if its bytes are exactly its elements
+  // (strides kept, blocks of one element), else gathered into packed rows.
+  if (src0->type != compute) {
+    draw(static_cast<std::uint64_t>(ggml_nelements(src0)) * compute_size);
+    if (ggml_is_contiguously_allocated(src0)) {
+      plan.weights = CublasOperand::kConverted;
+    } else {
+      plan.weights = CublasOperand::kPacked;
+      plan.s01 = src0->ne[0];
+      plan.s02 = src0->ne[1] * plan.s01;
+      plan.s03 = src0->ne[2] * plan.s02;
+      src0_cont_2 = true;
+    }
+  }
+  if (src1->type != compute) {
+    draw(static_cast<std::uint64_t>(ggml_nelements(src1)) * compute_size);
+    if (ggml_is_contiguously_allocated(src1)) {
+      plan.input = CublasOperand::kConverted;
+    } else {
+      plan.input = CublasOperand::kPacked;
+      plan.s11 = src1->ne[0];
+      plan.s12 = src1->ne[1] * plan.s11;
+      plan.s13 = src1->ne[2] * plan.s12;
+      src1_cont_2 = true;
+    }
+  }
+  if (!f32_output && compute != GGML_TYPE_F32) {
+    draw(static_cast<std::uint64_t>(ggml_nelements(node)) * compute_size);
+  }
+
+  // What cuBLAS is given: each operand's base (a scratch block's is 256-
+  // aligned) and strides in the type it reads, and the output's.
+  const auto align = [&plan](std::uint64_t value) {
+    if (value != 0) {
+      plan.alignment = std::min(plan.alignment, value & (~value + 1));
+    }
+  };
+  const auto operand = [&align](const ggml_tensor* src, CublasOperand how, std::uint64_t size,
+                                std::initializer_list<std::int64_t> strides) {
+    align(how == CublasOperand::kDirect
+              ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(src->data))
+              : 256);
+    for (const std::int64_t stride : strides) {
+      align(static_cast<std::uint64_t>(stride) * size);
+    }
+  };
+  operand(src0, plan.weights, plan.weights == CublasOperand::kDirect ? ts0 : compute_size,
+          {plan.s01, plan.s02, plan.s03});
+  operand(src1, plan.input, plan.input == CublasOperand::kDirect ? ts1 : compute_size,
+          {plan.s11, plan.s12, plan.s13});
+  const bool output_direct = f32_output || compute == GGML_TYPE_F32;
+  const std::uint64_t output_size = output_direct ? sizeof(float) : compute_size;
+  align(output_direct ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(node->data))
+                      : 256);
+  for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+    align(node->nb[i] / sizeof(float) * output_size);
+  }
+
+  // cuBLAS reads the weights transposed: each of its columns is a weight
+  // row, so both operands' leading dimensions must reach k (it refuses
+  // less), and it takes the batch count as an int.
+  const std::int64_t k = src0->ne[0];
+  const std::int64_t batches = src1->ne[2] * src1->ne[3];
+  if (plan.s01 < k || plan.s11 < k) {
+    return Rejected("cuBLAS needs rows at least k elements apart in both operands");
+  }
+  if (batches > std::numeric_limits<std::int32_t>::max()) {
+    return Rejected("more matrices than cuBLAS takes in one call");
+  }
+  const bool broadcast = src1->ne[2] != src0->ne[2] || src1->ne[3] != src0->ne[3];
+  if (src1->ne[2] == 1 && src1->ne[3] == 1) {
+    plan.gemm = compute == GGML_TYPE_F32 ? CublasGemm::kSgemm : CublasGemm::kGemmEx;
+  } else if (!broadcast && src0_cont_2 && src1_cont_2) {
+    plan.gemm = CublasGemm::kGemmStridedBatchedEx;
+  } else {
+    plan.gemm = CublasGemm::kGemmBatchedEx;
+    // Two input and one output pointer per matrix.
+    draw(2 * static_cast<std::uint64_t>(batches) * sizeof(void*));
+    draw(static_cast<std::uint64_t>(batches) * sizeof(void*));
+  }
+  return plan;
 }
 
 }  // namespace jitllm::kernels::ggml

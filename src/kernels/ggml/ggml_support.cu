@@ -151,4 +151,24 @@ namespace jitllm::kernels::ggml::internal {
 
 std::optional<std::string> TakeCudaError() { return std::exchange(recorded_error, std::nullopt); }
 
+bool CudaErrorPending() { return recorded_error.has_value(); }
+
+cublasContext* CublasHandleOf(ggml_backend_cuda_context& context) {
+  if (context.cublas_handles[context.device][context.curr_stream_no] == nullptr) {
+    return nullptr;
+  }
+  return context.cublas_handle();
+}
+
+bool HoldsCublasWorkspace(const ggml_backend_cuda_context& context) {
+  for (const auto& per_device : context.cublas_workspaces) {
+    for (const void* workspace : per_device) {
+      if (workspace != nullptr) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace jitllm::kernels::ggml::internal

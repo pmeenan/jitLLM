@@ -7,7 +7,9 @@
 // workspace the caller declared and charged. GGML creates nothing of its
 // own: no stream, pool, cuBLAS handle, workspace or process-wide setting
 // (ggml_support.cu); it keeps only a host-side cache of which kernels may
-// use programmatic dependent launch. Run checks an operation's scratch bound against the
+// use programmatic dependent launch. A context may also lend GGML a cuBLAS
+// handle jitLLM created for the same stream (cublas.h); without one, an
+// operation that needs cuBLAS is refused. Run checks an operation's scratch bound against the
 // workspace, calls its launchers, and reports the first CUDA error they
 // recorded instead of aborting.
 //
@@ -39,6 +41,7 @@ struct ggml_backend_cuda_context;
 
 namespace jitllm::kernels::ggml {
 
+class CublasHandle;
 class WorkspacePool;
 
 class LaunchContext {
@@ -50,10 +53,12 @@ class LaunchContext {
     base::Bytes size;
   };
 
-  // Launches on `stream`, a CUDA provider's stream on `device`.
+  // Launches on `stream`, a CUDA provider's stream on `device`, lending
+  // GGML `cublas` if given: a handle for the same device and stream, which
+  // must outlive the context.
   static std::expected<std::unique_ptr<LaunchContext>, KernelFailure> Create(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      Workspace workspace);
+      Workspace workspace, CublasHandle* cublas = nullptr);
 
   LaunchContext(const LaunchContext&) = delete;
   LaunchContext& operator=(const LaunchContext&) = delete;
@@ -79,11 +84,14 @@ class LaunchContext {
   base::Bytes scratch_peak() const;
   bool faulted() const { return faulted_; }
   int device() const { return device_; }
+  Workspace workspace() const { return workspace_; }
+  // The lent cuBLAS handle, if any.
+  const CublasHandle* cublas() const { return cublas_; }
 
  private:
   LaunchContext(int device, providers::DeviceExecution& execution, providers::StreamId stream,
                 providers::NativeStream native, std::unique_ptr<ggml_backend_cuda_context> context,
-                std::unique_ptr<WorkspacePool> pool, Workspace workspace);
+                std::unique_ptr<WorkspacePool> pool, Workspace workspace, CublasHandle* cublas);
 
   std::expected<void, KernelFailure> Begin(base::Bytes scratch);
   std::expected<void, KernelFailure> End();
@@ -97,6 +105,7 @@ class LaunchContext {
   // and stream back.
   std::unique_ptr<ggml_backend_cuda_context> context_;
   Workspace workspace_;
+  CublasHandle* cublas_;
   bool faulted_ = false;
 };
 

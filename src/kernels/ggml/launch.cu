@@ -17,6 +17,7 @@
 #include "base/bytes.h"
 #include "base/check.h"
 #include "common.cuh"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
 
@@ -96,7 +97,7 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 
 std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
-    Workspace workspace) {
+    Workspace workspace, CublasHandle* cublas) {
   if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) {
     return Rejected("a launch context needs a device");
   }
@@ -126,30 +127,55 @@ std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Crea
   if (cudaGetDevice(&current) != cudaSuccess || current != device) {
     return Rejected(std::format("device {} is not current on this thread", device));
   }
+  if (cublas != nullptr && (cublas->device() != device || cublas->stream() != stream ||
+                            cublas->native_stream().handle != native->handle)) {
+    return Rejected("the cuBLAS handle is bound to another device or stream");
+  }
+  if (cublas != nullptr) {
+    // Both workspaces are written from the same stream's work.
+    const Workspace other = cublas->workspace();
+    if (workspace.size.value() > 0 && other.size.value() > 0 &&
+        workspace.base < other.base + other.size.value() &&
+        other.base < workspace.base + workspace.size.value()) {
+      return Rejected("the scratch workspace overlaps the cuBLAS workspace");
+    }
+  }
   auto context = std::make_unique<ggml_backend_cuda_context>(device);
   auto pool = std::make_unique<WorkspacePool>(workspace.base, workspace.size.value());
   context->streams[device][0] = static_cast<cudaStream_t>(native->handle);
   context->pools[device][0].reset(pool.get());
+  if (cublas != nullptr) {
+    // GGML's cublas_handle() returns a handle it finds, and creates one
+    // (with a workspace of its own) only when it finds none.
+    context->cublas_handles[device][0] = cublas->native();
+    ++cublas->borrowers_;
+  }
   return std::unique_ptr<LaunchContext>(new LaunchContext(
-      device, execution, stream, *native, std::move(context), std::move(pool), workspace));
+      device, execution, stream, *native, std::move(context), std::move(pool), workspace, cublas));
 }
 
 LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
                              providers::StreamId stream, providers::NativeStream native,
                              std::unique_ptr<ggml_backend_cuda_context> context,
-                             std::unique_ptr<WorkspacePool> pool, Workspace workspace)
+                             std::unique_ptr<WorkspacePool> pool, Workspace workspace,
+                             CublasHandle* cublas)
     : device_(device),
       execution_(execution),
       stream_(stream),
       native_(native),
       pool_(std::move(pool)),
       context_(std::move(context)),
-      workspace_(workspace) {}
+      workspace_(workspace),
+      cublas_(cublas) {}
 
 LaunchContext::~LaunchContext() {
   // Take back what was lent, so GGML's destructor finds nothing to destroy.
   context_->streams[device_][0] = nullptr;
   (void)context_->pools[device_][0].release();
+  if (cublas_ != nullptr) {
+    context_->cublas_handles[device_][0] = nullptr;
+    --cublas_->borrowers_;
+  }
 }
 
 std::expected<void, KernelFailure> LaunchContext::Begin(base::Bytes scratch) {

@@ -306,9 +306,39 @@ reservation policy) were recorded in M0.
         reference. `unit.GgmlKernelsTest.*` shows that launches bind to
         the provider's primary context and its stream order, and that a
         launch error comes back as a fault.
+      - **cuBLAS handle and workspace injection.** jitLLM creates the
+        cuBLAS handle as upstream sets it up (TF32 math, the provider's
+        stream, a declared workspace, 32 MiB as upstream's on GB10) and
+        lends it to the launch context (`cublas.h`). The handle refuses a
+        cuBLAS other than the pinned 13.8.0 (a system one found first on
+        the library path) and any of cuBLAS's numerics switches in the
+        environment. GGML's cuBLAS matrix multiplication is a recorded
+        jitLLM copy (`mul_mat_cublas.cu`). One host plan
+        (`CheckMulMatCublas`) fixes its conversions, cuBLAS entry point,
+        operand alignment and scratch bound before launch. It takes only
+        operands upstream would route to cuBLAS and that clear both
+        workspaces. Tests link cuBLAS dynamically (D-076) and load it from
+        the build tree.
+        - On every profile, `unit.GgmlValidateTest.*` shows the output
+          head's plan drawing exactly GGML's pool peaks recorded in P0
+          (5,196,288, 9,781,248 and 156,499,968 bytes at 17, 32 and 512
+          rows).
+        - On `spark`, `unit.GgmlCublasTest.*` and
+          `unit.GgmlCublasMemoryTest.*` show:
+          - Sgemm, GemmEx, strided batched and pointer-array batched
+            products (F16, BF16 and F32 compute; direct, converted and
+            gathered operands; grouping within samples; a 4-byte-aligned
+            operand) bit-identical in cudaMalloc memory, device VMM and
+            host VMM, and close to a CPU reference;
+          - each product's scratch peak equal to its plan's bound, and its
+            recorded alignment as predicted;
+          - the 17- and 32-row peaks drawn on the device;
+          - GGML using the lent handle and creating none.
+        - The copied `k_compute_batched_ptrs` has the bridge's recorded
+          SASS (`37c97848…`, 200 instructions; cuobjdump 13.0.85 on
+          `spark`, 2026-09-26).
 
       Remaining in P1:
-      - cuBLAS handle and workspace injection;
       - kernel times on host VMM versus cudaMalloc;
       - the allocation census;
       - per-launch host cost;

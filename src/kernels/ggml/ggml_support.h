@@ -10,11 +10,23 @@
 #include <optional>
 #include <string>
 
+struct cublasContext;
+struct ggml_backend_cuda_context;
+
 namespace jitllm::kernels::ggml::internal {
 
 // The first CUDA failure GGML recorded on this thread since the last call,
 // if any; taking it clears it.
 std::optional<std::string> TakeCudaError();
+// Whether a failure is recorded and not yet taken.
+bool CudaErrorPending();
+
+// The cuBLAS handle GGML's call sites take from the context
+// (ggml_backend_cuda_context::cublas_handle), or null if none was lent
+// (where upstream would create one); and whether the context holds a
+// cuBLAS workspace of its own. For tests.
+cublasContext* CublasHandleOf(ggml_backend_cuda_context& context);
+bool HoldsCublasWorkspace(const ggml_backend_cuda_context& context);
 
 }  // namespace jitllm::kernels::ggml::internal
 

@@ -132,6 +132,21 @@ function(jitllm_gtest target)
   gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
 endfunction()
 
+# A GoogleTest executable that runs only on a GB10 and loads cuBLAS
+# (D-076). Where GPU tests are skipped it may not even load (qemu-user has
+# no libgcc_s for cuBLAS), so CTest never runs it to list its tests: they
+# are read from its sources (gtest_add_tests) and labeled `gpu`. It finds
+# the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH relative to
+# itself, which a deployed copy of the build tree keeps.
+function(jitllm_gpu_gtest target)
+  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_warnings)
+  jitllm_test_executable(${target})
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  gtest_add_tests(TARGET ${target} TEST_PREFIX unit. TEST_LIST tests)
+  set_tests_properties(${tests} PROPERTIES LABELS gpu)
+endfunction()
+
 add_subdirectory(src)
 add_subdirectory(benchmarks)
 add_subdirectory(packaging)
