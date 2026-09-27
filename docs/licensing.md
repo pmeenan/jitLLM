@@ -283,7 +283,13 @@ body:
 
 **What the proof does meanwhile.** The [backend proof](backend-proof.md)
 runs the EXL3 GEMM kernel wherever upstream would select GEMV (m ≤ 8).
-Other dispatch paths are unchanged.
+Other dispatch paths are unchanged. On 2026-09-26 the owner allowed the
+dense GEMV kernel, its host wrapper and `exl3_gemv_half_inst.cu` to be
+ported for development into an optional module (D-079). The module also
+holds every jitLLM file that includes one of them, and no core
+(copyleft-disabled) or distributed build includes it.
+**Open question for the owner:** whether jitLLM ships that module. It
+stays open until the three steps above are done.
 
 **The other selected kernels are not cleared either.** None of them cites
 QTIP or another third-party source in its own text. The remaining QTIP

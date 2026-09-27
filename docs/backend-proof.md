@@ -52,11 +52,13 @@ for the proof.
   the references, record numerical profiles and cross-implementation bounds
   from reference controls ([first-slice.md](first-slice.md),
   [exl3-bringup.md](exl3-bringup.md)), and freeze the performance protocol.
-  The owner approves each threshold before any native output it governs
-  is seen: approval may come in parts ([P0 declarations](#p0-declarations)),
-  but never after. A bound set after a failure is not acceptance.
-- **The GEMV provenance gate below closes before that kernel is ported.** The
-  rest of the EXL3 closure does not wait for it.
+  Each threshold is approved by the owner, or pre-registered under D-079,
+  before any native output it governs is seen: this may come in parts
+  ([P0 declarations](#p0-declarations)), but never after. A bound set or
+  moved after its result is seen is not acceptance.
+- **The GEMV provenance gate below closes before that kernel enters a
+  core-eligible module.** Until then it may be ported only into an optional
+  module (D-079). The rest of the EXL3 closure does not wait for it.
 
 ## Pinned inputs
 
@@ -269,7 +271,13 @@ They also list what adapted launchers must not inherit.
   configuration (`EXL3_GEMV=0`), and all other dispatch paths are unchanged.
   Measure the gap to upstream's GEMV-enabled normal
   configuration. Under D-052 a regression there needs a fix or an explicit
-  owner-approved tradeoff; it is not a pass.
+  owner-approved tradeoff; it is not a pass. The owner accepted it for M2
+  (D-079).
+  The owner allowed the GEMV kernel to be ported meanwhile, into an
+  optional module that no core (copyleft-disabled) or distributed build
+  includes (D-079). A native GEMV-on plan's GEMV linears are judged exactly
+  against EXL3-O's at the same forced plan, and its full model against
+  Tier C; EXL3-G stays the gated plan until the gate closes.
 
 ## Dispatch and implementations (D-053)
 
@@ -330,9 +338,9 @@ on the same stream. No segment boundaries or cross-stream events are needed.
 - One build holds at least two implementations of one operation. The plan
   selects between them, and each passes its own reference comparison and
   envelope.
-  - Natural first case: EXL3 GEMM versus GEMV at m ≤ 8, once the GEMV
-    provenance gate clears.
-  - Until then: GGML's fused versus unfused RMSNorm, inside the fused and
+  - Natural first case: EXL3 GEMM versus GEMV at m ≤ 8, but only in a
+    build with GEMV's optional module (D-079).
+  - In the core build: GGML's fused versus unfused RMSNorm, inside the fused and
     unfused plans that have bridge fusion arms as oracles, or its MMF versus
     cuBLAS matrix-multiply paths at a shared shape.
 - Implementation identity is part of plan identity. The implementation
@@ -392,7 +400,8 @@ First-slice context and envelope limits apply.
 
 ## P0 declarations
 
-**Status.** Approval is by part, each before the native output it governs.
+**Status.** Approval, or pre-registration under D-079, is by part, each
+before the native output it governs.
 
 - **Approved by the owner on 2026-09-26, in force:**
   - the numerical profiles;
@@ -427,11 +436,15 @@ First-slice context and envelope limits apply.
     buffer plan. The allowance below adds per-layer intermediates to a
     peak set when the logits are allocated, when those intermediates are
     already dead, so it is loose.
-- **Still proposed, not yet ready:** the declared-departure contingency,
-  the FP16 memory limits, BP-F1's calibration, and the retained-backing
-  criteria.
+- **Delegated by the owner on 2026-09-26 (D-079):** the declared-departure
+  contingency, the FP16 memory limits, BP-F1's calibration, the
+  retained-backing criteria, the P3-entry items above and the M2 acceptance
+  of EXL3-G's GEMM-only gap. Each is settled by the default D-079 records
+  and written here, with its evidence, before any native result it judges
+  is seen.
 
-Each part is approved before any native result it would judge is seen.
+Each part is approved, or pre-registered under D-079, before any native
+result it would judge is seen.
 Five rounds of review and challenge shaped the EXL3 parts. Their basis is
 in the report: the
 [third pass](experiments/backend-proof-p0/README.md#exl3-third-pass-calibrating-the-full-model-bound),
@@ -457,7 +470,7 @@ all of it reference runs on `spark`:
 | FP16-F | FP16 GGUF | first-slice.md's settings: F16 K/V, one sequence, no flash attention, no CUDA graphs, fusion on | `control`: 76 tokens, context 512, batch 64, chunks 32 then 44 × 1, restore after 32. `heldout`: 577 IDs, context 1,024, batch 512, chunks 16, 17, 16 × 1, 512, 16 × 1, restore after 33 |
 | FP16-U | FP16 GGUF | FP16-F with fusion off | as FP16-F |
 | EXL3-G | 4.0 and 4.5 bpw | Upstream's optimized profile with GEMV off (`EXL3_GEMV=0`); the reconstruction GEMM pinned to cuBLAS (`EXL3_HGEMM_F16ACC=0`, what upstream's timing probe chooses on GB10); F16 cache of 4,096 tokens; the frozen GEMM-only tuning caches `tune-40-gemvoff` and `tune-45-gemvoff` | Prefixes of 32, 144, 145, 1,023 and 1,024 held-out IDs, every prefill row's logits, then 16 single-token steps |
-| EXL3-O (reported only) | 4.0 and 4.5 bpw | EXL3-G with GEMV on, caches `tune-40` and `tune-45` | as EXL3-G |
+| EXL3-O (reported; the GEMV-on reference, D-079) | 4.0 and 4.5 bpw | EXL3-G with GEMV on, caches `tune-40` and `tune-45` | as EXL3-G |
 
 The trajectories, the chunking and the harnesses are the P0 report's. The
 held-out IDs have SHA-256 `6dd8da89…`. The caches' bytes and decoded choices
@@ -467,7 +480,9 @@ are in its `results.json`.
   1,024-token context, and EXL3 up to 1,040 tokens in a 4,096-token cache.
   It covers nothing beyond, timing included.
 - **GEMV.** EXL3-G is the native plan until the GEMV provenance gate
-  closes. EXL3-O measures the gap.
+  closes. EXL3-O measures the gap, and is the exact reference for a
+  native GEMV-on plan's GEMV linears, built with the optional module
+  (D-079).
 - **Per-linear sweep (BP-N5).** Rows 1, 8, 9, 16, 32, 33, 144, 145, 1,023
   and 1,024, on every real projection of both fixtures. It runs at a forced
   plan, the same tile shape, block, SMs and concurrency on both sides,
@@ -498,11 +513,15 @@ never bounded. Logits and restored storage must be bit-identical.
   - Only stream identity, addresses (subject to those alignment conditions)
     and the PDL launch attribute may differ.
   - Logits are compared only after the plans match.
-- **A declared departure (proposed).** A native plan could depart from the
-  recorded plan only with a bridge arm, built from a patch recorded in the
-  report, that makes the same departure. Tier E would then hold against
-  that arm. The challenge found this needs its own accuracy bound. Until
-  it is approved, a native FP16 plan may not depart from the recorded plan.
+- **A declared departure (delegated, D-079).** A native plan may depart
+  from the recorded plan only if the departure is written down before the
+  run, with a bridge arm, built from a patch recorded in the report, that
+  makes the same departure. Tier E then holds exactly against that arm.
+  The challenge found exactness alone insufficient, so the departure also
+  carries an accuracy bound for that arm against the recorded bridge,
+  derived from reference measurements already recorded and written down
+  with the departure, before the arm runs. A departure never answers a
+  mismatch already seen: that is a defect, localized and fixed.
 - **Rung 4 against rung 3, and rung 5 against rung 4 (approved)**, for every profile
   and fixture, including every eviction, restore and relocation arm and
   every repeat.
@@ -1015,7 +1034,8 @@ reference container.
     kernel rule above.
   - Before the first comparison, four A/A calibration sessions on
     `cudaMalloc` set BP-F1's `σ`, and two holdout sessions validate the
-    rule for it. Both are brought to the owner before BP-F1 is gated.
+    rule for it. BP-F1's `σ` is pre-registered from them (D-079) before
+    BP-F1 is gated.
   - A regression reopens D-034 for the owner; it does not block other
     stages.
 - **BP-F2: EXL3 kernels.**
@@ -1025,8 +1045,8 @@ reference container.
     EXL3-O against EXL3-G. It applies only to the 4.0 bpw fixture: its
     GEMM-only kernels are 1.14–1.55× slower on q, k and down at 1 and 8
     rows, and 0.90–0.94× on the fused gate/up. The 4.5 bpw fixture
-    launches the same kernels either way. Accepting the gap at M2 is an
-    explicit tradeoff for the owner, not a pass (above). The tradeoff expires when the GEMV
+    launches the same kernels either way. The owner accepted the gap for
+    M2 as an explicit tradeoff (D-079); it is reported, not a pass. The tradeoff expires when the GEMV
     provenance gate closes, and at M3's entry at the latest: from then on,
     BP-F2 is gated against EXL3-O.
 - **BP-F4: host submission time.**
@@ -1041,7 +1061,7 @@ reference container.
 
 | Stage | Needs | Exit evidence |
 | --- | --- | --- |
-| **P0** Bridges and controls | M1 build | Toolchain bridges run, FP16 with fusion on and off. Held-out trajectories run on both references. The reference EXL3 tuned shapes and grids are decoded. Numerical profiles, bounds and the performance protocol are frozen and owner-approved |
+| **P0** Bridges and controls | M1 build | Toolchain bridges run, FP16 with fusion on and off. Held-out trajectories run on both references. The reference EXL3 tuned shapes and grids are decoded. Numerical profiles, bounds and the performance protocol are frozen, owner-approved or pre-registered under D-079 |
 | **P1** Substrate probes | M1; no artifacts | GGML launchers under a jitLLM context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on host VMM versus `cudaMalloc`. Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
 | **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog | Prepared-artifact execution on host VMM; oracle rungs 3–4; BP-A cases |
 | **P3** Resident EXL3 | P2 infrastructure; GEMV gate or GEMM-only plan | Both fixtures; per-linear and full-model oracles; BP-F2 kernel parity |
@@ -1239,16 +1259,20 @@ with dependency safety and bounded queues.
   M2 memory manager and synthetic extents. Report end-to-end restore on the
   real fixtures. This uses synthetic extents only,
   not MoE execution, which stays in M5.
-- **Criteria before measurement.** As in P0, the owner approves the metrics,
-  budgets, trace identity and the margins at which a slab or hybrid design
-  would amend D-033. This happens before any candidate result is seen.
+- **Criteria before measurement.** As in P0, the metrics, budgets, trace
+  identity and the margins at which a slab or hybrid design would amend
+  D-033 are fixed before any candidate result is seen. Their approval is
+  delegated under D-079, whose default keeps D-033 unless a design beats it
+  by more than run-to-run noise with no worse waste, refusals or restore
+  latency.
 - **Expert compaction is partial at M2.** Relocation without VA remapping
   assumes pointer-table dispatch. For experts, the M5 GGML proof decides
   that. M2 evaluates compaction for dense groups, and the expert
   case is completed in M5.
 
-**Proposed criteria** (2026-09-25, second draft, pending the owner's
-approval). The trace's identity is added and approved once the trace exists,
+**Proposed criteria** (2026-09-25, second draft; approval delegated under
+D-079, and settled with the open points below before any design runs on
+the trace). The trace's identity is added and approved once the trace exists,
 before any design runs on it. Margins and budgets are proposals, not
 measurements.
 
@@ -1301,7 +1325,7 @@ Still needed:
 - **Amending D-033.** A slab or hybrid design replaces the baseline only if
   it meets all of the following at every budget and on both seeds:
   - its design-attributable p95 restore time is better by more than the
-    larger of the measurement allowance and 10%;
+    measurement allowance, the run-to-run noise (D-079);
   - its end-to-end p95 is no worse, beyond the allowance;
   - its total waste, stranded plus padding, is no more than the baseline's
     padding, both as a time-weighted mean and at the peak;

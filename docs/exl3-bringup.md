@@ -207,7 +207,8 @@ can be a core-eligible build-time CUDA backend after the compiled closure
 audit in [licensing.md](licensing.md). The small-m GEMV kernel additionally
 cites QTIP's GPL-3.0-licensed `qtip-kernels/src/inference.cu` as the model
 for its structure. That is an open provenance question to resolve before
-porting it or files that include it. Meanwhile the
+it or files that include it enter a core-eligible module (D-079 allows an
+optional-module port before then). Meanwhile the
 [backend proof](backend-proof.md) runs the GEMM kernel wherever upstream
 would select GEMV. The format name does not imply an
 AGPL module or clear third-party patches and calibration data. Preserve

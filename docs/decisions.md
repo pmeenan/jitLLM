@@ -33,6 +33,79 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-079: The remaining backend-proof approvals are delegated and pre-registered; the EXL3 GEMV kernel may be ported into an optional module while its provenance stays open  (2026-09-26, status: accepted; amends backend-proof.md's owner approval of thresholds before native output, and its GEMV gate for development builds only)
+
+**Decision.** The owner delegated to the agents, on 2026-09-26, the
+backend-proof approvals still open: the FP16 memory limits, BP-F1's
+calibration, the declared-departure contingency, BP-F2's reference arm and
+the EXL3 phase limits at P3 entry, the retained-backing criteria and the
+M2 acceptance of EXL3-G's GEMM-only gap at 1 to 8 rows. The owner approved
+the defaults each is settled by:
+
+- memory limits: the reference engine's measured peak per phase plus only
+  the declared plan's own itemized needs, taken from the plan and not from
+  a native run, as the approved EXL3 formula;
+- timing calibrations: whatever the A/A and holdout sessions under the
+  approved kernel rule give;
+- a declared departure from the recorded FP16 plan: allowed only if
+  written down before the run and still exact against a bridge arm that
+  makes the same departure. The P0 challenge found exactness against that
+  arm insufficient alone, so the departure also carries an accuracy bound
+  for that arm against the recorded bridge, derived from reference
+  measurements already recorded and written down with the departure,
+  before the arm runs. A departure never answers a mismatch already seen;
+- D-033 stays unless a slab or hybrid design beats it by more than the
+  run-to-run noise on the trace, with no worse waste, refusals or restore
+  latency;
+- the GEMM-only gap is accepted for M2 and reported (it expires when the
+  GEMV gate closes, or at M3's entry at the latest).
+
+Delegation does not waive the order. Each threshold is written into
+backend-proof.md, with the evidence it comes from, before any native
+result it judges is seen, and is never set or moved once one has been.
+
+The owner also allowed the ExLlamaV3 dense GEMV kernel
+(`exl3_gemv_kernel.cuh`, its host wrapper `exl3_gemv.cu` and
+`exl3_gemv_half_inst.cu`) to be ported now. The MoE cooperative kernels
+and derivatives on licensing.md's gate list stay gated. The port enters
+as an optional module, never a core one: the copyleft-disabled profile and
+any build that has not enabled it exclude it, and its dependency record
+carries the open provenance question. Every jitLLM file that includes
+one of them, directly or through another header, belongs to the module
+too and builds only with it; a core build reports a GEMV plan unsupported
+(BP-S4). Whether jitLLM ships the module is the
+owner's open question; it stays in licensing.md until the structural
+comparison is recorded and the owner resolves its D-017 disposition.
+EXL3-G, GEMV off, remains the gated native plan. In a native GEMV-on
+plan, the GEMV linears are judged exactly against EXL3-O's at the same
+forced plan, as the packed linears are against EXL3-G, and the full model
+against the approved Tier C bounds, whose legitimate arms include GEMV on.
+In module builds it is also a case of D-053's two implementations
+selected by plan; the core's case stays GGML's.
+
+**Context.** The Sparks are dedicated to the project, and the other
+engines are baselines: a limit or bound follows from what they measure, not
+from a preference only the owner holds. The approvals were blocking native
+work that their defaults settle. What the P0 rule protects is the order, a
+bound frozen before its result, and that is kept.
+
+**Consequences.** backend-proof.md's P0 declarations list the delegated
+items, each with the pre-registered values once they are derived. The GEMV
+module is its own lock module (`--modules`, `JITLLM_MODULES`) with its own
+dependency record; the proof reports EXL3-G and GEMV-on results side by
+side. No distributed build includes the GEMV module until the owner
+decides (D-002's rule for unresolved provenance); `mise run package`
+builds only the core profile. The GEMV files are MIT-declared: the open
+question is derivation, not a license outside D-017's allowlist. So the
+core EXL3 component may still come from the same archive with `keep`
+excluding them, and the module's patches may sit in
+`third_party/patches/`; if they turn out to be GPL-3.0, both rules of
+source-dependencies.md for optional payloads apply in full.
+
+**Reopen if.** The owner withdraws the delegation for an item, a derived
+bound turns out to depend on a preference rather than a measurement, or the
+GEMV provenance review finds incorporated GPL-3.0 code.
+
 ## D-078: Source archives are checked and unpacked by one parser, Python's tarfile  (2026-09-26, status: accepted; amends D-057's FetchContent script-mode population for unpacking only)
 
 **Decision.** `mise run prepare` unpacks a locked archive with Python's

@@ -241,7 +241,10 @@ approved its profiles, the FP16 exactness gate and the EXL3 bounds (full
 model, reconstruction exactness, the operation plan and gate, the timing
 rule). P1 has started: GGML's launchers, and a recorded copy of its
 cuBLAS path on a jitLLM-owned handle, run under jitLLM's launch context
-on jitLLM memory (D-077). BP-F2's timing reference
+on jitLLM memory (D-077). The owner delegated the
+remaining proof thresholds, each pre-registered before the native result it
+judges, and allowed ExLlamaV3's GEMV into an optional module pending its
+provenance (D-079). BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
 criteria are still drafts. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

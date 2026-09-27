@@ -238,16 +238,19 @@ reservation policy) were recorded in M0.
       registered buffers. The workstation's btrfs quietly buffers direct I/O
       (RE-018).
 - [ ] **Backend integration proof** ([scope](backend-proof.md), stages
-      P0–P6). The owner approves the frozen bounds and performance protocol
-      at P0, before any native output is seen. The GGML subset and the
+      P0–P6). The frozen bounds and performance protocol are approved at
+      P0 (or, since D-079, pre-registered), before any native output is
+      seen. The GGML subset and the
       ExLlamaV3 files enter through D-057 with reviewed patches, and GGML's
       C++ CUDA launchers are checked for throws at the pinned revision
       (D-066). The FP16 control and both EXL3 fixtures run from v0 prepared
       artifacts built by M0's prototype. D-053 dispatch records each
       operation's K-C or K-L choice, selects between at least two
       implementations of one operation by plan, and alternates FP16 and
-      EXL3 in one process. The five-rung oracle ladder applies throughout. The plan stays GEMM-only until the
-      GEMV provenance gate closes, and the gap to upstream is measured.
+      EXL3 in one process. The five-rung oracle ladder applies throughout.
+      The gated EXL3 plan stays GEMM-only until the GEMV provenance gate
+      closes, and the gap to upstream is measured; GEMV may be ported into
+      an optional module meanwhile (D-079).
 
       *P0 measured and partly approved:*
       - Both toolchain bridges reproduce their references bit for bit.
@@ -281,10 +284,13 @@ reservation policy) were recorded in M0.
       tuning cache, and a SASS-match check against the port), and the
       EXL3 phase memory limits, tightened against native's buffer plan.
 
-      Still to come, each before the native output it governs: the FP16
-      memory limits, BP-F1's calibration, the declared-departure
-      contingency and the retained-backing criteria. cuBLAS links
-      dynamically from the SDK (D-076).
+      The rest (the FP16 memory limits, BP-F1's calibration, the
+      declared-departure contingency, the P3-entry items, the
+      retained-backing criteria and M2's acceptance of the GEMM-only gap)
+      the owner delegated on 2026-09-26 with
+      their defaults (D-079): each is pre-registered in backend-proof.md
+      before the native output it governs. cuBLAS links dynamically from
+      the SDK (D-076).
 
       *P1 started:*
       - **GGML enters the build** as the locked llama.cpp archive, narrowed
@@ -348,7 +354,8 @@ reservation policy) were recorded in M0.
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
       The criteria are [proposed](backend-proof.md#retained-backing-comparison)
-      (a second draft, not yet approvable), without the trace's identity.
+      (a second draft), without the trace's identity; their approval is
+      delegated (D-079) and they are settled before any design runs.
 - [ ] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.
