@@ -141,7 +141,8 @@ class Admission {
 
   // The running request reached a completed phase boundary, with `done`
   // ticks of its work behind it. The policy may pause it for a waiting
-  // request.
+  // request. Nothing here checks that the boundary is a completed one: the
+  // caller does (execution::ProgramCursor::AtBoundary, execution/program.h).
   std::expected<Decision, AdmissionError> Boundary(RequestId id, Tick done, Tick now);
 
   // A request retired or was terminated explicitly, whatever its state.

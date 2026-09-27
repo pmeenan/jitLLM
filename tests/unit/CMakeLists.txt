@@ -114,6 +114,18 @@ add_executable(execution_test execution_test.cc)
 target_link_libraries(execution_test PRIVATE jitllm_execution)
 jitllm_gtest(execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# D-068's shape contracts: state representations and composed contexts
+# (model_test), and request programs planned from them and driven through
+# admission, the ledgers and the catalog over the fake device-memory
+# provider (shapes_test), in every profile.
+add_executable(model_test model_test.cc)
+target_link_libraries(model_test PRIVATE jitllm_model)
+jitllm_gtest(model_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(shapes_test shapes_test.cc)
+target_link_libraries(shapes_test PRIVATE jitllm_execution jitllm_scheduler jitllm_fake_providers)
+jitllm_gtest(shapes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # GGML tensor descriptors over jitLLM memory, in every profile, and GGML's
 # CUDA launchers and the cuBLAS path under jitLLM's launch context on a
 # real device (label `gpu`, so only on a Spark).

@@ -565,12 +565,68 @@ reservation policy) were recorded in M0.
       pre-registered under D-079 with the trace's identity; no design has
       run. Next: the fake-backend replay of the 13 designs, then the timed
       sessions on `spark`.
-- [ ] **Shape expressibility** (D-068): fake-provider scenarios for draft
+- [x] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.
+      *Landed:* internal contract types, which the P6 decision settles. The
+      resource core is unchanged and names no architecture.
+      - `src/model/`: state representations declare their blocks and
+        capabilities (append; truncate to any position or only to a
+        snapshot). A request's live state keeps its committed prefix apart
+        from tentative positions. Model contexts compose components in
+        roles, each an artifact or a declared part of one, and count
+        shared resources once.
+      - `src/execution/program.h`: phase kinds with validated widths,
+        closures and working sets; decoding modes; transient working
+        state; and `PlanProgram`, which turns a finite request into its
+        envelope. Everything a program keeps across a completed boundary
+        goes in `R_i`: live states at the bound, working states such as a
+        canvas, and the output buffer. `E_i` is the largest phase closure,
+        with shared extents counted once, plus its working set. A cursor
+        refuses phases past the admitted program, and an output buffer
+        refuses output past the admitted bound and makes a phase's output
+        visible whole or not at all. A contract that could only fail once
+        running (no phase emits, colliding item names, a closure in
+        another domain) is refused at planning.
+      - `unit.ShapeScenarioTest.*` drives these through admission, the
+        ledgers, the catalog and materialization, with the fake
+        device-memory provider backing every extent. After every step it
+        checks D-050's guarantee and the ledgers' invariants. The
+        scenarios:
+        - a stored draft layer at a budget of exactly `F + R_i + E_i`:
+          partly rejected drafts roll back, freeing whole blocks and never
+          the committed prefix. A draft paused or cancelled before its
+          verify commits nothing.
+        - paged KV, snapshot-only recurrent state and a drafter's own KV
+          through verify cycles at every acceptance count, a pause after
+          one that accepted every draft, and verifies narrowing to the
+          bound; a failed verify rolls back through the snapshot at the
+          prefix.
+        - a companion drafter in a second artifact: one closure over both
+          artifacts, with the shared embeddings leased and charged once. A
+          stale closure's lease is refused whole.
+        - a 256-position canvas paused between denoising steps (D-069):
+          the canvas stays in `R_i` and unchanged, and the substitute
+          evicts only idle weights. The negative control charges the
+          canvas to the phase instead; that request is admitted beside the
+          substitute, whose first phase then cannot materialize (a
+          circular wait). With the canvas in `R_i`, the same substitute
+          queues without a grant. A cancelled paused canvas never commits.
+        - block output: a commit waits for output room for the whole
+          block, a failed commit rolls back and publishes nothing, and the
+          last block is clamped to the output bound. A failed phase ends
+          its request, so block output needs no truncation.
+      `unit.ProgramPlanTest.*`, `unit.StateCursorTest.*` and
+      `unit.ModelContextTest.*` cover the types. No contract gap needed a
+      special case in the core.
 - [ ] **Explainable plans:** plans expose their validated phase widths,
       envelopes and rejection reasons, and the proof records each phase
       kind's guaranteed bound against its observed peak.
+      *Landed:* the first part. A `ProgramPlan` lists each phase kind's
+      width, validated widths, closure, working set, envelope and phase
+      count, and itemizes `R_i`. A rejection names the phase kind, the
+      width, the required bytes and the shortfall
+      (`unit.ProgramPlanTest.*`). Remaining: the proof's observed peaks.
 - [x] Find which OS counters include VMM backing on the Spark driver, so
       the [memory breakdown](architecture.md#memory-breakdown) reconciles.
       *Landed:* on `spark` (driver 580.178.04), device-local and host

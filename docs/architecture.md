@@ -1060,9 +1060,11 @@ phases drawn from the phase kinds the build registers.
   count, image steps. Run-time outcomes such as draft acceptance or adaptive
   stopping only shorten an admitted program, never lengthen it (D-050).
   Draft depth and verify width are clamped so that written positions never
-  exceed the admitted context and output bounds. A canvas keeps the model's
-  block size as transient working state unless its adapter validates a
-  shorter one, and only its commit is clamped to the admitted output bound.
+  exceed the admitted context and output bounds; every narrower width a
+  clamp can reach is itself a validated width of the plan. A canvas keeps
+  the model's block size as transient working state unless its adapter
+  validates a shorter one, and only its commit is clamped to the admitted
+  output bound.
   Where a full block would cross the model's context limit, admission lowers
   the output bound to end on a block the context can hold; if no whole block
   fits, the request fails as context exhaustion (400, D-045). A program is

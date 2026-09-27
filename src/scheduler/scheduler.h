@@ -57,7 +57,9 @@
 //
 // Not yet here: VMM mapping and backing release on the device lane (the
 // memory manager's), victim selection on a miss, admission's envelopes
-// and the switching policy (admission.h) driving task starts.
+// and the switching policy (admission.h) driving task starts, which
+// reports a boundary only where the request's ProgramCursor::AtBoundary
+// holds (execution/program.h).
 
 #ifndef JITLLM_SCHEDULER_SCHEDULER_H_
 #define JITLLM_SCHEDULER_SCHEDULER_H_
