@@ -150,8 +150,6 @@ package may take them); a libstdc++ update replaces or redefines the
 macro (a hardened mode or C++26 contracts); or a third-party component
 cannot build with it.
 
-## D-079: The remaining backend-proof approvals are delegated and pre-registered; the EXL3 GEMV kernel may be ported into an optional module while its provenance stays open  (2026-09-26, status: accepted; amends backend-proof.md's owner approval of thresholds before native output, and its GEMV gate for development builds only)
-
 ## D-081: Weights and state live in device VMM; direct reads land in a bounded host-VMM zone and the GPU copies each extent in  (2026-09-27, status: accepted; amends D-034's in-place consumption, and so D-034's amendment of D-004's staging copy)
 
 **Decision.** The owner, on 2026-09-27: "If it fixes the L2 cache issue
