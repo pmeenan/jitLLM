@@ -30,6 +30,31 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-023: ext4 reuses inode numbers at once, and coarse timestamps hide the swap  (2026-09-27, status: worked-around)
+
+Environment: the workstation (kernel 7.0.0-31-generic) with a loop-mounted
+ext4 made with `mkfs.ext4 -I 128`, and `spark-b` (kernel 7.0.0-1019-nvidia,
+ext4 with 256-byte inodes).
+
+Observed: a file deleted and created again gets the same inode number
+straight away on both. With 128-byte inodes ext4 has no room for
+sub-second timestamps, so the new file's `st_ctim` was also identical to the
+old one's (whole seconds, nanoseconds zero) and, at the same size, `fstat`
+could not tell them apart. `FS_IOC_GETVERSION` did: the inode generation
+differed (`dedc637f` against `7142ca29`); ext4 draws a new one for every
+inode it creates. Overlayfs and tmpfs answer the ioctl with `ENOTTY`.
+
+Expected: device, inode and status-change time to identify a file between
+two opens.
+
+Impact: the artifact reader's shard identity (`OpenShardForDirectRead`,
+`src/artifact/artifact.h`) includes the generation where the file system
+reports one; the replacement test fails on the 128-byte-inode ext4 without
+it. Where there is none (overlayfs, tmpfs, NFS), a same-size replacement
+within one timestamp tick is not detected. The request's declared argument
+is a `long` even though ext4, btrfs and xfs write an `int`: FUSE copies back
+up to the declared 8 bytes from its server, so the buffer must be a `long`.
+
 ## RE-022: The GB10's L2 does not keep host-located CUDA memory, so re-reads go to DRAM  (2026-09-27, status: open)
 
 On `spark` (GB10, driver 580.178.04), GPU reads of memory that CUDA

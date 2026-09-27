@@ -159,7 +159,11 @@ be a second, GGML-only type authority, which D-052 rejects. GGUF remains the
 
 Keys are strict at every level: unknown or missing keys, wrong JSON types
 (`false` is not `0`), floats, non-finite numbers, duplicate keys, a BOM or
-non-UTF-8 text, and non-canonical formatting are rejected.
+non-UTF-8 text, and non-canonical formatting are rejected. No valid string
+needs a JSON escape, so the native reader refuses any escape outright
+(`canonical`). The prototype refuses it too, under the first rule it
+reaches: `json` for an invalid escape or a later syntax error, a check
+made before canonical form, `canonical`, or the field's rule.
 
 | Key | Content |
 | --- | --- |
@@ -462,7 +466,10 @@ the pinned `gguf.cpp` rules: no arrays of arrays, non-empty unique keys, and
 every `*.expert_count` a u32, and every array element type valid even when
 the array is empty. In every kept `.kv.gguf` file, an architecture must equal
 the manifest's, and any `*.expert_count` must be the manifest architecture's
-key with exactly the manifest's count. Each resource may carry at most 8
+key with exactly the manifest's count. The native reader (`src/artifact`) does not yet
+parse kept `.kv.gguf` files: it checks only their caps and source
+coverage, so it accepts one these rules refuse, and whatever first reads
+their contents natively must add these checks. Each resource may carry at most 8
 alias roles, and aliases count toward the entry cap. Unkept arrays are skipped without being built.
 Single links are checked for every file in both modes. The prototype's 104 unit
 tests cover each rule with a negative case: the classes found by ten

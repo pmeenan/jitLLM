@@ -483,6 +483,38 @@ reservation policy) were recorded in M0.
       Remaining in P1:
       - the allocation census;
       - the first native EXL3 linear.
+
+      *P2 started:* **`src/artifact/`** reads v0 prepared artifacts
+      natively (no importer; artifacts still come from M0's prototype).
+      `Artifact::Open` treats the directory as untrusted input and makes
+      the checks the prototype makes when a loader opens an artifact
+      (`verify` without payload hashing), in its order and under its rule
+      names:
+      - the directory, its links and file set, and every size before a read;
+      - a strict parser for the canonical JSON subset (integers only, no
+        escapes, the prototype's caps), with the artifact ID as the
+        manifest's SHA-256;
+      - manifest and index schema, profile, groups, chunks, resource and
+        expert-slice placement, representation sizes and GGML over-read,
+        EXL3 closure and expert structure, all in checked arithmetic;
+      - each shard header rebuilt from the index and compared byte for
+        byte.
+
+      It yields groups, chunk ranges, placements and closures, row lookups
+      and coalesced vectored read plans, and opens a shard for direct reads
+      only if it is still the file it validated. It reads no payload and does
+      not parse kept `.kv.gguf` metadata. The prototype decides
+      `unit.ArtifactCorpusTest.*` in every profile: a corpus it builds and
+      judges at build time. Its views of three synthetic artifacts match
+      line for line, and its verdicts on 188 mutated ones and 800 seeded
+      random mutations (plus probes of the two documented divergences, a
+      string escape and the unparsed metadata) match, each divergence
+      checked to its exact rule. `unit.ArtifactFilesTest.*`
+      adds links, special files, caps on sparse files, the owner policy and
+      shards replaced or rewritten after open. On `spark-b`,
+      `unit.ArtifactFixtureTest.*` opens the M0 fixtures (Qwen2.5 FP16, both
+      EXL3 rates and Gemma 4) and matches the prototype's views of them.
+      Next: page-in into host VMM (B2).
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

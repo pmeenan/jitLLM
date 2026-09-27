@@ -157,3 +157,26 @@ if(JITLLM_CUDA)
   target_link_libraries(ggml_cublas_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(ggml_cublas_test)
 endif()
+
+# The v0 artifact reader, in every profile, against a corpus the M0
+# prototype builds and judges at build time (artifact_corpus.py): its views
+# of valid artifacts and its verdicts on about 190 mutated ones and 800
+# seeded random mutations of their documents (with 8 divergence probes). The real
+# v0 fixtures are opened where they are installed (a Spark) and skipped
+# elsewhere.
+set(artifact_corpus "${CMAKE_CURRENT_BINARY_DIR}/artifact-corpus")
+set(artifact_prototype "${PROJECT_SOURCE_DIR}/docs/experiments/artifact-layout")
+add_custom_command(
+  OUTPUT "${artifact_corpus}/stamp"
+  COMMAND "${JITLLM_PYTHON}" -B "${CMAKE_CURRENT_SOURCE_DIR}/artifact_corpus.py" "${artifact_corpus}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/artifact_corpus.py" "${artifact_prototype}/layout.py"
+          "${artifact_prototype}/test_layout.py"
+  COMMENT "Building the artifact reader's corpus with the M0 prototype"
+  VERBATIM)
+add_custom_target(artifact_corpus ALL DEPENDS "${artifact_corpus}/stamp")
+add_executable(artifact_test artifact_test.cc)
+target_link_libraries(artifact_test PRIVATE jitllm_artifact)
+add_dependencies(artifact_test artifact_corpus)
+# CTest runs it here, beside the corpus (remote runs map this directory).
+jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")

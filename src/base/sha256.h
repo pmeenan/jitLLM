@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// SHA-256 (FIPS 180-4), for identities built from bytes jitLLM already
-// trusts, such as implementation and plan identities (D-053). Incremental:
-// Update any number of times, then Finish once.
+// SHA-256 (FIPS 180-4), for identities such as implementation and plan
+// identities (D-053) and a v0 artifact's ID and document digests (D-056),
+// whose bytes may be untrusted. Incremental: Update any number of times,
+// then Finish once.
 
 #ifndef JITLLM_BASE_SHA256_H_
 #define JITLLM_BASE_SHA256_H_
