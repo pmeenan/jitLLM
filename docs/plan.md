@@ -416,8 +416,13 @@ reservation policy) were recorded in M0.
         host-VMM zone that the GPU copies from
         ([diagnosis](experiments/host-vmm-diagnosis/README.md), RE-022;
         direct landing in device memory is impossible here, RE-025).
-        Next: BP-F1 rerun against device VMM under a newly pre-registered
-        rule.
+      - **BP-F1 rule v2 (device VMM) is pre-registered** (2026-09-27;
+        [report](experiments/backend-proof-p1/README.md#rule-v2-device-vmm-d-081)).
+        The harness gained a device-VMM memory kind. Four new A/A
+        `cudaMalloc` sessions on `spark` gave a median `σ` of 1.17%, and
+        both holdout sessions passed alone. The new harness, the
+        unchanged cases and the calibration are registered as "BP-F1 v2".
+        Next: the gated comparison, `cudaMalloc` against device VMM.
 
       - **Plan selection between implementations (D-053).** The
         implementation registry (`src/execution/registry.h`) holds each

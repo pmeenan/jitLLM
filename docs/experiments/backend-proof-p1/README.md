@@ -13,6 +13,16 @@ the pre-registration was reviewed and committed.
 
 **Results in brief.**
 
+- **Rule v2 (device VMM, D-081) is pre-registered; its holdout passes.**
+  The harness gained a device-VMM memory kind, so the rerun D-081 asks
+  for needed a new calibration. Four A/A `cudaMalloc` sessions with the
+  new binary give a median `σ` of 1.17% (0.15–3.15%). Both holdout
+  sessions pass alone, with no case over `z` and aggregate `t` 0.03 and
+  −0.59. backend-proof.md registers the harness (`0c191da7…`), the
+  unchanged case file and the calibration (`567cb849…`) as "BP-F1 v2".
+  The device-VMM comparison has not run yet
+  ([rule v2](#rule-v2-device-vmm-d-081)).
+
 - **BP-F1 fails: host VMM is slower.** Under the pre-registered rule, 41
   of 53 cases fail both the primary and the mirrored confirmation session,
   and the aggregate fails in both (`t` 54.2 and 57.0 against 3.143).
@@ -370,11 +380,137 @@ and workspaces, on host VMM changes the result. The rule placed every
 buffer in the candidate's memory; separating them is for the owner's
 D-034 review, not part of this gate.
 
+## Rule v2: device VMM (D-081)
+
+D-081 moved weights and state to device-located VMM and asked for BP-F1 to
+be rerun against it. Rule v1 stays as history: its harness and calibration
+are for host VMM. Rule v2 is v1 with two changes: the candidate's memory
+kind, and the harness binary. So v2 needed a new calibration and holdout,
+pre-registered in backend-proof.md before any device-VMM session ran on
+`spark`. The cases (`fe78d033…`), the statistic, `z = 3.555`, the
+aggregate limit, the declared holdout and the confirmation procedure are
+v1's, unchanged.
+
+- **Placement.** The harness gains a `device-vmm` memory kind: every
+  buffer the kernels are given (weights, activations, outputs, GGML's
+  scratch and the cuBLAS workspace) is a device-located reservation from
+  jitLLM's CUDA provider, mapped read-write for the device only, where
+  D-081 places weights and state. The setup staging buffer stays host VMM,
+  as in v1, and no timed kernel touches it. The `cudaMalloc` arm is
+  unchanged. A device-VMM block, like a host-VMM one, refuses to run
+  without a calibration hash.
+- **Harness.** `jitllm_ggml_vmm_bench` built by the `spark-native` preset
+  on `spark-b`, SHA-256
+  `0c191da79557793ee779e2cac3de241072e83f052224d1f037c7adef596d5d8c`,
+  copied read-only to `spark` beside the same cuBLAS 13.8.0.4 as v1
+  (`ee7c1657…`, `ba3b942f…`). Like v1's, the binary embeds its source
+  paths, so the comparison runs this copy. Sources: commit `961cc09b`
+  plus the uncommitted v2 changes, identity `06409b28…` by the formula
+  under [Reproduction](#reproduction); session driver `bpf1_session.py`
+  `7ba32a7e…`.
+- **Registration.** backend-proof.md records the harness, the case file
+  and [`bpf1-v2-calibration.json`](bpf1-v2-calibration.json) (SHA-256
+  `567cb8494dbb36022be6ba64fb185be272561bf7e7f89680c3413931f93bb3bc`) as
+  "BP-F1 v2 …". The session driver runs a device-VMM arm only if all three
+  match the v2 registration, and a host-VMM arm only if they match v1's.
+  `bpf1_stats.py` checks both again. [`bpf1-v2-timing.json`](bpf1-v2-timing.json)
+  records every v2 session as `bpf1-timing.json` does for v1.
+- **Before registration.** A development run on `spark-b` put all 53
+  cases through one device-VMM block and one `cudaMalloc` block. It
+  confirmed that device VMM launches the recorded kernels with identical
+  outputs. It also timed them, on a GPU another agent was using, so its
+  times are not evidence. The host-VMM diagnosis had already measured
+  device VMM at 0.98–1.02× of `cudaMalloc`
+  ([report](../host-vmm-diagnosis/README.md)). Neither result could shape
+  the rule: everything except `σ` is v1's, and `σ` comes mechanically from
+  the A/A `cudaMalloc` sessions.
+
+### Conditions
+
+`spark` (`spark-c4e2`), 2026-09-27, 23:00–23:17 UTC: `c1` (primary
+order), `c2` (mirrored), `c3` (primary), `c4` (mirrored), then `h1`
+(primary) and `h2` (mirrored). Each took about two minutes. The
+declaration (the rule is rejected if either holdout session, taken as the
+primary with the other as its confirmation, fails the stage) is in all six
+manifests, so it was written before `c1` ran.
+
+- **Host and GPU.** GB10, kernel 7.0.0-1019-nvidia, driver 580.178.04,
+  application clock 2,418 MHz, CPU governor `performance`. At block
+  boundaries the SM clock was 2,405–2,431 MHz and the GPU 51–63 °C, with
+  no active throttle reason.
+- **Idle checks.** Before each session a wrapper waited until three things
+  held: no other measurement script or benchmark was running, no compute
+  process was on the GPU, and the load average was below 0.5. The load
+  average at start was 0.24–0.40. The driver checked again for compute
+  processes before every block, and found none.
+- **The other agent's run.** When the sessions were first queued, another
+  agent's page-in timing session was running on `spark`. The first
+  wrapper, which checked only the GPU and the load, was stopped before any
+  session began; the wrapper above replaced it. The page-in run's last
+  result is at 23:00:00, and its processes were gone when `c1` started at
+  23:00:44.
+
+### Calibration
+
+`σ` per case is the relative standard deviation of the eight block medians
+within a session, pooled over `c1`–`c4` (as for v1).
+
+| Kernels | Cases | Median `σ` | Largest `σ` |
+| --- | --- | --- | --- |
+| Elementwise and norms | 23 | 1.21% | 2.91% (`mul`, 1 row) |
+| Projections | 20 | 1.31% | 3.15% (`linear.k_v`, 1 row) |
+| Attention products | 10 | 0.74% | 1.60% (`attn.kq`, 17 rows) |
+| All | 53 | 1.17% (v1: 1.23%) | 3.15% |
+
+The quietest cases are the output head at 16 and 1 rows (0.15%, 0.18%)
+and the single-row KQ at 256 cells (0.20%). The per-case thresholds
+`z · σ · √½` are 0.37–7.9%: below 2% for 18 cases and below 5% for 47.
+Across the six sessions the A/A ratios of arm medians spanned 0.957–1.039.
+No session's sign test rejects at 1%: the smallest p is 0.011 (`c2`, 16
+cases slower, 35 faster). The aggregate `t` stayed within −0.97 to 0.41.
+Every ordered pairing of `c1`–`c4` passes without a confirmation; the
+largest in-sample `d` is 2.83 (`linear.q_o` at one row, `c3`).
+
+### Holdout
+
+| Primary | Confirmation | Over `z` in the primary (largest `d`) | Aggregate `t` | Stage |
+| --- | --- | --- | --- | --- |
+| `h1` | (not needed) | none (`mul` at 1 row, 1.92) | 0.03 | passes |
+| `h2` | (not needed) | none (`attn.kqv` at 16 rows, 0.94) | −0.59 | passes |
+
+Rule v2 stands. `timing_protocol.py` at `c05fd2dd…`, the approved rule,
+computed the calibration and outcomes. The current script (`b841b018…`)
+gives the same calibration byte for byte and the same holdout outcomes.
+
+### Power
+
+One case slowed in both sessions of a pair:
+
+| Slowdown | `h1` + `h2` | `c1` + `c2` | `c3` + `c4` |
+| --- | --- | --- | --- |
+| 2% | 25% | 25% | 28% |
+| 3% | 45% | 47% | 47% |
+| 5% | 85% | 81% | 81% |
+| 10% | 94% | 98% | 98% |
+
+A subset slowed together (the stage fails at or above):
+
+| Subset | Cases | `h1` + `h2` | `c1` + `c2` | `c3` + `c4` |
+| --- | --- | --- | --- | --- |
+| All cases | 53 | 0.5% | 0.5% | 0.5% |
+| Matrix products | 30 | 0.5% | 0.5% | 0.5% |
+| Elementwise and norms | 23 | 1% | 2% | 2% |
+| 512 rows | 13 | 1% | 1% | 1% |
+| Noisiest quarter | 14 | not at 3% | not at 3% | not at 3% |
+
+The raw sessions and the harness copy stay on `spark` in
+`~/.local/share/jitllm/bpf1v2-20260927/`.
+
 ## Limitations
 
-- **One host, one day.** All sessions ran on `spark` within 70 minutes:
-  the calibration and holdout in 05:27–05:51 UTC, the comparison in
-  06:30–06:37;
+- **One host, one day.** All sessions ran on `spark` on 2026-09-27:
+  rule v1's calibration and holdout in 05:27–05:51 UTC and its comparison
+  in 06:30–06:37; rule v2's calibration and holdout in 23:00–23:17.
   `spark-b` served only development runs, which are not evidence.
 - **Not the whole model.** The cases are the kernels jitLLM has; RoPE,
   softmax, the KV writes, the SiLU gate and the fused single-row MMVF
@@ -385,8 +521,8 @@ D-034 review, not part of this gate.
 - **Everything in one kind.** The comparison places scratch and the cuBLAS
   workspace with the operands; it does not separate weights on host VMM
   from activations elsewhere.
-- **Small kernels are noisy.** Thresholds reach 5–7% for some one-row
-  elementwise kernels and the one-row k/v projection; a regression smaller
+- **Small kernels are noisy.** Thresholds reach 5–7% (v2: up to 7.9%) for
+  some one-row elementwise kernels and the one-row k/v projection; a regression smaller
   than that in one such kernel alone would pass.
 - **The rule is BP-F2's.** Its structure (four processes per arm, the
   aggregate test, the confirmation) was tuned on EXL3 kernels; this
@@ -435,3 +571,13 @@ timing_protocol.py bpf1-calibration.json p1.json m1.json
 bpf1_compare_record.py --protocol timing_protocol.py --calibration bpf1-calibration.json \
   --primary p1.json --confirmation m1.json > bpf1-comparison.json
 ```
+
+Rule v2 differs in two places. The harness is built on a Spark
+(`mise run test -- spark-native --locked` on `spark-b` builds
+`build/spark-native/benchmarks/jitllm_ggml_vmm_bench` beside
+`build/spark-native/cublas/`) and copied to `spark`. The records are
+`bpf1-v2-calibration.json` and `bpf1-v2-timing.json`, computed on a Spark
+with the mise-pinned Python, from sessions named `c1`–`c4`, `h1` and `h2`
+as for v1. A device-VMM comparison session passes `--arm-b device-vmm
+--registry docs/backend-proof.md --calibration bpf1-v2-calibration.json`
+with the v2 harness and case file.

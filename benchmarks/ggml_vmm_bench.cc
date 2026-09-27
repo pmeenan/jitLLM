@@ -3,7 +3,8 @@
 
 // BP-F1 (docs/backend-proof.md, "Performance protocol"): jitLLM's GGML
 // kernels at the FP16 fixture's held-out shapes, timed with every operand
-// in one kind of memory, cudaMalloc or host VMM (D-034). One process is one
+// in one kind of memory: cudaMalloc, host VMM (D-034; rule v1) or device
+// VMM (D-081; rule v2), the VMM from jitLLM's provider. One process is one
 // block of a timing session; the session driver
 // (docs/experiments/backend-proof-p1/bpf1_session.py) runs the blocks in
 // the protocol's order and records the host's state between them.
@@ -36,11 +37,13 @@
 //   sets of the ring.
 // - The output of set 0 is hashed again and must equal the eager hash.
 //
-// A host-VMM block needs --calibration-sha256: the driver passes the
-// SHA-256 of BP-F1's calibration only once it matches the one
-// pre-registered in docs/backend-proof.md, and the block records it.
+// A host- or device-VMM block needs --calibration-sha256: the driver passes
+// the SHA-256 of the calibration of BP-F1's rule for that memory kind only
+// once it matches the one pre-registered in docs/backend-proof.md, and the
+// block records it. The setup staging buffer is host VMM in every kind; no
+// timed kernel touches it.
 //
-//   jitllm_ggml_vmm_bench --cases FILE --memory cuda-malloc|host-vmm --output FILE
+//   jitllm_ggml_vmm_bench --cases FILE --memory cuda-malloc|host-vmm|device-vmm --output FILE
 //                         [--calibration-sha256 HEX] [--case NAME@ROWS]...
 
 #include <cuda.h>
@@ -322,7 +325,7 @@ std::string Normalize(std::string_view mangled) {
 
 // ---- Device memory of one kind ----
 
-enum class Memory : std::uint8_t { kCudaMalloc, kHostVmm };
+enum class Memory : std::uint8_t { kCudaMalloc, kHostVmm, kDeviceVmm };
 
 struct Allocation {
   std::uint64_t base = 0;
@@ -371,6 +374,9 @@ class Device {
   std::expected<Allocation, std::string> Allocate(Memory kind, std::uint64_t size) {
     if (kind == Memory::kHostVmm) {
       return Vmm(BackingKind::kHost, size);
+    }
+    if (kind == Memory::kDeviceVmm) {
+      return Vmm(BackingKind::kDevice, size);
     }
     Allocation allocation;
     allocation.size = size;
@@ -1250,21 +1256,28 @@ int main(int argc, char** argv) {
     }
   }
   if (args.size() % 2 == 0 || cases_path.empty() || output_path.empty() ||
-      (memory_name != "cuda-malloc" && memory_name != "host-vmm")) {
+      (memory_name != "cuda-malloc" && memory_name != "host-vmm" && memory_name != "device-vmm")) {
     std::println(stderr,
-                 "usage: jitllm_ggml_vmm_bench --cases FILE --memory cuda-malloc|host-vmm "
-                 "--output FILE [--calibration-sha256 HEX] [--case NAME@ROWS]...");
+                 "usage: jitllm_ggml_vmm_bench --cases FILE "
+                 "--memory cuda-malloc|host-vmm|device-vmm --output FILE "
+                 "[--calibration-sha256 HEX] [--case NAME@ROWS]...");
     return 2;
   }
-  const Memory memory = memory_name == "host-vmm" ? Memory::kHostVmm : Memory::kCudaMalloc;
+  Memory memory = Memory::kCudaMalloc;
+  if (memory_name == "host-vmm") {
+    memory = Memory::kHostVmm;
+  } else if (memory_name == "device-vmm") {
+    memory = Memory::kDeviceVmm;
+  }
   if (!calibration.empty() && !Hex64(calibration)) {
     std::println(stderr, "--calibration-sha256 takes 64 lowercase hex digits");
     return 2;
   }
-  if (memory == Memory::kHostVmm && calibration.empty()) {
+  if (memory != Memory::kCudaMalloc && calibration.empty()) {
     std::println(stderr,
-                 "a host-VMM block needs --calibration-sha256: BP-F1 compares host VMM only "
-                 "under its pre-registered calibration (docs/backend-proof.md)");
+                 "a {} block needs --calibration-sha256: BP-F1 compares VMM only under its "
+                 "pre-registered calibration (docs/backend-proof.md)",
+                 memory_name);
     return 2;
   }
   auto file = ReadCases(cases_path);

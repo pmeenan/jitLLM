@@ -37,7 +37,7 @@ if(JITLLM_CUDA)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(jitllm_launch_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
 
-  # BP-F1: GGML kernels with their operands in host VMM or cudaMalloc
+  # BP-F1: GGML kernels with their operands in cudaMalloc, host VMM or device VMM
   # memory, one timing block per process (docs/experiments/backend-proof-p1/).
   # Finds the SDK's cuBLAS in build/<preset>/cublas, as the GPU tests do.
   add_executable(jitllm_ggml_vmm_bench ggml_vmm_bench.cc)

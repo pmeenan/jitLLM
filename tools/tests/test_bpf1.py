@@ -112,6 +112,55 @@ class CalibrationGate(unittest.TestCase):
         self.register(self.digest, self.digest)  # stated twice, one value
         self.assertEqual(self.check(), self.digest)
 
+    def register_v2(self, calibration, harness=None, cases=None):
+        harness = harness or session.sha256(self.harness)
+        cases = cases or session.sha256(self.cases)
+        with open(self.registry, "a") as f:
+            f.write(f"BP-F1 v2 calibration SHA-256: `{calibration}`\nBP-F1 v2 harness SHA-256: `{harness}`\n"
+                    f"BP-F1 v2 cases SHA-256: `{cases}`\n")
+
+    def check_device(self):
+        return session.check_registration(["cuda-malloc", "device-vmm"], self.registry, self.calibration,
+                                           self.harness, self.cases)
+
+    def test_device_vmm_runs_only_under_rule_v2(self):
+        self.register(self.digest)  # rule v1 matches: not enough for device VMM
+        with self.assertRaises(SystemExit):
+            self.check_device()
+        for other in ({"calibration": HASH}, {"harness": HASH}, {"cases": HASH}):
+            self.register(self.digest)
+            self.register_v2(**{"calibration": self.digest, **other})
+            with self.subTest(other=other), self.assertRaises(SystemExit):
+                self.check_device()
+        self.register(HASH)  # rule v1 no longer matches; v2 does
+        self.register_v2(self.digest)
+        self.assertEqual(self.check_device(), self.digest)
+        with self.assertRaises(SystemExit):
+            self.check()  # host VMM stays under rule v1
+        self.assertEqual(session.registered_calibration(self.registry.read_text()), HASH)
+        self.assertEqual(session.registered_calibration(self.registry.read_text(), "v2"), self.digest)
+
+    def test_a_session_compares_one_vmm_kind(self):
+        self.register(self.digest)
+        self.register_v2(self.digest)
+        with self.assertRaises(SystemExit):
+            session.check_registration(["host-vmm", "device-vmm"], self.registry, self.calibration,
+                                       self.harness, self.cases)
+
+    def test_the_repository_registers_rule_v2(self):
+        registry = (REPO / "docs/backend-proof.md").read_text()
+        self.assertEqual(session.registered_calibration(registry, "v2"),
+                         session.sha256(P1 / "bpf1-v2-calibration.json"))
+        self.assertEqual(session.registered(registry, "cases", "v2"), session.sha256(P1 / "bpf1-cases.txt"))
+        self.assertNotEqual(session.registered(registry, "harness", "v2"), session.registered(registry, "harness"))
+        record = json.loads((P1 / "bpf1-v2-timing.json").read_text())
+        self.assertEqual(record["rule"]["calibration_sha256"], session.registered_calibration(registry, "v2"))
+        for name, s in record["sessions"].items():
+            with self.subTest(session=name):
+                identities = s["manifest"]["identities"]
+                self.assertEqual(identities["harness_sha256"], session.registered(registry, "harness", "v2"))
+                self.assertEqual(identities["cases_sha256"], session.registered(registry, "cases", "v2"))
+
 
 class SessionChecks(unittest.TestCase):
     def setUp(self):
@@ -195,6 +244,18 @@ class SessionChecks(unittest.TestCase):
             with self.subTest(registry=wrong), self.assertRaises(ValueError):
                 stats.summarize(self.dir, wrong)
         self.assertAlmostEqual(stats.summarize(self.dir, registry)["cases"][0]["ratio"], 1.2)
+
+    def test_device_vmm_blocks_need_the_rule_v2_registration(self):
+        self.write_session("device-vmm", HASH, scale=1.05)
+        v1 = f"BP-F1 calibration SHA-256: `{HASH}`\nBP-F1 harness SHA-256: `{'cd' * 32}`\n" \
+             f"BP-F1 cases SHA-256: `{'ef' * 32}`\n"
+        v2 = v1.replace("BP-F1 ", "BP-F1 v2 ")
+        with self.assertRaises(ValueError):
+            stats.summarize(self.dir)  # no registry
+        for wrong in (v1, v2.replace("ab", "12"), v2.replace("cd", "12"), v2.replace("ef", "12")):
+            with self.subTest(registry=wrong), self.assertRaises(ValueError):
+                stats.summarize(self.dir, wrong)
+        self.assertAlmostEqual(stats.summarize(self.dir, v2)["cases"][0]["ratio"], 1.05)
 
 
 if __name__ == "__main__":

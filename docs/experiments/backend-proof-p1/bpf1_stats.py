@@ -17,10 +17,11 @@ Before any statistic it checks the raw blocks: eight timed blocks, four per
 arm, each with the manifest's memory kind and the same cases in the same
 order; 31 finite, positive samples per case and arm; every case's launches
 verified; and one output hash per case, equal in every block of both arms
-(host VMM and cudaMalloc give identical results, BP-N3). A block with host
-VMM must carry the calibration SHA-256 pre-registered in --registry
-(docs/backend-proof.md), which is then required, and its session must
-have run the pre-registered harness binary and case file.
+(VMM and cudaMalloc give identical results, BP-N3). A host- or device-VMM
+block must carry the calibration SHA-256 pre-registered in --registry
+(docs/backend-proof.md) for its memory kind's rule (v1 for host VMM, v2
+for device VMM), which is then required, and its session must have run
+that rule's pre-registered harness binary and case file.
 """
 
 import argparse
@@ -34,7 +35,7 @@ SAMPLES = 31
 BLOCKS = ("A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bpf1_session import registered, registered_calibration  # noqa: E402
+from bpf1_session import RULES, registered  # noqa: E402
 
 
 def positive(value):
@@ -49,23 +50,24 @@ def load_session(directory, registry_text=None):
     recorded = [b["block"] for b in manifest["blocks"]]
     if sorted(recorded) != sorted(BLOCKS) or recorded != manifest["order"].split():
         raise ValueError(f"{directory.name}: the blocks are not the declared order")
-    calibration = registered_calibration(registry_text) if registry_text is not None else None
     blocks, keys = {}, None
     for label in BLOCKS:
         block = json.loads((directory / f"{label}.json").read_text())
         memory = manifest["arms"][label[0]]
         if block.get("memory") != memory:
             raise ValueError(f"{label}: memory {block.get('memory')}, not the manifest's {memory}")
-        if memory == "host-vmm":
+        if memory in RULES:
+            rule = RULES[memory]
+            calibration = registered(registry_text, "calibration", rule) if registry_text is not None else None
             if calibration is None:
-                raise ValueError("a host-VMM block needs the registry that pre-registers its calibration")
+                raise ValueError(f"a {memory} block needs the registry that pre-registers its calibration")
             if block.get("calibration_sha256") != calibration or manifest.get("calibration_sha256") != calibration:
-                raise ValueError(f"{label}: not run under the pre-registered calibration")
+                raise ValueError(f"{label}: not run under the pre-registered rule {rule} calibration")
             identities = manifest.get("identities", {})
             for what in ("harness", "cases"):
-                expected = registered(registry_text, what)
+                expected = registered(registry_text, what, rule)
                 if expected is None or identities.get(f"{what}_sha256") != expected:
-                    raise ValueError(f"{directory.name}: not run with the pre-registered {what}")
+                    raise ValueError(f"{directory.name}: not run with the rule {rule} pre-registered {what}")
         cases = block["cases"]
         these = [(block["set"], c["name"], c["rows"]) for c in cases]
         if not these or len(set(these)) != len(these):

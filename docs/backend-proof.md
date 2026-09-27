@@ -528,8 +528,9 @@ before the native output it governs.
     ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry),
     [report](experiments/backend-proof-p1/README.md)). Applied on
     2026-09-27, it fails: host VMM is slower. The owner answered with
-    D-081 (device VMM); BP-F1 is rerun against device VMM under a newly
-    pre-registered rule.
+    D-081 (device VMM). BP-F1 rule v2, for device VMM, was pre-registered
+    the same day with its own harness, calibration and a passing holdout,
+    before any device-VMM session ran on `spark`.
   - *Pre-registered on 2026-09-27 (D-079), before any native FP16 run:*
     the FP16 memory limits and M2's census rule
     ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
@@ -1471,9 +1472,9 @@ reference container.
   reference arm, identified by its SHA-256. `measure.py` on the same binary
   is the reference, under this rule. The session must pass before any
   native kernel is timed.
-- **BP-F1: jitLLM's VMM against `cudaMalloc`.** Host VMM failed the rule
-  below; under D-081 BP-F1 is rerun against device VMM under a newly
-  pre-registered rule.
+- **BP-F1: jitLLM's VMM against `cudaMalloc`.** Host VMM failed rule v1
+  below; under D-081 BP-F1 is rerun against device VMM under rule v2,
+  pre-registered below.
   - Compares the same GGML kernels, at the held-out trajectory's chunk
     shapes (1, 16, 17 and 512 rows).
   - Each sample rotates through weight buffers whose total exceeds four
@@ -1540,6 +1541,48 @@ reference container.
     passed. Launches and outputs were identical in both memory kinds. This
     blocks no other stage
     ([comparison](experiments/backend-proof-p1/README.md#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
+  - **BP-F1 rule v2 (device VMM, D-081),** pre-registered 2026-09-27
+    (D-079) before any device-VMM session of these kernels ran on `spark`
+    ([report](experiments/backend-proof-p1/README.md#rule-v2-device-vmm-d-081)).
+    Rule v1 and its result stand as history. v2 changes the candidate's
+    memory kind and the harness binary (now built natively), and so the
+    calibration and holdout; the cases, statistic, `z` and procedure are
+    v1's:
+    - *Cases:* v1's 53, unchanged
+      (BP-F1 v2 cases SHA-256: `fe78d03360b12824e1fad2f0d9e6f152b867d8c502aa6d451671684302e6a20c`).
+    - *Placement:* arm A (the reference) holds every buffer the kernels
+      are given in `cudaMalloc` memory; arm B (the candidate) in
+      device-located VMM from jitLLM's provider, where D-081 places
+      weights and state: weights, activations, outputs, GGML's scratch and
+      the cuBLAS workspace. The setup staging buffer (host VMM in both
+      arms) is outside; no timed kernel touches it. Rings as in v1.
+    - *Harness:* `jitllm_ggml_vmm_bench` with a `device-vmm` memory kind,
+      built by the `spark-native` preset on `spark-b` and copied, with
+      cuBLAS 13.8.0.4, to `spark`; the comparison uses this binary, kept
+      with the raw sessions.
+      BP-F1 v2 harness SHA-256: `0c191da79557793ee779e2cac3de241072e83f052224d1f037c7adef596d5d8c`
+    - *Calibration:* four A/A `cudaMalloc` sessions on `spark` with this
+      binary, `c1`–`c4`, two in each order; median `σ` 1.17%
+      (0.15–3.15%).
+      BP-F1 v2 calibration SHA-256: `567cb8494dbb36022be6ba64fb185be272561bf7e7f89680c3413931f93bb3bc`
+      ([`bpf1-v2-calibration.json`](experiments/backend-proof-p1/bpf1-v2-calibration.json)).
+      The session driver refuses a device-VMM arm unless its calibration
+      file, harness and case file have these v2 hashes (and a host-VMM
+      arm unless they have v1's); every manifest records them, and
+      `bpf1_stats.py` checks them again.
+    - *Thresholds:* `z = 3.555` over the 53 cases; the aggregate limit
+      stays 3.143. Per-case thresholds `z · σ · √½` are 0.37–7.9%,
+      below 2% for 18 cases.
+    - *Holdout,* declared in advance (in every v2 session's manifest) to
+      reject the rule if either session, as the primary with the other as
+      its confirmation, failed the stage: `h1` (primary) and `h2`
+      (mirrored) each pass alone, no case over `z` (largest d 1.92 and
+      0.94), aggregate `t` 0.03 and −0.59. The rule stands.
+    - *Procedure:* v1's. A primary session A1 B1 B2 A2 B3 A3 A4 B4 with A
+      `cudaMalloc` and B device VMM; if a case or the aggregate fails, a
+      mirrored confirmation. A case fails BP-F1 only when it fails both;
+      the aggregate must pass in the confirmation too. The stream-launched
+      arm is reported, not gated. A failure reopens D-081.
 - **BP-F2: EXL3 kernels.**
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
     matched plan; EXL3-O since D-080, with the case set fixed at P3 entry

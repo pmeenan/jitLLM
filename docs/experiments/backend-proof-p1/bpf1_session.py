@@ -7,8 +7,9 @@
                   --order primary|mirrored --source-commit SHA --source-diff-sha256 HEX
                   [--registry backend-proof.md --calibration FILE] [--note TEXT]
 
-KIND is cuda-malloc or host-vmm; A is the reference, B the candidate. A
-calibration or holdout session is A/A: both arms cuda-malloc. The session:
+KIND is cuda-malloc, host-vmm or device-vmm; A is the reference
+(cuda-malloc), B the candidate. A calibration or holdout session is A/A:
+both arms cuda-malloc. The session:
 
 - refuses to start if any compute process is on the GPU or the load
   average is above --max-load, and records the host, driver, GPU state,
@@ -24,12 +25,15 @@ calibration or holdout session is A/A: both arms cuda-malloc. The session:
   clock-throttle reasons before and after every block, and stops if
   another compute process appears on the GPU.
 
-A host-VMM arm runs only under BP-F1's pre-registered rule: the SHA-256
-of --calibration, --harness and --cases must each equal the one written in
---registry (docs/backend-proof.md) as "BP-F1 calibration SHA-256: `<hex>`",
-"BP-F1 harness SHA-256: `<hex>`" and "BP-F1 cases SHA-256: `<hex>`". The
-harness then records the calibration's hash in each block. bpf1_stats.py summarizes a
-session. Needs Python 3.12 and nvidia-smi.
+A VMM arm runs only under the BP-F1 rule pre-registered for its memory
+kind: host VMM under rule v1 (D-034), device VMM under rule v2 (D-081).
+The SHA-256 of --calibration, --harness and --cases must each equal the one
+written in --registry (docs/backend-proof.md) as "BP-F1 calibration
+SHA-256: `<hex>`", "BP-F1 harness SHA-256: `<hex>`" and "BP-F1 cases
+SHA-256: `<hex>`" for v1, and as "BP-F1 v2 calibration SHA-256: `<hex>`"
+and so on for v2. The harness then records the calibration's hash in each
+block. bpf1_stats.py summarizes a session. Needs Python 3.12 and
+nvidia-smi.
 """
 
 import argparse
@@ -43,9 +47,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-KINDS = ("cuda-malloc", "host-vmm")
+KINDS = ("cuda-malloc", "host-vmm", "device-vmm")
+# The pre-registered rule each VMM memory kind is compared under.
+RULES = {"host-vmm": "v1", "device-vmm": "v2"}
 ORDERS = {"primary": "A1 B1 B2 A2 B3 A3 A4 B4", "mirrored": "B1 A1 A2 B2 A3 B3 B4 A4"}
-REGISTERED = re.compile(r"BP-F1 (calibration|harness|cases) SHA-256: `([0-9a-f]{64})`")
+REGISTERED = re.compile(r"BP-F1 (?:(v2) )?(calibration|harness|cases) SHA-256: `([0-9a-f]{64})`")
 GPU_STATE = ("clocks.sm,clocks.mem,temperature.gpu,power.draw,pstate,"
              "clocks_throttle_reasons.active")
 GPU_SETTINGS = ("name,driver_version,persistence_mode,clocks.max.sm,clocks.max.mem,"
@@ -60,32 +66,39 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def registered(registry_text, what="calibration"):
+def registered(registry_text, what="calibration", rule="v1"):
     """The SHA-256 of BP-F1's `what` (calibration, harness or cases) pre-registered in
-    backend-proof.md, or None if there is not exactly one."""
-    found = {digest for name, digest in REGISTERED.findall(registry_text) if name == what}
+    backend-proof.md for `rule` (v1 or v2), or None if there is not exactly one."""
+    found = {digest for version, name, digest in REGISTERED.findall(registry_text)
+             if name == what and (version or "v1") == rule}
     return found.pop() if len(found) == 1 else None
 
 
-def registered_calibration(registry_text):
+def registered_calibration(registry_text, rule="v1"):
     """The calibration SHA-256 pre-registered in backend-proof.md, or None if there is not exactly one."""
-    return registered(registry_text, "calibration")
+    return registered(registry_text, "calibration", rule)
 
 
 def check_registration(arms, registry, calibration, harness=None, cases=None):
-    """The calibration hash a host-VMM session runs under; None for a session without host VMM.
+    """The calibration hash a VMM session runs under; None for a session without VMM.
 
-    A host-VMM session also needs the pre-registered harness binary and case file."""
-    if "host-vmm" not in arms:
+    A VMM session also needs the harness binary and case file pre-registered with that
+    calibration, under the rule for its memory kind (RULES)."""
+    kinds = {kind for kind in arms if kind in RULES}
+    if not kinds:
         return None
+    if len(kinds) != 1:
+        raise SystemExit("a session compares one VMM kind against cudaMalloc")
+    kind = kinds.pop()
+    rule = RULES[kind]
     if registry is None or calibration is None:
-        raise SystemExit("a host-VMM arm needs --registry and --calibration")
+        raise SystemExit(f"a {kind} arm needs --registry and --calibration")
     text = Path(registry).read_text()
     checked = {}
     for what, path in (("calibration", calibration), ("harness", harness), ("cases", cases)):
-        expected = registered(text, what)
+        expected = registered(text, what, rule)
         if expected is None:
-            raise SystemExit(f"{registry} pre-registers no BP-F1 {what}: host VMM is not compared")
+            raise SystemExit(f"{registry} pre-registers no BP-F1 rule {rule} {what}: {kind} is not compared")
         actual = sha256(path) if path is not None else None
         if actual != expected:
             raise SystemExit(f"the {what} {path} has SHA-256 {actual}, not the pre-registered {expected}")
@@ -167,7 +180,7 @@ def main():
     def run(arm, label):
         command = [str(args.harness), "--cases", str(args.cases), "--memory", arms[arm],
                    "--output", str(args.out / f"{label}.json")]
-        if arms[arm] == "host-vmm":
+        if arms[arm] in RULES:
             command += ["--calibration-sha256", calibration]
         with open(args.out / f"{label}.log", "w") as log:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
