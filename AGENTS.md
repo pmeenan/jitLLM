@@ -50,11 +50,13 @@ affected docs. Until then, these govern.
   allocations, GPU backing, staging, and page cache share 128 GB of unified
   memory, so CPU offload is not a second tier. Two nodes are two memory
   domains connected by a network; cross-node access is explicit object
-  transfer, never shared virtual memory. On validated Spark configurations,
-  prefer direct file DMA into GPU-accessible host VMM without CPU payload
-  copies; native GDS or GPUDirect RDMA is not assumed. The storage backend
-  itself is not Spark-specific.
-  (D-004, D-034)
+  transfer, never shared virtual memory. Weights and state live in device
+  VMM (the GB10's L2 does not cache host-located memory). On validated
+  Spark configurations, direct file reads land in a bounded host-VMM zone
+  and the GPU copies each extent into device VMM; no CPU payload copies.
+  Native GDS or GPUDirect RDMA is not assumed. The storage backend itself
+  is not Spark-specific.
+  (D-004, D-034, D-081)
 - **Explicit CUDA VMM plus a node-wide resource catalog.** Backing is
   reserved, created, mapped, and unmapped by us through the driver API.
   Accessing absent backing is a bug, not a page-in request. Every managed
@@ -93,8 +95,8 @@ affected docs. Until then, these govern.
   settling the artifact/backend contracts, with upstream performance gates),
   other sources or our own (on measured need) implement operations under one
   contract; several
-  coexist, and the plan selects per operation, architecture and shape.
-  No runtime plugin ABI. (D-028, D-052, D-053)
+  coexist, and the plan selects per operation, architecture and shape, by
+  correctness and speed. No runtime plugin ABI. (D-028, D-052, D-053, D-080)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
   interfaces, with CUDA VMM the only implementation for now. Apple silicon
@@ -112,14 +114,16 @@ affected docs. Until then, these govern.
   model combinations, or license permissions. (D-011, D-012)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
   jitLLM's own code is Apache-2.0. Incorporated core implementation uses
-  Apache-2.0 / BSD / MIT / MPL-2.0; other implementation licenses require
-  explicitly enabled optional modules. Declared tools and platform runtimes
-  (including system libraries and CUDA) have separate terms under D-017 and
-  remain in the audit. The copyleft-disabled profile excludes optional
-  implementation dependencies. Reuse follows actual licenses; no single
-  engine's architecture is mandatory, and "reference" is not relicensing.
-  Every dependency records its category and applicable tier. (D-002, D-003,
-  D-013, D-017)
+  Apache-2.0 / BSD / MIT / MPL-2.0; other implementation licenses live in
+  optional modules, which jitLLM's own builds ship by default; the
+  copyleft-disabled profile is the build-time opt-out. Unknown or
+  incompatible terms still block. A component counts
+  as copyleft once that is confirmed, not on suspicion. Declared tools and
+  platform runtimes (including system libraries and CUDA) have separate
+  terms under D-017 and remain in the audit. Reuse follows actual licenses;
+  no single engine's architecture is mandatory, and "reference" is not
+  relicensing. Every dependency records its category and applicable tier.
+  (D-002, D-003, D-013, D-017, D-080)
 - **Local-first, privacy by default.** Management binds locally by default;
   remote access requires authentication and transport protection. Prompts and
   KV contents are never logged by default; spill files are protected with
@@ -223,41 +227,18 @@ the commit gate.
 
 ## Current status
 
-**M0 (plan the plan) is done** (2026-09-20 to 2026-09-23; exited on the
-owner's approval). The vision, the triaged feature matrix, the approved
-architecture, decisions D-001–D-069 and the M1–M8 milestone ladder with exit
-criteria are in place; M0's spikes and reference runs are summarized in
-[docs/m0-record.md](docs/m0-record.md) with their reports under
-`docs/experiments/`. **M1 (Bootstrap) is done** (2026-09-23 to 2026-09-24; exited on the
-owner's word): the pinned SDK and reference container, the builds and check
-gate, the source lock, license and provenance records, versioning, `jitllm
-doctor`, node configuration, and the arm64 package with `jitllm-runtime`
-and confined jobs, validated on `spark` (D-070 to D-074; summary in
-[docs/m1-record.md](docs/m1-record.md)). The runtime starts, checks and
-waits; it serves nothing yet. **M2 (resource core and backend proof) is in
-progress**: the catalog and ledgers, admission, D-048's task lanes and
-scheduler turn loop, and the providers (fake and CUDA) have landed, with
-their measurements
-([docs/plan.md](docs/plan.md)). The backend proof's P0 is measured. The owner
-approved its profiles, the FP16 exactness gate and the EXL3 bounds (full
-model, reconstruction exactness, the operation plan and gate, the timing
-rule). P1 has started: GGML's launchers, and a recorded copy of its
-cuBLAS path on a jitLLM-owned handle, run under jitLLM's launch context
-on jitLLM memory (D-077). P2 has started: a native reader validates v0
-artifacts as the prototype does at load (kept GGUF metadata aside) and
-plans their reads, and native Qwen2.5-0.5B FP16 on `cudaMalloc` (rung 3)
-matches the bridge's recorded plan and its logits bit for bit on both
-profiles and trajectories; its allocation census fails the pre-registered
-rule on sub-resolution and transient charges (for the owner). The owner delegated the
-remaining proof thresholds, each pre-registered before the native result it
-judges, and allowed ExLlamaV3's GEMV into an optional module pending its
-provenance (D-079). BP-F1 failed under its pre-registered rule: GGML's
-matrix products run 1.1–4.9× slower on host VMM than on `cudaMalloc`,
-which reopens D-034 for the owner. The FP16 memory limits and the census
-rule are pre-registered, and a plan comparator checks a native run against
-the bridge's recorded plan. BP-F2's timing reference
-and the EXL3 phase memory limits wait for P3 entry. The retained-backing
-criteria's deterministic replay found no slab design that meets them at
-every budget (primary seed), so none can replace D-033; report-only timed
-sessions for the designs eligible at 64 GiB are next. Keep this paragraph short and current
-when plan.md milestone status changes (rule 4).
+**M0 (plan the plan) and M1 (Bootstrap) are done**
+([docs/m0-record.md](docs/m0-record.md), [docs/m1-record.md](docs/m1-record.md)).
+The runtime starts, checks and waits; it serves nothing yet. **M2
+(resource core and backend proof) is in progress**
+([docs/plan.md](docs/plan.md)). Landed: the catalog, ledgers and
+admission; D-048's task lanes; the fake and CUDA providers; the v0
+artifact reader; GGML's kernels under jitLLM's dispatch and ExLlamaV3's
+GEMM kernels in the build; plan selection between implementations; shape expressibility; and native
+Qwen2.5-0.5B FP16 matching the bridge bit for bit at rung 3. BP-F1 showed
+host VMM too slow for kernels, so weights and state move to device VMM
+behind a landing-zone copy (D-081); D-080 sets the license policy. Open:
+census rule v2 (measurement-accuracy allowances and an instrumented
+pass, at the owner's request), BP-F1's rerun against device VMM, rungs
+4–5, native EXL3 (P3), the retained-backing timed sessions, and P4–P6. Keep this
+paragraph short and current when plan.md milestone status changes (rule 4).

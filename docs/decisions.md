@@ -33,7 +33,134 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
-## D-079: The remaining backend-proof approvals are delegated and pre-registered; the EXL3 GEMV kernel may be ported into an optional module while its provenance stays open  (2026-09-26, status: accepted; amends backend-proof.md's owner approval of thresholds before native output, and its GEMV gate for development builds only)
+## D-081: Weights and state live in device VMM; direct reads land in a bounded host-VMM zone and the GPU copies each extent in  (2026-09-27, status: accepted; amends D-034's in-place consumption, and so D-034's amendment of D-004's staging copy)
+
+**Decision.** The owner, on 2026-09-27: "If it fixes the L2 cache issue
+and doesn't degrade loading performance (doesn't look like it does), the
+copy 100% is the right call."
+Weights and state live in device-located CUDA VMM (D-006, D-033), which the
+GB10's L2 caches. `O_DIRECT` reads still go from the file straight into
+host VMM, but only into a bounded landing zone of 2 × depth 2 MiB extents
+(8–16 MiB at D-034's two to four in flight). The GPU then copies each
+landed extent into its device-VMM extent, by the copy engine by default
+(it uses no SMs). An extent is published only once its copy completes.
+Write-back and state spill take the reverse path. Payloads still never
+pass through a CPU copy. The zone is a separately declared, bounded,
+persistent pool, reserved before pressure (D-004, and D-034's rule for a
+staged pool). Like the persistent library workspaces it is not part of
+`F`, which holds only handles and module state. The rest of D-034
+stands: regular files, bounded io_uring submission, no silent buffered or
+unverified path, queried alignment, no page cache.
+
+**Context.** BP-F1 failed under its pre-registered rule: with every buffer
+in host VMM, GGML's matrix products ran 1.10–4.9× slower than on
+`cudaMalloc` ([report](experiments/backend-proof-p1/README.md)). The owner:
+"The gate did its job in preventing a slower architecture from causing
+downstream performance problems."
+
+**Evidence** (`spark`, GB10, driver 580.178.04).
+- [Host-VMM diagnosis](experiments/host-vmm-diagnosis/README.md) (RE-022):
+  the GB10's L2 never keeps lines of host-located CUDA memory. A 4 MiB
+  re-read gets 0 L2 hits and 243 GB/s from host VMM, 98.4% and 1,952 GB/s
+  from device VMM or `cudaMalloc`. D-034's scan read each byte once, so it
+  could not show this. Device VMM runs kernels at `cudaMalloc` speed
+  (0.98–1.02×), but `cuMemSetAccess` refuses to map it for the CPU, so a
+  direct read cannot land there.
+- Direct landing in device memory is impossible on this platform
+  (`docs/experiments/dmabuf-direct/`, RE-025). The driver reports
+  `DMA_BUF_SUPPORTED` = 0, and every device-memory export returns
+  `CUDA_ERROR_INVALID_VALUE`. NVIDIA's dma-buf mappings are
+  `VM_PFNMAP | VM_IO`, so `O_DIRECT` and io_uring fail with `EFAULT`.
+  Kernel 7.0's io_uring takes a dma-buf only for network receive. A
+  `udmabuf` import is host memory to the GPU (4 MiB re-read: 226 against
+  1,979 GB/s).
+- At four and eight in flight the copy costs no load bandwidth
+  (re-measured 2026-09-27 in `docs/experiments/dmabuf-direct/`, 8 GiB in
+  2 MiB direct reads): landing and copy 14.918–14.956 GB/s against
+  14.941–14.952 in place. At two it is 0.8% lower.
+  Each extent is usable 38–39 µs later at the median with the copy engine,
+  29 µs with an SM copy kernel. The copy adds 2× the restored bytes of DRAM
+  traffic (about 30 GB/s during a 14.9 GB/s restore).
+
+**Consequences.** Host VMM holds only the landing zone and buffers the CPU
+must map; device VMM is not CPU-mapped, so CPU diagnostics read a copy.
+The backend proof's rung 4 is device VMM, and rung 5 restores through the
+zone. At the owner's request, BP-F1 is rerun against device VMM in this
+cycle, under a newly pre-registered rule.
+The copier (copy engine or SM kernel) is a provider tuning choice. Not
+measured: the copy's effect on concurrently running kernels, which matters
+for partial paging during decode, not for cold loads.
+
+**Reopen if.** BP-F1's rerun against device VMM fails, or the runtime's
+loads through the zone measurably fall below in-place direct reads (the
+owner's conditions were that the copy fix the L2 issue and not degrade
+loading), a driver exports device memory with page-backed mappings that
+direct I/O can pin, the kernel gains a dma-buf file-read path, or the copy
+measurably slows concurrent decode.
+
+## D-080: jitLLM ships its optional copyleft modules by default, with a build-time opt-out; ExLlamaV3's GEMV is core-eligible, and its GEMM kernels and the direct CCCL include are cleared  (2026-09-27, status: accepted; amends D-079's distributed-build rule and GEMV's optional-module placement, how D-017's optional tier is applied, D-057's default-off optional modules, D-027's core-only default install and D-002's rule for ambiguous provenance)
+
+**Decision.** The owner, on 2026-09-27:
+
+- **Shipping.** "We always ship ourselves even with optional viral
+  licenses. We just need a compile-time flag that lets others choose to
+  exclude viral code." jitLLM's own builds and packages include its
+  optional copyleft modules by default; the copyleft-disabled profile
+  (D-002, D-017) is the build-time opt-out. That applies "only after
+  [virality] is confirmed": a component is classified by its declared
+  license until copyleft code in it is confirmed, so a provenance
+  suspicion alone does not make it copyleft or keep it out of a
+  distributed build: it ships under its declared license (the owner,
+  2026-09-27, asked directly). This narrows D-002's rule that ambiguous
+  provenance stays out of distributed builds. Unknown or incompatible
+  terms still block (D-017).
+- **Kernel choice.** "I honestly don't care where the kernels come from as
+  long as they are correct and the fastest available." Kernels are chosen
+  by correctness and speed; the license decides only core or optional
+  module. D-079's arrangement stands: the core EXL3 component comes from
+  the pinned archive narrowed by `keep`.
+- **GEMV.** "Sounds like GEMV isn't actually viral." ExLlamaV3's dense GEMV
+  kernel, host wrapper and `exl3_gemv_half_inst.cu` are MIT-declared, and
+  the review scan found no run of 20 or more tokens shared with QTIP's
+  kernels beyond identical PTX `mma` operand strings. They are treated as
+  MIT and core-eligible. The provenance gate closes on the owner's judgment,
+  without the structural comparison.
+- **GEMM kernels and CCCL.** "It all sounds fine and permissive with no
+  viral code issues." The recorded audit clears ExLlamaV3's GEMM kernels
+  for the core. licensing.md's decision 5 also covers libcu++
+  (`<cuda/atomic>`, Apache-2.0 WITH LLVM-exception) included directly by
+  incorporated code: it is permissive either way.
+
+**Context.** D-079 kept the GEMV module out of distributed builds until the
+owner decided, and the GEMM audit left two questions open
+([licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2)). The
+owner answered them together and set the general rule.
+
+**Consequences.**
+- A package that includes a confirmed-GPL module is conveyed under the
+  GPL's terms as a whole, with notices and corresponding source. An AGPL
+  module adds the network source offer
+  ([licensing.md](licensing.md#agpl-in-a-served-process)). That is now the
+  default; excluding it is the builder's choice.
+- The lock has no optional module, so no build changes yet. When a
+  confirmed-copyleft module lands, the default selection and the package
+  include it (D-057 and D-027 had optional modules off by default), and the
+  copyleft-disabled profile stays in the check gate (D-061).
+- GEMV is ported into the core component when P3 needs it, with its own
+  per-file record. D-079's M2 acceptance of the GEMM-only gap expires with
+  the gate, as D-079 provided: BP-F2 is gated against EXL3-O, its cases
+  fixed at P3 entry.
+- The upstream MoE cooperative kernels lose the QTIP question they
+  inherited from GEMV but still need their own audit; the MiaAI
+  derivatives' mixed provenance is unchanged.
+- A shipped binary may link the GEMM kernels, with ExLlamaV3's MIT text in
+  its notices.
+
+**Reopen if.** Evidence of copied GPL code appears in a component cleared
+here (it then becomes an optional module, still shipped by default), or a
+module's terms forbid shipping it with the core.
+
+## D-079: The remaining backend-proof approvals are delegated and pre-registered; the EXL3 GEMV kernel may be ported into an optional module while its provenance stays open  (2026-09-26, status: accepted; amends backend-proof.md's owner approval of thresholds before native output, and its GEMV gate for development builds only; its distributed-build rule and GEMV placement amended by D-080)
 
 **Decision.** The owner delegated to the agents, on 2026-09-26, the
 backend-proof approvals still open: the FP16 memory limits, BP-F1's
@@ -2264,7 +2391,7 @@ requires an update. Repeat both-host semantic checks and the applicable M1
 build tests; update archive identities deliberately rather than following
 the latest installed CMake.
 
-## D-057: Locked CMake source acquisition with curated vendoring for adapted kernels  (2026-09-23, status: accepted; resolves open question 7; specializes D-012, D-017 and D-053; "CI" gates run in D-061's local gate)
+## D-057: Locked CMake source acquisition with curated vendoring for adapted kernels  (2026-09-23, status: accepted; resolves open question 7; specializes D-012, D-017 and D-053; "CI" gates run in D-061's local gate; optional modules' default-off amended by D-080)
 
 **Decision.** Use CMake FetchContent for hash-pinned source archives and
 curated vendoring for selected source units that need adaptation. A single
@@ -3810,7 +3937,7 @@ gate remains. No model-level performance or padding budget is claimed yet.
 the backend requires a conflicting layout, another provider has incompatible
 granularity, or measured workloads justify a different extent/read policy.
 
-## D-034: Direct regular-file I/O into GPU-accessible host VMM on Spark  (2026-09-21, status: accepted; amends D-004's required staging copy)
+## D-034: Direct regular-file I/O into GPU-accessible host VMM on Spark  (2026-09-21, status: accepted; amends D-004's required staging copy; in-place consumption amended by D-081)
 
 **Decision.** Keep prepared artifacts and spill state in regular files. The
 preferred Spark payload path is native `O_DIRECT` I/O into host-backed CUDA
@@ -4107,7 +4234,7 @@ without a fork; the flagship recipes need kernels GGML cannot host; or an
 out-of-tree, differently licensed backend must load without rebuilding the
 core.
 
-## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md)
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md; core-only default install amended by D-080)
 
 **Decision.** The user-facing installation path is the platform's package
 manager. For DGX Spark that is apt with a project-hosted, signed repository
@@ -4428,7 +4555,7 @@ not implied merely by completing a milestone.
 before both model paths have been validated; that requires an explicit
 narrower contract and its own evidence.
 
-## D-017: Dependency policy distinguishes incorporated code, tools, and platform runtimes  (2026-09-20, status: accepted; supersedes D-015)
+## D-017: Dependency policy distinguishes incorporated code, tools, and platform runtimes  (2026-09-20, status: accepted; supersedes D-015; optional modules shipped by default under D-080)
 
 **Decision.** jitLLM-authored code remains Apache-2.0. Classify dependencies
 by how they are used, and audit the full selected build, including its
@@ -4806,7 +4933,7 @@ must not silently revert to a vLLM-controlled process architecture.
 **Reopen if.** A hosted engine exposes a memory-management contract that
 satisfies D-006, D-007, and D-008 without owning the process.
 
-## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted; staging-copy requirement amended by D-034)
+## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted; staging-copy requirement amended by D-034, and a GPU copy through a host-VMM landing zone restored by D-081)
 
 **Decision.** The initial target is local inference on one or two DGX Sparks
 (Arm CPU, GB10 GPU at compute capability 12.1, 128 GB unified memory). A
@@ -4858,7 +4985,7 @@ D-015.
 for a different arrangement, or a core dependency turns out to be
 incompatible with Apache-2.0 distribution.
 
-## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate)
+## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate; optional copyleft shipped by default, with an opt-out, and suspected but unconfirmed provenance shipped under its declared license, under D-080)
 
 *Scope note (owner, 2026-09-20): model weights are outside the project's
 licensing scope. Users download them directly; jitLLM supports loading them

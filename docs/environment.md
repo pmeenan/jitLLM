@@ -220,12 +220,16 @@ the 180-second run sustained 14.962 GB/s without a sustained thermal decline.
 GPU scanning of host VMM matched device VMM at about 242 GB/s. CPU submission
 and completion work remains; CPU payload copies and a separate staging copy
 are absent from the selected path. Capability checks and DMA evidence are
-retained in the report, not inferred from unified memory alone.
+retained in the report, not inferred from unified memory alone. The scan
+re-read nothing; D-081 (2026-09-27) moved weights and state to device VMM
+behind a host-VMM landing zone, because the GB10's L2 does not cache
+host-located memory (RE-022).
 
 Start with two 2 MiB requests for latency-sensitive loads and up to four for
 bulk reads: 4–8 MiB of catalog-charged destination backing, with no extra
 staging allocation on this path. A device-VMM fallback needs its own bounded,
-charged DMA staging buffers. Cold/warm OS-cache measurements are separated;
+charged DMA staging buffers; under D-081 that is the selected path, and its
+landing zone is 2 × depth 2 MiB extents (8–16 MiB). Cold/warm OS-cache measurements are separated;
 buffered full-file reads under 100 GiB of held memory forced file-cache
 reclamation, whereas direct reads kept file cache empty. Concurrent memory
 scans lost about 10% throughput with the in-place path; one physical budget

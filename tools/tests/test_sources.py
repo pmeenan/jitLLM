@@ -87,8 +87,8 @@ class CheckedInLock(unittest.TestCase):
 class ExllamaV3Component(unittest.TestCase):
     """The locked ExLlamaV3 subset: the pin, and a keep set that is exactly the GEMM kernels' closure.
 
-    The GEMV family stays out of every core build until its provenance gate closes (D-079,
-    docs/licensing.md), so neither it nor anything that includes it may be kept. The closure test
+    The GEMV family is core-eligible since D-080 but not ported yet; until its port changes this
+    test, neither it nor anything that includes it may be kept. The closure test
     reads the prepared tree (`mise run prepare`) and is skipped where none exists.
     """
 
@@ -97,8 +97,8 @@ class ExllamaV3Component(unittest.TestCase):
     # The four compilation units the build compiles: the mcg codebook (cb1) at the M2 fixtures' rates.
     UNITS = [EXT + "quant/comp_units/exl3_comp_unit_4_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_5_cb1.cu",
              EXT + "quant/comp_units/exl3_comp_unit_6_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_8_cb1.cu"]
-    # Upstream files that must never be kept in the core component: the GEMV family and what
-    # includes or dispatches to it (D-079), the ATen host wrappers and bits_k.cuh's c10 include.
+    # Upstream files the core component does not keep: the GEMV family and what includes or
+    # dispatches to it (not ported yet, D-080), the ATen host wrappers and bits_k.cuh's c10 include.
     EXCLUDED = ["quant/exl3_gemv_kernel.cuh", "quant/exl3_gemv.cu", "quant/exl3_gemv.cuh",
                 "quant/comp_units/exl3_gemv_half_inst.cu", "quant/exl3_moe_coop_kernel.cuh",
                 "quant/exl3_moe_coop.cu", "quant/exl3_gemm.cu", "quant/exl3_kernel_map.cu",

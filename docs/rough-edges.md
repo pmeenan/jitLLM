@@ -100,7 +100,7 @@ within one timestamp tick is not detected. The request's declared argument
 is a `long` even though ext4, btrfs and xfs write an `int`: FUSE copies back
 up to the declared 8 bytes from its server, so the buffer must be a `long`.
 
-## RE-022: The GB10's L2 does not keep host-located CUDA memory, so re-reads go to DRAM  (2026-09-27, status: open)
+## RE-022: The GB10's L2 does not keep host-located CUDA memory, so re-reads go to DRAM  (2026-09-27, status: worked-around)
 
 On `spark` (GB10, driver 580.178.04), GPU reads of memory that CUDA
 allocates at a host location miss L2 every time they re-read it. That
@@ -122,7 +122,8 @@ caching, and a persisting access-policy window does not change it.
 either (RE-025). Measurements, options and reproduction:
 [host-vmm-diagnosis](experiments/host-vmm-diagnosis/README.md).
 Before placing any buffer the GPU re-reads in host-located memory on the
-Spark, measure it with a re-reading kernel, not a scan.
+Spark, measure it with a re-reading kernel, not a scan. D-081 keeps
+weights and state in device VMM and uses host VMM only as a landing zone.
 
 ## RE-021: GGML's graph object trips UBSan on creation  (2026-09-27, status: worked-around)
 

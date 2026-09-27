@@ -111,7 +111,7 @@ TEST(CudaDeviceMemory, DeviceBackingMapsAndTheRulesHold) {
 }
 
 // D-034's path: io_uring reads a direct-I/O file straight into host VMM
-// backing, which the device could then consume in place.
+// backing, the landing zone the device copies from (D-081).
 TEST(CudaDeviceMemory, DirectReadsLandInHostBacking) {
   const std::unique_ptr<VmmProvider> memory = Open();
   ASSERT_NE(memory, nullptr);

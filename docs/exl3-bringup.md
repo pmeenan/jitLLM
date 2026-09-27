@@ -122,7 +122,7 @@ codebook. Dense success never means all EXL3 variants work.
 ## Correctness and paging gates
 
 M2 runs both real fixtures from prepared artifacts on jitLLM-owned
-GPU-accessible host VMM, with full dense prefill/decode execution. A loader,
+device VMM (D-081), with full dense prefill/decode execution. A loader,
 one matrix multiply, or an external reference process is not the native
 proof. The FP16 control remains useful for diagnosing the common model
 graph, but the **EXL3 oracle is the identical EXL3 artifact in ExLlamaV3**.
@@ -206,11 +206,10 @@ Selected upstream ExLlamaV3 kernels are MIT implementation candidates and
 can be a core-eligible build-time CUDA backend after the compiled closure
 audit in [licensing.md](licensing.md). The small-m GEMV kernel additionally
 cites QTIP's GPL-3.0-licensed `qtip-kernels/src/inference.cu` as the model
-for its structure. That is an open provenance question to resolve before
-it or files that include it enter a core-eligible module (D-079 allows an
-optional-module port before then). Meanwhile the
-[backend proof](backend-proof.md) runs the GEMM kernel wherever upstream
-would select GEMV. The format name does not imply an
+for its structure. The owner judged it MIT and core-eligible on
+2026-09-27 (D-080); the review scan had found no run of 20 or more tokens
+shared with QTIP beyond identical PTX `mma` operand strings. The
+format name does not imply an
 AGPL module or clear third-party patches and calibration data. Preserve
 per-file provenance and notices. The reference includes an attributed MIT-source
 patch for external ARM host helpers; no upstream implementation has entered

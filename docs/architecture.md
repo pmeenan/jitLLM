@@ -86,8 +86,10 @@
   unleased ≠ may be lost; reconstructible ≠ already stored in the right
   format; resident ≠ available without admission (§4).
 - **Memory model of the target.** One Spark = one 128 GB unified budget. Two
-  Sparks = two domains over a network. Validated Spark storage uses direct
-  file DMA into GPU-accessible host VMM without a staging copy (D-004, D-034).
+  Sparks = two domains over a network. Weights and state live in device
+  VMM, which the GB10's L2 caches; validated Spark storage reads directly
+  into a bounded host-VMM landing zone, and the GPU copies each extent into
+  device VMM, with no CPU payload copy (D-004, D-034, D-081).
 - **Explicit VMM plus catalog.** Driver-API VMM; accessing absent backing is
   a bug; every allocation registered; unknown allocations non-evictable;
   typed IDs and generations, raw pointers only at the backend boundary
@@ -299,9 +301,10 @@ substitute a fake at any provider boundary.
   `runtime` program links it. The execution layer never includes a kernel
   module, and nothing is loaded at run time (D-028).
 - An implementation under a license outside D-017's allowlist lives in its
-  own optional module with its own license, CMake option and package. The
-  copyleft-disabled profile excludes it before any source is fetched
-  (D-057), and the registry then never sees it.
+  own optional module with its own license and CMake option. jitLLM's own
+  builds and packages include it by default (D-080); the copyleft-disabled
+  profile excludes it before any source is fetched (D-057), and the
+  registry then never sees it.
 - Headers are internal and live beside their sources. No public header tree,
   C ABI or linkable library ships (D-064).
 - Only programs wire services together. Library code starts no threads and
@@ -627,7 +630,9 @@ reconstruction) · reusable completed-prefix state (retain by reuse and
 recovery value; invalidate correctly) · scratch (recycle after final
 consumers; don't spill dead scratch) · graph/runtime objects and kernel code
 (coarse cleanup only, initially) · communication buffers (stable backing for
-registrations) · transfer staging (bounded, pre-reserved) · transient
+registrations) · transfer staging, including D-081's landing zone
+(bounded, pre-reserved; a separately declared persistent pool, not part
+of `F`) · transient
 working state such as a drafter's state or a diffusion canvas (charged to
 the request's `R(G)` allowance and discarded at retirement; never a D-055
 entry unless its adapter declares it). Live and
@@ -661,9 +666,11 @@ refused; the budget never drops below outstanding claims (D-050).
 
 D-033 starts with independent 2 MiB physical extents. Compatible backing is
 handed directly to admitted loads that need it, with no standing cache of
-unused handles. On validated Spark configurations the backing is
-GPU-accessible host VMM, so direct file reads land in place with no staging
-copy (D-034).
+unused handles. Weights and state are backed by device-located VMM:
+the GB10's L2 does not cache host-located memory (RE-022). On validated
+Spark configurations direct file reads land in a bounded host-VMM zone of
+2 × depth 2 MiB extents, and the GPU copies each one into its device
+extent, by the copy engine by default (D-081).
 
 With D-033's independent handles, the runtime reserves a virtual range for
 a context's weights before its first page-in; this is address space only.
@@ -677,16 +684,17 @@ D-033. A stable address does not by itself make a captured pointer or
 registration valid (§7).
 
 Retained state uses its own blocks, sized per state adapter rather than per
-chunk. Spill writes go straight from backing, so a state block's bytes past
-its valid length are zeroed before the block joins a retained entry
-(D-055). Workspace comes from charged backing that the plan declares. The M2
+chunk. Spill writes go from backing through the landing zone (D-081), so a
+state block's bytes past its valid length are zeroed before the block joins
+a retained entry (D-055). Workspace comes from charged backing that the plan declares. The M2
 [retained-backing comparison](backend-proof.md#retained-backing-comparison)
 tests the owner-proposed slab alternative before D-033 is kept or amended.
 
 ### Page-in and eviction lifecycles (§8)
 
 Page-in: commit capacity for the actual missing extents → obtain backing →
-map and set access → transfer → verify completion, full length and the
+map and set access → transfer (direct read into the landing zone, then
+the copy into device VMM, D-081) → verify completion, full length and the
 current content generation (no page-in hashing, D-056) →
 publish resident → grant lease. Duplicate requests for one content generation
 are coalesced.
@@ -697,13 +705,14 @@ requires it → commit recoverable state / invalidate discarded entries → unma
 and release or recycle → update occupancy and generation.
 
 Storage backends sit behind one read/write completion interface. D-034 selects
-native direct-file I/O into GPU-accessible host VMM on validated Spark
-configurations, with bounded asynchronous submission and no CPU payload copy.
-Device VMM with a validated DMA staging path remains a provider option;
-cuFile compatibility mode is a comparison path, not required for the initial
+native direct-file I/O on validated Spark configurations, with bounded
+asynchronous submission and no CPU payload copy; D-081 lands it in a
+host-VMM zone and copies each extent into device VMM (device VMM cannot be
+mapped for the CPU or exported as a dma-buf on the Spark). cuFile
+compatibility mode is a comparison path, not required for the initial
 runtime. Native GDS (supported non-Spark targets) and remote extent transfer
-remain later backends. Host-VMM GGML execution and full registration/reclaim
-lifetimes are part of the M2 integration proof.
+remain later backends. GGML execution on device VMM and full
+registration/reclaim lifetimes are part of the M2 integration proof.
 
 ### Victim selection (initial baseline)
 
@@ -891,7 +900,8 @@ the installed and spill roles, without following links or crossing mounts
 admitted, protected backing ranges by backing identity and generation. The
 scheduler records those ranges and their addresses when it prepares the
 operation (async-model.md), and the service checks the backing generations
-at submission.
+at submission. On the Spark those ranges are landing-zone extents, and the
+copy to or from device VMM is device-execution work (D-081).
 
 - **Classes, highest first:** demand reads for admitted phases, including
   restores of their retained state, together with any write-back or spill
@@ -1248,9 +1258,9 @@ signatures follow the M2 proof.
 
 | Provider | Operations | Notes |
 | --- | --- | --- |
-| Device memory | Report domains, granularity and allocation classes; reserve and free address ranges; create and release backing in a class; map, set access, unmap | CUDA VMM through the driver API (D-006, D-033); GPU-accessible host backing on Spark (D-034) |
-| Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (a staged fallback, relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
-| Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges; reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034); every request ends not started, accepted or unknown |
+| Device memory | Report domains, granularity and allocation classes; reserve and free address ranges; create and release backing in a class; map, set access, unmap | CUDA VMM through the driver API (D-006, D-033); device-located backing, with a host-located landing zone for direct I/O on Spark (D-081) |
+| Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (landing zone to device VMM and back, D-081; relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
+| Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034); every request ends not started, accepted or unknown |
 | Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M6, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
 | Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `jitllm doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
 

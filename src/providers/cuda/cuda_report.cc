@@ -163,8 +163,8 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
     report.problems.push_back(
         std::format("GPU {}: device-local VMM backing: {}", device.ordinal, fault));
   }
-  // D-034: jitLLM reads weights and state straight into host VMM backing,
-  // and there is no staged path to fall back on (owner, 2026-09-24).
+  // D-034, D-081: every direct read of weights and state lands in host VMM
+  // backing (the landing zone), and there is no other path (owner, 2026-09-24).
   std::string why;
   if (device.host_numa) {
     why = GranularityFault(*device.host_numa);

@@ -297,9 +297,10 @@ reservation policy) were recorded in M0.
       operation's K-C or K-L choice, selects between at least two
       implementations of one operation by plan, and alternates FP16 and
       EXL3 in one process. The five-rung oracle ladder applies throughout.
-      The gated EXL3 plan stays GEMM-only until the GEMV provenance gate
-      closes, and the gap to upstream is measured; GEMV may be ported into
-      an optional module meanwhile (D-079).
+      The GEMV provenance gate closed on 2026-09-27 (D-080): GEMV is
+      core-eligible, and BP-F2 is gated against upstream with GEMV on
+      (EXL3-O), its cases fixed at P3 entry. Weights and state run from
+      device VMM, loaded through a host-VMM landing zone (D-081).
 
       *P0 measured and partly approved:*
       - Both toolchain bridges reproduce their references bit for bit.
@@ -329,8 +330,9 @@ reservation policy) were recorded in M0.
       - the persistent-workspace limit.
 
       Deferred to P3 entry, once the ExLlamaV3 port exists: BP-F2's
-      reference arm (fused gate/up cases, ExLlamaV3's bias add, one
-      tuning cache, and a SASS-match check against the port), and the
+      reference arm (EXL3-O with GEMV on since D-080, fused gate/up
+      cases, ExLlamaV3's bias add, one tuning cache, and a SASS-match
+      check against the port), and the
       EXL3 phase memory limits, tightened against native's buffer plan.
 
       The rest (the FP16 memory limits, BP-F1's calibration, the
@@ -408,7 +410,13 @@ reservation policy) were recorded in M0.
         both. Every matrix product ran 1.10× to 4.9× slower on host VMM (the
         output head at one row 2.14×), with identical launches and outputs
         ([comparison](experiments/backend-proof-p1/README.md#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
-        This reopens D-034 for the owner; it blocks no other stage.
+        This reopened D-034. The owner answered with D-081: weights and
+        state move to device VMM, and direct reads land in a bounded
+        host-VMM zone that the GPU copies from
+        ([diagnosis](experiments/host-vmm-diagnosis/README.md), RE-022;
+        direct landing in device memory is impossible here, RE-025).
+        Next: BP-F1 rerun against device VMM under a newly pre-registered
+        rule.
 
       - **Plan selection between implementations (D-053).** The
         implementation registry (`src/execution/registry.h`) holds each
@@ -488,17 +496,16 @@ reservation policy) were recorded in M0.
         (D-077). Patch 0001 removes `util.cuh`'s exiting error checks
         and drops four no-op `register` specifiers that NVCC rejects with
         a Clang host compiler; 0002 adds jitLLM's build, which reproduces
-        the P0 reference's device flags. Neither the GEMV family (D-079)
-        nor any ATen host wrapper is kept; a tooling test fails if `keep`
+        the P0 reference's device flags. Neither the GEMV family (not yet
+        ported) nor any ATen host wrapper is kept; a tooling test fails if `keep`
         differs from the units' include closure (quoted and angle
         includes) or a kept file can end the process. The reconstruction,
         Hadamard and bias-add kernels share their `.cu` files with ATen
         wrappers and come with the launchers. The per-file audit is in
-        [licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2);
-        whether it clears the kernels, and whether decision 5 covers
-        `ptx.cuh`'s direct libcu++ include, are the owner's open questions,
-        so no packaged binary links them (`sources.closure` refuses one
-        built from a `use: test` component).
+        [licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2).
+        The owner cleared the kernels and `ptx.cuh`'s direct libcu++
+        include on 2026-09-27 (D-080). Only tests link them so far (the
+        lock's `use: test`).
         - In every profile, `unit.Exl3ContextTest.*` checks the device
           context's sizes from the kept `exl3_devctx.cuh` (4,202,760 B of
           lock slots, a 16 MiB workspace). In every CUDA profile,
@@ -603,7 +610,7 @@ reservation policy) were recorded in M0.
       shards replaced or rewritten after open. On `spark-b`,
       `unit.ArtifactFixtureTest.*` opens the M0 fixtures (Qwen2.5 FP16, both
       EXL3 rates and Gemma 4) and matches the prototype's views of them.
-      Next: page-in into host VMM (B2).
+      Next: page-in into device VMM through the landing zone (B2, D-081).
 
       *Native FP16 at rung 3* ([report](experiments/backend-proof-p2/README.md)):
       - **The model and its graph.** `src/model/` holds the Qwen2 adapter:
@@ -641,7 +648,8 @@ reservation policy) were recorded in M0.
         neither, nor says how many runs a verdict takes.
 
       Left for rung 4 and the BP-A cases: page-in of the same groups into
-      host VMM (B2) and the rung-4 comparison against these runs; the
+      device VMM through the landing zone (B2, D-081) and the rung-4
+      comparison against these runs; the
       restore evaluation (rung 5); the in-process pointer-coverage check
       of BP-A1 against a real catalog rather than the harness's ledger.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
@@ -1220,8 +1228,8 @@ bounds, declared before native evaluation.
       4's vision encoder) and audio files, on models validated for them,
       with bounded preprocessing.
 - [ ] **Packaging** (D-027): the signed arm64 apt repository and its signing
-      keys, a separate component for optional copyleft modules, and
-      drain-before-restart upgrades.
+      keys, optional copyleft modules in the default install with a
+      build-time opt-out (D-080), and drain-before-restart upgrades.
 - [ ] **Release readiness** (D-061, D-062): the release checklist, the
       published support matrix, notices and source obligations for every
       shipped profile, and user documentation.

@@ -41,7 +41,9 @@ package does not carry. See [tests/sources/](../tests/sources/).
 ## Profiles
 
 The **core** profile, the default, is the copyleft-disabled profile of D-002:
-the lock's `core` components only. An optional module adds its components
+the lock's `core` components only. The lock has no optional module yet;
+when a confirmed-copyleft one lands, D-080 puts it in the default, with the
+core profile as the opt-out. An optional module adds its components
 when named at both steps: `mise run prepare -- --modules <m>`, then configure
 with `-DJITLLM_MODULES=<m>`. Neither step fetches, reads or builds another
 module's sources. A build directory that has built a module never builds a

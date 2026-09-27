@@ -20,6 +20,8 @@ the pre-registration was reviewed and committed.
   row runs 2.14× slower. The launches and outputs are identical in both
   memory kinds. Per the protocol this reopens D-034 for the owner and
   blocks nothing else ([comparison](#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
+  Why, and the options: the [host-VMM diagnosis](../host-vmm-diagnosis/README.md);
+  the owner's answer is D-081 (device VMM behind a landing-zone copy).
 
 - **53 cases**, derived from the FP16 bridge's recorded plan for the
   held-out trajectory at 1, 16, 17 and 512 rows. Each is a kernel jitLLM

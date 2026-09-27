@@ -21,8 +21,8 @@
 #                        barriers hang), and lock slots no concurrently
 #                        running launch shares.
 #
-# Nothing here may include ExLlamaV3's GEMV kernel or a file that does
-# (D-079): those belong to an optional module, which no core build has.
+# Nothing here includes ExLlamaV3's GEMV kernel or a file that does yet:
+# it is core-eligible (D-080) and enters with its own per-file record.
 add_library(jitllm_exl3 INTERFACE)
 target_include_directories(jitllm_exl3 INTERFACE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_exl3 INTERFACE jitllm_exl3_headers)

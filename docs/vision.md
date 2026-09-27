@@ -134,10 +134,11 @@ in the model support matrix, not to arbitrary checkpoints.
 - **The default build meets its dependency policy.** Incorporated core
   implementation satisfies the Apache-2.0 / BSD / MIT / MPL-2.0 allowlist;
   declared tools and platform runtimes are recorded under their separate
-  terms (D-017). The profile builds, passes the core tests, and its full
-  dependency closure is audited. Optional modules and their dependencies
-  are absent unless explicitly selected; enabled builds ship matching
-  notices and source obligations.
+  terms (D-017). It and the copyleft-disabled profile build, pass the core
+  tests, and have their full dependency closures audited. jitLLM's own
+  builds include optional modules and their dependencies by default, with
+  the copyleft-disabled profile as the build-time opt-out (D-080); builds
+  that include them ship matching notices and source obligations.
 
 ## Non-goals
 

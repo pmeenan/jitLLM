@@ -92,21 +92,24 @@ the origin bytes and the patches are the local changes, so nothing is
 vendored into Git.
 ExLlamaV3's GEMM kernels enter the same way, as the `exllamav3`
 component: `keep` holds exactly the closure of the four compilation units
-the build compiles, which excludes the GEMV family (D-079) and every ATen
-host wrapper ([licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2)).
+the build compiles, which excludes the GEMV family (not yet ported;
+core-eligible since D-080) and every ATen host wrapper ([licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2)).
 
 GGML and EXL3 reference revisions in D-051/D-052 are candidate origins, not
 an instruction to import their whole repositories or runtimes. The
 [licensing inventory](licensing.md) still blocks the untraced tokenizer
-tables and the EXL3 GEMV family from core incorporation. Other selected units
-also need their own closure audit. This decision neither clears those gates
-nor changes D-017's allowlist.
+tables from core incorporation; D-080 made the dense EXL3 GEMV files
+core-eligible. Other
+selected units also need their own closure audit. This decision neither
+clears those gates nor changes D-017's allowlist.
 
 ## Preparation and build
 
 1. **Select before acquiring.** Resolve the finite closure for the requested
    CPU/CUDA, native/cross and license profile from the lock. Optional
-   implementation modules default off. Reject a dependency on a disabled or
+   implementation modules are in the default selection (D-080; the tooling
+   still selects none, since the lock has none yet), and the
+   copyleft-disabled profile is the build-time opt-out. Reject a dependency on a disabled or
    unclassified component before downloading or configuring any of it. A
    full archive containing excluded optional implementation cannot be fetched
    and then filtered for the copyleft-disabled build; use an audited curated

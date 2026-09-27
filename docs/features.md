@@ -102,11 +102,11 @@ client-supplied history when an idle cache entry is unavailable.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Common internal read/write completion interface across backends | confirmed | ideation §8 |
-| Spark direct path: file DMA → GPU-accessible host VMM, consumed in place (and reversed for write-back) | confirmed | D-034 amends D-004's mandatory staging copy; no CPU payload copies; M2 validates actual GGML execution |
-| Bounded, explicitly budgeted staging pool where a validated DMA fallback needs one | confirmed | no separate staging pool for the selected Spark in-place path; never allocate unbudgeted RAM in order to evict RAM |
+| Spark direct path: file DMA → bounded host-VMM landing zone → GPU copy into device VMM (and reversed for write-back) | confirmed | D-081 amends D-034's in-place consumption: the GB10's L2 does not cache host-located memory (RE-022); no CPU payload copies |
+| Bounded, explicitly budgeted staging pool where a validated DMA fallback needs one | confirmed | on Spark this is D-081's landing zone (2 × depth × 2 MiB); never allocate unbudgeted RAM in order to evict RAM |
 | Explicit handling of short transfers, checksum errors, storage exhaustion, alignment, retries, cancellation; bounded queues | confirmed | |
 | Coalesce duplicate loads for the same content generation | confirmed | |
-| Native direct-file I/O backend (queue depth, priority, cancellation control) | confirmed | D-034 selects bounded asynchronous I/O into host VMM on validated Spark configurations; staged DMA remains a provider option |
+| Native direct-file I/O backend (queue depth, priority, cancellation control) | confirmed | D-034 selects bounded asynchronous direct I/O on validated Spark configurations; D-081 lands it in host VMM and copies into device VMM |
 | cuFile compatibility-mode backend | confirmed | measured M0 comparison path; D-034 does not select it for the initial runtime |
 | Buffered vs direct-I/O comparison; page-cache duplication and read amplification measured | confirmed | no system-wide cache flushing as runtime policy |
 | Write-back only when preservation requires it; clean weights are never written | confirmed | |
@@ -115,7 +115,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Optional crash durability for spill as a separate policy | deferred | 2026-09-21. M4 retention is same-process and spill is discarded on start, so its encoding is internal (D-055). Earliest after M4; trigger: a runtime upgrade or crash during a long conversation forces a noticeable re-prefill, or drain-before-restart upgrades prove insufficient. Ideation §8 distinguishes it from same-process retention |
 | Spill encryption at rest | rejected | *agent-suggested*, rejected 2026-09-21. Nodes are single-owner and local (multi-tenant isolation is a stated non-goal); D-014's "protect spill files" is met by a restricted directory owned by the non-root service user, bounded retention, and cleanup on expiry and on start. Restore-path CPU on unified memory would compete with the model |
 | Direct I/O (`O_DIRECT`) as the default payload read path on unified memory | confirmed | measured and selected in D-034; buffered metadata remains allowed, but payload paths must not silently introduce CPU copies; import must honor queried direct-I/O alignment |
-| GPU in-place access to memory read straight from NVMe | confirmed | M0 measured host-NUMA CUDA VMM at full SSD bandwidth and matched device-VMM GPU scan speed; D-034 selects this over a mandatory staging copy, with M2 GGML/lifetime proof still required |
+| GPU in-place access to memory read straight from NVMe | rejected | confirmed 2026-09-21 (D-034), rejected 2026-09-27 by D-081. M0's scan matched device VMM, but kernels that re-read lost 1.1–4.9× (BP-F1: the GB10's L2 skips host-located memory), and no route lands a direct read in device memory on Spark (RE-025); D-081 copies each extent instead |
 | Sustained-read thermal behaviour and a spill-write budget for the single NVMe | confirmed | *agent-suggested*, confirmed 2026-09-21 as I/O spike scope. Measure sustained throughput over minutes, not seconds; reads do not wear the drive but KV spill writes do |
 
 ## Model import and prepared artifacts
@@ -222,7 +222,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Versioned releases with a changelog and a compatibility policy for the artifact format and management API | confirmed | *agent-suggested*, confirmed 2026-09-21. D-062 (2026-09-23): SemVer 0.x, owner-signed tags, independent integer versions per public surface, Keep a Changelog `CHANGELOG.md` from M1; artifact compatibility guarantees additionally require D-018's dense and MoE evidence |
 | Contribution policy: external PRs accepted with DCO sign-off; no CLA | confirmed | 2026-09-21 (D-029); merges still pass the human commit gate (D-016). External PR code never runs locally; the first external PR triggers hosted CI (D-061). Flagged in ideation §21 alongside the license |
 | User installation through native package managers: a project-hosted, signed apt repository with arm64 packages for Spark first | confirmed | D-027; the user path, distinct from the developer setup path (D-012); M8 |
-| Optional copyleft modules as separate packages in a separate repository component, mirroring D-017's tiers | confirmed | *agent-suggested*, confirmed 2026-09-21. apt components make the license profile a visible install choice and keep the default install to the core; M8 |
+| Optional copyleft modules as separate packages in a separate repository component, mirroring D-017's tiers | confirmed | *agent-suggested*, confirmed 2026-09-21. Amended 2026-09-27 (D-080): jitLLM's own builds and packages include confirmed-copyleft modules by default, and a build-time flag excludes them; whether a module also gets its own package is M8's choice |
 | systemd unit, non-root service user, FHS layout (config under `/etc`, state and artifacts under a configurable data directory), drain-before-restart upgrades | confirmed | *agent-suggested* consequences of D-027, confirmed 2026-09-21; recorded in D-063 (2026-09-23): `jitllm` system user, `jitllm.service`, a strict TOML node document at `/etc/jitllm/jitllm.toml` plus `jitllm.d/` fragments, data roles under `/var/lib/jitllm` ([layout](architecture.md#installed-layout)). Directories are created by the role's user and split by mode (0755 models, 1777 checkpoints, 0700 spill and state); defaults are front door `127.0.0.1:8114` and management `127.0.0.1:8115` (jitLLM's own, clear of other engines' defaults). Unit, user and layout M1; drain-before-restart upgrades with M8's apt repository |
 | The check gate builds installable `.deb` packages from M1, before the repository is published | confirmed | *agent-suggested*, confirmed 2026-09-21. Late packaging is where notices, paths, and dependencies go wrong. D-061 moves this to the local `check:full` tier (arm64 package in D-063's layout), with its install test in an arm64 container on the workstation |
 | Homebrew and other package managers | deferred | follow their platforms (D-026, D-027) |
@@ -399,7 +399,8 @@ public API scope) ride along as M0 tasks or later-milestone questions.
    design and staging budget. → Initial path answered by the M0
    [comparison](experiments/io-path/README.md), D-034: direct regular files,
    bounded asynchronous submission, and GPU-accessible host VMM without a
-   staging copy. M2 validates GGML/lifetime behavior; model traces still
+   staging copy; D-081 then moved weights and state to device VMM behind a
+   landing-zone copy. M2 validates GGML/lifetime behavior; model traces still
    tune queue policy and M4 spill limits.
 3. **Async/task and completion model.** Hand-rolled executor with explicit
    continuations, C++20 coroutines, a sender/receiver library, or something

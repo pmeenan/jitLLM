@@ -27,7 +27,7 @@ consumes or hosts them.
 | The operation contract: dependencies, workspace, streams/fences, captured pointers, backend allocations, errors (ideation §10) | All stages | Decision entry at M2 close, before M3 builds on it |
 | Executable-layout constraints: alignment, padding, kernel-readable ranges, tile rules | P2–P4 against D-056's v0 encoding | Validates or amends the experimental artifact |
 | Phase envelopes and fixed runtime overhead `F` for the declared profiles | P6 | D-050 admission numbers for M2/M3 |
-| Whether actual kernels regress on host VMM | BP-F1 | D-034 reopen check |
+| Whether actual kernels regress on jitLLM's VMM (host VMM failed; device VMM since D-081) | BP-F1 | D-081 reopen check |
 | EXL3 per-kernel time and workspace parity with upstream | BP-F2 | D-052 M2 gate |
 
 The proof is not complete with a loader, one matrix multiply, an external
@@ -56,9 +56,8 @@ for the proof.
   before any native output it governs is seen: this may come in parts
   ([P0 declarations](#p0-declarations)), but never after. A bound set or
   moved after its result is seen is not acceptance.
-- **The GEMV provenance gate below closes before that kernel enters a
-  core-eligible module.** Until then it may be ported only into an optional
-  module (D-079). The rest of the EXL3 closure does not wait for it.
+- **The GEMV provenance gate below closed on 2026-09-27** on the owner's
+  judgment (D-080): the kernel is core-eligible.
 
 ## Pinned inputs
 
@@ -195,9 +194,8 @@ They also list what adapted launchers must not inherit.
   launch on one stream.
 - **CPU backend.** `ggml_graph_plan`/`ggml_graph_compute` accept a
   caller-supplied work buffer and thread pool and compute on `tensor->data`
-  only. Host VMM is mapped with host access
-  ([I/O report](experiments/io-path/README.md)), so CPU diagnostics can run on
-  the same backing. `ggml_init` accepts a caller-supplied metadata buffer.
+  only. Device VMM cannot be mapped for the CPU (D-081), so CPU diagnostics
+  run on a copy of the backing. `ggml_init` accepts a caller-supplied metadata buffer.
   Spark's CPU heap draws on the same physical budget. This graph-compute
   path is a diagnostic, not a serving implementation under D-053.
 - **Tied weights.** One tensor can feed both the embedding lookup and the
@@ -263,21 +261,16 @@ They also list what adapted launchers must not inherit.
 - **GEMV provenance gate.** The K=4 GEMV kernel header describes a
   ["QTIP-style structure"](https://github.com/turboderp-org/exllamav3/blob/6b84a21b6f1e5da3f291b9e1019061f0de788279/exllamav3/exllamav3_ext/quant/exl3_gemv_kernel.cuh#L3-L4)
   and cites QTIP's `qtip-kernels/src/inference.cu`. QTIP's repository is
-  GPL-3.0 ([licensing.md](licensing.md#early-exl3-companion-d-052)). Whether
-  any of its code was incorporated is unresolved. Resolve it with the owner
-  before porting that kernel, or a file that includes it, into a
-  core-eligible module. Until then, the native plan runs the EXL3 GEMM kernel
-  wherever upstream would select GEMV (m ≤ 8). Upstream supports that
-  configuration (`EXL3_GEMV=0`), and all other dispatch paths are unchanged.
-  Measure the gap to upstream's GEMV-enabled normal
-  configuration. Under D-052 a regression there needs a fix or an explicit
-  owner-approved tradeoff; it is not a pass. The owner accepted it for M2
-  (D-079).
-  The owner allowed the GEMV kernel to be ported meanwhile, into an
-  optional module that no core (copyleft-disabled) or distributed build
-  includes (D-079). A native GEMV-on plan's GEMV linears are judged exactly
-  against EXL3-O's at the same forced plan, and its full model against
-  Tier C; EXL3-G stays the gated plan until the gate closes.
+  GPL-3.0 ([licensing.md](licensing.md#early-exl3-companion-d-052)). On
+  2026-09-27 the owner judged it not copyleft and closed the gate (D-080):
+  GEMV is MIT and core-eligible. Before that, the native plan ran the EXL3
+  GEMM kernel wherever upstream would select GEMV (m ≤ 8; upstream's
+  `EXL3_GEMV=0`), and the owner accepted the gap for M2 (D-079). That
+  acceptance expired with the gate: BP-F2 is gated against EXL3-O (its
+  cases and reference arm are set at P3 entry), so the native plan needs
+  the GEMV port. A native GEMV-on plan's GEMV linears are
+  judged exactly against EXL3-O's at the same forced plan, and its full
+  model against Tier C.
 
 ## Dispatch and implementations (D-053)
 
@@ -355,8 +348,8 @@ on the same stream. No segment boundaries or cross-stream events are needed.
 - One build holds at least two implementations of one operation. The plan
   selects between them, and each passes its own reference comparison and
   envelope.
-  - Natural first case: EXL3 GEMM versus GEMV at m ≤ 8, but only in a
-    build with GEMV's optional module (D-079).
+  - Natural first case: EXL3 GEMM versus GEMV at m ≤ 8 (core since
+    D-080).
   - In the core build: GGML's fused versus unfused RMSNorm, inside the fused and
     unfused plans that have bridge fusion arms as oracles, or its MMF versus
     cuBLAS matrix-multiply paths at a shared shape.
@@ -413,7 +406,8 @@ absorbed into a tolerance.
    batch splits, cuBLAS paths and handle setup. Compare an unfused plan with
    a fusion-disabled bridge arm, the counterpart of the recorded reference
    arm (first-slice.md).
-4. **Native, jitLLM host VMM.** Expect results identical to rung 3.
+4. **Native, jitLLM device VMM** loaded through the host-VMM landing zone
+   (D-081). Expect results identical to rung 3.
 5. **Native after eviction, restoration or relocation.** Must be identical to
    rung 4.
 
@@ -460,7 +454,9 @@ before the native output it governs.
   - the persistent-workspace limit.
 - **Deferred to P3 entry.** These are approved once the ExLlamaV3 port
   exists, and before any native EXL3 timing or memory result is seen:
-  - *BP-F2's reference arm.* Four things are open:
+  - *BP-F2's reference arm.* Five things are open:
+    - gate against EXL3-O, GEMV on, and add its GEMV kernels to the timed
+      cases (D-079's GEMM-only acceptance expired with the gate, D-080);
     - add the fused gate/up kernel (`exl3_mgemm_kernel`) to the timed
       cases;
     - time ExLlamaV3's bias add in the reference, not PyTorch's;
@@ -488,8 +484,9 @@ before the native output it governs.
     `z`, with a passing holdout
     ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry),
     [report](experiments/backend-proof-p1/README.md)). Applied on
-    2026-09-27, it fails: host VMM is slower, which reopens D-034 for the
-    owner.
+    2026-09-27, it fails: host VMM is slower. The owner answered with
+    D-081 (device VMM); BP-F1 is rerun against device VMM under a newly
+    pre-registered rule.
   - *Pre-registered on 2026-09-27 (D-079), before any native FP16 run:*
     the FP16 memory limits and M2's census rule
     ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
@@ -521,7 +518,7 @@ all of it reference runs on `spark`:
 | FP16-F | FP16 GGUF | first-slice.md's settings: F16 K/V, one sequence, no flash attention, no CUDA graphs, fusion on | `control`: 76 tokens, context 512, batch 64, chunks 32 then 44 × 1, restore after 32. `heldout`: 577 IDs, context 1,024, batch 512, chunks 16, 17, 16 × 1, 512, 16 × 1, restore after 33 |
 | FP16-U | FP16 GGUF | FP16-F with fusion off | as FP16-F |
 | EXL3-G | 4.0 and 4.5 bpw | Upstream's optimized profile with GEMV off (`EXL3_GEMV=0`); the reconstruction GEMM pinned to cuBLAS (`EXL3_HGEMM_F16ACC=0`, what upstream's timing probe chooses on GB10); F16 cache of 4,096 tokens; the frozen GEMM-only tuning caches `tune-40-gemvoff` and `tune-45-gemvoff` | Prefixes of 32, 144, 145, 1,023 and 1,024 held-out IDs, every prefill row's logits, then 16 single-token steps |
-| EXL3-O (reported; the GEMV-on reference, D-079) | 4.0 and 4.5 bpw | EXL3-G with GEMV on, caches `tune-40` and `tune-45` | as EXL3-G |
+| EXL3-O (the GEMV-on reference, D-079; BP-F2's gated reference since D-080) | 4.0 and 4.5 bpw | EXL3-G with GEMV on, caches `tune-40` and `tune-45` | as EXL3-G |
 
 The trajectories, the chunking and the harnesses are the P0 report's. The
 held-out IDs have SHA-256 `6dd8da89…`. The caches' bytes and decoded choices
@@ -530,10 +527,10 @@ are in its `results.json`.
 - **Context.** The proof covers FP16 trajectories of up to 577 tokens in a
   1,024-token context, and EXL3 up to 1,040 tokens in a 4,096-token cache.
   It covers nothing beyond, timing included.
-- **GEMV.** EXL3-G is the native plan until the GEMV provenance gate
-  closes. EXL3-O measures the gap, and is the exact reference for a
-  native GEMV-on plan's GEMV linears, built with the optional module
-  (D-079).
+- **GEMV.** The GEMV provenance gate closed on 2026-09-27 (D-080), so
+  GEMV is core. EXL3-O is BP-F2's gated reference, with its cases set at P3
+  entry, and the exact reference for a native GEMV-on plan's GEMV linears.
+  The approved EXL3-G bounds and gates below are unchanged.
 - **Per-linear sweep (BP-N5).** Rows 1, 8, 9, 16, 32, 33, 144, 145, 1,023
   and 1,024, on every real projection of both fixtures. It runs at a forced
   plan, the same tile shape, block, SMs and concurrency on both sides,
@@ -938,6 +935,8 @@ They are identical under cuBLAS 13.1.1 and 13.8.0.4.
     separately.
   - KV must equal the declared layout.
   - Persistent library workspaces are limited separately (below).
+  - D-081's landing zone is a separately declared persistent pool, like
+    the library workspaces; it is not in `E` or `F`.
   - `F` holds only handles and module state. It is reported, never used to
     hide a workspace.
 - **EXL3 phase limits.** Native's `E` per phase may not exceed upstream's
@@ -1301,7 +1300,9 @@ reference container.
   reference arm, identified by its SHA-256. `measure.py` on the same binary
   is the reference, under this rule. The session must pass before any
   native kernel is timed.
-- **BP-F1: host VMM against `cudaMalloc`.**
+- **BP-F1: jitLLM's VMM against `cudaMalloc`.** Host VMM failed the rule
+  below; under D-081 BP-F1 is rerun against device VMM under a newly
+  pre-registered rule.
   - Compares the same GGML kernels, at the held-out trajectory's chunk
     shapes (1, 16, 17 and 512 rows).
   - Each sample rotates through weight buffers whose total exceeds four
@@ -1312,8 +1313,8 @@ reference container.
     `cudaMalloc` set BP-F1's `σ`, and two holdout sessions validate the
     rule for it. BP-F1's `σ` is pre-registered from them (D-079) before
     BP-F1 is gated.
-  - A regression reopens D-034 for the owner; it does not block other
-    stages.
+  - A regression reopens the memory decision (D-034, now D-081) for the
+    owner; it does not block other stages.
   - **The frozen rule (pre-registered 2026-09-27, D-079),** fixed before
     any host-VMM timing of these kernels ran
     ([report](experiments/backend-proof-p1/README.md)):
@@ -1358,7 +1359,8 @@ reference container.
       if a case or the aggregate fails, a mirrored confirmation. A case
       fails BP-F1 only when it fails both; the aggregate must pass in the
       confirmation too. The stream-launched arm is reported, not gated.
-  - **Result (2026-09-27): BP-F1 fails; D-034 is reopened for the owner.**
+  - **Result (2026-09-27): BP-F1 fails; D-034 was reopened, and the owner
+    moved weights and state to device VMM (D-081).**
     Run under the committed pre-registration (`d3b4f2a`) on `spark`: 41 of
     the 53 cases failed both the primary session `p1` and its mirrored
     confirmation `m1`, and the aggregate failed in both (`t` 54.16 and
@@ -1369,15 +1371,16 @@ reference container.
     ([comparison](experiments/backend-proof-p1/README.md#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
 - **BP-F2: EXL3 kernels.**
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
-    matched plan.
+    matched plan; EXL3-O since D-080, with the case set fixed at P3 entry
+    (above).
   - Upstream's GEMV gap at 1 to 8 rows is measured in the report, as
     EXL3-O against EXL3-G. It applies only to the 4.0 bpw fixture: its
     GEMM-only kernels are 1.14–1.55× slower on q, k and down at 1 and 8
     rows, and 0.90–0.94× on the fused gate/up. The 4.5 bpw fixture
     launches the same kernels either way. The owner accepted the gap for
-    M2 as an explicit tradeoff (D-079); it is reported, not a pass. The tradeoff expires when the GEMV
-    provenance gate closes, and at M3's entry at the latest: from then on,
-    BP-F2 is gated against EXL3-O.
+    M2 as an explicit tradeoff (D-079), to expire when the GEMV provenance
+    gate closed. It closed on 2026-09-27 (D-080): BP-F2 is gated against
+    EXL3-O, with the case set and reference arm fixed at P3 entry.
 - **BP-F4: host submission time.**
   - Reported per launch and per token, against both upstreams' decode:
     llama.cpp with CUDA graphs on and off, and ExLlamaV3's graph-captured
@@ -1391,12 +1394,12 @@ reference container.
 | Stage | Needs | Exit evidence |
 | --- | --- | --- |
 | **P0** Bridges and controls | M1 build | Toolchain bridges run, FP16 with fusion on and off. Held-out trajectories run on both references. The reference EXL3 tuned shapes and grids are decoded. Numerical profiles, bounds and the performance protocol are frozen, owner-approved or pre-registered under D-079 |
-| **P1** Substrate probes | M1; no artifacts | GGML launchers under a jitLLM context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on host VMM versus `cudaMalloc`. Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
-| **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog; the [P2 prerequisites](#p2-prerequisites) | Prepared-artifact execution on host VMM; oracle rungs 3–4; BP-A cases |
-| **P3** Resident EXL3 | P2 infrastructure; GEMV gate or GEMM-only plan | Both fixtures; per-linear and full-model oracles; BP-F2 kernel parity |
+| **P1** Substrate probes | M1; no artifacts | GGML launchers under a jitLLM context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on jitLLM's VMM versus `cudaMalloc` (device VMM since D-081). Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
+| **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog; the [P2 prerequisites](#p2-prerequisites) | Prepared-artifact execution on device VMM through the landing zone (D-081); oracle rungs 3–4; BP-A cases |
+| **P3** Resident EXL3 | P2 infrastructure; the GEMV port for BP-F2 (gate closed, D-080) | Both fixtures; per-linear and full-model oracles; BP-F2 kernel parity |
 | **P4** Paging | M2 leases and storage service | BP-P cases on both representations |
 | **P5** Lifetime and failure | D-048 completion services | BP-L and BP-V cases on real providers |
-| **P6** Envelopes and contract | P2–P5 | Complete accounting; phase envelopes and `F` per profile; contract draft; per-operation K-C/K-L choices, registry and D-034/D-052/D-053 status recorded |
+| **P6** Envelopes and contract | P2–P5 | Complete accounting; phase envelopes and `F` per profile; contract draft; per-operation K-C/K-L choices, registry and D-052/D-053/D-081 status recorded |
 
 The [retained-backing comparison](#retained-backing-comparison) runs on the
 P4 harness, but its acceptance stays a separate plan item.
@@ -1441,8 +1444,8 @@ recorded plan (the FP16 Tier E gate).
 - **What it does not compare,** which the gate allows to differ: stream
   identity, addresses, the launch API (which carries the PDL attribute;
   the recorder names any other launch attribute, which is a difference)
-  and the copies' memory kinds, which follow from the addresses. Host VMM
-  is device memory to CUDA (D-034).
+  and the copies' memory kinds, which follow from the addresses. VMM
+  backing of either location is device memory to CUDA (D-034, D-081).
   - Alignment is judged by its effects: `get_rows`' variant and cuBLASLt's
     alignment preferences.
   - The recording sees no addresses, so the harness must check that every
@@ -1495,15 +1498,15 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 - **BP-N1:** The toolchain bridges versus the references; differences
   recorded.
 - **BP-N2:** Native dispatch on conventional memory versus the bridge.
-- **BP-N3:** Host VMM versus conventional memory.
+- **BP-N3:** jitLLM's VMM (device VMM, D-081) versus conventional memory.
 - **BP-N4:** Native versus the reference within the declared bound, on
   held-out inputs.
 - **BP-N5:** Per-linear EXL3 byte equality at a forced plan across the row
   sweep, together with a decode check of the reconstructed weights.
 - **BP-N6:** Full-model EXL3 within the declared bound, with per-layer
   localization.
-- **BP-N7:** CPU diagnostics on the same host-VMM backing versus the
-  reference's CPU path.
+- **BP-N7:** CPU diagnostics on a copy of the device-VMM backing versus
+  the reference's CPU path.
 
 **Paging (weights and state)**
 
@@ -1538,7 +1541,7 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
   quarantine (invariant 8).
 - **BP-L5:** Shared EXL3 locks and workspace across plans or streams
   serialize or reject.
-- **BP-L6:** Registered I/O buffers over host-VMM extents are unregistered
+- **BP-L6:** Registered I/O buffers over host-VMM landing extents are unregistered
   before unmap or reassignment.
 
 **Validation and failure**
@@ -1555,8 +1558,8 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 **Performance** (under the frozen protocol, with the reference repeated
 beside the candidate)
 
-- **BP-F1:** GGML kernel times on host VMM versus `cudaMalloc` memory (the
-  D-034 check).
+- **BP-F1:** GGML kernel times on jitLLM's VMM versus `cudaMalloc` memory
+  (the D-081 check; host VMM failed it, 2026-09-27).
 - **BP-F2:** EXL3 kernel parity on the 176 declared cases (the D-052 M2
   gate).
 - **BP-F3:** Resident full-model timings for all three fixtures, reported

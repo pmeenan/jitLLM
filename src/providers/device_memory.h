@@ -32,7 +32,7 @@
 // Addresses are the device's virtual addresses. On validated Spark
 // configurations host-kind backing is GPU-accessible host memory, and with
 // read or write access the same address is a CPU pointer too: direct file
-// I/O lands there with no copy (D-034).
+// I/O lands there (D-034), and the GPU copies it into device backing (D-081).
 
 #ifndef JITLLM_PROVIDERS_DEVICE_MEMORY_H_
 #define JITLLM_PROVIDERS_DEVICE_MEMORY_H_

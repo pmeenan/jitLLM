@@ -165,7 +165,8 @@ D-074):
    own provenance.
 5. Clang's resource headers and CCCL reached through CUDA headers belong to
    D-017's platform family, as recorded, although D-017 does not name
-   compiler headers or `Apache-2.0 WITH LLVM-exception`.
+   compiler headers or `Apache-2.0 WITH LLVM-exception`. This also covers
+   libcu++ included directly by incorporated code (D-080).
 6. The evidence above that `libcudart_static.a` meets the GCC exception's
    eligibility test is accepted, as D-060 asked.
 7. Code compiled from CUDA headers that Attachment A does not list ships as
@@ -243,13 +244,23 @@ No MiaAI patches or calibration corpus are used by this reference.
 Selected MIT device kernels are core-eligible implementation candidates
 once their native selected-file and compiled-closure audit is recorded and
 the owner accepts it; the GEMM kernels' audit is
-[below](#exllamav3-gemm-kernels-in-the-core-m2), and its acceptance is open. The external
+[below](#exllamav3-gemm-kernels-in-the-core-m2), accepted on 2026-09-27
+(D-080). The external
 PyTorch/driver/toolkit stack is a declared reference tool/platform dependency,
 not incorporated native implementation or clearance to redistribute its
 whole container. Native wrappers must remove upstream allocator, stream and
 scheduling ownership; their actual closure and notices must be audited anew.
 
-**Open provenance question: the GEMV kernel.** At the pinned revision,
+**Resolved provenance question: the GEMV kernel.** On 2026-09-27 the owner
+judged it not copyleft ("Sounds like GEMV isn't actually viral", D-080): it
+is MIT-declared, and the scan below found no run of 20 or more tokens
+shared with QTIP beyond identical PTX `mma` operand strings. The dense
+GEMV kernel, its host wrapper and `exl3_gemv_half_inst.cu` are treated as
+MIT and core-eligible, and the gate below closed on that judgment without
+the structural comparison. It reopens if evidence of copied GPL code
+appears. The record that led there follows.
+
+At the pinned revision,
 [`quant/exl3_gemv_kernel.cuh`](https://github.com/turboderp-org/exllamav3/blob/6b84a21b6f1e5da3f291b9e1019061f0de788279/exllamav3/exllamav3_ext/quant/exl3_gemv_kernel.cuh#L3-L4)
 describes its small-m path as a "QTIP-style structure". It cites
 Cornell-RelaxML/qtip `qtip-kernels/src/inference.cu`.
@@ -267,7 +278,7 @@ Cornell-RelaxML/qtip `qtip-kernels/src/inference.cu`.
 versions with QTIP's kernel sources at that revision, by token sequence.
 Apart from identical PTX `mma` operand strings, it found no shared run of
 20 or more tokens. That is an observation, not the structural comparison
-required below, and not clearance. This inventory draws no conclusion about
+the gate asked for, and not clearance. This inventory draws no conclusion about
 derivation.
 
 **The same gate covers related files.** It applies to any file that
@@ -281,30 +292,20 @@ body:
 - upstream `comp_units/exl3_gemv_half_inst.cu`;
 - the GLM, GLM TP3 and DeepSeek `cooperative_moe_kernel.cuh` derivatives.
 
-**Before any of these enters a core-eligible native module:**
+The gate asked, before any of these entered a core-eligible module, for a
+structural comparison with the cited file, its record, and the owner's
+D-017 disposition. The owner's judgment (D-080) settles the dense GEMV
+files; D-079's optional GEMV module is not created. The upstream MoE
+cooperative files lose the QTIP question they inherited but still need
+their own audit, and the MiaAI derivatives keep their mixed provenance
+([below](#file-specific-declarations-and-mixed-provenance)).
 
-1. compare the code structurally with the cited file at a pinned revision;
-2. record the result;
-3. have the owner resolve its D-017 disposition.
-
-**What the proof does meanwhile.** The [backend proof](backend-proof.md)
-runs the EXL3 GEMM kernel wherever upstream would select GEMV (m ≤ 8).
-Other dispatch paths are unchanged. On 2026-09-26 the owner allowed the
-dense GEMV kernel, its host wrapper and `exl3_gemv_half_inst.cu` to be
-ported for development into an optional module (D-079). The module also
-holds every jitLLM file that includes one of them, and no core
-(copyleft-disabled) or distributed build includes it.
-**Open question for the owner:** whether jitLLM ships that module. It
-stays open until the three steps above are done.
-
-**The other selected kernels are not cleared either.** None of them cites
-QTIP or another third-party source in its own text. The remaining QTIP
-comments sit in host files that dispatch to this path (`exl3_gemm.cu`,
-`exl3_gemv.cuh`). The absence of a citation is not clearance: these
-kernels still need the audit above. The GEMM kernels' audit is recorded
-[below](#exllamav3-gemm-kernels-in-the-core-m2), but whether it clears them
-is the owner's open question; the reconstruction, Hadamard and bias-add
-kernels still need theirs.
+**Each selected kernel still needs its per-file audit.** None of them
+cites QTIP or another third-party source in its own text. The remaining
+QTIP comments sit in host files that dispatch to this path (`exl3_gemm.cu`,
+`exl3_gemv.cuh`). The GEMM kernels' audit is recorded and accepted
+([below](#exllamav3-gemm-kernels-in-the-core-m2)); the GEMV, reconstruction,
+Hadamard and bias-add kernels need theirs when they are ported.
 
 ## ExLlamaV3 GEMM kernels in the core (M2)
 
@@ -314,13 +315,10 @@ as GGML entered (D-077): GitHub's archive of the reference revision
 [`6b84a21b`][exl], hash-pinned, narrowed by `archive.keep`, with two
 reviewed patches. Checked **2026-09-27**.
 
-**Status: not cleared.** The owner has not answered the two open questions
-at the end of this section. Until the first is answered, the kernels are
-recorded core-tier only because their declared license is MIT; no
-distributed build links them (D-002), and `sources.closure` refuses a
-packaged executable built from any `use: test` component. If the answer is
-the GEMV gate's structural comparison and it finds QTIP code, the component
-moves to an optional module as D-079's GEMV port did.
+**Status: cleared for the core** by this audit (owner, 2026-09-27, D-080;
+the answers close this section). Only tests link them so far: the lock
+marks the component `use: test`, and `sources.closure` refuses a packaged
+executable built from one.
 
 - **What is compiled.** Upstream's compilation units for the mcg codebook
   at K = 4, 5, 6 and 8, the M2 fixtures' rates, unchanged. They
@@ -419,7 +417,7 @@ at `e90c6688` (`qtip-kernels/src/`: `inference.cu`, `inference.h`,
   `hadamard_inner.cuh` alone.
 
 That is an observation, not the structural comparison the GEMV gate
-requires, and not a finding that EXL3's format or GEMM owe nothing to
+asked for, and not a finding that EXL3's format or GEMM owe nothing to
 QTIP's ideas. Ideas are not what D-017 audits; incorporated code is.
 
 **Platform code the kernels reach.** Through NVCC: CUDA's `cuda_fp16.h`,
@@ -427,22 +425,20 @@ QTIP's ideas. Ideas are not what D-017 audits; incorporated code is.
 nothing links cuBLAS). `ptx.cuh` also includes libcu++'s `<cuda/atomic>`
 directly, and the multi-GEMM kernel's group barrier compiles its
 `cuda::atomic_ref` into device code. libcu++ is CCCL, recorded as platform
-code under Apache-2.0 WITH LLVM-exception; decision 5 above covers CCCL
-reached through CUDA headers, and whether it also covers this direct
-include is open question 2.
+code under Apache-2.0 WITH LLVM-exception; decision 5 above covers it,
+reached through CUDA headers or included directly (D-080).
 
-**Obligations.** None while only tests link the kernels. Once the owner
-has cleared them, a shipped binary that links them carries ExLlamaV3's MIT
+**Obligations.** None while only tests link the kernels. A shipped binary
+that links them carries ExLlamaV3's MIT
 text in its third-party notices (the lock's `notices`, with `use` set to
 `product`). No source offer is owed.
 
-**Open questions for the owner** (both unresolved):
-1. Whether this audit (the per-file record and the comparisons above)
-   clears the GEMM kernels for the core. The alternative is the GEMV gate's
-   structural comparison with QTIP, done for these files too.
-2. Whether decision 5's CCCL classification ("reached through CUDA
-   headers") also covers libcu++ included directly by incorporated code,
-   as `ptx.cuh` does.
+**The owner's answers** (2026-09-27, D-080: "It all sounds fine and
+permissive with no viral code issues"):
+1. This audit (the per-file record and the comparisons above) clears the
+   GEMM kernels for the core; no structural comparison with QTIP is needed.
+2. Decision 5's CCCL classification also covers libcu++ included directly
+   by incorporated code, as `ptx.cuh` does: permissive either way.
 
 ## Reference instrumentation
 
@@ -524,8 +520,8 @@ these categories.
 | Qwen `files/ple_layer_patched.py`; `files/ple_offload/{connector,ple_offload_layer,protocol,worker}.py`; `files/ple_offload/orig/{connector,ple_offload_layer,protocol,worker}.py`; `tp1/files/ple_offload/orig/{connector,ple_offload_layer,protocol,worker}.py` | Apache-2.0/vLLM headers; README expressly preserves file-specific SPDX terms under `files/`. Record headers, but audit modifications and the `tp1/` copies before adoption |
 | Qwen `bench/sweep.py`, `files/build_draft_vocab.py`, `files/evict_page_cache.py`, `files/patch_qsa_fp8_kv.py` | Explicit AGPL-3.0-or-later headers; `files/patch_mtp_draft_vocab.py` also attributes an AGPL-3.0-or-later origin |
 | GLM/DeepSeek `overlay/exl3_fat_gemm.{cu,cuh}`, `overlay/exl3_fat_moe.{cu,cuh}`, `overlay/build_exl3_fat_moe_ext.py`; DeepSeek `overlay/e3v2/exl3_fat_moe.{cu,cuh}`, `overlay/row_store.cpp`, `overlay/engram_{file_backend,layout}.py` | No separate permissive grant found for these current files; use AGPL-default optional classification. Including MIT ExLlamaV3 headers does not make these files MIT |
-| GLM/DeepSeek `extensions/cooperative_moe/native/{cooperative_moe.cu,cooperative_moe_kernel.cuh,exl3_moe_coop.cuh}` and GLM TP3 counterparts plus `tp3/native/dispatch.cu` | Modified native implementations with retained `LICENSE.exllamav3` and documented MIT upstream origin. Downstream specialization is not proven MIT by that notice. Treat as mixed provenance, optional/blocked for permissive-core reuse pending clarification; preserve MIT notices in any permitted combined work. `cooperative_moe_kernel.cuh` (native and TP3) includes and follows the GEMV kernel, so its open QTIP question applies |
-| GLM `extensions/cooperative_moe/tp3/vendor/exllamav3_ext/` headers listed below | Nine byte-identical upstream MIT headers verified against the pinned upstream tree; separable MIT candidates, not evidence that the surrounding TP3 module is MIT. Exception: `quant/exl3_gemv_kernel.cuh` carries the open QTIP provenance question in [Early EXL3 companion](#early-exl3-companion-d-052) |
+| GLM/DeepSeek `extensions/cooperative_moe/native/{cooperative_moe.cu,cooperative_moe_kernel.cuh,exl3_moe_coop.cuh}` and GLM TP3 counterparts plus `tp3/native/dispatch.cu` | Modified native implementations with retained `LICENSE.exllamav3` and documented MIT upstream origin. Downstream specialization is not proven MIT by that notice. Treat as mixed provenance, optional/blocked for permissive-core reuse pending clarification; preserve MIT notices in any permitted combined work. `cooperative_moe_kernel.cuh` (native and TP3) includes and follows the GEMV kernel, whose QTIP question D-080 closed |
+| GLM `extensions/cooperative_moe/tp3/vendor/exllamav3_ext/` headers listed below | Nine byte-identical upstream MIT headers verified against the pinned upstream tree; separable MIT candidates, not evidence that the surrounding TP3 module is MIT. `quant/exl3_gemv_kernel.cuh`'s QTIP provenance question, in [Early EXL3 companion](#early-exl3-companion-d-052), is closed by D-080 |
 | GLM `overlay/patch_sparse_mla_slice.py` | Attributes a patch to punkjazz-labs under MIT, but does not provide a separate whole-file license declaration. Resolve source revision, copied portion and later changes; do not promote the entire script to MIT |
 | GLM `overlay/patch_flashkda_tp3.py` and `docs/licenses/Apache-2.0-FlashKDA.txt` | Script names external adaptation and vLLM origins; accompanying Apache license text does not prove every adaptation is Apache. External origin and modifications remain adoption blockers for a permissive classification |
 | ExLlamaV3 `exllamav3/conversion/standard_cal_data/*.utf8` | Calibration corpora contain third-party text, not just upstream-authored implementation. In `code.utf8`, embedded source carries GPL-2.0 SPDX notices and a separate All Rights Reserved notice. These do not license the entire corpus under either term, and the root MIT grant does not clear the embedded material. Corpus use or redistribution needs its own provenance review; no corpus is cleared here |
@@ -587,6 +583,13 @@ mechanism. A served modified runtime must account for that obligation even
 when no binary is distributed. [Section 1][agpl1] defines the source scope,
 including relevant build/install/run scripts and covered dependencies;
 [sections 4–6][agpl4] separately govern conveying source and object code.
+
+**Shipping (D-080).** jitLLM's own builds and packages include its
+optional copyleft modules by default; the copyleft-disabled profile is the
+build-time opt-out. A component counts as copyleft only once that is
+confirmed; a provenance suspicion alone does not. A package with a
+confirmed-GPL module is conveyed under its terms as a whole; an AGPL one
+also owes the network source offer below.
 
 For a future enabled AGPL backend, review the **actual combined program** and
 provide source for the covered version and build, preserving MIT/Apache and
