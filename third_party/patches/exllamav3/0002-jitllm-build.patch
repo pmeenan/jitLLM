@@ -1,0 +1,71 @@
+jitLLM's build of the ExLlamaV3 subset it uses (D-053, D-057): adds
+jitllm/CMakeLists.txt, which the source lock adds as the component's
+project. It compiles only the files it names.
+
+diff --git a/jitllm/CMakeLists.txt b/jitllm/CMakeLists.txt
+new file mode 100644
+index 0000000..f55cd4a
+--- /dev/null
++++ b/jitllm/CMakeLists.txt
+@@ -0,0 +1,61 @@
++# SPDX-FileCopyrightText: 2026 jitLLM contributors
++# SPDX-License-Identifier: Apache-2.0
++
++# jitLLM's build of the ExLlamaV3 subset it uses (D-052, D-053, D-057;
++# docs/backend-proof.md). third_party/patches/exllamav3/ adds this file to
++# the pinned ExLlamaV3 tree, and the source lock adds this directory. It
++# compiles only the files named here, never upstream's setup.py, ext.py or
++# any ATen host wrapper: jitLLM owns dispatch.
++#
++#   jitllm_exl3_headers  the kept headers' directory, in every
++#                     profile: exl3_devctx.cuh's context sizes are host
++#                     constants.
++#   jitllm_exl3_cuda  the EXL3 GEMM kernels (exl3_gemm_kernel and
++#                     exl3_mgemm_kernel) for the mcg codebook at K = 4, 5, 6
++#                     and 8, the rates of the two M2 fixtures, with FP16 and
++#                     FP32 outputs and tile shapes 1 to 4: upstream's
++#                     compilation units exl3_comp_unit_<K>_cb1.cu, unchanged.
++#                     Each defines the tables tfp_exl3_{gemm,mgemm}_kernel_
++#                     {fp16,fp32}_b<K>_cb1[], indexed by shape, that
++#                     comp_units/exl3_comp_unit_<K>.cuh declares. CUDA
++#                     profiles only; elsewhere an empty placeholder, so the
++#                     lock's targets exist in every build.
++#
++# The flags reproduce what upstream's extension builds with, as the P0
++# reference was built (docs/experiments/backend-proof-p0/): NVCC -O3
++# --use_fast_math, SASS for sm_121 (not sm_121a), C++20, and the half and
++# bfloat16 macros and --expt-relaxed-constexpr that PyTorch's extension
++# builder adds. Not reproduced: -lineinfo, PyTorch's include paths and
++# extension-name macros, which no file here reads and which leave the SASS
++# unchanged.
++cmake_minimum_required(VERSION 4.4.3)
++project(jitllm_exl3 LANGUAGES CXX)
++
++set(ext "${CMAKE_CURRENT_SOURCE_DIR}/../exllamav3/exllamav3_ext")
++
++add_library(jitllm_exl3_headers INTERFACE)
++target_include_directories(jitllm_exl3_headers INTERFACE "${ext}")
++
++if(CMAKE_CUDA_COMPILER)
++  # The reference's -O3 replaces the build type's optimization level here.
++  foreach(config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
++    string(REGEX REPLACE "(^| )-O[0-9s]( |$)" " " CMAKE_CUDA_FLAGS_${config} "${CMAKE_CUDA_FLAGS_${config}}")
++  endforeach()
++  set(units "")
++  foreach(bits IN ITEMS 4 5 6 8)
++    list(APPEND units "${ext}/quant/comp_units/exl3_comp_unit_${bits}_cb1.cu")
++  endforeach()
++  add_library(jitllm_exl3_cuda STATIC ${units})
++  target_link_libraries(jitllm_exl3_cuda PUBLIC jitllm_exl3_headers)
++  target_compile_definitions(jitllm_exl3_cuda
++    PRIVATE __CUDA_NO_HALF_OPERATORS__ __CUDA_NO_HALF_CONVERSIONS__
++            __CUDA_NO_BFLOAT16_CONVERSIONS__ __CUDA_NO_HALF2_OPERATORS__)
++  # Upstream suppresses two front-end warnings: 177 (declared but never
++  # referenced) and 20012 (__device__ on a defaulted constructor).
++  target_compile_options(jitllm_exl3_cuda PRIVATE -O3 --use_fast_math --expt-relaxed-constexpr
++                                                  --diag-suppress=177,20012)
++  set_target_properties(jitllm_exl3_cuda PROPERTIES
++    CUDA_ARCHITECTURES 121-real CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++else()
++  add_library(jitllm_exl3_cuda INTERFACE)
++endif()

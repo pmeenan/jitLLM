@@ -215,3 +215,21 @@ add_dependencies(artifact_test artifact_corpus)
 # CTest runs it here, beside the corpus (remote runs map this directory).
 jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The locked ExLlamaV3 subset: the device context's sizes in every profile;
+# the GEMM kernels' tables link in every CUDA profile, and on a GB10 (label
+# `gpu`) every kernel loads and the recorded ones use the P0 launch record's
+# registers.
+add_executable(exl3_context_test exl3_context_test.cc)
+target_link_libraries(exl3_context_test PRIVATE jitllm_exl3)
+jitllm_gtest(exl3_context_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+if(JITLLM_CUDA)
+  add_executable(exl3_tables_test exl3_tables_test.cc)
+  target_link_libraries(exl3_tables_test PRIVATE jitllm_exl3_kernels)
+  jitllm_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  add_executable(exl3_kernels_test exl3_kernels_test.cc)
+  target_link_libraries(exl3_kernels_test PRIVATE jitllm_exl3_kernels)
+  jitllm_gpu_gtest(exl3_kernels_test)
+endif()

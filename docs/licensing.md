@@ -10,8 +10,10 @@ what the pinned toolchain puts into a jitLLM binary (M1, checked
 **2026-09-24**; D-071). The rest is the M0 reference inventory, checked on
 **2026-09-22**: evidence for the first dense slice, early EXL3 proof and
 later optional-backend design, not approval to import these repositories or
-a license audit of their built containers. No implementation was
-incorporated.
+a license audit of their built containers. M2's incorporated sources are
+audited in the [source lock](../third_party/sources.lock.json); the
+[ExLlamaV3 GEMM kernels](#exllamav3-gemm-kernels-in-the-core-m2) have a
+per-file record below.
 
 ## Repository license metadata
 
@@ -21,8 +23,8 @@ Every file follows the [REUSE specification 3.3](https://reuse.software/spec-3.3
 - A file whose format has comments starts with `SPDX-FileCopyrightText` and
   `SPDX-License-Identifier` tags in a header comment. jitLLM's own files say
   `2026 jitLLM contributors` and `Apache-2.0`; third-party material names its
-  holders and actual license, as the two experiment patches with MIT
-  upstream context do.
+  holders and actual license, as the patches with MIT upstream context do
+  (GGML's and ExLlamaV3's in `third_party/patches/`, and two experiments').
 - A file that cannot hold a comment (JSON, a patch, plain text, `NOTICE`, or
   `mise.lock`, which mise rewrites) has a `.license` sidecar with the same
   tags. There is no `REUSE.toml`: it could override a file's own header.
@@ -56,7 +58,9 @@ from its UTF-8 decoder. GGML (MIT, D-077) links so far into the backend
 proof's tests only; a shipped binary that links it carries its MIT text
 and the YaRN attribution from its RoPE kernel, and jitLLM's
 `src/kernels/ggml/ggml_support.cu`, adapted from GGML, keeps GGML's notice
-in its header.
+in its header. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
+far; a shipped binary that links them carries ExLlamaV3's MIT text
+([below](#exllamav3-gemm-kernels-in-the-core-m2)).
 
 | Unit (version) | Category | License | In a packaged binary |
 | --- | --- | --- | --- |
@@ -236,8 +240,10 @@ Turboderp's notice in [UPSTREAM-NOTICE.txt](experiments/exl3-reference/UPSTREAM-
 It disables x86 CPU MoE/collective helpers; no device kernels are changed.
 No MiaAI patches or calibration corpus are used by this reference.
 
-Selected MIT device kernels remain core-eligible implementation candidates,
-pending the native selected-file and compiled-closure audit. The external
+Selected MIT device kernels are core-eligible implementation candidates
+once their native selected-file and compiled-closure audit is recorded and
+the owner accepts it; the GEMM kernels' audit is
+[below](#exllamav3-gemm-kernels-in-the-core-m2), and its acceptance is open. The external
 PyTorch/driver/toolkit stack is a declared reference tool/platform dependency,
 not incorporated native implementation or clearance to redistribute its
 whole container. Native wrappers must remove upstream allocator, stream and
@@ -295,7 +301,148 @@ stays open until the three steps above are done.
 QTIP or another third-party source in its own text. The remaining QTIP
 comments sit in host files that dispatch to this path (`exl3_gemm.cu`,
 `exl3_gemv.cuh`). The absence of a citation is not clearance: these
-kernels still need the audit above.
+kernels still need the audit above. The GEMM kernels' audit is recorded
+[below](#exllamav3-gemm-kernels-in-the-core-m2), but whether it clears them
+is the owner's open question; the reconstruction, Hadamard and bias-add
+kernels still need theirs.
+
+## ExLlamaV3 GEMM kernels in the core (M2)
+
+The source lock's `exllamav3` component brings ExLlamaV3's GEMM kernels
+into the core build (D-017 incorporated implementation, core tier, MIT),
+as GGML entered (D-077): GitHub's archive of the reference revision
+[`6b84a21b`][exl], hash-pinned, narrowed by `archive.keep`, with two
+reviewed patches. Checked **2026-09-27**.
+
+**Status: not cleared.** The owner has not answered the two open questions
+at the end of this section. Until the first is answered, the kernels are
+recorded core-tier only because their declared license is MIT; no
+distributed build links them (D-002), and `sources.closure` refuses a
+packaged executable built from any `use: test` component. If the answer is
+the GEMV gate's structural comparison and it finds QTIP code, the component
+moves to an optional module as D-079's GEMV port did.
+
+- **What is compiled.** Upstream's compilation units for the mcg codebook
+  at K = 4, 5, 6 and 8, the M2 fixtures' rates, unchanged. They
+  instantiate `exl3_gemm_kernel` and `exl3_mgemm_kernel` for FP16 and FP32
+  outputs at tile shapes 1 to 4, in CUDA profiles only. So far only test
+  executables link them. In every profile a test includes
+  `exl3_devctx.cuh` for the device context's sizes.
+- **What is kept.** Exactly the units and the files they include (19
+  files, 3,260 lines), and the root `LICENSE`. A test follows the
+  includes of the prepared tree and fails if `keep` holds more or less
+  (`tools/tests/test_sources.py`).
+- **What is not kept.** Everything else:
+  - the Python package, `setup.py` and `ext.py`;
+  - the ATen host wrappers (`exl3_gemm.cu`, which carries a QTIP comment,
+    `exl3_kernel_map.cu`, `exl3_devctx.cu`), and `bits_k.cuh` with its c10
+    include;
+  - the reconstruction, Hadamard and bias-add kernels, whose `.cu` files
+    they share with ATen wrappers;
+  - other codebooks and rates;
+  - the whole GEMV family of the [gate above](#early-exl3-companion-d-052),
+    and the MoE kernels;
+  - the quantizer and the calibration corpora.
+
+  No kept file includes a GEMV file, directly or through another header,
+  or mentions one.
+
+**Per-file record.** Paths are under `exllamav3/exllamav3_ext/` except
+`LICENSE`; the SHA-256 prefix is of the upstream bytes, identical to the
+commit's Git blobs. No file carries a license or copyright line of its own:
+all fall under the root MIT `LICENSE` (Copyright (c) 2025 Turboderp). None
+cites QTIP or any other source; the only links are to NVIDIA's PTX
+documentation.
+
+| File | SHA-256 | Holds |
+| --- | --- | --- |
+| `LICENSE` | `27a32b6263fcd96c` | MIT, Copyright (c) 2025 Turboderp |
+| `quant/comp_units/exl3_comp_unit_{4,5,6,8}_cb1.cu` | `d7b2bd80d427c6f0`, `07c53ef89d7c12a4`, `564e1a8847568bdf`, `44497b3d7f670d94` | One macro each, instantiating the tables of kernels for its rate and cb 1 |
+| `quant/comp_units/exl3_comp_unit_{4,5,6,8}.cuh` | `313d479451fe5ecb`, `f377ef4dd47edca5`, `11497c8618830b9e`, `3354be2f6db645bf` | The tables' `extern` declarations |
+| `quant/exl3_gemm_kernel.cuh` | `3e94f9e1f3acb0dd` | The GEMM and multi-GEMM kernels: input Hadamard, tile loop, grid syncs |
+| `quant/exl3_gemm_inner.cuh` | `c50147d165a72627` | The tiled main loop: pipelined loads, dequantization, MMA, split-K reduction. **Patched** (0001) |
+| `quant/exl3_dq.cuh` | `4e48a37af4811e8e` | Trellis bit extraction and dequantization to MMA fragments |
+| `quant/codebook.cuh` | `0e3c63b323f8d3cc` | The procedural codebooks (3INST, mcg, mul1) |
+| `quant/hadamard_inner.cuh` | `8d8e437aced88735` | 128-point Hadamard transforms by warp shuffle, and activations |
+| `quant/exl3_kernel_map.cuh` | `91fa4be2b7b23cc3` | Kernel signatures, tile shapes and table macros; host selector declarations |
+| `quant/exl3_devctx.cuh` | `effb1827e9b6c61b` | Lock-area and workspace sizes; the device-context class, declared only |
+| `ptx.cuh` | `8ceacb1b321af587` | Inline PTX for MMA, `ldmatrix`, `cp.async`, barriers; a group barrier on libcu++'s `cuda::atomic_ref` |
+| `util.cuh` | `1907cea115260db7` | Half vector types and helpers; exiting CUDA and cuBLAS error checks. **Patched** (0001) |
+| `util.h` | `ba89ac6793bf31cf` | Min/max and debug macros; TORCH_CHECK wrappers, unused |
+| `compat.cuh` | `dd6038fa6eb8b28d` | `tanh` approximation |
+
+**Patches** (`third_party/patches/exllamav3/`, MIT AND Apache-2.0 for
+0001, which carries upstream context; Apache-2.0 for 0002):
+- `0001` removes `util.cuh`'s `cuda_check`, `gpu_assert`,
+  `cublas_check` and `cublas_assert`, which print and call `exit()`
+  (D-066). They are inline code in a header, so a guard macro could not
+  keep them out of a unit that includes it without the macro; a tooling
+  test refuses any kept file that can end the process (host exits, aborts
+  and asserts; device traps and asserts). It also drops a no-op `register` from four
+  arrays in `exl3_gemm_inner.cuh`: NVCC rejects it with a Clang host compiler.
+- `0002` adds `jitllm/CMakeLists.txt`, jitLLM's build of the four units.
+
+The SASS of the 14 GEMM kernels the P0 launch record names equals the
+recorded hashes ([plan](plan.md)); the record names no other kernel built
+here.
+
+**Comparison with QTIP and the GEMV kernel.** A token-run comparison (C
+tokens, comments removed) set every kept file against QTIP's kernel sources
+at `e90c6688` (`qtip-kernels/src/`: `inference.cu`, `inference.h`,
+`qtip_torch.cu`, `test.cu`, `wrapper.cpp`) and against the pinned
+`exl3_gemv_kernel.cuh` and `exl3_moe_coop_kernel.cuh`:
+- **QTIP.** No shared run is longer than 11 tokens (include lists, loop
+  headers, `asm volatile` operand lists), except one: `util.cuh`'s
+  `gpu_assert` shares 32 tokens with QTIP's `gpuAssert` in `inference.h`.
+  Both copy the common CUDA error-check idiom posted on Stack Overflow.
+  Patch 0001 removes it.
+- **The GEMV kernel.** `exl3_gemm_kernel.cuh` shares a 103-token input
+  Hadamard prologue with it, `exl3_dq.cuh` 91 tokens of bit extraction and
+  `codebook.cuh` 62 tokens of mcg decoding. Upstream's history gives the
+  direction:
+  - each run is already in the kept file's version before the GEMV
+    kernel's: the prologue at `df1a9690` (2026-05-01), the others at
+    `0f2da5d6` (2025-10-12);
+  - the GEMV kernel arrived at `377c8423` (2025-10-22) and was rewritten
+    at `485fa6c0` (2026-07-08), and neither commit changed a kept file;
+  - two later commits changed both: `405028b7` added a missing `break;` to
+    `hadamard_inner.cuh`, and `07b8a2e0` added half-integer rates to every
+    kernel. Neither carries GEMV code into a kept file.
+
+  So the GEMV kernel reuses the GEMM kernels' code, not the reverse. None
+  of the kept files follows the GEMV kernel's body.
+- **The gated MoE kernel.** `exl3_moe_coop_kernel.cuh`, which includes
+  the GEMV kernel, shares a 66-token Hadamard butterfly with
+  `hadamard_inner.cuh`. The run is already in `hadamard_inner.cuh` before
+  the MoE kernel arrived (`58d4d73`, 2026-09-13). The only commit that
+  changed the MoE kernel and a kept file is `07b8a2e0` above, which leaves
+  `hadamard_inner.cuh` alone.
+
+That is an observation, not the structural comparison the GEMV gate
+requires, and not a finding that EXL3's format or GEMM owe nothing to
+QTIP's ideas. Ideas are not what D-017 audits; incorporated code is.
+
+**Platform code the kernels reach.** Through NVCC: CUDA's `cuda_fp16.h`,
+`cuda_bf16.h`, `cooperative_groups.h` and `cublas_v2.h` (declarations only;
+nothing links cuBLAS). `ptx.cuh` also includes libcu++'s `<cuda/atomic>`
+directly, and the multi-GEMM kernel's group barrier compiles its
+`cuda::atomic_ref` into device code. libcu++ is CCCL, recorded as platform
+code under Apache-2.0 WITH LLVM-exception; decision 5 above covers CCCL
+reached through CUDA headers, and whether it also covers this direct
+include is open question 2.
+
+**Obligations.** None while only tests link the kernels. Once the owner
+has cleared them, a shipped binary that links them carries ExLlamaV3's MIT
+text in its third-party notices (the lock's `notices`, with `use` set to
+`product`). No source offer is owed.
+
+**Open questions for the owner** (both unresolved):
+1. Whether this audit (the per-file record and the comparisons above)
+   clears the GEMM kernels for the core. The alternative is the GEMV gate's
+   structural comparison with QTIP, done for these files too.
+2. Whether decision 5's CCCL classification ("reached through CUDA
+   headers") also covers libcu++ included directly by incorporated code,
+   as `ptx.cuh` does.
 
 ## Reference instrumentation
 

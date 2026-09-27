@@ -34,7 +34,10 @@ and checks:
   a linker script or anything else; and the only shared libraries linked
   from the SDK are the sysroot's glibc, NVIDIA's driver stub, libcuda.so,
   which binaries resolve to the driver's libcuda.so.1 at run time (D-072),
-  and the pinned cuBLAS, libcublas.so.13 and libcublasLt.so.13 (D-076).
+  and the pinned cuBLAS, libcublas.so.13 and libcublasLt.so.13 (D-076);
+- nothing the package ships (its executables, with every object, archive and
+  header they are built from) comes from a test-only component (the lock's
+  `use: test`), whose notices the package does not carry.
 """
 
 import argparse
@@ -52,6 +55,9 @@ import sys
 HOST_PLATFORM_PACKAGES = ("libc6", "libc6-dev", "linux-libc-dev")
 # Libraries a link may name with -l: glibc's and the static CUDA runtime's.
 PLATFORM_LIBRARIES = ("c", "m", "dl", "rt", "pthread", "cudart_static", "cudadevrt")
+# The executables the package ships, as tools/jitllm_package.py's EXECUTABLES
+# names them (a tooling test keeps the two equal).
+SHIPPED_EXECUTABLES = ("src/cli/jitllm", "src/runtime/jitllm-runtime")
 # The SDK's cuBLAS, linked dynamically (D-076): the SDK-relative path of the
 # file its libcublas.so or libcublasLt.so resolves to, inside the unpacked libcublas package
 # (toolchains/manifest.toml, component cublas or cublas-sbsa-target).
@@ -226,6 +232,23 @@ def link_arguments(build_dir: pathlib.Path) -> dict[str, list[str]]:
     return links
 
 
+def expand_linker_options(arguments: list[str]) -> list[str]:
+    """A link's arguments with CMake's LINKER: options (-Wl,... or -Xlinker)
+    split into the linker arguments they carry."""
+    expanded = []
+    forwarded = iter(arguments)
+    for arg in forwarded:
+        if arg.startswith("-Wl,"):
+            expanded.extend(arg[4:].split(","))
+        elif arg.startswith(("-Xlinker=", "--linker-options=")):
+            expanded.extend(arg.split("=", 1)[1].split(","))
+        elif arg in ("-Xlinker", "--linker-options"):
+            expanded.extend(next(forwarded, "").split(","))
+        else:
+            expanded.append(arg)
+    return expanded
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--build-dir", type=pathlib.Path, required=True)
@@ -300,27 +323,58 @@ def main() -> int:
         for path in paths:
             classify(path, output)
 
+    # What the package ships is never built from a test-only component: the
+    # package carries only the notices of `use: product` components. Each
+    # shipped executable's recursive inputs (sources, objects, archives,
+    # component stamps) and the headers its objects were compiled from.
+    test_only = {cid for cid, c in components.items() if c.get("use") == "test"}
+    link_edges = link_arguments(args.build_dir)
+
+    def component_of(path: str) -> str | None:
+        full = os.path.normpath(path if os.path.isabs(path) else os.path.join(build, path))
+        for location in {full, os.path.realpath(full)}:
+            if within(location, os.path.join(build, "third_party")):
+                top = "/".join(os.path.relpath(location, build).split("/")[:2])
+                if top in outputs:
+                    return outputs[top]
+            for cid, tree in trees.items():
+                if within(location, tree):
+                    return cid
+        return None
+
+    for shipped in SHIPPED_EXECUTABLES:
+        if shipped not in rules:
+            continue
+        closure = [p for p in subprocess.run([args.ninja, "-C", str(args.build_dir), "-t", "inputs", "-0", "-E",
+                                              shipped], capture_output=True, text=True,
+                                             check=True).stdout.split("\0") if p]
+        # A path in the link's flags (a LINKER: option), bare or as a linker
+        # script's value, is read by the linker though it is no input of the
+        # edge.
+        for arg in expand_linker_options(link_edges.get(shipped, [])):
+            if arg.startswith(("--script=", "--version-script=")):
+                closure.append(arg.split("=", 1)[1])
+            elif arg.startswith("-T") and len(arg) > 2:
+                closure.append(arg[2:])
+            elif arg and not arg.startswith("-"):
+                closure.append(arg)
+        for path in [shipped, *closure]:
+            for used_path in [path, *inputs.get(os.path.normpath(path), inputs.get(path, []))]:
+                cid = component_of(used_path)
+                if cid in test_only:
+                    problems.append(f"{shipped}, which the package ships, is built from {cid}, a test-only "
+                                    f"component whose notices it does not carry ({used_path})")
+
     # What links consume, from their dependency records and their edges.
     link_inputs = {path for output, paths in inputs.items() if "_LINKER__" in rules.get(os.path.normpath(output), "")
                    for path in paths}
-    for output, arguments in link_arguments(args.build_dir).items():
+    for output, arguments in link_edges.items():
         link_inputs.update(a for a in arguments if not a.startswith("-"))
         linked = (pathlib.Path(build) / output).exists()
         # CMake's LINKER: options arrive as -Wl,... or -Xlinker. Inspect
         # their payload as well as direct driver flags (especially for CUDA,
         # whose link rules do not produce a linker dependency file).
-        expanded = []
-        forwarded = iter(arguments)
-        for arg in forwarded:
-            if arg.startswith("-Wl,"):
-                expanded.extend(arg[4:].split(","))
-            elif arg.startswith(("-Xlinker=", "--linker-options=")):
-                expanded.extend(arg.split("=", 1)[1].split(","))
-            elif arg in ("-Xlinker", "--linker-options"):
-                expanded.extend(next(forwarded, "").split(","))
-            else:
-                expanded.append(arg)
-        arguments = iter(expanded)
+        arguments = iter(expand_linker_options(arguments))
         for arg in arguments:
             if arg in ("-rpath", "--rpath", "-rpath-link", "--rpath-link", "-soname", "--soname",
                        "-z", "-u", "--undefined", "-e", "--entry", "--defsym", "-Map", "--dependency-file"):

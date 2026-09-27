@@ -14,6 +14,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -74,12 +75,205 @@ class CheckedInLock(unittest.TestCase):
                 self.assertTrue(url.startswith("https://"), f"{cid}: {url}")
 
     def test_core_selection(self):
-        self.assertEqual(srclib.select(srclib.load_lock(), []), ["ggml", "googletest", "tomlplusplus"])
+        self.assertEqual(srclib.select(srclib.load_lock(), []),
+                         ["exllamav3", "ggml", "googletest", "tomlplusplus"])
 
     def test_mise_tasks(self):
         tasks = tomllib.loads((REPO / "mise.toml").read_text())["tasks"]
         self.assertEqual(tasks["setup"]["run"], "python3 tools/setup")
         self.assertEqual(tasks["prepare"]["run"], "python3 tools/prepare-sources")
+
+
+class ExllamaV3Component(unittest.TestCase):
+    """The locked ExLlamaV3 subset: the pin, and a keep set that is exactly the GEMM kernels' closure.
+
+    The GEMV family stays out of every core build until its provenance gate closes (D-079,
+    docs/licensing.md), so neither it nor anything that includes it may be kept. The closure test
+    reads the prepared tree (`mise run prepare`) and is skipped where none exists.
+    """
+
+    COMMIT = "6b84a21b6f1e5da3f291b9e1019061f0de788279"
+    EXT = "exllamav3/exllamav3_ext/"
+    # The four compilation units the build compiles: the mcg codebook (cb1) at the M2 fixtures' rates.
+    UNITS = [EXT + "quant/comp_units/exl3_comp_unit_4_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_5_cb1.cu",
+             EXT + "quant/comp_units/exl3_comp_unit_6_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_8_cb1.cu"]
+    # Upstream files that must never be kept in the core component: the GEMV family and what
+    # includes or dispatches to it (D-079), the ATen host wrappers and bits_k.cuh's c10 include.
+    EXCLUDED = ["quant/exl3_gemv_kernel.cuh", "quant/exl3_gemv.cu", "quant/exl3_gemv.cuh",
+                "quant/comp_units/exl3_gemv_half_inst.cu", "quant/exl3_moe_coop_kernel.cuh",
+                "quant/exl3_moe_coop.cu", "quant/exl3_gemm.cu", "quant/exl3_kernel_map.cu",
+                "quant/exl3_devctx.cu", "quant/bits_k.cuh", "quant/reconstruct.cu", "quant/hadamard.cu"]
+
+    def setUp(self):
+        self.comp = srclib.load_lock()["components"]["exllamav3"]
+        self.keep = self.comp["archive"]["keep"]
+
+    def test_pin(self):
+        comp = self.comp
+        self.assertEqual(comp["upstream"]["commit"], self.COMMIT)
+        self.assertEqual(comp["archive"]["urls"],
+                         [f"https://github.com/turboderp-org/exllamav3/archive/{self.COMMIT}.tar.gz"])
+        self.assertEqual(comp["archive"]["sha256"],
+                         "63c3c7fe4adc281753d1dfd37110f772775a77a6dce72be068b3c23e07a915b0")
+        self.assertEqual(comp["archive"]["size"], 8628152)
+        self.assertEqual((comp["category"], comp["tier"], comp["use"]), ("implementation", "core", "test"))
+        self.assertNotIn("module", comp)
+        self.assertEqual(comp["license"]["expression"], "MIT")
+        self.assertEqual(comp["cmake"]["targets"], ["jitllm_exl3_headers", "jitllm_exl3_cuda"])
+
+    def test_patches_carry_their_license(self):
+        for patch in self.comp["patches"]:
+            path = REPO / "third_party" / patch["path"]
+            self.assertTrue(path.parent.name == "exllamav3", patch["path"])
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), patch["sha256"])
+            self.assertTrue(path.with_name(path.name + ".license").is_file(), patch["path"])
+
+    def test_keep_excludes_the_gemv_family(self):
+        self.assertIn("LICENSE", self.keep)
+        for path in self.keep:
+            self.assertNotIn("gemv", path)
+            self.assertNotIn("moe", path)
+            # Single files only: a kept directory would take whatever upstream adds to it.
+            self.assertTrue(path == "LICENSE" or (path.startswith(self.EXT) and path.endswith((".cu", ".cuh", ".h"))),
+                            path)
+        for path in self.EXCLUDED:
+            self.assertNotIn(self.EXT + path, self.keep)
+        units = [p for p in self.keep if p.endswith(".cu")]
+        self.assertEqual(sorted(units), sorted(self.UNITS))
+
+    # Names from licensing.md's GEMV gate list (the GEMV kernel, its wrapper and instances, the MoE
+    # cooperative kernels and their derivatives) and the source it cites. No kept file may name one.
+    GATED = re.compile(r"gemv|moe_coop|cooperative_moe|qtip", re.I)
+    # Calls that end the process (D-066; a served process never exits from inside a kernel library):
+    # host exits, aborts, asserts and fatal signals, and device traps, breakpoints and asserts
+    # (compiler builtins and cooperative_groups' _CG_ABORT among them), as calls or as PTX.
+    EXITING = re.compile(r"\b(?:std::)?(?:_?exit|_Exit|quick_exit|abort|terminate|assert|__assert\w*|__trap"
+                         r"|__builtin_\w*(?:trap|abort)|_CG_ABORT|__brkpt|raise|kill)\s*\(|\b(?:trap|brkpt)\s*;")
+
+    @classmethod
+    def include_closure(cls, tree: pathlib.Path, units: list[str], roots: list[str]) -> tuple[set[str], list[str]]:
+        """The tree files the units reach, as the compiler resolves includes, and what is wrong with them.
+
+        A quoted include is looked up beside the including file, then in the include roots; an angle
+        include in the roots only (then in the toolkit, which is not the tree). Both kinds are followed
+        wherever they resolve inside the tree: a kept file an angle include reaches is compiled as
+        surely as a quoted one.
+        """
+        seen, pending, problems = set(), list(units), []
+        while pending:
+            rel = pending.pop()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            text = (tree / rel).read_text()
+            if cls.GATED.search(text):
+                problems.append(f"{rel} names a gated file or source ({cls.GATED.search(text)[0]})")
+            for quote, name in re.findall(r'^\s*#\s*include\s*(["<])([^">]+)[">]', text, re.M):
+                if cls.GATED.search(name) or name.startswith(("ATen/", "c10/", "torch/", "pybind11/")):
+                    problems.append(f"{rel} includes {name}")
+                bases = ([os.path.dirname(rel)] if quote == '"' else []) + roots
+                found = next((os.path.normpath(os.path.join(base, name)) for base in bases
+                              if (tree / os.path.normpath(os.path.join(base, name))).is_file()), None)
+                if found is not None:
+                    pending.append(found)
+                elif quote == '"':
+                    problems.append(f"{rel} includes \"{name}\", which is not kept")
+        return seen, problems
+
+    def test_include_closure_follows_angle_includes_into_the_tree(self):
+        # A kept file reaching a gated header through the include root (-I), with angle brackets,
+        # is found and refused, as a quoted include is.
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = pathlib.Path(tmp)
+            for rel, text in {self.EXT + "quant/unit.cu": '#include <cuda_fp16.h>\n#include "../util.cuh"\n',
+                              self.EXT + "util.cuh": "#include <quant/other.cuh>\n",
+                              self.EXT + "quant/other.cuh": "#pragma once\n#include <quant/deep.cuh>\n",
+                              self.EXT + "quant/deep.cuh": "#pragma once\n"}.items():
+                (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+                (tree / rel).write_text(text)
+            seen, problems = self.include_closure(tree, [self.EXT + "quant/unit.cu"], [self.EXT.rstrip("/")])
+            self.assertEqual(problems, [])
+            self.assertEqual(seen, {self.EXT + p for p in ("quant/unit.cu", "util.cuh", "quant/other.cuh",
+                                                           "quant/deep.cuh")})
+            (tree / self.EXT / "quant/deep.cuh").write_text("#pragma once\n#include <quant/exl3_moe_coop_kernel.cuh>\n")
+            (tree / self.EXT / "quant/exl3_moe_coop_kernel.cuh").write_text("// derived from QTIP\n")
+            seen, problems = self.include_closure(tree, [self.EXT + "quant/unit.cu"], [self.EXT.rstrip("/")])
+            self.assertIn(self.EXT + "quant/exl3_moe_coop_kernel.cuh", seen)
+            self.assertTrue(any("includes quant/exl3_moe_coop_kernel.cuh" in p for p in problems), problems)
+            self.assertTrue(any("names a gated file or source (QTIP)" in p for p in problems), problems)
+
+    def test_keep_is_exactly_the_compiled_closure(self):
+        tree = srclib.prepared_dir(srclib.SOURCES_DIR, "exllamav3", self.comp)
+        if not tree.is_dir():
+            self.skipTest(f"{tree} is not prepared (mise run prepare)")
+        self.assertEqual(srclib.tree_digest(tree), self.comp["tree_sha256"])
+        # The build exposes one include root, the extension's directory, and compiles exactly the units.
+        build = (tree / "jitllm" / "CMakeLists.txt").read_text()
+        self.assertIn('set(ext "${CMAKE_CURRENT_SOURCE_DIR}/../exllamav3/exllamav3_ext")', build)
+        self.assertEqual(re.findall(r"target_include_directories\(([^)]*)\)", build),
+                         ['jitllm_exl3_headers INTERFACE "${ext}"'])
+        self.assertIn('foreach(bits IN ITEMS 4 5 6 8)', build)
+        self.assertIn('exl3_comp_unit_${bits}_cb1.cu', build)
+        # Every include, quoted or angle, that resolves in the tree is followed; nothing gated is reached.
+        seen, problems = self.include_closure(tree, self.UNITS, [self.EXT.rstrip("/")])
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(seen | {"LICENSE"}), self.keep)
+
+    def test_exiting_pattern_finds_every_way_to_end_the_process(self):
+        # Host exits, aborts and asserts, and device traps and asserts: a trapped kernel leaves the
+        # context unusable, so the process is as good as ended. Each is found where upstream would
+        # write it; static_assert and prose are not calls.
+        for snippet in ("if (abort) exit(code);", "std::exit (1);", "_exit(1);", "_Exit(1);", "quick_exit(0);",
+                        "abort();", "std::abort();", "std::terminate();", "assert(x == 1);",
+                        "__assert_fail(a, b, c, d);", "__assertfail(a, b, c, d, e);", "__trap();",
+                        "__builtin_trap();", "__brkpt();", 'asm volatile ("trap;");', 'asm("brkpt;");',
+                        "__builtin_abort();", "__builtin_debugtrap();", '__builtin_verbose_trap("a", "b");',
+                        "__assert_perror_fail(e, f, l, fn);", "_CG_ABORT();", "raise(SIGABRT);",
+                        "std::raise(SIGTERM);", "kill(getpid(), SIGKILL);"):
+            with self.subTest(snippet=snippet):
+                self.assertRegex(snippet, self.EXITING)
+        for snippet in ("static_assert(sizeof(int) == 4);", "// assert x is dtype T", "bool abort = true;",
+                        "// a served process never exits from inside a kernel library",
+                        "int exit_code = 0;", "trapezoid(x);", "// raise the limit", "skill(x);",
+                        "atexit_count(x);"):
+            with self.subTest(snippet=snippet):
+                self.assertNotRegex(snippet, self.EXITING)
+
+    CONTRACT = "src/kernels/exl3/launch_contract.h"
+
+    def test_launch_contract_covers_every_kept_kernel(self):
+        # A kept kernel waits on other blocks (cooperative_groups' grid sync, which traps unless the
+        # launch was cooperative, and spin barriers, which hang unless every block is co-resident),
+        # so the launch contract the launchers include names each, and the kernel tables include it.
+        tree = srclib.prepared_dir(srclib.SOURCES_DIR, "exllamav3", self.comp)
+        if not tree.is_dir():
+            self.skipTest(f"{tree} is not prepared (mise run prepare)")
+        kernels = set()
+        for rel in self.keep:
+            text = (tree / rel).read_text()
+            for match in re.finditer(r"\b__global__\b", text):
+                end = min(i for i in (text.find("{", match.end()), text.find(";", match.end()), len(text)) if i >= 0)
+                declarator = re.sub(r"__launch_bounds__\s*\([^)]*\)", "", text[match.end():end])
+                kernels.add(re.search(r"(\w+)\s*\(", declarator)[1])
+        self.assertEqual(kernels, {"exl3_gemm_kernel", "exl3_mgemm_kernel"})
+        contract = (REPO / self.CONTRACT).read_text()
+        for kernel in kernels:
+            self.assertRegex(contract, rf"\b{kernel}\b")
+        self.assertIn(f'#include "{self.CONTRACT.removeprefix("src/")}"',
+                      (REPO / "tests/unit/exl3_tables.h").read_text())
+
+    def test_no_kept_file_can_end_the_process(self):
+        # Patch 0001 removes upstream's exiting error checks from util.cuh outright: they are inline
+        # host code in a header, so any translation unit that reaches the header without a guard
+        # macro (or undefines one) would compile them. No kept file, patched, may call one.
+        tree = srclib.prepared_dir(srclib.SOURCES_DIR, "exllamav3", self.comp)
+        if not tree.is_dir():
+            self.skipTest(f"{tree} is not prepared (mise run prepare)")
+        for rel in self.keep:
+            text = (tree / rel).read_text()
+            found = [m[0] for m in self.EXITING.finditer(text)]
+            self.assertEqual(found, [], f"{rel} can end the process: {found}")
+        self.assertNotRegex((tree / self.EXT / "util.cuh").read_text(), r"#\s*define\s+(?:cuda|cublas)_check")
 
 
 class Validation(unittest.TestCase):

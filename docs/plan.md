@@ -480,6 +480,61 @@ reservation policy) were recorded in M0.
         [report](experiments/launch-overhead/README.md)). Per-token figures
         against upstream's decode wait for a native decode step (P2).
 
+      - **ExLlamaV3's GEMM kernels enter the build** as the source lock's
+        `exllamav3` component: the reference revision's archive
+        (`6b84a21b`), narrowed by `archive.keep` to exactly the closure of
+        upstream's compilation units for the mcg codebook at K = 4, 5, 6
+        and 8 (19 files and `LICENSE`), with two patches, as GGML entered
+        (D-077). Patch 0001 removes `util.cuh`'s exiting error checks
+        and drops four no-op `register` specifiers that NVCC rejects with
+        a Clang host compiler; 0002 adds jitLLM's build, which reproduces
+        the P0 reference's device flags. Neither the GEMV family (D-079)
+        nor any ATen host wrapper is kept; a tooling test fails if `keep`
+        differs from the units' include closure (quoted and angle
+        includes) or a kept file can end the process. The reconstruction,
+        Hadamard and bias-add kernels share their `.cu` files with ATen
+        wrappers and come with the launchers. The per-file audit is in
+        [licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2);
+        whether it clears the kernels, and whether decision 5 covers
+        `ptx.cuh`'s direct libcu++ include, are the owner's open questions,
+        so no packaged binary links them (`sources.closure` refuses one
+        built from a `use: test` component).
+        - In every profile, `unit.Exl3ContextTest.*` checks the device
+          context's sizes from the kept `exl3_devctx.cuh` (4,202,760 B of
+          lock slots, a 16 MiB workspace). In every CUDA profile,
+          `unit.Exl3KernelTablesTest.*` links the 64 kernels' tables. On
+          `spark-b`, `unit.Exl3KernelsGpuTest.*` loads each from its sm_121
+          SASS, and each of the 14 GEMM kernels the P0 launch record names
+          uses the recorded registers.
+        - The 14 kernels' SASS equals the recorded hashes in the `native`
+          and `cross` builds' archives and in the linked test binary
+          (cuobjdump 13.0.85 on `spark-b`, 2026-09-27). All 64 kernels'
+          SASS is identical across both builds and a standalone compile
+          with upstream's exact PyTorch flags. P0's `sass_hashes.py` hashes
+          the last function of each cubin together with the next member's
+          header, so that hash depends on its container; none of the 14 is
+          affected, and the other 12 recorded ExLlamaV3 hashes are
+          re-derived before use ([P0 report](experiments/backend-proof-p0/README.md)).
+        - Each CUDA profile compiles the four units in 75 to 113
+          CPU-seconds (19 to 28 s each; the workstation idle, then loaded).
+
+      Remaining in P1:
+      - the allocation census, under the pre-registered rule;
+      - the first native EXL3 linear (its launchers, and the
+        reconstruction, Hadamard and bias-add kernels). The launchers
+        include and keep `src/kernels/exl3/launch_contract.h`, which a
+        tooling test requires to name every kept kernel: launch each
+        cooperatively, within the co-resident block limit, as upstream's
+        `exl3_gemm.cu` does, and give each launch lock slots (and the
+        multi-GEMM kernel's selection state) that no concurrently running
+        launch shares. `cooperative_groups`' grid sync traps (`_CG_ABORT`)
+        when the launch was not cooperative, and a trap loses the CUDA
+        context; the split-K locks and, from sm_90 on, the multi-GEMM
+        kernel's group barrier spin instead, so a grid whose blocks are not
+        all resident hangs, and on sm_121 some multi-GEMM launches reach no
+        grid sync at all. The kept files hold no trap of their own; all
+        160 in the four units' SASS are that sync's (checked 2026-09-27).
+
       *P2 prerequisites* ([scope](backend-proof.md#p2-prerequisites)):
       - **FP16 memory limits and the census rule,** pre-registered under
         D-079 before any native FP16 run
@@ -517,10 +572,6 @@ reservation policy) were recorded in M0.
           matched `control-fused` from token 6, registers and SASS
           included. The result is incomplete by design: it is a fragment,
           with no cuBLAS call and so no cuBLAS logs.
-
-      Remaining in P1:
-      - the allocation census, under the pre-registered rule;
-      - the first native EXL3 linear.
 
       *P2 started:* **`src/artifact/`** reads v0 prepared artifacts
       natively (no importer; artifacts still come from M0's prototype).

@@ -9,6 +9,14 @@ they came from, how its license was classified and how it builds. Nothing
 else enters the build. [source-dependencies.md](../docs/source-dependencies.md)
 explains the mechanism and why it was chosen.
 
+It holds four core components: GoogleTest, toml++, GGML (D-077) and
+ExLlamaV3's GEMM kernels; all but toml++ link only into tests so far
+(`use: test`). The last two are adapted sources:
+each is its upstream archive narrowed by `archive.keep`, with the reviewed
+patches in [patches/](patches/)`<id>/` that add jitLLM's build of the
+files it compiles. [licensing.md](../docs/licensing.md) records their
+audits.
+
 | Step | Where | Does |
 | --- | --- | --- |
 | Prepare | `mise run prepare` ([tools/prepare-sources](../tools/prepare-sources)); `mise run setup` runs it after the SDK | Validates the lock, selects the profile's closure, then fetches each archive into the persistent cache (`~/.cache/jitllm/downloads/<sha256>/`, shared with the SDK and re-verified on every use). One parser, Python's `tarfile`, both checks and unpacks it (D-078): it refuses an archive with anything but plain files and directories at safe paths, two members at one path or a member inside a file member, then writes the checked members through tarfile's `data` filter, stripping a single top-level directory and keeping only the `archive.keep` paths if the lock names any. The unpacked tree must hold only directories and singly linked regular files. It then applies the recorded patches and checks the tree digest before the tree appears as `build/sources/<id>-<tree>` |
@@ -25,8 +33,10 @@ alike: remove the tree and prepare again, or use an override (below). The
 inventory recorded by Ninja against the receipt. The inventory accepts a
 build-tree file only if a current build rule or a selected component's
 build directory produced it. No compiled or linked object or archive outside
-the SDK may contain exception support (D-066). See
-[tests/sources/](../tests/sources/).
+the SDK may contain exception support (D-066). Nothing the package ships
+(`jitllm`, `jitllm-runtime`, and every object, archive and header they are
+built from) may come from a `use: test` component, whose notices the
+package does not carry. See [tests/sources/](../tests/sources/).
 
 ## Profiles
 
@@ -74,7 +84,7 @@ saw.
 | `version`, `upstream` | The release, its repository, tag and full commit |
 | `kind` | `archive`, a hash-pinned upstream archive. Adapted sources come as an archive with patches (D-077); vendored units (`third_party/<id>/` in Git) are not supported |
 | `category`, `tier`, `module` | D-017's classification. `implementation` is incorporated code. `core` needs an allowlisted license (Apache-2.0, BSD-2-Clause, BSD-3-Clause, MIT or MPL-2.0); `optional` needs a `module`. A core component never depends on an optional one |
-| `use` | `test` if only test executables link it (never shipped), else `product` |
+| `use` | `test` if only test executables link it (never shipped; `sources.closure` refuses a shipped executable built from it), else `product` |
 | `machine` | `target`: built with the profile's target toolchain. Build-host tools and generators are not supported until the first one needs a host build |
 | `archive` | `file`, `urls` (https), `sha256` and `size`. Bytes that change under the same URL are an error, not a lock update. A tar archive, plain or gzip-, xz- or bzip2-compressed, judged by its leading bytes. Members must be plain files and directories, one per path, none inside a file member. Optional `keep`: the paths (files or directories, relative to the unpacked tree, sorted, none inside another) that preparation keeps; the rest is never written and never reaches the tree digest, configure or the build. Every kept path must hold a file; a discarded member's name need only be printable ASCII without `\`. `keep` narrows the tree, not the license review: an archive holding implementation outside the component's tier still cannot be fetched and filtered ([source-dependencies.md](../docs/source-dependencies.md)) |
 | `patches` | Ordered `path` (relative to this directory, conventionally `patches/<id>/`) and `sha256`, applied exactly: git-style unified diffs of text files with no fuzz, renames, mode changes or binary hunks. Text before the first file and git's signature are skipped; any other line between files is an error |

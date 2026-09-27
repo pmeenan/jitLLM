@@ -51,6 +51,7 @@ class Inventory(unittest.TestCase):
         self.extra_edges = ""
         self.symbols = ""  # what the fake llvm-nm -A -u reports
         self.sections = ""  # what the fake llvm-readelf -S reports
+        self.closures = {}  # what the fake ninja -t inputs reports for one target
 
     def ninja(self, command, **kwargs):
         if command[0].endswith(("llvm-nm", "llvm-readelf")):
@@ -59,8 +60,10 @@ class Inventory(unittest.TestCase):
         tool = command[command.index("-t") + 1]
         if tool == "targets":
             out = "".join(f"{name}: {rule}\n" for name, rule in self.targets.items())
-        elif tool == "inputs":
+        elif tool == "inputs" and command[-1] == "all":
             out = "\0".join(sorted(self.default_inputs)) + "\0"
+        elif tool == "inputs":
+            out = "".join(f"{path}\0" for path in self.closures.get(command[-1], []))
         elif tool == "deps":
             out = ""
             for name in command[command.index("deps") + 1:]:
@@ -246,6 +249,75 @@ class Inventory(unittest.TestCase):
         self.targets["libown.a"] = "CXX_SHARED_LIBRARY_LINKER__own"
         self.link_lines = "  LINK_LIBRARIES = libown.a\n"
         self.check(1, "a link uses the shared library libown.a")
+
+    RUNTIME = "src/runtime/jitllm-runtime"
+
+    def ship(self, *built_from):
+        """A test-only component the test executable uses, and the shipped runtime built from built_from."""
+        tree = self.prepared / ("testonly-" + "b" * 16)
+        tree.mkdir()
+        self.receipt["components"][0]["use"] = "product"
+        self.receipt["components"].append({"id": "testonly", "source_tree": "b" * 64, "source": str(tree),
+                                           "use": "test"})
+        self.targets["test_object.o"] = "CXX_COMPILER__example"
+        self.deps["test_object.o"] = [str(tree / "kernel.cc"), str(tree / "kernel.h")]
+        self.link_inputs = "object.o test_object.o"
+        self.deps["app"].append("test_object.o")
+        self.targets[self.RUNTIME] = "CXX_EXECUTABLE_LINKER__runtime"
+        self.extra_edges += f"build {self.RUNTIME}: CXX_EXECUTABLE_LINKER__runtime {' '.join(built_from)}\n"
+        self.closures[self.RUNTIME] = list(built_from)
+        return tree
+
+    def test_shipped_executable_from_product_components_accepted(self):
+        self.ship("object.o")
+        self.check()
+
+    def test_shipped_executable_linking_a_test_only_component_rejected(self):
+        # Its notices are not in the package (tools/jitllm_package.py ships only `use: product` ones).
+        self.ship("object.o", "test_object.o")
+        self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only component")
+
+    def test_shipped_executable_including_a_test_only_header_rejected(self):
+        tree = self.ship("object.o", "runtime.o")
+        self.targets["runtime.o"] = "CXX_COMPILER__example"
+        self.deps["runtime.o"] = [str(self.source / "runtime.cc"), str(tree / "kernel.h")]
+        self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only component")
+
+    def test_shipped_executable_linking_a_test_only_component_output_rejected(self):
+        self.ship("object.o", f"third_party/testonly-{'b' * 16}/libkernels.a")
+        self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only component")
+
+    def test_shipped_executable_linking_a_test_only_archive_through_linker_options_rejected(self):
+        # A path in LINK_FLAGS (target_link_options(... "LINKER:...")) is no Ninja input of the edge,
+        # but the linker reads it all the same, alone or inside a -Wl, or -Xlinker list.
+        archive = f"third_party/testonly-{'b' * 16}/libkernels.a"
+        for flags in (f"-Wl,--whole-archive,{archive},--no-whole-archive", f"-Xlinker {archive}",
+                      f"-Wl,--push-state -Wl,{archive} -Wl,--pop-state"):
+            with self.subTest(flags=flags):
+                self.setUp()
+                self.ship("object.o")
+                self.extra_edges += f"  LINK_FLAGS = {flags}\n"
+                self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only "
+                              "component")
+
+    def test_shipped_executable_linking_a_test_only_linker_script_rejected(self):
+        # A linker script can name inputs of its own (INPUT, GROUP); one passed as an option's
+        # value is read as surely as a bare path.
+        script = f"third_party/testonly-{'b' * 16}/kernels.ld"
+        for flags in (f"-Wl,--script={script}", f"-Wl,-T{script}", f"-Xlinker -T{script}",
+                      f"-Xlinker=--script={script}"):
+            with self.subTest(flags=flags):
+                self.setUp()
+                self.ship("object.o")
+                self.extra_edges += f"  LINK_FLAGS = {flags}\n"
+                self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only "
+                              "component")
+
+    def test_shipped_executables_are_the_packaged_ones(self):
+        sys.path.insert(0, str(SCRIPT.parents[2] / "tools"))
+        import jitllm_package  # noqa: PLC0415 (the package tool needs the tools directory on the path)
+
+        self.assertEqual(closure.SHIPPED_EXECUTABLES, tuple(built for built, _ in jitllm_package.EXECUTABLES))
 
     def test_static_archive_external_object_rejected(self):
         self.link_rule = self.targets["app"] = "CXX_STATIC_LIBRARY_LINKER__app"

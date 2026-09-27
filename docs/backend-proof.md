@@ -1237,7 +1237,11 @@ reference container.
   - Native's ExLlamaV3 port is compiled as the reference is: NVCC 13.4.92,
     `-O3 --use_fast_math`, SASS for `sm_121` (not `sm_121a`), with the same
     sources. That is what makes the launch record's SASS hashes a
-    requirement native can meet.
+    requirement native can meet. The locked build meets it for the 14 GEMM
+    kernels the record names (the source lock's `exllamav3` component,
+    [plan.md](plan.md)). It also reproduces the device-code flags that
+    PyTorch's extension builder adds: the four `__CUDA_NO_HALF*` macros,
+    `--expt-relaxed-constexpr` and C++20.
   - Per case and session:
     `d = (candidate median / reference median − 1) / (σ · √½)`. Here each
     arm's median is taken over all 124 of its samples, and √½ reflects the

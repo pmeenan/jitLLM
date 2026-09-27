@@ -90,6 +90,10 @@ narrowed by `archive.keep` to the paths the build uses, with reviewed
 patches and a jitLLM build file added by patch. The archive's hash proves
 the origin bytes and the patches are the local changes, so nothing is
 vendored into Git.
+ExLlamaV3's GEMM kernels enter the same way, as the `exllamav3`
+component: `keep` holds exactly the closure of the four compilation units
+the build compiles, which excludes the GEMV family (D-079) and every ATen
+host wrapper ([licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2)).
 
 GGML and EXL3 reference revisions in D-051/D-052 are candidate origins, not
 an instruction to import their whole repositories or runtimes. The

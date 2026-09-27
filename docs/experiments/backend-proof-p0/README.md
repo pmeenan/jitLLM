@@ -1070,3 +1070,15 @@ the llama.cpp source at `b29c606e2`.
   - `compare` compared the two extension builds, giving
     [`exl3-sass-compare.json`](exl3-sass-compare.json).
   - `merge` added the 13.4.92 build's hashes to the launch recordings.
+  - **Caveat (found 2026-09-27).** `hash` ends a function only at the
+    next `Function :` line, so the last function of each cubin also
+    hashes the text `cuobjdump` prints before the next one: the `Fatbin`
+    header and, in an archive, the `member` line with its path. That
+    hash depends on the container, not only the SASS. In jitLLM's
+    locked build it changes three kernels' hashes between an object, its
+    archive and a linked binary. None of the 14 GEMM kernels the launch
+    record names is affected: the locked build reproduces all 14. The 12
+    other recorded ExLlamaV3 hashes (Hadamard, reconstruction, bias add)
+    are unchecked. Before a native build is judged against them, re-hash
+    the reference extension with a hasher that ends each function at a
+    `Fatbin` line, as `fp16_plan.py sass-hash` does.
