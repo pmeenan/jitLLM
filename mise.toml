@@ -48,7 +48,7 @@ description = "Build the cross preset from locked sources and its arm64 Debian p
 run = "python3 tools/build package"
 
 [tasks.check]
-description = "The check gate for every change: formatting, clang-tidy, tooling tests, native, CPU-only and cross builds and tests"
+description = "The workstation check tier, at milestone gates and for host-needing changes (D-084): formatting, clang-tidy, tooling tests, native, CPU-only and cross builds and tests"
 run = "python3 tools/check"
 
 [tasks."check:full"]

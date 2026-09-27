@@ -33,6 +33,50 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-084: One check set per slice, on a Spark; the workstation tiers at milestone gates and for host-only needs  (2026-09-27, status: accepted; amends D-061's "`check` on every change" and its `check:full` for blast-radius changes, D-011's native ARM build as only a diagnostic, and the heavy path's fix/verify rounds in workflow.md)
+
+**Decision.** The owner, on 2026-09-27: "We probably only need one set of
+checks for everything except for a milestone gate as well (spark unless
+linux host capabilities are needed to minimize contention)." Work lands in
+larger slices, each checked once on its final state with the Spark set:
+`mise run test -- spark-native --locked` on `spark-b` (the whole build
+and every test, GPU tests included, in the core profile from locked
+sources) plus, locally, the light steps a change touches (formatting of
+changed files, the REUSE and header checks when files are added, the
+tools/ tests it affects). D-061's workstation tiers run at each milestone
+gate and for changes that need the Linux host: x86-64 or CPU-only builds,
+qemu, the reference container, the package, toolchain or source-lock
+changes, or behaviour only a sanitizer build shows. Review and challenge
+rounds iterate on the Spark set, and a round that finds only low-severity
+issues fixes them without another round.
+
+**Context.** On 2026-09-26/27 an overnight run landed 17 commits. Each
+review and challenge round re-ran `check`, `check:full` and `check:spark`
+(observed at 30–60 minutes each in that run's logs), queued behind the
+workstation's performance measurements (the host lock); that cost more
+than the work. A `spark-native` build and full test run took 57 s of wall
+time on `spark-b` on 2026-09-27 (401 tests, 27 on the GPU) and never
+contends with the measurements. Two check tiers run at once on
+one tree also clobbered each other's build directories.
+
+**Consequences.** x86-64-only and CPU-only regressions, qemu-only,
+sanitizer-only and clang-tidy findings surface at the next milestone gate
+or host-needing change, not per slice; the milestone gate runs all tiers
+on the milestone's final state. The per-slice build is `spark-native`,
+which D-011 kept as a diagnostic; the cross build stays the release and
+package profile and runs at every gate. Blast-radius changes keep the
+challenge pass but no longer run `check:full` per slice. `spark-native`
+has no sanitizer variants yet: a change runs `check:spark`'s sanitizer
+builds only when its builder or reviewer names a specific risk that needs
+them, and `spark-native` sanitizer presets are the intended follow-up.
+At most about two streams of work run at once, each in its own worktree
+and its own copy on `spark-b`. Checks never run
+twice at once on one tree.
+
+**Reopen if.** A regression that a per-slice workstation tier would have
+caught costs more than the contention it avoids, hosted CI arrives, or the
+workstation stops hosting measurements.
+
 ## D-081: Weights and state live in device VMM; direct reads land in a bounded host-VMM zone and the GPU copies each extent in  (2026-09-27, status: accepted; amends D-034's in-place consumption, and so D-034's amendment of D-004's staging copy)
 
 **Decision.** The owner, on 2026-09-27: "If it fixes the L2 cache issue
@@ -2053,7 +2097,7 @@ version does not relax exact-version artifact readers. The release checklist
 (backports, LTS), or a surface needs version negotiation instead of exact
 matching.
 
-## D-061: A local, tiered check gate instead of hosted CI for now; the Sparks are never runners for the public repository  (2026-09-23, status: accepted; amends D-029's "CI runs" to the local gate; specializes D-011, D-012 and D-057's CI requirements)
+## D-061: A local, tiered check gate instead of hosted CI for now; the Sparks are never runners for the public repository  (2026-09-23, status: accepted; per-change cadence amended by D-084; amends D-029's "CI runs" to the local gate; specializes D-011, D-012 and D-057's CI requirements)
 
 **Decision.** Owner's answer on 2026-09-23: no hosted CI until the
 repository has external contributors. Every check that earlier decisions and
@@ -4757,7 +4801,7 @@ generator is never run on x86 by accident.
 **Reopen if.** mise cannot express a needed pin, or provisioning through it
 proves less reliable than a container-only approach.
 
-## D-011: Develop on x86-64 Linux; cross-compile for Spark; deploy and test over SSH  (2026-09-20, status: accepted)
+## D-011: Develop on x86-64 Linux; cross-compile for Spark; deploy and test over SSH  (2026-09-20, status: accepted; the per-slice check builds natively on a Spark by D-084)
 
 **Decision.** Editing, indexing, native builds, static analysis, and CPU tests
 happen on the x86-64 Ubuntu workstation. Spark (AArch64 CPU, GB10 GPU)

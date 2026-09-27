@@ -17,8 +17,10 @@ the main agent to).
 
 1. **Build.** One agent implements the task (scope from
    [plan.md](plan.md)), adds or updates tests for any behaviour change, runs
-   the repo's checks (D-061's local `mise run check`, `check:full` and
-   `check:spark` tiers; there is no hosted CI yet), and writes a
+   one check set on a Spark (D-084: `mise run test -- spark-native
+   --locked` on `spark-b`, plus the light local steps the change
+   touches; D-061's workstation tiers only where D-084 requires them),
+   and writes a
    handoff note: what changed, what was verified, on which host, and what
    was not run and why. The note goes in the agent's final message, for the
    commit; the docs themselves carry at most a one-line provenance stamp.
@@ -27,7 +29,8 @@ the main agent to).
    loss or corruption, invariant violations, security, broken behaviour,
    claims in docs the code doesn't back — not style or ceremony. Findings are
    file:line claims ranked by severity. The reviewer fixes what it finds (or
-   hands back to the builder for anything larger), re-runs the checks, and
+   hands back to the builder for anything larger), re-verifies with
+   targeted tests and the Spark check set (not the full tiers), and
    reports a review note the same way. A clean review is a valid result and
    is stated as such.
 3. **Commit.** The human reads both notes and the diff at whatever depth the
@@ -44,7 +47,8 @@ change that touches any of them gets, in addition to the loop above, an
 adversarial challenge pass — a reviewer whose brief is to break it: construct
 the input, race, cancellation, or failure that violates a pager invariant,
 corrupts an artifact, or escapes a bound — followed by fix/verify rounds until
-the challenge comes back clean.
+the challenge comes back clean or finds only low-severity issues, which are
+fixed without another round (D-084).
 
 - Memory manager, catalog, reservation/lease logic, eviction — anything the
   pager invariants in [architecture.md](architecture.md) govern.
@@ -67,12 +71,24 @@ downgrade a heavy-path change to the light loop on their own.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
-- **Say which checks ran where.** Native builds and CPU tests run on the
-  workstation, including AArch64 CPU tests under qemu-user (D-061). Anything
-  that needs a Spark (GPU, VMM, RDMA/NCCL, ARM concurrency, target I/O,
-  performance, distributed) runs on `spark` or `spark-b` (see
-  environment.md); when it was not run, the note
-  says so rather than implying it passed.
+- **Check cadence (D-084).** Work lands in slices, each checked once on
+  its final state. The per-slice set runs on a Spark: `mise run test --
+  spark-native --locked` on `spark-b` (full build and every test, GPU
+  included), plus locally the light steps the change touches (clang-format
+  on changed files, the REUSE and header checks when files are added, the
+  tools/ tests it affects). The workstation tiers (`check`, `check:full`,
+  `check:spark`) run at milestone gates, and for a change that needs the
+  Linux host: x86-64 or CPU-only builds, qemu, the reference container,
+  packaging, toolchain or source-lock changes, or sanitizer-only
+  behaviour. Review and challenge rounds iterate on the Spark set; a round
+  that finds only low-severity issues fixes them without another round.
+  Never run two check tiers on one tree at once.
+- **Say which checks ran where.** The workstation tiers' native builds and
+  CPU tests run on the workstation, including AArch64 CPU tests under
+  qemu-user (D-061). The per-slice set, and anything that needs a Spark
+  (GPU, VMM, RDMA/NCCL, ARM concurrency, target I/O, performance,
+  distributed), runs on `spark` or `spark-b` (see environment.md); when it
+  was not run, the note says so rather than implying it passed.
 - **Evidence, not adjectives.** A performance or capability claim in a note
   or doc carries the measurement and its provenance (host, driver, toolkit,
   artifact, policy) or is not made.
@@ -86,9 +102,11 @@ downgrade a heavy-path change to the light loop on their own.
   identities and retrieval/supply instructions with the replay harness.
 - **Tests travel with behaviour.** A behaviour change without a test needs a
   stated reason in the handoff note.
-- **One stream of work at a time.** Check `git status` first; if there are
-  changes you didn't make, you're iterating on in-flight work, not starting
-  fresh.
+- **At most about two streams of work at once** (D-084), each in its own
+  worktree and its own copy on `spark-b` (synced with `rsync -a --delete
+  --exclude /build/ --exclude /.git`). Check `git status` first; if there
+  are changes you didn't make, you're iterating on in-flight work, not
+  starting fresh.
 - **Scratch files stay out of the tree.**
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail

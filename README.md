@@ -103,7 +103,7 @@ and write to `build/<preset>/`:
 | `native` | x86-64, CUDA for `sm_121` | On the workstation, GPU tests skipped |
 | `cpu` | x86-64 with no CUDA toolkit | On the workstation |
 | `cross` | AArch64 for DGX Spark, CUDA for `sm_121` | Under qemu-user, GPU tests skipped; or on a Spark with `--host` |
-| `spark-native` | AArch64, built on a Spark (a diagnostic fallback) | On that Spark |
+| `spark-native` | AArch64, built on a Spark (each slice's check, D-084) | On that Spark |
 | `cpu-asan` | `cpu` with ASan, UBSan and LeakSanitizer | On the workstation |
 | `cross-asan` | `cross` with ASan and UBSan | Under qemu-user without leak detection; or on a Spark with it, with `--host` |
 | `cross-tsan` | `cross` with ThreadSanitizer | Only on a Spark, with `--host` |
@@ -204,15 +204,18 @@ to [CHANGELOG.md](CHANGELOG.md) in the same change (D-062).
 
 ## Checks
 
-Before handing off a change, run the local check gate (D-061; there is no
-hosted CI yet). Each tier ends with a summary of its steps and the host,
+Each slice of work is checked once on a Spark before handoff (D-084):
+`mise run test -- spark-native --locked` there, plus the light local steps
+the change touches. The local check gate's tiers (D-061; there is no hosted
+CI yet) run at milestone gates, for releases and for changes that need the
+workstation. Each tier ends with a summary of its steps and the host,
 commit and SDK they ran with:
 
 | Task | When | Runs |
 | --- | --- | --- |
-| `mise run check` | Every change | clang-format, REUSE lint, the embedded-header check, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
-| `mise run check:full` | Toolchain, dependency, packaging and blast-radius changes, and releases | `check`, then `cpu-asan` and `cross-asan`; the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network; the arm64 package, its inventory against the build receipt, `NOTICE` and the SBOM, and its install test in an arm64 container with no network; and the confined-job proof in your systemd user manager. Needs Docker |
-| `mise run check:spark -- --host <spark>` | Anything that needs the hardware | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests (`jitllm doctor` on the GB10 among them) and leak detection included |
+| `mise run check` | Milestone gates; changes that need the workstation | clang-format, REUSE lint, the embedded-header check, the tooling tests, the `native`, `cpu` and `cross` builds and tests (cross under qemu-user), and clang-tidy |
+| `mise run check:full` | Milestone gates; toolchain, dependency and packaging changes, and releases | `check`, then `cpu-asan` and `cross-asan`; the reference build: the checkout copied into the [reference container](.devcontainer/), its sources prepared from an empty cache, then `native`, `cpu` and `cross` built and tested with no network; the arm64 package, its inventory against the build receipt, `NOTICE` and the SBOM, and its install test in an arm64 container with no network; and the confined-job proof in your systemd user manager. Needs Docker |
+| `mise run check:spark -- --host <spark>` | Milestone gates; changes that need the Spark sanitizer builds | The `cross`, `cross-asan` and `cross-tsan` tests on that Spark, GPU tests (`jitllm doctor` on the GB10 among them) and leak detection included |
 
 Check builds configure afresh with the build tool's `--locked`: the core
 profile, from locked sources only, with nothing kept from a build

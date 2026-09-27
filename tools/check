@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Runs the local check gate's tiers (D-061).
+"""Runs the local check gate's tiers (D-061) at milestone gates and where D-084 asks.
 
-    tools/check [check]              every change, on the workstation
-    tools/check full                 toolchain, dependency, packaging and blast-radius changes
-    tools/check spark --host HOST    what needs a Spark, run there over SSH
+    tools/check [check]              milestone gates, and changes that need the workstation
+    tools/check full                 milestone gates; toolchain, dependency and packaging changes
+    tools/check spark --host HOST    milestone gates, and changes that need its Spark sanitizer builds
     tools/check TIER --list          the tier's steps, without running them
 
 `mise run check`, `mise run check:full` and `mise run check:spark -- --host

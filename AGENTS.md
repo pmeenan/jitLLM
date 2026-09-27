@@ -111,7 +111,9 @@ affected docs. Until then, these govern.
   not application configuration). Explicit CPU/GPU targets only, never
   `-march=native` or autodetection. Toolchain provisioning is declarative and
   pinned. Agents never invent compiler pins, measured numbers, supported
-  model combinations, or license permissions. (D-011, D-012)
+  model combinations, or license permissions. Each slice's check builds
+  natively on a Spark; the workstation tiers run at milestone gates.
+  (D-011, D-012, D-084)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
   jitLLM's own code is Apache-2.0. Incorporated core implementation uses
   Apache-2.0 / BSD / MIT / MPL-2.0; other implementation licenses live in
