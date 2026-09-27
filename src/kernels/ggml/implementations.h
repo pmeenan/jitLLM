@@ -13,6 +13,12 @@
 //                              RmsNormThenMul), as FP16-U runs it;
 // and the other operations the FP16 bridge's recorded plan launches, each
 // over its nodes in this order (Kernel):
+//   ggml.rms_norm                {rms_norm}              ops.h RmsNorm
+//   ggml.add                     {add}                   ops.h Add
+//   ggml.mul                     {mul}                   ops.h Mul
+//   ggml.mul_mat.mmvf            {mul_mat}               ops.h MulMatVecF
+//   ggml.mul_mat.mmf             {mul_mat}               ops.h MulMatF
+//   ggml.mul_mat.cublas          {mul_mat}               ops.h MulMatCublas
 //   ggml.get_rows                {get_rows}              ops.h GetRows
 //   ggml.set_rows                {set_rows}              ops.h SetRows
 //   ggml.rope.neox               {rope}                  ops.h Rope
@@ -39,8 +45,10 @@
 //   - the name, and a variant naming the launcher sequence.
 // Code outside the module, such as the provider that supplies the stream,
 // is not covered: it does not choose what is launched.
-// The remaining implementations in ops.h (RMSNorm, add, mul and the matrix
-// product families) join when a planner selects them.
+// The matrix product's three implementations are GGML's kernel families;
+// the plan names the one upstream selects on the device (ops.h
+// SelectMulMat; graph_plan.h), and each refuses operands upstream would
+// route elsewhere.
 //
 // A bound plan's implementation becomes a kernel here once, when the plan
 // is bound; each launch then runs that kernel's host checks and launchers

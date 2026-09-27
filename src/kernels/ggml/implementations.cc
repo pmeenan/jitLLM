@@ -73,7 +73,49 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 9> kKernels = {{
+constexpr std::array<Kernel::Entry, 15> kKernels = {{
+    {.name = "ggml.rms_norm",
+     .operation = execution::Operation::kRmsNorm,
+     .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckRmsNorm(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RmsNorm(launch, n[0]); }},
+    {.name = "ggml.add",
+     .operation = execution::Operation::kAdd,
+     .variant = "ggml_cuda_op_add: k_bin_bcast<op_add, float, float, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_ADD); },
+     .run = [](LaunchContext& launch, Nodes n) { return Add(launch, n[0]); }},
+    {.name = "ggml.mul",
+     .operation = execution::Operation::kMul,
+     .variant = "ggml_cuda_op_mul: k_bin_bcast<op_mul, float, float, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_MUL); },
+     .run = [](LaunchContext& launch, Nodes n) { return Mul(launch, n[0]); }},
+    {.name = "ggml.mul_mat.mmvf",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_mul_mat_vec_f: mul_mat_vec_f<T, type_acc, ncols, block, false, false> "
+                "as upstream selects; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMat(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecF(launch, n[0]); }},
+    {.name = "ggml.mul_mat.mmf",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_mul_mat_f: mul_mat_f<T, warp, cols, nwarps, false> as upstream "
+                "selects; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatF(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatF(launch, n[0]); }},
+    {.name = "ggml.mul_mat.cublas",
+     .operation = execution::Operation::kMatMul,
+     .variant = "GGML's cuBLAS path (mul_mat_cublas.cu): conversions, GemmEx, strided or "
+                "pointer-array batched GEMM on the lent handle, as upstream plans them",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMat(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatCublas(launch, n[0]); }},
     {.name = "ggml.get_rows",
      .operation = execution::Operation::kGetRows,
      .variant = "ggml_cuda_op_get_rows: k_get_rows_float_vec on 16-byte vectors, aligned rows "

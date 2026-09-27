@@ -133,6 +133,18 @@ add_executable(ggml_tensors_test ggml_tensors_test.cc)
 target_link_libraries(ggml_tensors_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_tensors_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The Qwen2 adapter (model/qwen2.h): binding a synthetic index to the
+# compiled-in profile, and a chunk's host-built inputs.
+add_executable(qwen2_test qwen2_test.cc)
+target_link_libraries(qwen2_test PRIVATE jitllm_model)
+jitllm_gtest(qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The Qwen2 chunk graph, its plan with and without fusion, and activation
+# placement (kernels/ggml/qwen2_graph.h, graph_plan.h).
+add_executable(ggml_graph_test ggml_graph_test.cc)
+target_link_libraries(ggml_graph_test PRIVATE jitllm_ggml_tensors jitllm_model)
+jitllm_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(ggml_validate_test ggml_validate_test.cc)
 target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)

@@ -553,6 +553,46 @@ reservation policy) were recorded in M0.
       `unit.ArtifactFixtureTest.*` opens the M0 fixtures (Qwen2.5 FP16, both
       EXL3 rates and Gemma 4) and matches the prototype's views of them.
       Next: page-in into host VMM (B2).
+
+      *Native FP16 at rung 3* ([report](experiments/backend-proof-p2/README.md)):
+      - **The model and its graph.** `src/model/` holds the Qwen2 adapter:
+        a compiled-in Qwen2.5-0.5B profile bound to the artifact's resources
+        at load, and each chunk's host-built inputs (n_kv padded to 256,
+        the cell layout, mask, positions, output rows). A reference-side
+        script checks the profile against the GGUF. `kernels/ggml/` builds
+        each chunk's graph as llama.cpp does (941 GPU nodes; the bridge
+        logs 942 with its CPU embedding lookup), plans it with upstream's
+        fusion gates in upstream's order and the device's kernel family,
+        places activations, and runs the plan bound through the registry,
+        which now declares RMSNorm, add, mul and the three product families.
+        `unit.Qwen2Test.*` and `unit.Qwen2GraphTest.*` cover the profile,
+        the inputs, the node order, both plans and the placement (activations
+        exactly A) in every profile.
+      - **The FP16 gate passes on all four arms** (2026-09-27, `spark-b`).
+        `benchmarks/fp16_exec.cc` loads the FP16 artifact with direct reads,
+        every chunk's digest checked, into `cudaMalloc`, and runs both
+        trajectories recorded from process start. For FP16-U and FP16-F,
+        `control` and `heldout`, `plan_compare.py` reports a complete match
+        (exit 0, with cuBLAS's logs, SASS and an nsys trace); only then were
+        the logits compared, and they are bit-identical to the bridge's, a
+        second evaluation equal to the first. BP-S1 closes.
+      - **The census fails on all four arms** under its pre-registered
+        rule. The bridge's `F` cap was measured first and written into
+        backend-proof.md, with one amendment made before any native census:
+        `MemAvailable` misses host memory on the per-CPU page lists
+        (RE-024), so readings add them. Native's 1.5 s reading wait was
+        set after the first (void) native readings were seen. Every native
+        phase places exactly its limit, and native's growth ends each
+        evaluation below the cap; the failures are sub-R excesses at
+        single warm-up steps and growth that reverses within a few
+        intervals. In a batch set aside for the final binary, FP16-F
+        `control` passed. For the owner: the rule as written resolves
+        neither, nor says how many runs a verdict takes.
+
+      Left for rung 4 and the BP-A cases: page-in of the same groups into
+      host VMM (B2) and the rung-4 comparison against these runs; the
+      restore evaluation (rung 5); the in-process pointer-coverage check
+      of BP-A1 against a real catalog rather than the harness's ledger.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

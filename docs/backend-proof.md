@@ -546,7 +546,10 @@ never bounded. Logits and restored storage must be bit-identical.
 
 - **FP16, native against the bridge (approved)**, on both FP16 profiles and
   both trajectories (rung 3), and therefore against the image reference as
-  well.
+  well. *Applied 2026-09-27 at rung 3 (`cudaMalloc`, `spark-b`):* on all
+  four arms the native plan matches `fp16-plan.json` completely and then
+  the logits are bit-identical, with BP-S1 exact on both implementations
+  ([P2 report](experiments/backend-proof-p2/README.md)).
   - The native GGML kernels are built as the bridge's are, for `sm_121a`
     (GGML's CMake maps `121-real` to it), since the SASS hashes must match.
   - The native executed plan must first match the bridge's recorded plan
@@ -1045,6 +1048,85 @@ count is subtracted once. They are charged as follows:
   interval is charged to the phase it falls in, or to the next phase if
   it falls between two. It must fit in that phase's `E` (BP-A2: lazy
   growth after the warm-up). `E` holds no allowance for it.
+
+**The FP16 `F` cap: measured and pre-registered under D-079 (2026-09-27),
+before any native census result was seen.** The bridge's census ran on
+`spark-b`, the host of the native runs
+([P2 report](experiments/backend-proof-p2/README.md#the-bridges-census-the-fp16-f-cap)):
+[`fp16_census.cc`](experiments/backend-proof-p2/fp16_census.cc), a
+reference-only harness linked against the P0 bridge build, and
+[`census.py`](experiments/backend-proof-p2/census.py), which attributes
+both harnesses' readings. Three processes per arm, all four arms; every
+run reproduced its arm's recorded logits.
+
+- **One amendment to the counters, made before any native census.** On
+  this kernel `MemAvailable` misses host memory: freed pages wait on the
+  per-CPU page lists, and allocations are served from them, without
+  moving the free-page count it reads. The host control, 64 MiB written,
+  moved `MemAvailable` by −15.8 to +70.6 MiB across the 12 runs, which
+  voids every run under the rule as written (RE-024). Every reading therefore adds the pages on those
+  lists (`/proc/zoneinfo`, each zone's pagesets `count`) to
+  `MemAvailable`, for the bridge and native alike. With that, the host
+  control moved 63.7 to 64.4 MiB (144 moves), the VMM control 64.0 to
+  64.6 MiB, and `cudaMalloc` 36.1 to 65.2 MiB (the one outlier below). Wherever this section says `MemAvailable`, it means that
+  sum.
+- **R** was 0.92 to 1.19 MiB in 11 of the 12 runs. In one, one
+  `cudaMalloc` control repeat moved 36 MiB (27.9 MiB gap; not void).
+- **Pinned host memory** (`cudaMallocHost`, 64 MiB) moved `MemAvailable`
+  by 65.4 to 65.9 MiB and `RssAnon` by nothing, so a pinned buffer is
+  counted once, by the catalog. The runtime keeps freed pinned memory, so
+  that probe runs only after the evaluation.
+- **The bridge's declared buffers** are its model, KV and compute buffers
+  by buffer type (`llama_get_memory_breakdown`), its output buffer (rows ×
+  151,936 × 4, as `output_reserve` sizes it), the GGML pool's committed
+  bytes after each chunk (P0's pool-peak record) and the 32 MiB cuBLAS
+  workspace.
+- **Steps.** A reading after the CUDA context (`cudaFree(0)`), one after
+  the controls, the end of setup (everything before the first phase: the
+  bridge's model and context creation, native's weights, KV and buffers),
+  and one after each chunk of the first evaluation. The bridge creates its
+  cuBLAS handle and workspace lazily, in its first phase that calls cuBLAS
+  (`control` chunk 0, `heldout` chunk 1), with cuBLAS's first-use state.
+  Native creates its handle at the same point, before that phase's first
+  launch, so the handle's growth falls in the same step on both sides.
+- **The cap** at each step is the largest of the three bridge processes'
+  cumulative unexplained growth at that step. Native's cumulative `F` at a
+  step is its cumulative unexplained growth, at most the cap. What exceeds
+  the cap and was not already charged at an earlier step is charged to
+  the step's phase, or, at the end of setup, to the persistent library
+  workspace. Every step's cap for every arm is in
+  [`fp16-f-caps.json`](experiments/backend-proof-p2/fp16-f-caps.json).
+
+  | Step (cumulative, MiB) | `control` fused | `control` unfused | `heldout` fused | `heldout` unfused |
+  | --- | ---: | ---: | ---: | ---: |
+  | context | 240.56 | 240.63 | 240.71 | 242.33 |
+  | end of setup | 256.85 | 256.54 | 260.86 | 262.52 |
+  | chunk 0 | 326.93 | 326.63 | 278.74 | 280.41 |
+  | chunk 1 | 326.98 | 326.68 | 346.08 | 347.75 |
+  | 512-row prefill (chunk 18) | — | — | 351.55 | 353.00 |
+  | last chunk | 327.00 | 326.69 | 351.56 | 353.02 |
+
+  The CUDA context accounts for about 240 MiB, and the first phase that
+  calls cuBLAS for about 67 to 70 MiB (cuBLAS's handle and first-use
+  state, and lazily loaded modules).
+- *Applied 2026-09-27 (native rung 3, `spark-b`):* all four arms fail.
+  Every phase places exactly its limit (A, S, I and L equal the itemized
+  terms), KV passes, and native's cumulative unexplained growth ends each
+  evaluation below the cap. What fails are charges of two kinds: warm-up
+  excesses of 0.08 to 0.70 MiB over the cap at single steps, below each
+  run's R (1.8 to 4.1 MiB), which the rule does not allow for (one, at
+  FP16-U `control`'s controls step, is charged to the persistent
+  workspace and takes it over its limit); and single-interval growth of
+  4.6 to 137 MiB that reverses within a few intervals. Native's readings
+  wait 1.5 s rather than the bridge's 250 ms. That wait moves no bound, but
+  it was set after the first native census readings (a void run at
+  250 ms) had been seen, and the bridge was not re-measured at 1.5 s. In
+  an earlier batch set aside for the final binary, FP16-F `control`
+  passed in a run valid under the rule
+  ([P2 report](experiments/backend-proof-p2/README.md#the-native-census)).
+  The outcome stands as measured; whether the rule should resolve
+  sub-R steps and reversing transients, and how many runs a verdict
+  takes, is for the owner.
 
 **What waits for CUPTI.** Without it, or an nsys trace (a host tool, used
 as P0 used it), these are out of reach:

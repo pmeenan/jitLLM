@@ -30,6 +30,30 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-024: MemAvailable misses host memory held on the per-CPU page lists  (2026-09-27, status: worked-around)
+
+Environment: `spark-b` (kernel 7.0.0-1019-nvidia, 4 KiB pages, 20 CPUs,
+driver 580.178.04), an otherwise idle host.
+
+Observed: 64 MiB from `malloc`, written, then freed, moved `RssAnon` by
+exactly 64 MiB every time, but `MemAvailable` (and `MemFree`) by anything
+from 0 to 62 MiB, and by −15.8 to +70.6 MiB across the census runs' 144
+control moves. Waiting 1 to 2.5 s did not help. Freed order-0 pages go to
+the freeing CPU's page list and allocations are served from it, without
+moving `NR_FREE_PAGES`, which `MemAvailable` reads. This kernel's adaptive
+list sizes allow up to 198,125 pages (774 MiB) per CPU per zone
+(`/proc/zoneinfo`, `high_max`). `cudaMalloc` and VMM backing, taken in
+large blocks, moved `MemAvailable` within about 1 MiB of their size.
+
+Expected: `MemAvailable` to follow an allocation of tens of MiB.
+
+Impact: the M2 census rule (backend-proof.md) voided every run through its
+host control. Adding the lists' pages (each zone's pagesets `count:` in
+`/proc/zoneinfo`, readable by any user) to `MemAvailable` brings the host
+control within 0.4 MiB of 64 MiB; the census reads that sum. Root can
+drain the lists instead (`vm.percpu_pagelist_high_fraction`, compaction),
+which an unprivileged harness cannot.
+
 ## RE-023: ext4 reuses inode numbers at once, and coarse timestamps hide the swap  (2026-09-27, status: worked-around)
 
 Environment: the workstation (kernel 7.0.0-31-generic) with a loop-mounted

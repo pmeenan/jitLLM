@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ggml.h"
@@ -258,6 +259,108 @@ std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_
     return std::nullopt;
   }
   return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};
+}
+
+std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL})) {
+    return std::nullopt;
+  }
+  ggml_tensor* norm = graph[index];
+  ggml_tensor* mul = graph[index + 1];
+  // Upstream asserts an F32 norm; here a norm of another type does not fuse.
+  if (norm->src[0] == nullptr || norm->src[0]->type != GGML_TYPE_F32 ||
+      norm->type != GGML_TYPE_F32) {
+    return std::nullopt;
+  }
+  const ggml_tensor* a = mul->src[0];
+  const ggml_tensor* b = mul->src[1];
+  if (a == nullptr || b == nullptr || a->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32 ||
+      mul->type != GGML_TYPE_F32) {
+    return std::nullopt;
+  }
+  // With the norm as the second operand, upstream fuses no broadcast.
+  if (norm == b && !ggml_are_same_shape(a, norm)) {
+    return std::nullopt;
+  }
+  if (!ggml_is_contiguous_rows(a) || !ggml_is_contiguous_rows(b)) {
+    return std::nullopt;
+  }
+  return RmsNormMulNodes{.norm = norm, .mul = mul};
+}
+
+std::optional<std::string_view> UnimplementedFusionAt(GraphNodes graph, std::size_t index) {
+  if (index >= graph.size()) {
+    return std::nullopt;
+  }
+  const ggml_tensor* node = graph[index];
+  // Every pattern with an operation outside these starts or ends at a node
+  // this check refuses on its own.
+  switch (node->op) {
+    case GGML_OP_NONE:
+    case GGML_OP_VIEW:
+    case GGML_OP_RESHAPE:
+    case GGML_OP_PERMUTE:
+    case GGML_OP_TRANSPOSE:
+    case GGML_OP_RMS_NORM:
+    case GGML_OP_MUL:
+    case GGML_OP_ADD:
+    case GGML_OP_MUL_MAT:
+    case GGML_OP_ROPE:
+    case GGML_OP_SET_ROWS:
+    case GGML_OP_GET_ROWS:
+    case GGML_OP_SOFT_MAX:
+    case GGML_OP_CONT:
+    case GGML_OP_GLU:
+      break;
+    default:
+      return ggml_op_name(node->op);
+  }
+  const auto ops_at = [&](std::initializer_list<ggml_op> ops) {
+    if (!InGraph(graph, index, ops.size())) {
+      return false;
+    }
+    std::size_t i = index;
+    return std::ranges::all_of(ops, [&](ggml_op op) { return graph[i++]->op == op; });
+  };
+  // A MUL whose operands are experts and per-expert weights
+  // (ggml_cuda_match_moe_weighted_reduction, ggml-cuda.cu:3047-3110).
+  if (node->op == GGML_OP_MUL && node->type == GGML_TYPE_F32 && ggml_is_contiguous(node)) {
+    const auto weights = [node](const ggml_tensor* t) {
+      return t != nullptr && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t) && t->ne[0] == 1 &&
+             t->ne[1] == node->ne[1] && t->ne[2] == node->ne[2] && t->ne[3] == node->ne[3];
+    };
+    const auto experts = [node](const ggml_tensor* t) {
+      return t != nullptr && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t) &&
+             ggml_are_same_shape(t, node);
+    };
+    if ((experts(node->src[0]) && weights(node->src[1])) ||
+        (experts(node->src[1]) && weights(node->src[0]))) {
+      return "moe weighted reduction";
+    }
+  }
+  // topk-moe starting at a soft_max (ggml_cuda_topk_moe_fusion,
+  // ggml-cuda.cu:2816-2870): SOFT_MAX then RESHAPE.
+  if (ops_at({GGML_OP_SOFT_MAX, GGML_OP_RESHAPE})) {
+    return "topk moe";
+  }
+  // Chains of adds or muls (ggml-cuda.cu:3599-3633).
+  if (ops_at({GGML_OP_ADD, GGML_OP_ADD}) || ops_at({GGML_OP_MUL, GGML_OP_MUL})) {
+    return "add or mul chain";
+  }
+  // Products with biases or scales before a GLU, and scaled products
+  // (ggml-cuda.cu:3635-3984, 3986-4072).
+  if (ops_at({GGML_OP_MUL_MAT, GGML_OP_ADD, GGML_OP_MUL_MAT, GGML_OP_ADD, GGML_OP_GLU})) {
+    return "mul_mat, bias, mul_mat, bias, glu";
+  }
+  if (ops_at({GGML_OP_MUL_MAT, GGML_OP_MUL})) {
+    return "mul_mat and scale";
+  }
+  // The longer RMSNorm patterns (ggml-cuda.cu:4135-4148).
+  if (ops_at({GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE}) ||
+      ops_at({GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD})) {
+    return "rms_norm, mul and rope or add";
+  }
+  return std::nullopt;
 }
 
 }  // namespace jitllm::kernels::ggml

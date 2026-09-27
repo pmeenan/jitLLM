@@ -1,0 +1,119 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "kernels/ggml/executor.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <span>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "execution/registry.h"
+#include "ggml.h"
+#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/implementations.h"
+#include "kernels/ggml/launch.h"
+#include "kernels/ggml/ops.h"
+#include "kernels/ggml/tensors.h"
+
+namespace jitllm::kernels::ggml {
+namespace {
+
+std::unexpected<KernelFailure> Rejected(std::string detail) {
+  return std::unexpected(
+      KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
+}
+
+}  // namespace
+
+DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
+  return {.mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
+          .vector_fusible =
+              [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); }};
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
+                                                        const GraphPlan& plan) {
+  std::uint64_t most = 0;
+  for (const PlanStep& step : plan.steps) {
+    if (step.implementation != kMulMatCublas) {
+      continue;
+    }
+    const auto planned = PlanMulMatCublas(launch, step.nodes.front());
+    if (!planned) {
+      return std::unexpected(planned.error());
+    }
+    most = std::max(most, planned->scratch);
+  }
+  return most;
+}
+
+std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Registry& registry,
+                                                          const GraphPlan& plan) {
+  const std::vector<execution::Choice> choices = plan.Choices();
+  const auto built = execution::Plan::Build(registry, choices);
+  if (!built) {
+    return Rejected(std::format("the plan does not build: {} at step {}", built.error().detail,
+                                built.error().operation));
+  }
+  auto bound = execution::Resolve(registry, *built);
+  if (!bound) {
+    return Rejected(std::format("the plan does not bind: {} at step {}", bound.error().detail,
+                                bound.error().operation));
+  }
+  std::vector<Step> steps;
+  steps.reserve(plan.steps.size());
+  for (std::size_t i = 0; i < plan.steps.size(); ++i) {
+    const PlanStep& planned = plan.steps[i];
+    const execution::Implementation& implementation = bound->at(i);
+    std::vector<const ggml_tensor*> view(planned.nodes.begin(), planned.nodes.end());
+    if (planned.operation == execution::Operation::kRmsNormMul) {
+      auto kernel = RmsNormMulKernel::Bind(implementation);
+      if (!kernel) {
+        return std::unexpected(kernel.error());
+      }
+      if (planned.nodes.size() != 2) {
+        return Rejected(std::format("step {}: RMSNorm-mul takes two nodes", i));
+      }
+      if (auto checked = kernel->Check(planned.nodes[0], planned.nodes[1]); !checked) {
+        return Rejected(std::format("step {} ({}): {}", i, kernel->name(), checked.error().detail));
+      }
+      steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
+      continue;
+    }
+    auto kernel = Kernel::Bind(implementation);
+    if (!kernel) {
+      return std::unexpected(kernel.error());
+    }
+    if (auto checked = kernel->Check(view); !checked) {
+      return Rejected(std::format("step {} ({}): {}", i, kernel->name(), checked.error().detail));
+    }
+    steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
+  }
+  return BoundGraph(std::move(*bound), std::move(steps));
+}
+
+std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const {
+  for (std::size_t i = 0; i < steps_.size(); ++i) {
+    const Step& step = steps_[i];
+    std::expected<void, KernelFailure> ran;
+    if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
+      ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
+    } else {
+      ran = std::get<Kernel>(step.kernel).Run(launch, step.nodes);
+    }
+    if (!ran) {
+      return std::unexpected(KernelFailure{
+          .error = ran.error().error, .detail = std::format("step {}: {}", i, ran.error().detail)});
+    }
+  }
+  return {};
+}
+
+}  // namespace jitllm::kernels::ggml

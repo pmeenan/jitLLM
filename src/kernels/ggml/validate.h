@@ -156,6 +156,14 @@ struct CublasMulMat {
   std::uint64_t scratch = 0;
 };
 
+// Upstream's kernel family for a matrix product (ggml_cuda_mul_mat); ops.h
+// SelectMulMat makes the choice on a device.
+enum class MulMatPath : std::uint8_t {
+  kVector,      // MMVF, mul_mat_vec_f
+  kTensorCore,  // MMF, mul_mat_f (up to 16 columns)
+  kCublas,      // GGML's cuBLAS path (mul_mat_cublas.cu)
+};
+
 // Whether no byte of the node or its two sources lies in the device range
 // [base, base + size): a launcher's scratch or a library's workspace, which
 // the launch writes while it reads the operands.

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <string>
@@ -115,6 +116,41 @@ std::expected<void, KernelFailure> MulMatF(LaunchContext& launch, ggml_tensor* n
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     ggml_cuda_mul_mat_f(context, node->src[0], node->src[1], nullptr, node);
   });
+}
+
+std::expected<MulMatPath, KernelFailure> SelectMulMat(const LaunchContext& launch,
+                                                      const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_MUL_MAT || node->src[0] == nullptr ||
+      node->src[1] == nullptr) {
+    return Rejected("not a ggml_mul_mat node");
+  }
+  const ggml_tensor* src0 = node->src[0];
+  const ggml_tensor* src1 = node->src[1];
+  // Only a quantized tensor is padded in a CUDA buffer, so upstream's
+  // bad_padding_clear never holds for the others; quantized weights take
+  // MMVQ or MMQ, which are not implemented.
+  if (ggml_is_quantized(src0->type)) {
+    return Rejected("quantized weights take MMVQ or MMQ, which are not implemented");
+  }
+  if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32) {
+    return MulMatPath::kCublas;
+  }
+  const auto& device = Device(launch);
+  const std::int64_t ne11 = src1->ne[1];
+  if (ggml_cuda_should_use_mmvf(src0->type, device.cc, src0->ne, src0->nb, ne11)) {
+    return MulMatPath::kVector;
+  }
+  if (src0->ne[1] == 1 && ne11 > MMVF_MAX_BATCH_SIZE && node->ne[2] == 1 && node->ne[3] == 1 &&
+      src0->type == GGML_TYPE_F32 && ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
+      ggml_is_contiguous(node) &&
+      ggml_cuda_should_use_mmvf(src1->type, device.cc, src1->ne, src1->nb, /*ne11=*/1)) {
+    return Rejected("upstream takes the transposed vector product, which is not implemented");
+  }
+  if (ggml_cuda_should_use_mmf(src0->type, device.cc, device.warp_size, src0->ne, src0->nb,
+                               static_cast<int>(ne11), /*mul_mat_id=*/false)) {
+    return MulMatPath::kTensorCore;
+  }
+  return MulMatPath::kCublas;
 }
 
 bool MulMatVecFusible(const LaunchContext& launch, const ggml_tensor* mul_mat) {

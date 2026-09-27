@@ -40,6 +40,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ggml.h"
@@ -96,6 +97,29 @@ std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t in
 // ggml_cuda_can_fuse at 3256-3267 and ggml_cuda_should_fuse_rope_set_rows
 // at 2666-2698, with the memory ranges). Complete: it needs no device.
 std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index);
+
+// An RMSNorm and the mul that scales it, which GGML's fused launcher writes
+// in one kernel (ops.h RmsNormMul).
+struct RmsNormMulNodes {
+  ggml_tensor* norm = nullptr;
+  ggml_tensor* mul = nullptr;
+};
+
+// {RMS_NORM, MUL} at `index` (ggml-cuda.cu:4150-4153, through
+// ggml_cuda_can_fuse at 3269-3314): ggml_can_fuse's rules, F32 operands,
+// no broadcast when the norm is the mul's second operand, and rows that
+// are contiguous. Complete: it needs no device. Upstream tries the
+// five- and three-node RMSNorm patterns first; UnimplementedFusionAt
+// covers them.
+std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index);
+
+// Whether a fusion pattern upstream tries at `index`, other than the four
+// above, might apply there. It checks the op sequences each such pattern
+// requires (ggml_cuda_try_fuse, ggml-cuda.cu:3432-4180, and its matchers),
+// and operations no implementation here supports, so a true answer is
+// conservative: a planner that must reproduce upstream refuses the graph
+// rather than guess. Names the pattern, or nothing.
+std::optional<std::string_view> UnimplementedFusionAt(GraphNodes graph, std::size_t index);
 
 // ggml_cuda_check_fusion_memory_ranges (ggml-cuda.cu:2971-3033): whether
 // the output node `output` overlaps no input of the `count` nodes from

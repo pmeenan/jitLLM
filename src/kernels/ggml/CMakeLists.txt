@@ -6,18 +6,23 @@
 #
 #   jitllm_ggml_tensors  GGML tensor descriptors over jitLLM memory
 #                        (tensors.h), the implementations' operand checks
-#                        (validate.h) and upstream's fusion gates
-#                        (fusion.h). Every profile.
+#                        (validate.h), upstream's fusion gates (fusion.h),
+#                        graph planning and activation placement
+#                        (graph_plan.h) and the Qwen2 chunk graph
+#                        (qwen2_graph.h). Every profile.
 #   jitllm_ggml_kernels  the K-C launch context (launch.h), jitLLM's cuBLAS
 #                        handle (cublas.h), the operation implementations
 #                        (ops.h, mul_mat_cublas.cu) and jitLLM's definitions
 #                        of the ggml-cuda.cu symbols GGML's launchers use
 #                        (ggml_support.cu), and the module's declarations
 #                        in the implementation registry
-#                        (implementations.h). CUDA builds only.
-add_library(jitllm_ggml_tensors STATIC fusion.cc tensors.cc validate.cc)
+#                        (implementations.h), and the executor of planned
+#                        graphs (executor.h). CUDA builds only.
+add_library(jitllm_ggml_tensors STATIC fusion.cc graph_plan.cc qwen2_graph.cc tensors.cc
+                                       validate.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base PRIVATE jitllm_warnings)
+target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
+                                                 jitllm_model PRIVATE jitllm_warnings)
 
 if(JITLLM_CUDA)
   # cuBLAS, the SDK's pinned shared library, linked dynamically (D-076):
@@ -42,7 +47,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         cublas.cc implementations.cc)
+                                         cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -87,10 +92,11 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h fusion.cc fusion.h ggml_support.cu
-                   ggml_support.h implementations.cc implementations.h launch.cu launch.h
-                   module_digest.cmake mul_mat_cublas.cu ops.cu ops.h tensors.cc tensors.h
-                   validate.cc validate.h)
+  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fusion.cc fusion.h
+                   ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
+                   implementations.h launch.cu launch.h module_digest.cmake mul_mat_cublas.cu
+                   ops.cu ops.h qwen2_graph.cc qwen2_graph.h tensors.cc tensors.h validate.cc
+                   validate.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)
