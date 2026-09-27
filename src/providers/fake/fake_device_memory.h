@@ -13,6 +13,12 @@
 // Every allocation class is served from host memory: the fake proves
 // jitLLM's logic, not GPU placement or performance. Tests can make the
 // next call of an operation fail with a chosen error.
+//
+// An address-only fake (Contents::kNone) keeps the shared rules, the
+// capacity and the no-access reservations, but its backing holds no bytes:
+// Map, SetAccess and Unmap leave the reservation a no-access hole, so
+// touching any of it faults. It is for replays that count provider calls
+// at real scale and never touch contents (the retained-backing replay).
 
 #ifndef JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
 #define JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
@@ -43,12 +49,15 @@ enum class Operation : std::uint8_t {
   kUnmap
 };
 
+// Whether backing holds host memory (kPoisoned) or nothing (kNone).
+enum class Contents : std::uint8_t { kPoisoned, kNone };
+
 class FakeDeviceMemory final : public VmmProvider {
  public:
   // One device class and one host class at `granularity`, which must be a
   // multiple of the host page size. `capacity` bounds the backing that may
   // exist at once, across classes.
-  FakeDeviceMemory(Bytes granularity, Bytes capacity);
+  FakeDeviceMemory(Bytes granularity, Bytes capacity, Contents contents = Contents::kPoisoned);
   ~FakeDeviceMemory() override;
 
   FakeDeviceMemory(const FakeDeviceMemory&) = delete;
@@ -88,11 +97,14 @@ class FakeDeviceMemory final : public VmmProvider {
 
   std::vector<AllocationClass> classes_;
   Bytes capacity_;
+  Contents contents_;
+  Handle next_unbacked_ = 0;  // handles of address-only backing
   Bytes in_use_;
   std::map<Operation, Scripted> failures_;
   // Reservations this fake made, to unmap any left at destruction.
   std::map<std::uint64_t, Bytes> reserved_;
-  // Backing files by handle (the file descriptor).
+  // Backing by handle: the file descriptor, or with Contents::kNone a
+  // counter that names no file.
   std::map<Handle, Bytes> files_;
 };
 

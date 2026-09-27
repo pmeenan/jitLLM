@@ -142,7 +142,7 @@ affected docs. Until then, these govern.
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
 | `tests/jobs/` | The confined-job proof, which `tools/job-proof` runs in delegated cgroups (D-074) |
-| `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/` |
+| `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/`. `retained_backing/` holds the retained-backing replay and its candidate designs, which unit tests cover |
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan |
@@ -257,6 +257,7 @@ which reopens D-034 for the owner. The FP16 memory limits and the census
 rule are pre-registered, and a plan comparator checks a native run against
 the bridge's recorded plan. BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
-criteria are pre-registered with the cross-model swap trace; no design has
-run on it yet. Keep this paragraph short and current
+criteria's deterministic replay found no slab design that meets them at
+every budget (primary seed), so none can replace D-033; report-only timed
+sessions for the designs eligible at 64 GiB are next. Keep this paragraph short and current
 when plan.md milestone status changes (rule 4).

@@ -27,6 +27,7 @@ using jitllm::providers::BackingId;
 using jitllm::providers::BackingKind;
 using jitllm::providers::ProviderError;
 using jitllm::providers::ReservationId;
+using jitllm::providers::fake::Contents;
 using jitllm::providers::fake::FakeDeviceMemory;
 using jitllm::providers::fake::kPoison;
 using jitllm::providers::fake::Operation;
@@ -189,6 +190,36 @@ TEST_F(DeviceMemoryDeathTest, AbsentBackingFaults) {
   EXPECT_DEATH((void)no_access[0], "");
   ASSERT_TRUE(memory_.Release(backing).has_value());
   ASSERT_TRUE(memory_.Free(reservation).has_value());
+}
+
+// The address-only fake holds no bytes, so a replay can count calls at real
+// scale (here 256 GiB of backing) under the same rules and capacity, and
+// every byte of it still faults when touched.
+TEST_F(DeviceMemoryDeathTest, AddressOnlyBackingKeepsTheRulesAndFaults) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  constexpr std::uint64_t kHuge = std::uint64_t{256} << 30U;  // 256 GiB
+  FakeDeviceMemory memory(2_MiB, Bytes(kHuge), Contents::kNone);
+  const ReservationId reservation = memory.Reserve(Bytes(kHuge)).value();
+  const BackingId big = memory.Create(kHost, Bytes(kHuge - (2_MiB).value())).value();
+  EXPECT_EQ(memory.Create(kHost, 4_MiB).error().error, ProviderError::kOutOfMemory);
+  const BackingId small = memory.Create(kHost, 2_MiB).value();
+  EXPECT_EQ(memory.in_use(), Bytes(kHuge));
+  ASSERT_TRUE(memory.Map(reservation, 0_MiB, small).has_value());
+  EXPECT_EQ(memory.Map(reservation, 0_MiB, big).error().error, ProviderError::kInvalid);
+  ASSERT_TRUE(memory.Map(reservation, 2_MiB, big).has_value());
+  ASSERT_TRUE(memory.SetAccess(reservation, 0_MiB, 2_MiB, Access::kReadWrite).has_value());
+  const std::uint64_t base = memory.RangeOf(reservation).value().base;
+  volatile auto* granted =
+      reinterpret_cast<volatile std::byte*>(base);  // NOLINT(performance-no-int-to-ptr)
+  EXPECT_DEATH((void)granted[0], "");               // no bytes behind it
+  EXPECT_EQ(memory.Release(small).error().error, ProviderError::kInvalid);  // still mapped
+  ASSERT_TRUE(memory.Unmap(reservation, 0_MiB, Bytes(kHuge)).has_value());
+  ASSERT_TRUE(memory.Release(small).has_value());
+  ASSERT_TRUE(memory.Release(big).has_value());
+  ASSERT_TRUE(memory.Free(reservation).has_value());
+  EXPECT_EQ(memory.in_use(), Bytes());
+  EXPECT_EQ(memory.backings(), 0U);
+  EXPECT_EQ(memory.reservations(), 0U);
 }
 
 }  // namespace

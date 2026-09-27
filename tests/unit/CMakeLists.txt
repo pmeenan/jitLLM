@@ -77,6 +77,13 @@ add_executable(device_memory_test device_memory_test.cc)
 target_link_libraries(device_memory_test PRIVATE jitllm_fake_providers)
 jitllm_gtest(device_memory_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The retained-backing replay's trace reader, reference and candidate
+# designs (benchmarks/retained_backing/), on the address-only fake.
+add_executable(rb_replay_test rb_replay_test.cc)
+target_link_libraries(rb_replay_test PRIVATE jitllm_retained_backing)
+jitllm_gtest(rb_replay_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(device_execution_test device_execution_test.cc)
 target_link_libraries(device_execution_test PRIVATE jitllm_fake_providers)
 jitllm_gtest(device_execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)

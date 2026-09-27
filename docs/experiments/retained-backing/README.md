@@ -5,9 +5,11 @@
 
 The cross-model swap trace for the
 [retained-backing comparison](../../backend-proof.md#retained-backing-comparison)
-(D-035, D-079). It is replay input, not a measurement: no backing design
-has run on it. The trace stays outside Git; this directory holds its
-generator, parameters, size table and identity.
+(D-035, D-079). It is replay input, not a measurement. The trace stays
+outside Git; this directory holds its generator, parameters, size table and
+identity, and the [deterministic replay](replay.md) of part (a)'s 13
+designs on its primary seed (2026-09-27): no slab or hybrid design meets
+every deterministic criterion at every budget.
 
 | File | Purpose |
 | --- | --- |
@@ -15,8 +17,12 @@ generator, parameters, size table and identity.
 | `params.json` | Library, episode template, route pools, budgets, shrink probe and both seeds |
 | `library.json` | D-056's measured group and closure sizes per model, extracted from headers |
 | `extract_library.py` | Produces `library.json` with the layout study's pinned planner |
+| `replay.md` | The deterministic replay of the 13 designs: designs as replayed, results, eligibility |
+| `replay_report.py` | Checks a replay run is whole and agreed, and applies the deterministic criteria |
 
-Tests are in `tools/tests/test_swap_trace.py` (`mise run check`).
+Tests are in `tools/tests/test_swap_trace.py` and
+`tools/tests/test_rb_replay_report.py`; the replay harness,
+`benchmarks/retained_backing/`, is tested by `unit.Rb*` (`mise run check`).
 
 ## What the trace is
 
@@ -74,7 +80,8 @@ event hashes in its `full-evidence.json`:
 
 Every design performs the reference's evictions first, so the reference's
 restores are a lower bound for the designs, and anything beyond them is a
-design's own cost. LRU is not an optimal policy in general.
+design's own cost. LRU is not an optimal policy in general. The replay
+recomputes the reference and requires the records to be its choices.
 
 **Budgets.** Each budget is the largest multiple of 1 GiB not above the
 trace's unique bytes divided by 5/4, 3/2 or 2. Unique bytes are the stored

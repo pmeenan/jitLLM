@@ -1258,7 +1258,9 @@ The fakes keep backing in host memory filled with poison patterns, so a touch
 of absent backing shows up in tests. They script completion order, delays,
 short reads, errors and unknown outcomes, which is what the deterministic
 simulation needs (§18; [async-model
-experiment](experiments/async-model/README.md)). A fake proves jitLLM's logic,
+experiment](experiments/async-model/README.md)). An address-only device-memory
+fake keeps the same rules and capacity with no bytes behind its backing, so a
+replay can count provider calls at real scale. A fake proves jitLLM's logic,
 not GPU synchronization or performance.
 
 ## Errors, faults, startup and shutdown

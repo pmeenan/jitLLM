@@ -46,12 +46,13 @@ bool Poison(int fd, Bytes size) {
 
 }  // namespace
 
-FakeDeviceMemory::FakeDeviceMemory(Bytes granularity, Bytes capacity)
+FakeDeviceMemory::FakeDeviceMemory(Bytes granularity, Bytes capacity, Contents contents)
     : VmmProvider(granularity),
       classes_{
           AllocationClass{.kind = BackingKind::kDevice, .location = 0, .granularity = granularity},
           AllocationClass{.kind = BackingKind::kHost, .location = 0, .granularity = granularity}},
-      capacity_(capacity) {
+      capacity_(capacity),
+      contents_(contents) {
   const long page = ::sysconf(_SC_PAGESIZE);
   base::Check(page > 0 && granularity.value() > 0 &&
                   granularity.value() % static_cast<std::uint64_t>(page) == 0,
@@ -64,8 +65,10 @@ FakeDeviceMemory::~FakeDeviceMemory() {
   for (const auto& [base, size] : reserved_) {
     (void)::munmap(At(base), size.value());
   }
-  for (const auto& [handle, size] : files_) {
-    (void)::close(static_cast<int>(handle));
+  if (contents_ == Contents::kPoisoned) {
+    for (const auto& [handle, size] : files_) {
+      (void)::close(static_cast<int>(handle));
+    }
   }
 }
 
@@ -140,6 +143,16 @@ std::expected<FakeDeviceMemory::Handle, Failure> FakeDeviceMemory::DoCreate(
     return std::unexpected(
         Failure{.error = ProviderError::kOutOfMemory, .detail = "the fake's capacity is used up"});
   }
+  if (contents_ == Contents::kNone) {
+    const Handle handle = next_unbacked_++;
+    in_use_ = *after;
+    files_.emplace(handle, size);
+    if (script) {
+      return std::unexpected(
+          Failure{.error = script->error, .detail = "scripted by the test, and applied"});
+    }
+    return handle;
+  }
   const int fd = ::memfd_create("jitllm-fake-backing", MFD_CLOEXEC);
   if (fd < 0) {
     return SystemFailure("memfd_create");
@@ -163,9 +176,11 @@ std::expected<void, Failure> FakeDeviceMemory::DoRelease(Handle handle, Bytes si
   if (script && !script->applied) {
     return std::unexpected(Failure{.error = script->error, .detail = "scripted by the test"});
   }
-  const int fd = static_cast<int>(handle);
-  (void)Poison(fd, size);  // what is freed reads as poison to any stale view
-  (void)::close(fd);
+  if (contents_ == Contents::kPoisoned) {
+    const int fd = static_cast<int>(handle);
+    (void)Poison(fd, size);  // what is freed reads as poison to any stale view
+    (void)::close(fd);
+  }
   files_.erase(handle);
   in_use_ = in_use_.Minus(size).value_or(Bytes());
   if (script) {
@@ -181,10 +196,12 @@ std::expected<void, Failure> FakeDeviceMemory::DoMap(std::uint64_t address, Byte
   if (script && !script->applied) {
     return std::unexpected(Failure{.error = script->error, .detail = "scripted by the test"});
   }
-  void* mapped = ::mmap(At(address), size.value(), PROT_NONE, MAP_SHARED | MAP_FIXED,
-                        static_cast<int>(handle), 0);
-  if (mapped == MAP_FAILED) {
-    return SystemFailure("mmap");
+  if (contents_ == Contents::kPoisoned) {
+    void* mapped = ::mmap(At(address), size.value(), PROT_NONE, MAP_SHARED | MAP_FIXED,
+                          static_cast<int>(handle), 0);
+    if (mapped == MAP_FAILED) {
+      return SystemFailure("mmap");
+    }
   }
   if (script) {
     return std::unexpected(
@@ -205,7 +222,7 @@ std::expected<void, Failure> FakeDeviceMemory::DoSetAccess(std::uint64_t address
   } else if (access == Access::kReadWrite) {
     protection = PROT_READ | PROT_WRITE;
   }
-  if (::mprotect(At(address), size.value(), protection) != 0) {
+  if (contents_ == Contents::kPoisoned && ::mprotect(At(address), size.value(), protection) != 0) {
     return SystemFailure("mprotect");
   }
   if (script) {
@@ -221,10 +238,12 @@ std::expected<void, Failure> FakeDeviceMemory::DoUnmap(std::uint64_t address, By
     return std::unexpected(Failure{.error = script->error, .detail = "scripted by the test"});
   }
   // Back to a no-access hole in the reservation.
-  void* hole = ::mmap(At(address), size.value(), PROT_NONE,
-                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
-  if (hole == MAP_FAILED) {
-    return SystemFailure("mmap");
+  if (contents_ == Contents::kPoisoned) {
+    void* hole = ::mmap(At(address), size.value(), PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+    if (hole == MAP_FAILED) {
+      return SystemFailure("mmap");
+    }
   }
   if (script) {
     return std::unexpected(

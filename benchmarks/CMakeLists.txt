@@ -9,6 +9,10 @@
 add_executable(jitllm_lanes_bench lanes_bench.cc)
 target_link_libraries(jitllm_lanes_bench PRIVATE jitllm_scheduler jitllm_warnings)
 
+# The retained-backing comparison's deterministic replay of the swap trace
+# on the fake provider (docs/experiments/retained-backing/).
+add_subdirectory(retained_backing)
+
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(JITLLM_CUDA)

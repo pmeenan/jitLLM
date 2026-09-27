@@ -602,9 +602,20 @@ reservation policy) were recorded in M0.
       routes from the paging-feasibility captures. It holds a primary and a
       confirmation seed at three budgets. The
       [criteria](backend-proof.md#retained-backing-comparison) are
-      pre-registered under D-079 with the trace's identity; no design has
-      run. Next: the fake-backend replay of the 13 designs, then the timed
-      sessions on `spark`.
+      pre-registered under D-079 with the trace's identity.
+      *Landed:* part (a)'s [deterministic replay](experiments/retained-backing/replay.md)
+      (`benchmarks/retained_backing/`, on an address-only fake provider)
+      of D-033 and the 12 slab designs, on the primary seed at 64, 53 and
+      40 GiB; every replay agreed with its twin. No slab or hybrid design
+      meets every deterministic criterion at every budget, so none can
+      replace D-033 on this seed. Nine pass at 64 GiB only (less waste
+      and lost content than D-033's padding costs): contiguous-run
+      eviction and compaction at each slab size, size classes at 32 MiB
+      and the hybrid at 32 and 256 MiB. At 53 and 40 GiB every design's
+      peak waste is above D-033's. The confirmation seed stays unread.
+      Next: the criteria still owe timed sessions on `spark` for the nine
+      designs eligible at 64 GiB, whose results can only be reported to
+      the owner; then part (b), and D-033's explicit retention.
 - [x] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.
