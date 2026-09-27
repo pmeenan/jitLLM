@@ -103,6 +103,12 @@ if(JITLLM_CUDA)
                ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
 
+# The executed-plan recording's JSON lines (tests/support/plan_record.h),
+# which docs/experiments/backend-proof-p2/plan_compare.py reads.
+add_executable(plan_record_test plan_record_test.cc)
+target_link_libraries(plan_record_test PRIVATE jitllm_plan_record jitllm_plan_record_sample)
+jitllm_gtest(plan_record_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The implementation registry and plans (D-053), on fake declarations.
 add_executable(execution_test execution_test.cc)
 target_link_libraries(execution_test PRIVATE jitllm_execution)
@@ -139,16 +145,14 @@ if(JITLLM_CUDA)
   set_tests_properties(unit.GgmlModuleDigest PROPERTIES LABELS unit)
 
   # The remaining operations of the FP16 bridge's recorded plan. The test
-  # wraps the CUDA runtime's launch and copy entry points at link time, so
-  # that it can record each launch and compare it with the recorded plan;
-  # its wrappers call the runtime's own.
+  # records each launch through tests/support's launch recorder, which wraps
+  # the CUDA runtime's entry points at link time, and compares it with the
+  # recorded plan.
   add_executable(ggml_ops_test ggml_ops_test.cc)
   target_include_directories(ggml_ops_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(ggml_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  target_link_options(ggml_ops_test PRIVATE
-                      "LINKER:--wrap=__cudaLaunchKernel,--wrap=cudaLaunchKernelExC"
-                      "LINKER:--wrap=cudaMemcpyAsync,--wrap=cudaMemcpy2DAsync")
+  target_link_libraries(ggml_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                              jitllm_launch_recorder jitllm_plan_record_sample)
   jitllm_gpu_gtest(ggml_ops_test)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)

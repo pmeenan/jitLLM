@@ -14,12 +14,15 @@
 //   own selection, and the registry declares, binds and runs every new
 //   implementation (D-053).
 //
-// Launches are recorded by wrapping the CUDA runtime's launch and copy
-// entry points when this test links (CMakeLists.txt: --wrap): the wrappers
-// below note each call made while a recording is open, then make it. GGML's
-// `<<<>>>` launches reach the runtime through __cudaLaunchKernel, its
-// programmatic-dependent launches through cudaLaunchKernelExC. The PDL
-// attribute those carry is not compared, as the FP16 gate allows.
+// Launches are recorded by tests/support's launch recorder, which wraps the
+// CUDA runtime's launch and copy entry points when this test links
+// (--wrap). GGML's `<<<>>>` launches reach the runtime through
+// __cudaLaunchKernel, its programmatic-dependent launches through
+// cudaLaunchKernelExC. The PDL attribute those carry is not compared, as
+// the FP16 gate allows. The first seven launches of the fused decode step
+// are also written as the recorder's JSON lines and must equal
+// plan_record_sample.txt, which plan_compare.py matches with the record;
+// with JITLLM_TEST_PLAN_RECORD set they are also written to that file.
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -32,7 +35,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -52,104 +57,12 @@
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
+#include "launch_recorder.h"
+#include "plan_record.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
-
-namespace {
-
-// One launch or device copy made while recording.
-struct Recorded {
-  std::string kernel;  // the kernel's mangled name; empty for a copy
-  std::array<unsigned, 3> grid{};
-  std::array<unsigned, 3> block{};
-  std::size_t shared = 0;
-  std::size_t bytes = 0;  // a copy's
-  void* stream = nullptr;
-};
-
-thread_local std::vector<Recorded>* recording = nullptr;
-
-std::array<unsigned, 3> Dims(dim3 dims) { return {dims.x, dims.y, dims.z}; }
-
-}  // namespace
-
-// The runtime's entry points, and this test's wrappers of them. The
-// linker sends every call to the wrapper, and __real_ to the runtime.
-// NOLINTBEGIN(bugprone-reserved-identifier,misc-use-internal-linkage,readability-identifier-naming)
-extern "C" {
-cudaError_t __real___cudaLaunchKernel(cudaKernel_t kernel, dim3 grid, dim3 block, void** args,
-                                      std::size_t shared, cudaStream_t stream);
-cudaError_t __real_cudaLaunchKernelExC(const cudaLaunchConfig_t* config, const void* function,
-                                       void** args);
-cudaError_t __real_cudaMemcpyAsync(void* destination, const void* source, std::size_t count,
-                                   cudaMemcpyKind kind, cudaStream_t stream);
-cudaError_t __real_cudaMemcpy2DAsync(void* destination, std::size_t destination_pitch,
-                                     const void* source, std::size_t source_pitch,
-                                     std::size_t width, std::size_t height, cudaMemcpyKind kind,
-                                     cudaStream_t stream);
-
-cudaError_t __wrap___cudaLaunchKernel(cudaKernel_t kernel, dim3 grid, dim3 block, void** args,
-                                      std::size_t shared, cudaStream_t stream) {
-  if (recording != nullptr) {
-    const char* name = nullptr;
-    if (cuKernelGetName(&name, reinterpret_cast<CUkernel>(kernel)) != CUDA_SUCCESS) {
-      name = "(unnamed)";
-    }
-    recording->push_back({.kernel = name,
-                          .grid = Dims(grid),
-                          .block = Dims(block),
-                          .shared = shared,
-                          .bytes = 0,
-                          .stream = stream});
-  }
-  return __real___cudaLaunchKernel(kernel, grid, block, args, shared, stream);
-}
-
-cudaError_t __wrap_cudaLaunchKernelExC(const cudaLaunchConfig_t* config, const void* function,
-                                       void** args) {
-  if (recording != nullptr) {
-    const char* name = nullptr;
-    if (cudaFuncGetName(&name, function) != cudaSuccess) {
-      name = "(unnamed)";
-    }
-    recording->push_back({.kernel = name,
-                          .grid = Dims(config->gridDim),
-                          .block = Dims(config->blockDim),
-                          .shared = config->dynamicSmemBytes,
-                          .bytes = 0,
-                          .stream = config->stream});
-  }
-  return __real_cudaLaunchKernelExC(config, function, args);
-}
-
-cudaError_t __wrap_cudaMemcpyAsync(void* destination, const void* source, std::size_t count,
-                                   cudaMemcpyKind kind, cudaStream_t stream) {
-  if (recording != nullptr) {
-    recording->push_back(
-        {.kernel = {}, .grid = {}, .block = {}, .shared = 0, .bytes = count, .stream = stream});
-  }
-  return __real_cudaMemcpyAsync(destination, source, count, kind, stream);
-}
-
-cudaError_t __wrap_cudaMemcpy2DAsync(void* destination, std::size_t destination_pitch,
-                                     const void* source, std::size_t source_pitch,
-                                     std::size_t width, std::size_t height, cudaMemcpyKind kind,
-                                     cudaStream_t stream) {
-  if (recording != nullptr) {
-    recording->push_back({.kernel = {},
-                          .grid = {},
-                          .block = {},
-                          .shared = 0,
-                          .bytes = width * height,
-                          .stream = stream});
-  }
-  return __real_cudaMemcpy2DAsync(destination, destination_pitch, source, source_pitch, width,
-                                  height, kind, stream);
-}
-}
-// NOLINTEND(bugprone-reserved-identifier,misc-use-internal-linkage,readability-identifier-naming)
 
 namespace {
 
@@ -164,6 +77,8 @@ using jitllm::providers::DeviceExecution;
 using jitllm::providers::FenceState;
 using jitllm::providers::StreamId;
 using jitllm::providers::VmmProvider;
+using jitllm::test_support::Event;
+using jitllm::test_support::EventKind;
 
 // Qwen2.5-0.5B's shapes.
 constexpr std::int64_t kWidth = 896;
@@ -228,34 +143,6 @@ void ExpectClose(const std::vector<float>& got, const std::vector<double>& want,
   }
   EXPECT_LT(worst, tolerance) << what;
   std::cout << what << ": largest relative difference from the reference " << worst << "\n";
-}
-
-// NVCC names a file's internal-linkage symbols with a per-file token,
-// _INTERNAL_<hash>_<length>_<file>_<hash>, whose hashes differ between
-// builds; the FP16 gate compares names with them normalized.
-std::string Normalized(std::string_view name) {
-  std::string out(name);
-  constexpr std::string_view kToken = "_INTERNAL_";
-  for (std::size_t at = out.find(kToken); at != std::string::npos;
-       at = out.find(kToken, at + kToken.size())) {
-    std::size_t p = at + kToken.size();
-    if (p + 8 > out.size()) {
-      break;
-    }
-    out.replace(p, 8, "xxxxxxxx");
-    p += 9;  // the hash and '_'
-    std::size_t length = 0;
-    while (p < out.size() && out[p] >= '0' && out[p] <= '9') {
-      length = (length * 10) + static_cast<std::size_t>(out[p] - '0');
-      ++p;
-    }
-    p += 1 + length + 1;  // '_', the file, '_'
-    if (p + 8 > out.size()) {
-      break;
-    }
-    out.replace(p, 8, "xxxxxxxx");
-  }
-  return out;
 }
 
 // The recorded plan's kernels these operations launch, by their id in
@@ -445,14 +332,16 @@ class GgmlOpsTest : public ::testing::Test {
 
   // What `run` launched, on this context's stream.
   template <typename Run>
-  std::vector<Recorded> Record(Run&& run) {
-    std::vector<Recorded> launched;
-    recording = &launched;
-    std::forward<Run>(run)();
-    recording = nullptr;
+  std::vector<Event> Record(Run&& run) {
+    std::vector<Event> launched;
+    {
+      jitllm::test_support::Recording recording;
+      std::forward<Run>(run)();
+      launched = recording.Take();
+    }
     const void* native = execution_->Submission(stream_).value().handle;
-    for (const Recorded& launch : launched) {
-      EXPECT_EQ(launch.stream, native) << launch.kernel;
+    for (const Event& launch : launched) {
+      EXPECT_EQ(launch.stream, native) << launch.name;
     }
     return launched;
   }
@@ -878,16 +767,17 @@ class GgmlOpsPlanMatchTest : public GgmlOpsTest {
  protected:
   // Compares what was recorded with the plan's launches, by kernel name
   // (normalized), grid, block and dynamic shared memory, or copy size.
-  static void Matches(const std::vector<Recorded>& got, const std::vector<Planned>& want,
+  static void Matches(const std::vector<Event>& got, const std::vector<Planned>& want,
                       const std::string& what) {
     ASSERT_EQ(got.size(), want.size()) << what;
     for (std::size_t i = 0; i < got.size(); ++i) {
       if (want[i].id == 0) {
-        EXPECT_TRUE(got[i].kernel.empty()) << what << ": " << got[i].kernel;
+        EXPECT_EQ(got[i].kind, EventKind::kCopy) << what << ": " << got[i].name;
         EXPECT_EQ(got[i].bytes, want[i].bytes) << what;
         continue;
       }
-      EXPECT_EQ(Normalized(got[i].kernel), Normalized(PlanKernel(want[i].id)))
+      EXPECT_EQ(jitllm::test_support::NormalizedKernelName(got[i].name),
+                jitllm::test_support::NormalizedKernelName(PlanKernel(want[i].id)))
           << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].grid, want[i].grid) << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].block, want[i].block) << what << ": kernel " << want[i].id;
@@ -1081,6 +971,87 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
           .error,
       KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
+}
+
+// The fused decode step's first seven launches (CF 1 from token 6: the
+// attention norm, Q with its bias, Q's RoPE, K and V with theirs, K's RoPE
+// with its write, V's write), recorded and written as the recorder's JSON
+// lines, equal plan_record_sample.txt, which plan_compare.py matches with
+// the record. Registers and shared memory are the runtime's. The recording
+// covers the whole test, the inputs' uploads before the chunk included, so
+// that an nsys trace of this test alone lines up with it (plan_compare.py
+// --nsys).
+TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
+  jitllm::test_support::Recording recording;
+  auto launch = Launcher();
+  auto arena = TensorArena::Create(64).value();
+  ggml_context* c = arena.context();
+  ggml_tensor* x = At(ggml_new_tensor_1d(c, GGML_TYPE_F32, kWidth));
+  ggml_tensor* norm_weight = At(ggml_new_tensor_1d(c, GGML_TYPE_F32, kWidth));
+  ggml_tensor* norm = At(ggml_rms_norm(c, x, 1e-6f));
+  ggml_tensor* normed = At(ggml_mul(c, norm, norm_weight));
+  auto biased = [&](std::int64_t width) {
+    ggml_tensor* weight = At(ggml_new_tensor_2d(c, GGML_TYPE_F16, kWidth, width));
+    ggml_tensor* bias = At(ggml_new_tensor_1d(c, GGML_TYPE_F32, width));
+    ggml_tensor* product = ggml_mul_mat(c, weight, normed);
+    return std::pair{product, At(ggml_add(c, product, bias))};
+  };
+  const auto [q, q_biased] = biased(kWidth);
+  const auto [k, k_biased] = biased(kKvWidth);
+  const auto [v, v_biased] = biased(kKvWidth);
+  ggml_tensor* positions = At(ggml_new_tensor_1d(c, GGML_TYPE_I32, 1), Iota<std::int32_t>(1));
+  ggml_tensor* q_rope = At(QwenRope(c, ggml_reshape_3d(c, q_biased, kHead, kHeads, 1), positions));
+  ggml_tensor* k_cache = At(ggml_new_tensor_2d(c, GGML_TYPE_F16, kKvWidth, kCells));
+  ggml_tensor* k_ids = At(ggml_new_tensor_1d(c, GGML_TYPE_I64, 1), Iota<std::int64_t>(1));
+  ggml_tensor* k_rope = QwenRope(c, ggml_reshape_3d(c, k_biased, kHead, kKvHeads, 1), positions);
+  ggml_tensor* k_write =
+      ggml_set_rows(c, k_cache, ggml_view_2d(c, k_rope, kKvWidth, 1, k_rope->nb[2], 0), k_ids);
+  ggml_tensor* v_cache = At(ggml_new_tensor_2d(c, GGML_TYPE_F16, kCells, kKvWidth));
+  ggml_tensor* v_ids =
+      At(ggml_new_tensor_1d(c, GGML_TYPE_I64, kKvWidth), Iota<std::int64_t>(kKvWidth));
+  ggml_tensor* v_write = ggml_set_rows(c, ggml_reshape_2d(c, v_cache, 1, kCells * kKvWidth),
+                                       ggml_reshape_2d(c, v_biased, 1, kKvWidth), v_ids);
+  const std::vector<Event> uploads = recording.Take();
+  Launched(jitllm::kernels::ggml::RmsNormMul(*launch, norm, normed), "attention norm");
+  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, q, q_biased), "Q");
+  Launched(jitllm::kernels::ggml::Rope(*launch, q_rope), "Q's RoPE");
+  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, k, k_biased), "K");
+  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, v, v_biased), "V");
+  Launched(jitllm::kernels::ggml::RopeSetRows(*launch, k_rope, k_write), "K's RoPE and write");
+  Launched(jitllm::kernels::ggml::SetRows(*launch, v_write), "V's write");
+  std::vector<Event> events = recording.Take();
+  Finish();
+  EXPECT_FALSE(launch->faulted());
+  EXPECT_TRUE(recording.Take().empty());
+
+  // Everything on the context's stream: the uploads are the provider's copies.
+  const void* native = execution_->Submission(stream_).value().handle;
+  std::string outside;
+  for (const Event& upload : uploads) {
+    EXPECT_EQ(upload.kind, EventKind::kCopy);
+    EXPECT_EQ(upload.api, "driver");
+    EXPECT_EQ(upload.stream, native);
+    outside += jitllm::test_support::EventLine(upload);
+  }
+  std::string lines = jitllm::test_support::ChunkLine(
+      jitllm::test_support::Chunk{.evaluation = 1, .chunk = 1, .rows = 1, .n_past = 32});
+  for (Event& event : events) {
+    EXPECT_EQ(event.stream, native) << event.name;
+    event.stream = reinterpret_cast<const void*>(0x10);  // NOLINT(performance-no-int-to-ptr)
+    lines += jitllm::test_support::EventLine(event);
+  }
+  lines += jitllm::test_support::EndChunkLine();
+  const std::string_view sample = jitllm::test_support::PlanRecordSample();
+  EXPECT_EQ(lines, sample.substr(sample.find('\n') + 1));
+
+  // For plan_compare.py by hand: the recording with this build's libraries.
+  if (const char* out = std::getenv("JITLLM_TEST_PLAN_RECORD")) {  // NOLINT(concurrency-mt-unsafe)
+    std::ofstream file(out);
+    file << jitllm::test_support::HeaderLine("ggml_ops_test: the decode step's first launches",
+                                             jitllm::test_support::LoadedCublas())
+         << outside << lines;
+    EXPECT_TRUE(file.good()) << out;
+  }
 }
 
 // The registry declares every new implementation, binds it by identity and

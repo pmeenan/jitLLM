@@ -145,6 +145,7 @@ affected docs. Until then, these govern.
 | `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/` |
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
+| `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan |
 | `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `jitllm_package.py`), `job-proof` (the confined-job proof), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
@@ -249,7 +250,9 @@ remaining proof thresholds, each pre-registered before the native result it
 judges, and allowed ExLlamaV3's GEMV into an optional module pending its
 provenance (D-079). BP-F1 failed under its pre-registered rule: GGML's
 matrix products run 1.1–4.9× slower on host VMM than on `cudaMalloc`,
-which reopens D-034 for the owner. BP-F2's timing reference
+which reopens D-034 for the owner. The FP16 memory limits and the census
+rule are pre-registered, and a plan comparator checks a native run against
+the bridge's recorded plan. BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
 criteria are pre-registered with the cross-model swap trace; no design has
 run on it yet. Keep this paragraph short and current

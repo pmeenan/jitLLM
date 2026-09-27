@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Support for tests and benchmarks: recording an executed plan to compare
+# with a recorded one (docs/backend-proof.md, the FP16 Tier E gate;
+# docs/experiments/backend-proof-p2/plan_compare.py). No production target
+# may link any of it; the check at the end of this file fails the configure
+# if one does.
+
+# The recording's events and JSON lines, in every profile.
+add_library(jitllm_plan_record STATIC plan_record.cc)
+target_include_directories(jitllm_plan_record PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(jitllm_plan_record PRIVATE jitllm_warnings)
+
+# plan_record_sample.txt, the JSON lines the writer must produce for its
+# events, which plan_compare.py's tests read too, compiled in at build time
+# so a deployed test needs no source tree.
+set(sample "${CMAKE_CURRENT_BINARY_DIR}/plan_record_sample.cc")
+add_custom_command(
+  OUTPUT "${sample}"
+  COMMAND "${CMAKE_COMMAND}" "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/plan_record_sample.txt"
+          "-DOUTPUT=${sample}" -P "${CMAKE_CURRENT_SOURCE_DIR}/plan_record_sample.cmake"
+  DEPENDS plan_record_sample.txt plan_record_sample.cmake
+  COMMENT "Compiling in the executed-plan recording's sample"
+  VERBATIM)
+add_library(jitllm_plan_record_sample STATIC "${sample}")
+target_link_libraries(jitllm_plan_record_sample PUBLIC jitllm_plan_record)
+
+# The launch recorder (launch_recorder.h), for binaries that run GGML-derived
+# kernels (jitllm_ggml_kernels brings the CUDA runtime). An object library,
+# so its wrappers are in every link that uses it, whatever the link order.
+if(JITLLM_CUDA)
+  add_library(jitllm_launch_recorder OBJECT launch_recorder.cc)
+  target_include_directories(jitllm_launch_recorder SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  # jitllm_cuda_device_memory brings the NVIDIA driver.
+  target_link_libraries(jitllm_launch_recorder PUBLIC jitllm_plan_record jitllm_ggml_kernels
+                                                      jitllm_cuda_device_memory
+                        PRIVATE jitllm_base jitllm_warnings)
+  target_link_options(jitllm_launch_recorder INTERFACE
+                      "LINKER:--wrap=__cudaLaunchKernel,--wrap=cudaLaunchKernelExC"
+                      "LINKER:--wrap=cudaMemcpyAsync,--wrap=cudaMemcpy2DAsync,--wrap=cudaMemsetAsync"
+                      "LINKER:--wrap=cuMemcpyAsync"
+                      "LINKER:--wrap=cublasSgemm_v2,--wrap=cublasGemmEx"
+                      "LINKER:--wrap=cublasGemmBatchedEx,--wrap=cublasGemmStridedBatchedEx")
+endif()
+
+# No production binary links the support libraries, directly or through
+# another library. Checked once every target exists.
+function(jitllm_check_no_test_support)
+  set(pending jitllm jitllm-runtime)
+  set(seen "")
+  while(pending)
+    list(POP_FRONT pending target)
+    # Anywhere in the item, so that a generator expression cannot hide it.
+    if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(plan_record|plan_record_sample|launch_recorder)([^A-Za-z0-9_]|$)")
+      message(FATAL_ERROR "A production binary links the test support library: ${target}.")
+    endif()
+    if(target IN_LIST seen OR NOT TARGET "${target}")
+      continue()
+    endif()
+    list(APPEND seen "${target}")
+    get_target_property(type "${target}" TYPE)
+    set(links "")
+    if(NOT type STREQUAL "INTERFACE_LIBRARY")
+      get_target_property(direct "${target}" LINK_LIBRARIES)
+      if(direct)
+        list(APPEND links ${direct})
+      endif()
+    endif()
+    get_target_property(interface "${target}" INTERFACE_LINK_LIBRARIES)
+    if(interface)
+      list(APPEND links ${interface})
+    endif()
+    foreach(link IN LISTS links)
+      string(REGEX REPLACE "^\\$<LINK_ONLY:(.*)>$" "\\1" link "${link}")
+      list(APPEND pending "${link}")
+    endforeach()
+  endwhile()
+endfunction()
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL jitllm_check_no_test_support)

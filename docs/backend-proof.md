@@ -490,6 +490,9 @@ before the native output it governs.
     [report](experiments/backend-proof-p1/README.md)). Applied on
     2026-09-27, it fails: host VMM is slower, which reopens D-034 for the
     owner.
+  - *Pre-registered on 2026-09-27 (D-079), before any native FP16 run:*
+    the FP16 memory limits and M2's census rule
+    ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
 
 Each part is approved, or pre-registered under D-079, before any native
 result it would judge is seen.
@@ -560,7 +563,9 @@ never bounded. Logits and restored storage must be bit-identical.
     - the precision rules that fusion changes.
   - Only stream identity, addresses (subject to those alignment conditions)
     and the PDL launch attribute may differ.
-  - Logits are compared only after the plans match.
+  - Logits are compared only after the plans match. The
+    [plan comparator](#p2-prerequisites) makes the comparison; only its
+    complete match (exit 0) counts.
 - **A declared departure (delegated, D-079).** A native plan may depart
   from the recorded plan only if the departure is written down before the
   run, with a bridge arm, built from a patch recorded in the report, that
@@ -852,8 +857,66 @@ EXL3 weights (`oracle.py`). Its calibration is in the report's
 
 ### Memory and workspace (the M2 gate in exl3-bringup.md)
 
-**FP16: proposed; still needs per-phase limits.** The bridge's compute
-buffer is sized for the largest batch.
+**FP16: the limits are pre-registered under D-079 (2026-09-27)**, before
+any native FP16 run. They follow the envelope rules below, and the census
+rule at the end of this section judges them. Evidence: the report's
+[FP16 executed plan and workspace](experiments/backend-proof-p0/README.md#fp16-executed-plan-and-workspace)
+and `fp16-plan.json`.
+
+- **The bridge gives no per-phase activation peak.** Its compute buffer is
+  one allocation, sized for the largest batch and held through every
+  phase. The two buffers are 37.31 MiB (`control`, 64 rows) and 298.50 MiB
+  (`heldout`, 512 rows).
+  - Each equals the batch times 611,328 bytes, to the byte. Per row, that
+    is the output head's F32 input (896 × 4) and its F32 logits
+    (151,936 × 4), which are live together at the head. That is the plan's
+    largest simultaneous need.
+  - So each limit is the plan's own need at the phase's row count,
+    itemized from the record. None exceeds the bridge's buffer.
+- **The items of `E`,** in bytes, for a chunk of n rows:
+  - *A, activations and intermediates:* n × 611,328.
+    - One layer's tensors counted with no reuse, plus the chunk's device
+      inputs, take at most n × 211,984 bytes (at n_kv 768), about 35% of
+      A. That count includes attention's scores and softmax,
+      2 × 56 × n_kv × n.
+    - So A holds when the head's output reuses the layers' memory, as the
+      bridge's allocator does. A is strict: native must reuse memory as
+      that allocator does.
+  - *S, the GGML pool scratch:* P0's recorded peak for the chunk. It is
+    the output head's F16 copies on the cuBLAS path.
+  - *I, the inputs built on the host:* the chunk's recorded input copies.
+    They carry the embeddings looked up on the host, the positions, the K
+    and V slots, the mask and the output ids.
+  - *L, the logits delivered to the host:* n × 607,744, the chunk's
+    recorded copy.
+
+  | Phase kind (trajectory, n_kv) | A | S | I | L | Limit `E` (bytes) |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 32-row prefill (`control`, 256) | 19,562,496 | 9,781,248 | 180,736 | 19,447,808 | 48,972,288 |
+  | single-token step (`control`, 256) | 611,328 | 0 | 5,648 | 607,744 | 1,224,720 |
+  | 16-row prefill (`heldout`, 256) | 9,781,248 | 0 | 90,368 | 9,723,904 | 19,595,520 |
+  | 17-row prefill (`heldout`, 256) | 10,392,576 | 5,196,288 | 96,016 | 10,331,648 | 26,016,528 |
+  | single-token step (`heldout`, 256) | 611,328 | 0 | 5,648 | 607,744 | 1,224,720 |
+  | 512-row prefill (`heldout`, 768) | 312,999,936 | 156,499,968 | 3,940,352 | 311,164,928 | 784,605,184 |
+  | single-token step (`heldout`, 768) | 611,328 | 0 | 7,696 | 607,744 | 1,226,768 |
+
+  - FP16-F and FP16-U have the same limits. Fusion changes neither the
+    head step, nor the pool draws, nor the copies.
+  - A phase kind not listed here is derived the same way and written here
+    before native runs it.
+  - `E` is judged on the bytes the phase's plan places. Rounding a region
+    up to the 2 MiB granule is reported separately, as weight padding is.
+- **Outside `E`:**
+  - *KV* is the declared layout: 24 layers, each cell holding F16 K and V
+    of 128 elements. That is 6,291,456 bytes for `control`'s 512 cells and
+    12,582,912 for `heldout`'s 1,024.
+  - *Weights* equal the artifact's bytes, with padding reported
+    separately. For comparison, the bridge holds 942.43 MiB on the device,
+    and on the host the 259.66 MiB token embedding it looks rows up in.
+  - *Persistent library workspace* is at most 33,554,432 bytes: the cuBLAS
+    workspace the record's handle sets. GGML's pool is phase scratch
+    (`S`), not workspace.
+  - *`F`* is reported, as for EXL3.
 
 **EXL3: the persistent-workspace limit is approved (2026-09-26); the phase
 limits are deferred to P3 entry.** The per-phase measurements are in the
@@ -916,6 +979,85 @@ They are identical under cuBLAS 13.1.1 and 13.8.0.4.
     it with its own 16 MiB before every call, so the recorded plan never
     uses it.
 - **No permanent FP16 shadow** (BP-A3).
+
+**The census rule for M2: pre-registered under D-079 (2026-09-27).** It
+covers BP-A1, BP-A2 and BP-A5 for both representations. The SDK has no
+CUPTI, and M2 pins none. The census uses three instruments:
+
+- **The catalog is authoritative for jitLLM's own memory.** It records
+  every reservation, backing and mapping, and each phase's placements and
+  scratch draws, the host buffers of `I` and `L` included. The launch
+  context's pool reports its peak, as in P1.
+  - A phase's observed peak, the figure judged against `E`, is the largest
+    total charged to that phase at once.
+  - Backing kept between phases is released but still resident (D-007).
+    An example is a region sized for the largest phase. Such backing is
+    reported as pool-held occupancy, not charged to a smaller phase.
+- **In-process checks, where jitLLM makes the call.** Every tensor bound
+  to a GGML launch, and every cuBLAS operand, must lie in a cataloged
+  range.
+- **System counters, read at quiescent points,** when all submitted work
+  has completed. The counters:
+  - `MemAvailable`, which on the GB10 is the driver's free memory
+    ([vmm-counters](experiments/vmm-counters/README.md));
+  - `SUnreclaim`, for the driver's bookkeeping per extent;
+  - the process's `RssAnon`, with `mallinfo2`, for ordinary allocations.
+
+  They are read at process start, after the context, after the cuBLAS
+  handle and workspace, after weights and KV are mapped, and before and
+  after every phase.
+
+**Controls.** Every census run carries three, each read before it is
+made, while it is held and after it is freed: a 64 MiB `cudaMalloc`, a
+64 MiB VMM mapping in 2 MiB extents, and a 64 MiB host allocation that is
+written.
+- Each is checked against its counters: `MemAvailable` for all three,
+  and `RssAnon` too for the host allocation.
+- R, the census's resolution, is the largest gap between a control's size
+  and its counter's move, over three repeats. For the VMM control, the
+  move is taken net of `SUnreclaim`'s. R is reported with every result.
+- Opaque growth below R cannot be seen. The catalog still judges jitLLM's
+  own bytes exactly.
+- A run is void if a control's counter moves the wrong way, or by less
+  than half the control's size.
+- No other GPU work runs on the host.
+
+**Attribution.** For each interval between readings, the unexplained
+bytes are the drop in `MemAvailable`, less three things: the catalog's
+backing, the driver's bookkeeping (`SUnreclaim`'s move) and ordinary
+allocations (`RssAnon`'s move). A byte both the catalog and `RssAnon`
+count is subtracted once. They are charged as follows:
+- *From process start to the end of the first evaluation,* the warm-up,
+  where the context, lazy module loading and a library's first-use state
+  appear: to `F`, itemized by step. `F`'s share at each step is capped at
+  the reference's own unexplained growth at that step.
+  - The excess is charged to the phase it appears in. Before the first
+    phase, it is charged to the persistent library workspace.
+  - For FP16, that reference is the bridge, measured with the same
+    counters and controls. Its unexplained growth is net of every buffer
+    it declares: model, KV, compute and output buffers, the GGML pool's
+    committed bytes and the cuBLAS workspace. So the cap holds only its
+    handles and module state, and `F` cannot hide a workspace. Its figures
+    are written here before any native census result is seen.
+  - For EXL3, whose reference process carries PyTorch's own state, the
+    cap is set at P3 entry with the phase limits.
+- *During the second and third evaluations:* growth beyond R over any
+  interval is charged to the phase it falls in, or to the next phase if
+  it falls between two. It must fit in that phase's `E` (BP-A2: lazy
+  growth after the warm-up). `E` holds no allowance for it.
+
+**What waits for CUPTI.** Without it, or an nsys trace (a host tool, used
+as P0 used it), these are out of reach:
+- attributing an opaque allocation to its caller (driver, runtime, cuBLAS
+  or module load) and its kind, rather than to the interval it appears in;
+- allocations made and freed inside a phase, that is, transient library
+  peaks, which quiescent readings cannot see;
+- pointer coverage for the kernels cuBLAS launches itself;
+- a continuous census in the runtime, rather than a harness's readings.
+
+An nsys trace with `--cuda-memory-usage=true`, taken in a separate run,
+may attribute an unexplained delta in the report. It does not replace the
+counters' run, because its own instrumentation allocates.
 
 ### Performance protocol (rule approved 2026-09-26; BP-F2's reference deferred to P3 entry)
 
@@ -1164,7 +1306,7 @@ reference container.
 | --- | --- | --- |
 | **P0** Bridges and controls | M1 build | Toolchain bridges run, FP16 with fusion on and off. Held-out trajectories run on both references. The reference EXL3 tuned shapes and grids are decoded. Numerical profiles, bounds and the performance protocol are frozen, owner-approved or pre-registered under D-079 |
 | **P1** Substrate probes | M1; no artifacts | GGML launchers under a jitLLM context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on host VMM versus `cudaMalloc`. Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
-| **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog | Prepared-artifact execution on host VMM; oracle rungs 3–4; BP-A cases |
+| **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog; the [P2 prerequisites](#p2-prerequisites) | Prepared-artifact execution on host VMM; oracle rungs 3–4; BP-A cases |
 | **P3** Resident EXL3 | P2 infrastructure; GEMV gate or GEMM-only plan | Both fixtures; per-linear and full-model oracles; BP-F2 kernel parity |
 | **P4** Paging | M2 leases and storage service | BP-P cases on both representations |
 | **P5** Lifetime and failure | D-048 completion services | BP-L and BP-V cases on real providers |
@@ -1172,6 +1314,59 @@ reference container.
 
 The [retained-backing comparison](#retained-backing-comparison) runs on the
 P4 harness, but its acceptance stays a separate plan item.
+
+### P2 prerequisites
+
+Three things are in place before any native FP16 run: the FP16 memory
+limits, the census rule (both under "Memory and workspace" above), and the
+plan comparator.
+
+**The plan comparator** tells whether a native run executed the bridge's
+recorded plan (the FP16 Tier E gate).
+
+- **Recording.** A test or benchmark links `jitllm_launch_recorder`
+  (`tests/support/`). It is for tests and benchmarks only: the configure
+  fails if a production binary links it.
+  - At link time it wraps the CUDA runtime's launch, copy and memset
+    entry points, the driver's copy and cuBLAS's GEMM entry points.
+  - While a `Recording` is open, it notes each call the thread makes: each
+    kernel's mangled name, grid, block and dynamic shared memory, with the
+    runtime's registers and static and local memory; each copy's size;
+    each cuBLAS call.
+  - The harness marks the chunks and writes JSON lines (`plan_record.h`).
+- **The run's other inputs,** captured as the bridge's were:
+  - cuBLAS's and cuBLASLt's logs: parameters, math mode, heuristic
+    preference, resolved algorithm and handle setup;
+  - `cuobjdump -sass` of the binary, for the SASS hashes;
+  - an nsys CUDA trace of the same run, for the kernels cuBLAS launches
+    itself, which no in-process wrapper sees;
+  - the hashes of the loaded cuBLAS libraries.
+- **[`plan_compare.py`](experiments/backend-proof-p2/plan_compare.py)**
+  converts the recording and compares it with the arm of `fp16-plan.json`,
+  chunk by chunk and token by token:
+  - chunk order, rows and positions;
+  - each kernel's name (NVCC's per-file hashes masked), grid, block,
+    shared memory, registers and SASS;
+  - each copy's size, which is where a lookup moved off the host shows;
+  - each cuBLAS call's parameters, math mode, cuBLASLt record and launched
+    kernels;
+  - the handle setup and the cuBLAS library hashes;
+  - no kernel or cuBLAS call between chunks.
+- **What it does not compare,** which the gate allows to differ: stream
+  identity, addresses, the launch API (which carries the PDL attribute;
+  the recorder names any other launch attribute, which is a difference)
+  and the copies' memory kinds, which follow from the addresses. Host VMM
+  is device memory to CUDA (D-034).
+  - Alignment is judged by its effects: `get_rows`' variant and cuBLASLt's
+    alignment preferences.
+  - The recording sees no addresses, so the harness must check that every
+    tensor it binds is aligned to 128 bytes.
+- **Its report.** It stops at the first difference and names the chunk,
+  the token, and the token's place in the record's folded sequence.
+  - Exit 0 means a complete match, the only result that lets the logits
+    be compared.
+  - Exit 2 means the recording matched but lacks one of the inputs above,
+    or is a fragment of the run.
 
 ## Case matrix
 
@@ -1190,7 +1385,8 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
   capacity, and validate that coverage with a host-allocation control. Charge
   opaque driver/library overhead conservatively and reconcile remaining
   physical-memory differences in BP-A5; a CUDA-only trace is not a complete
-  Spark memory census (invariant 5, D-006/D-050).
+  Spark memory census (invariant 5, D-006/D-050). M2's census, without
+  CUPTI, follows the census rule under "Memory and workspace".
 - **BP-A2:** Kernel scratch comes only from declared workspace. That
   covers GGML launchers' pool requests, cuBLAS workspace, EXL3 locks and
   workspace, and tuning allocations. Handles and unavoidable driver/library

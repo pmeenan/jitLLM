@@ -480,8 +480,46 @@ reservation policy) were recorded in M0.
         [report](experiments/launch-overhead/README.md)). Per-token figures
         against upstream's decode wait for a native decode step (P2).
 
+      *P2 prerequisites* ([scope](backend-proof.md#p2-prerequisites)):
+      - **FP16 memory limits and the census rule,** pre-registered under
+        D-079 before any native FP16 run
+        ([memory and workspace](backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
+        - Each phase kind's `E` is itemized from the recorded plan:
+          activations of n × 611,328 bytes (which reproduce both bridge
+          compute buffers to the byte), the recorded pool peaks, input
+          copies and logits.
+        - `E` runs from 1.17 MiB for a single-token step to 748.3 MiB for
+          the 512-row prefill. KV, weights and the 32 MiB cuBLAS workspace
+          are limited outside it.
+        - The census reconciles the catalog with `MemAvailable`,
+          `SUnreclaim` and `RssAnon` at quiescent points, with controls.
+          Opaque growth goes to `F` only up to the bridge's own; after the
+          warm-up, it goes to the phase's `E`.
+      - **The plan comparator.** `tests/support/` holds a launch recorder
+        for tests and benchmarks; configure fails if a production binary
+        links it. `ggml_ops_test` now uses it.
+        `experiments/backend-proof-p2/plan_compare.py` compares a
+        recording, with cuBLAS's logs, SASS hashes and an nsys trace, with
+        `fp16-plan.json`.
+        - `tools/tests/test_plan_compare.py` (in `mise run check`) shows:
+          - every bridge arm matches itself;
+          - 22 mutations are each caught and located, and the allowed
+            differences pass;
+          - a fragment, or a run without its nsys trace, is never a
+            complete match;
+          - a full synthetic recording with logs, SASS and trace converts
+            and matches.
+        - `unit.PlanRecordTest.*` holds the writer to the sample the
+          converter reads.
+        - On `spark-b`, `unit.GgmlOpsPlanMatchTest.*` recorded the fused
+          decode step's first seven launches. With the test's nsys trace,
+          SASS from cuobjdump 13.0.85 and the libraries' hashes, they
+          matched `control-fused` from token 6, registers and SASS
+          included. The result is incomplete by design: it is a fragment,
+          with no cuBLAS call and so no cuBLAS logs.
+
       Remaining in P1:
-      - the allocation census;
+      - the allocation census, under the pre-registered rule;
       - the first native EXL3 linear.
 
       *P2 started:* **`src/artifact/`** reads v0 prepared artifacts
