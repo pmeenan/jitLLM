@@ -245,8 +245,9 @@ cuBLAS path on a jitLLM-owned handle, run under jitLLM's launch context
 on jitLLM memory (D-077). The owner delegated the
 remaining proof thresholds, each pre-registered before the native result it
 judges, and allowed ExLlamaV3's GEMV into an optional module pending its
-provenance (D-079). BP-F1's timing rule is calibrated and pre-registered;
-its host-VMM comparison has not run. BP-F2's timing reference
+provenance (D-079). BP-F1 failed under its pre-registered rule: GGML's
+matrix products run 1.1–4.9× slower on host VMM than on `cudaMalloc`,
+which reopens D-034 for the owner. BP-F2's timing reference
 and the EXL3 phase memory limits wait for P3 entry. The retained-backing
 criteria are pre-registered with the cross-model swap trace; no design has
 run on it yet. Keep this paragraph short and current

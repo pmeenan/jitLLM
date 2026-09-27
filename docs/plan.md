@@ -401,7 +401,14 @@ reservation policy) were recorded in M0.
         `cudaMalloc` sessions on `spark` gave a median `σ` of 1.23%; the
         holdout declared in advance passed. The calibration's hash is
         registered in backend-proof.md, and the session driver refuses a
-        host-VMM arm under any other. No host-VMM timing has run.
+        host-VMM arm under any other.
+      - **BP-F1 fails: host VMM is slower** (2026-09-27, on `spark`, under
+        the committed pre-registration). 41 of 53 cases failed the primary
+        session and its mirrored confirmation, and the aggregate failed in
+        both. Every matrix product ran 1.10× to 4.9× slower on host VMM (the
+        output head at one row 2.14×), with identical launches and outputs
+        ([comparison](experiments/backend-proof-p1/README.md#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
+        This reopens D-034 for the owner; it blocks no other stage.
 
       - **Plan selection between implementations (D-053).** The
         implementation registry (`src/execution/registry.h`) holds each
@@ -474,8 +481,6 @@ reservation policy) were recorded in M0.
         against upstream's decode wait for a native decode step (P2).
 
       Remaining in P1:
-      - BP-F1's gated comparison, host VMM against cudaMalloc, once the
-        pre-registration is reviewed and committed;
       - the allocation census;
       - the first native EXL3 linear.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):

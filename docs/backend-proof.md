@@ -487,7 +487,9 @@ before the native output it governs.
     host-VMM timing ran: its 53 cases, operand placement, calibration and
     `z`, with a passing holdout
     ([BP-F1](#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry),
-    [report](experiments/backend-proof-p1/README.md)).
+    [report](experiments/backend-proof-p1/README.md)). Applied on
+    2026-09-27, it fails: host VMM is slower, which reopens D-034 for the
+    owner.
 
 Each part is approved, or pre-registered under D-079, before any native
 result it would judge is seen.
@@ -1128,6 +1130,15 @@ reference container.
       if a case or the aggregate fails, a mirrored confirmation. A case
       fails BP-F1 only when it fails both; the aggregate must pass in the
       confirmation too. The stream-launched arm is reported, not gated.
+  - **Result (2026-09-27): BP-F1 fails; D-034 is reopened for the owner.**
+    Run under the committed pre-registration (`d3b4f2a`) on `spark`: 41 of
+    the 53 cases failed both the primary session `p1` and its mirrored
+    confirmation `m1`, and the aggregate failed in both (`t` 54.16 and
+    56.98). Every matrix product ran slower on host VMM, 1.10× to 4.9×
+    (the output head at one row 2.14×); 12 elementwise and norm cases
+    passed. Launches and outputs were identical in both memory kinds. This
+    blocks no other stage
+    ([comparison](experiments/backend-proof-p1/README.md#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
 - **BP-F2: EXL3 kernels.**
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
     matched plan.

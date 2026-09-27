@@ -1,17 +1,25 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Backend proof P1: BP-F1's timing calibration — 2026-09-27
+# Backend proof P1: BP-F1, host VMM against cudaMalloc — 2026-09-27
 
 BP-F1 asks whether jitLLM's GGML kernels run slower when their memory is
 host VMM than when it is `cudaMalloc` memory (D-034's reopen condition;
 [backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-deferred-to-p3-entry)).
 The approved kernel-timing rule needs BP-F1's own noise calibration and
 holdout before any comparison. This report records that calibration, which
-settles BP-F1's rule under D-079. It holds no host-VMM timing: none has
-been run.
+settles BP-F1's rule under D-079, and then the gated comparison, run once
+the pre-registration was reviewed and committed.
 
 **Results in brief.**
+
+- **BP-F1 fails: host VMM is slower.** Under the pre-registered rule, 41
+  of 53 cases fail both the primary and the mirrored confirmation session,
+  and the aggregate fails in both (`t` 54.2 and 57.0 against 3.143).
+  Every matrix product is slower, by 1.10× to 4.9×; the output head at one
+  row runs 2.14× slower. The launches and outputs are identical in both
+  memory kinds. Per the protocol this reopens D-034 for the owner and
+  blocks nothing else ([comparison](#comparison-host-vmm-against-cudamalloc-bp-f1-gated)).
 
 - **53 cases**, derived from the FP16 bridge's recorded plan for the
   held-out trajectory at 1, 16, 17 and 512 rows. Each is a kernel jitLLM
@@ -234,9 +242,137 @@ A host-VMM penalty, if there is one, would be expected across many cases
 at once, where the aggregate and the per-case tests together are
 sensitive.
 
+## Comparison: host VMM against `cudaMalloc` (BP-F1, gated)
+
+Run 2026-09-27 on `spark` after the pre-registration was reviewed and
+committed (`d3b4f2a`), exactly under it: the registered harness
+(`05348df8…`), case file (`fe78d033…`) and calibration (`aa158127…`), which
+the session driver checked against backend-proof.md before running and
+each session's manifest records; every host-VMM block also records the
+calibration's. A is `cudaMalloc` (the reference), B host VMM (the
+candidate).
+
+**Outcome: BP-F1 fails.** 41 of the 53 cases fail both sessions, and the
+aggregate fails in both (`t` 54.16 and 56.98, limit 3.143). Under the
+protocol this reopens D-034 for the owner; it blocks no other stage.
+
+| Session | Order | When (UTC) | Cases over `z` | Aggregate `t` | Candidate slower / faster |
+| --- | --- | --- | --- | --- | --- |
+| `p1` (primary) | A1 B1 B2 A2 B3 A3 A4 B4 | 06:30–06:33 | 41 | 54.16 | 45 / 8 |
+| `m1` (confirmation) | B1 A1 A2 B2 A3 B3 B4 A4 | 06:34–06:37 | 41 | 56.98 | 45 / 8 |
+
+The primary failed (41 cases and the aggregate), so the mirrored
+confirmation ran, as the procedure requires; the same 41 cases exceeded
+`z` in both. The block-level shifts put every host-VMM block 13.5–16.7%
+above the per-case mean and every `cudaMalloc` block 14.5–16.2% below it,
+in both sessions. `timing_protocol.py` at `c05fd2dd…` applied the rule; the current
+script gives the same outcome. Nothing in the rule was ambiguous in
+applying it.
+
+- **Conditions.** Both sessions started with no compute process on the
+  GPU and the load average below 0.5 (0.14 and 0.43); no other compute
+  process appeared before any block. SM clock 2,405–2,457 MHz and
+  49–60 °C at block boundaries, no active throttle reason; driver
+  580.178.04, kernel 7.0.0-1019-nvidia, CPU governor `performance`.
+  Source: commit `d3b4f2a` with no uncommitted changes; the session driver
+  was the committed `bpf1_session.py` (`40d5daa5…`).
+- **The validity checks held in every block of both arms.** Every
+  captured launch matched the recorded plan on host VMM as on `cudaMalloc`,
+  and each case's output hash was the same in all 16 blocks: host VMM
+  changed the time, not the kernels or the results.
+- **Where it is slower.** Every matrix product fails, from 1.10× (the
+  output head at 17 rows) to 4.9× (single-row KQV at 768 cells). The
+  output head at one row, which reads its 272 MB of weights once per
+  invocation, takes 2,184 µs against 1,019 µs: about 125 GB/s of weights
+  read against 267 GB/s. The multiply, the fused RMSNorm-multiply and the
+  896-wide bias add fail at 16 rows and above, and every elementwise
+  kernel but the residual add fails at 512 rows.
+- **Where it is not.** The 12 passing cases are elementwise and norm
+  kernels at 1, 16 or 17 rows, and the residual add at 512 rows; several
+  ran faster on host VMM (fused RMSNorm-multiply at one row, 0.86×). The
+  rule is one-sided, so they pass.
+- **The stream-launched arm** (reported, not gated) also has host VMM
+  slower for every matrix product (1.04× to 6.0×); for the adds and the
+  multiply at 16 and 17 rows its ratios are closer to 1 than the graph
+  arm's, and for RMSNorm there they are further from it (1.10–1.12×).
+
+Per case: the reference's median (µs, the median of its four block
+medians in `p1`), each session's ratio of arm medians and its `d`
+(threshold `z` = 3.555), the stream-launched ratios, and the stage verdict.
+
+| Case | Rows | `cudaMalloc` µs | `p1` ratio | `p1` d | `m1` ratio | `m1` d | Stream `p1` / `m1` | Stage |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `add.bias_128` | 1 | 1.89 | 0.971 | -3.0 | 0.988 | -1.3 | 1.03 / 1.03 | passes |
+| `add.bias_896` | 1 | 2.00 | 0.905 | -5.4 | 0.895 | -6.0 | 1.03 / 1.03 | passes |
+| `attn.kq.kv256` | 1 | 5.52 | 4.450 | 964.3 | 4.396 | 949.1 | 5.00 / 4.97 | **fails** |
+| `attn.kq.kv768` | 1 | 3.56 | 1.436 | 50.1 | 1.421 | 48.4 | 1.48 / 1.48 | **fails** |
+| `attn.kqv.kv256` | 1 | 3.47 | 4.772 | 3739.3 | 4.740 | 3707.6 | 6.03 / 6.03 | **fails** |
+| `attn.kqv.kv768` | 1 | 4.90 | 4.900 | 702.2 | 4.834 | 690.3 | 5.36 / 5.24 | **fails** |
+| `linear.down` | 1 | 35.69 | 1.268 | 34.7 | 1.294 | 38.0 | 1.28 / 1.29 | **fails** |
+| `linear.gate_up` | 1 | 34.40 | 2.265 | 176.1 | 2.286 | 178.9 | 2.30 / 2.34 | **fails** |
+| `linear.k_v` | 1 | 2.71 | 2.362 | 69.9 | 2.344 | 69.0 | 2.97 / 2.97 | **fails** |
+| `linear.lm_head` | 1 | 1,018.80 | 2.143 | 1598.1 | 2.132 | 1582.6 | 2.15 / 2.13 | **fails** |
+| `linear.q_o` | 1 | 8.16 | 2.589 | 163.5 | 2.530 | 157.4 | 3.05 / 3.03 | **fails** |
+| `mul` | 1 | 1.92 | 0.946 | -3.0 | 0.942 | -3.3 | 1.00 / 1.00 | passes |
+| `rms_norm` | 1 | 2.69 | 0.919 | -6.0 | 0.916 | -6.3 | 0.96 / 0.92 | passes |
+| `rms_norm_mul` | 1 | 4.29 | 0.862 | -28.6 | 0.859 | -29.4 | 0.90 / 0.90 | passes |
+| `add.bias_128` | 16 | 2.03 | 1.011 | 0.9 | 1.009 | 0.8 | 1.00 / 1.00 | passes |
+| `add.bias_896` | 16 | 2.23 | 1.227 | 14.4 | 1.225 | 14.2 | 1.05 / 1.07 | **fails** |
+| `add.residual` | 16 | 2.38 | 0.963 | -2.6 | 0.958 | -3.0 | 1.01 / 1.00 | passes |
+| `attn.kq.kv256` | 16 | 3.83 | 1.667 | 57.0 | 1.639 | 54.6 | 1.44 / 1.47 | **fails** |
+| `attn.kqv.kv256` | 16 | 4.91 | 1.379 | 133.5 | 1.379 | 133.4 | 1.31 / 1.31 | **fails** |
+| `linear.down` | 16 | 40.96 | 2.109 | 138.1 | 2.070 | 133.2 | 2.08 / 2.04 | **fails** |
+| `linear.gate_up` | 16 | 39.51 | 1.814 | 83.0 | 1.850 | 86.6 | 1.76 / 1.81 | **fails** |
+| `linear.k_v` | 16 | 5.40 | 1.137 | 13.7 | 1.136 | 13.6 | 1.04 / 1.05 | **fails** |
+| `linear.lm_head` | 16 | 1,128.05 | 1.289 | 95.5 | 1.297 | 98.2 | 1.29 / 1.30 | **fails** |
+| `linear.q_o` | 16 | 9.47 | 1.913 | 123.3 | 1.910 | 122.8 | 1.87 / 1.86 | **fails** |
+| `mul` | 16 | 2.24 | 1.272 | 25.6 | 1.272 | 25.6 | 1.08 / 1.08 | **fails** |
+| `rms_norm` | 16 | 2.94 | 1.013 | 1.5 | 1.030 | 3.4 | 1.10 / 1.11 | passes |
+| `rms_norm_mul` | 16 | 4.17 | 1.174 | 29.8 | 1.174 | 29.8 | 1.17 / 1.18 | **fails** |
+| `add.bias_128` | 17 | 1.97 | 1.043 | 2.8 | 1.018 | 1.2 | 0.99 / 1.03 | passes |
+| `add.bias_896` | 17 | 2.24 | 1.280 | 24.8 | 1.279 | 24.7 | 1.08 / 1.11 | **fails** |
+| `add.residual` | 17 | 2.44 | 0.944 | -13.6 | 0.955 | -10.9 | 1.00 / 1.00 | passes |
+| `attn.kq.kv256` | 17 | 7.50 | 1.710 | 46.6 | 1.718 | 47.1 | 1.53 / 1.53 | **fails** |
+| `attn.kqv.kv256` | 17 | 9.10 | 1.606 | 60.5 | 1.595 | 59.4 | 1.49 / 1.48 | **fails** |
+| `linear.down` | 17 | 43.25 | 1.369 | 44.5 | 1.393 | 47.3 | 1.39 / 1.41 | **fails** |
+| `linear.gate_up` | 17 | 45.26 | 2.289 | 133.1 | 2.326 | 136.8 | 2.18 / 2.23 | **fails** |
+| `linear.k_v` | 17 | 8.14 | 1.396 | 64.8 | 1.415 | 67.9 | 1.23 / 1.24 | **fails** |
+| `linear.lm_head` | 17 | 1,289.05 | 1.109 | 19.5 | 1.103 | 18.5 | 1.11 / 1.10 | **fails** |
+| `linear.q_o` | 17 | 12.85 | 1.354 | 42.2 | 1.379 | 45.2 | 1.41 / 1.44 | **fails** |
+| `mul` | 17 | 2.25 | 1.278 | 26.7 | 1.273 | 26.2 | 1.21 / 1.12 | **fails** |
+| `rms_norm` | 17 | 3.01 | 1.024 | 2.3 | 1.002 | 0.2 | 1.12 / 1.11 | passes |
+| `rms_norm_mul` | 17 | 4.16 | 1.183 | 29.4 | 1.180 | 29.0 | 1.20 / 1.20 | **fails** |
+| `add.bias_128` | 512 | 3.75 | 1.528 | 34.0 | 1.536 | 34.5 | 1.49 / 1.52 | **fails** |
+| `add.bias_896` | 512 | 16.41 | 1.158 | 17.1 | 1.156 | 16.9 | 1.15 / 1.16 | **fails** |
+| `add.residual` | 512 | 23.13 | 0.953 | -5.0 | 0.965 | -3.8 | 0.94 / 0.95 | passes |
+| `attn.kq.kv768` | 512 | 124.34 | 1.680 | 186.9 | 1.694 | 190.6 | 1.65 / 1.66 | **fails** |
+| `attn.kqv.kv768` | 512 | 186.25 | 1.624 | 123.8 | 1.651 | 129.3 | 1.60 / 1.60 | **fails** |
+| `linear.down` | 512 | 122.16 | 3.715 | 212.5 | 3.687 | 210.3 | 3.64 / 3.61 | **fails** |
+| `linear.gate_up` | 512 | 139.95 | 2.679 | 342.4 | 2.752 | 357.4 | 2.62 / 2.65 | **fails** |
+| `linear.k_v` | 512 | 17.27 | 2.318 | 207.0 | 2.336 | 209.8 | 2.12 / 2.09 | **fails** |
+| `linear.lm_head` | 512 | 4,068.76 | 2.884 | 1538.6 | 2.895 | 1548.0 | 2.88 / 2.89 | **fails** |
+| `linear.q_o` | 512 | 34.05 | 2.962 | 235.7 | 2.966 | 236.2 | 2.86 / 2.87 | **fails** |
+| `mul` | 512 | 16.37 | 1.187 | 19.8 | 1.143 | 15.2 | 1.18 / 1.14 | **fails** |
+| `rms_norm` | 512 | 16.77 | 1.087 | 7.3 | 1.080 | 6.7 | 1.07 / 1.07 | **fails** |
+| `rms_norm_mul` | 512 | 17.54 | 1.290 | 41.6 | 1.317 | 45.5 | 1.28 / 1.29 | **fails** |
+
+[`bpf1-comparison.json`](bpf1-comparison.json) holds both sessions'
+manifests, block medians and `d`, and the rule's outcome, written by
+[`bpf1_compare_record.py`](bpf1_compare_record.py). The raw samples and
+logs stay on `spark` in `~/.local/share/jitllm/bpf1-20260927/p1` and `m1`.
+
+What the comparison does not show: why host VMM is slower here when
+D-034's scan kernels read host and device VMM at the same bandwidth
+(242 GB/s), and whether placing only the weights, or only the activations
+and workspaces, on host VMM changes the result. The rule placed every
+buffer in the candidate's memory; separating them is for the owner's
+D-034 review, not part of this gate.
+
 ## Limitations
 
-- **One host, one day.** All sessions ran on `spark` within half an hour;
+- **One host, one day.** All sessions ran on `spark` within 70 minutes:
+  the calibration and holdout in 05:27–05:51 UTC, the comparison in
+  06:30–06:37;
   `spark-b` served only development runs, which are not evidence.
 - **Not the whole model.** The cases are the kernels jitLLM has; RoPE,
   softmax, the KV writes, the SiLU gate and the fused single-row MMVF
@@ -289,4 +425,11 @@ bpf1_record.py --protocol timing_protocol.py --calibration bpf1-calibration.json
 A comparison session passes `--arm-b host-vmm --registry
 docs/backend-proof.md --calibration bpf1-calibration.json` with the
 registered harness and case file, and `bpf1_stats.py` needs `--registry`
-for it.
+for it. The comparison was then:
+
+```bash
+bpf1_stats.py OUT/p1 --registry docs/backend-proof.md > p1.json     # and m1
+timing_protocol.py bpf1-calibration.json p1.json m1.json
+bpf1_compare_record.py --protocol timing_protocol.py --calibration bpf1-calibration.json \
+  --primary p1.json --confirmation m1.json > bpf1-comparison.json
+```
