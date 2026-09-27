@@ -43,4 +43,17 @@ if(JITLLM_CUDA)
                                                       jitllm_warnings)
   target_link_options(jitllm_ggml_vmm_bench PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # Why host VMM slowed BP-F1's products, and what the alternatives cost:
+  # microkernels over each kind of memory, copies between them, and GGML
+  # products with each buffer group placed separately
+  # (docs/experiments/host-vmm-diagnosis/). Diagnostic, not a gate.
+  add_executable(jitllm_vmm_diag_bench vmm_diag_bench.cc vmm_diag_kernels.cu)
+  target_include_directories(jitllm_vmm_diag_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_vmm_diag_bench PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                      jitllm_storage jitllm_warnings)
+  set_target_properties(jitllm_vmm_diag_bench PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  target_link_options(jitllm_vmm_diag_bench PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()

@@ -30,6 +30,29 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-022: The GB10's L2 does not keep host-located CUDA memory, so re-reads go to DRAM  (2026-09-27, status: open)
+
+On `spark` (GB10, driver 580.178.04), GPU reads of memory that CUDA
+allocates at a host location miss L2 every time they re-read it. That
+covers `cuMemCreate` at `HOST_NUMA` or `HOST` (jitLLM's host VMM, whether
+mapped for the CPU or not) and `cudaMallocHost`. A kernel re-reading a
+4 MiB buffer gets 0 of 8,388,608 L2 sector hits and 243 GB/s (DRAM rate).
+The same kernel over `cudaMalloc` or device VMM gets 98.4% hits and
+1,952 GB/s. Streaming reads run at ~240 GB/s from every kind, so a
+bandwidth scan cannot show the difference; that is how D-034's evidence
+missed it. Blocks that write to such memory also finish more slowly
+(151,936 one-write blocks: 246 vs 96 µs). GEMMs, grouped attention and
+matrix-vector products re-read through L2, and ran 1.1–4.9× slower with
+all their buffers there (BP-F1). Ordinary memory read through ATS
+(pageable, registered, managed) is cached in L2, but it streams at only
+~165 GB/s. The CUDA 13.4 headers offer no allocation or access flag for
+caching, and a persisting access-policy window does not change it.
+`cuMemSetAccess` refuses to map device VMM for the CPU
+(`CUDA_ERROR_NOT_SUPPORTED`). Measurements, options and reproduction:
+[host-vmm-diagnosis](experiments/host-vmm-diagnosis/README.md).
+Before placing any buffer the GPU re-reads in host-located memory on the
+Spark, measure it with a re-reading kernel, not a scan.
+
 ## RE-021: GGML's graph object trips UBSan on creation  (2026-09-27, status: worked-around)
 
 In the `cross-asan` build on `spark-b` (address and undefined sanitizers,
