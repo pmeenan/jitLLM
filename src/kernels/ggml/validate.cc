@@ -385,6 +385,28 @@ std::expected<void, KernelFailure> CheckRmsNormMul(const ggml_tensor* norm,
   return {};
 }
 
+std::expected<void, KernelFailure> CheckRmsNormThenMul(const ggml_tensor* norm,
+                                                       const ggml_tensor* mul) {
+  if (mul == nullptr || mul->op != GGML_OP_MUL || norm == nullptr ||
+      (mul->src[0] != norm && mul->src[1] != norm)) {
+    return Rejected("not a mul node scaling this norm");
+  }
+  if (auto checked = CheckRmsNorm(norm); !checked) {
+    return checked;
+  }
+  if (auto checked = CheckBinary(mul, GGML_OP_MUL); !checked) {
+    return checked;
+  }
+  // The norm is this implementation's own intermediate. Written over its
+  // input, it would change what the fused implementation leaves alone;
+  // over the weight, it would change what the mul then reads.
+  const ggml_tensor* weight = mul->src[0] == norm ? mul->src[1] : mul->src[0];
+  if (Overlap(norm, norm->src[0]) || Overlap(norm, weight)) {
+    return Rejected("the norm's memory overlaps its input or the weight");
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node) {
   if (auto checked = CheckMulMat(node); !checked) {
     return checked;

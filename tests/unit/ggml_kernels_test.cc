@@ -10,7 +10,11 @@
 // - fused and unfused RMSNorm-mul, and MMVF and MMF at one column, are
 //   separate implementations of one operation;
 // - an operation that does not fit is refused before launch, and a launch
-//   error returns as a fault instead of aborting.
+//   error returns as a fault instead of aborting;
+// - a plan selects between fused and unfused RMSNorm-mul through the
+//   implementation registry (D-053, BP-S1), each selection exact across
+//   memory kinds and close to a CPU reference, and a stale or foreign
+//   implementation selects no kernel (BP-S2, BP-S4).
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -23,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -30,7 +35,9 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/tensors.h"
@@ -592,6 +599,214 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   EXPECT_TRUE(launch->faulted());
   EXPECT_EQ(launch->Run(Bytes(0), [](ggml_backend_cuda_context&) {}).error().error,
             KernelError::kRejected);
+}
+
+// Plan selection between two implementations of one operation (D-053).
+// Operands of one RMSNorm-mul: rows, a weight, the unfused norm's
+// intermediate and the output.
+struct NormShape {
+  std::int64_t width = 0;
+  std::int64_t rows = 0;
+};
+
+// A quiet NaN that no kernel writes.
+constexpr std::uint32_t kPoison = 0x7fc00badU;
+
+// What one selection wrote.
+struct NormResult {
+  std::vector<float> output;
+  std::vector<float> intermediate;
+};
+
+class GgmlPlanTest : public GgmlKernelsTest {
+ protected:
+  // RMSNorm-mul by the one operation of `plan`, resolved against
+  // `registry`, over inputs in `memory`; output and intermediate start as
+  // NaN, so whatever is not written shows.
+  NormResult Run(const jitllm::execution::Registry& registry, const jitllm::execution::Plan& plan,
+                 NormShape shape, Memory memory) {
+    const auto bound = jitllm::execution::Resolve(registry, plan);
+    EXPECT_TRUE(bound.has_value()) << (bound ? "" : bound.error().detail);
+    if (!bound) {
+      return {};
+    }
+    const auto kernel = jitllm::kernels::ggml::RmsNormMulKernel::Bind(bound->at(0));
+    EXPECT_TRUE(kernel.has_value()) << (kernel ? "" : kernel.error().detail);
+    if (!kernel) {
+      return {};
+    }
+    const auto count = static_cast<std::size_t>(shape.width * shape.rows);
+    std::vector<float> input(count);
+    std::vector<float> weight(static_cast<std::size_t>(shape.width));
+    for (std::size_t i = 0; i < input.size(); ++i) {
+      input[i] = Value(1, i) * 4.0f;
+    }
+    for (std::size_t i = 0; i < weight.size(); ++i) {
+      weight[i] = Value(2, i) + 1.0f;
+    }
+    const std::vector<float> poison(count, std::bit_cast<float>(kPoison));
+    const std::size_t bytes = count * sizeof(float);
+    const std::uint64_t input_at = Allocate(memory, bytes);
+    const std::uint64_t weight_at = Allocate(memory, weight.size() * sizeof(float));
+    const std::uint64_t intermediate_at = Allocate(memory, bytes);
+    const std::uint64_t output_at = Allocate(memory, bytes);
+    Upload(input_at, input.data(), bytes);
+    Upload(weight_at, weight.data(), weight.size() * sizeof(float));
+    Upload(intermediate_at, poison.data(), bytes);
+    Upload(output_at, poison.data(), bytes);
+
+    auto arena = TensorArena::Create(4).value();
+    ggml_context* context = arena.context();
+    ggml_tensor* x = ggml_new_tensor_2d(context, GGML_TYPE_F32, shape.width, shape.rows);
+    ggml_tensor* w = ggml_new_tensor_1d(context, GGML_TYPE_F32, shape.width);
+    TensorArena::Bind(x, input_at);
+    TensorArena::Bind(w, weight_at);
+    ggml_tensor* norm = ggml_rms_norm(context, x, kEps);
+    ggml_tensor* scaled = ggml_mul(context, norm, w);
+    TensorArena::Bind(norm, intermediate_at);
+    TensorArena::Bind(scaled, output_at);
+
+    auto launch = Launcher();
+    EXPECT_TRUE(kernel->Check(norm, scaled).has_value());
+    const auto ran = kernel->Run(*launch, norm, scaled);
+    EXPECT_TRUE(ran.has_value()) << (ran ? "" : ran.error().detail);
+    EXPECT_EQ(launch->scratch_peak(), Bytes(0));
+    return {.output = Download(output_at, count), .intermediate = Download(intermediate_at, count)};
+  }
+};
+
+// The CPU reference in double precision.
+std::vector<double> ReferenceNormMul(NormShape shape) {
+  std::vector<double> out(static_cast<std::size_t>(shape.width * shape.rows));
+  for (std::int64_t r = 0; r < shape.rows; ++r) {
+    double sum = 0.0;
+    for (std::int64_t c = 0; c < shape.width; ++c) {
+      const double v = Value(1, static_cast<std::uint64_t>((r * shape.width) + c)) * 4.0;
+      sum += v * v;
+    }
+    const double scale = 1.0 / std::sqrt((sum / static_cast<double>(shape.width)) + kEps);
+    for (std::int64_t c = 0; c < shape.width; ++c) {
+      const auto i = static_cast<std::uint64_t>((r * shape.width) + c);
+      out[i] = Value(1, i) * 4.0 * scale * (Value(2, static_cast<std::uint64_t>(c)) + 1.0);
+    }
+  }
+  return out;
+}
+
+const char* const kFused = "ggml.rms_norm_mul.fused";
+const char* const kUnfused = "ggml.rms_norm_mul.unfused";
+
+jitllm::execution::Plan NormPlan(const jitllm::execution::Registry& registry, const char* name) {
+  const std::vector<jitllm::execution::Choice> choices = {
+      {.operation = jitllm::execution::Operation::kRmsNormMul, .implementation = name}};
+  return jitllm::execution::Plan::Build(registry, choices).value();
+}
+
+TEST_F(GgmlPlanTest, EachSelectionIsExactAcrossMemoryAndCloseToTheReference) {
+  const auto registry =
+      jitllm::execution::Registry::Create(jitllm::kernels::ggml::Implementations()).value();
+  std::size_t candidates = 0;
+  for (std::size_t i = 0; i < registry.size(); ++i) {
+    candidates += registry.at(i).operation == jitllm::execution::Operation::kRmsNormMul ? 1 : 0;
+  }
+  EXPECT_EQ(candidates, 2U);
+  const auto fused = NormPlan(registry, kFused);
+  const auto unfused = NormPlan(registry, kUnfused);
+  EXPECT_NE(fused.identity(), unfused.identity());
+
+  // Qwen2.5-0.5B's width, which GGML's launchers run in 32-thread blocks,
+  // and a width they run in 1,024-thread blocks.
+  for (const NormShape shape :
+       {NormShape{.width = kWidth, .rows = kRows}, NormShape{.width = 4096, .rows = 3}}) {
+    const NormResult fused_control = Run(registry, fused, shape, Memory::kCudaMalloc);
+    const NormResult unfused_control = Run(registry, unfused, shape, Memory::kCudaMalloc);
+    for (const Memory memory : {Memory::kDeviceVmm, Memory::kHostVmm}) {
+      EXPECT_EQ(Bits(Run(registry, fused, shape, memory).output), Bits(fused_control.output));
+      EXPECT_EQ(Bits(Run(registry, unfused, shape, memory).output), Bits(unfused_control.output));
+    }
+    // Each against the reference, as GgmlMemoryTest judges them.
+    const std::vector<double> reference = ReferenceNormMul(shape);
+    ExpectClose(fused_control.output, reference, 1e-5, kFused);
+    ExpectClose(unfused_control.output, reference, 1e-5, kUnfused);
+    // The fused kernel never writes the intermediate; the unfused one does.
+    EXPECT_TRUE(std::ranges::all_of(fused_control.intermediate, [](float v) {
+      return std::bit_cast<std::uint32_t>(v) == kPoison;
+    }));
+    EXPECT_TRUE(
+        std::ranges::none_of(unfused_control.intermediate, [](float v) { return std::isnan(v); }));
+
+    // Fused against unfused: reported, not judged (BP-S1 judges each
+    // against its own bridge arm, in P2).
+    std::size_t differ = 0;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < fused_control.output.size(); ++i) {
+      const float a = fused_control.output[i];
+      const float b = unfused_control.output[i];
+      if (std::bit_cast<std::uint32_t>(a) != std::bit_cast<std::uint32_t>(b)) {
+        ++differ;
+        worst = std::max(worst, std::abs(static_cast<double>(a) - b) / (1.0 + std::abs(b)));
+      }
+    }
+    std::cout << "rms_norm_mul " << shape.width << " x " << shape.rows << ": fused and unfused "
+              << "differ in " << differ << " of " << fused_control.output.size()
+              << " elements, largest relative difference " << worst << "\n";
+    RecordProperty("differ_" + std::to_string(shape.width), static_cast<int>(differ));
+  }
+}
+
+TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
+  using jitllm::execution::PlanError;
+  const auto registry =
+      jitllm::execution::Registry::Create(jitllm::kernels::ggml::Implementations()).value();
+
+  // A plan made in a build whose fused implementation had another GGML
+  // tree (BP-S2): stale here, and never run as the unfused one.
+  std::vector<jitllm::execution::Implementation> older = jitllm::kernels::ggml::Implementations();
+  for (auto& implementation : older) {
+    implementation.revision = "0000";
+  }
+  const auto old_registry = jitllm::execution::Registry::Create(older).value();
+  const auto stale = jitllm::execution::Resolve(registry, NormPlan(old_registry, kFused));
+  ASSERT_FALSE(stale.has_value());
+  EXPECT_EQ(stale.error().error, PlanError::kStale);
+  // Nor does the stale declaration itself select a kernel.
+  EXPECT_EQ(jitllm::kernels::ggml::RmsNormMulKernel::Bind(older[0]).error().error,
+            KernelError::kRejected);
+
+  // A plan naming an implementation of a module this build lacks (BP-S4).
+  std::vector<jitllm::execution::Implementation> with_module =
+      jitllm::kernels::ggml::Implementations();
+  with_module.push_back({.name = "module.rms_norm_mul.other",
+                         .operation = jitllm::execution::Operation::kRmsNormMul,
+                         .source = "module",
+                         .revision = "1",
+                         .build = "1",
+                         .variant = "1"});
+  const auto module_registry = jitllm::execution::Registry::Create(with_module).value();
+  const auto unsupported =
+      jitllm::execution::Resolve(registry, NormPlan(module_registry, "module.rms_norm_mul.other"));
+  ASSERT_FALSE(unsupported.has_value());
+  EXPECT_EQ(unsupported.error().error, PlanError::kUnsupported);
+  EXPECT_EQ(jitllm::kernels::ggml::RmsNormMulKernel::Bind(with_module.back()).error().error,
+            KernelError::kRejected);
+
+  // A bound kernel refuses operands it cannot take, before any launch: the
+  // unfused norm needs memory of its own.
+  const auto unfused = jitllm::execution::Resolve(registry, NormPlan(registry, kUnfused)).value();
+  const auto kernel = jitllm::kernels::ggml::RmsNormMulKernel::Bind(unfused.at(0)).value();
+  EXPECT_EQ(kernel.name(), kUnfused);
+  const std::uint64_t rows = Allocate(Memory::kDeviceVmm, 3 * kWidth * sizeof(float));
+  auto arena = TensorArena::Create(4).value();
+  ggml_tensor* x = ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, kWidth);
+  ggml_tensor* w = ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, kWidth);
+  TensorArena::Bind(x, rows);
+  TensorArena::Bind(w, rows + (kWidth * sizeof(float)));
+  ggml_tensor* norm = ggml_rms_norm(arena.context(), x, kEps);
+  ggml_tensor* scaled = ggml_mul(arena.context(), norm, w);
+  TensorArena::Bind(scaled, rows + (2 * kWidth * sizeof(float)));
+  auto launch = Launcher();
+  EXPECT_EQ(kernel.Run(*launch, norm, scaled).error().error, KernelError::kRejected);
+  EXPECT_FALSE(launch->faulted());
 }
 
 }  // namespace

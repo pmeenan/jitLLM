@@ -28,6 +28,13 @@ std::expected<void, KernelFailure> CheckRmsNorm(const ggml_tensor* norm);
 // A ggml_rms_norm node and the ggml_mul that scales it, for GGML's fused
 // launcher, which writes the product and never the norm.
 std::expected<void, KernelFailure> CheckRmsNormMul(const ggml_tensor* norm, const ggml_tensor* mul);
+// The same two nodes for rms_norm's and mul's own launchers, one after the
+// other: the norm is written, to memory that shares no byte with its
+// input or the weight, and the mul reads it back. Apart from that
+// intermediate, the result and every other operand are as the fused
+// launcher leaves them.
+std::expected<void, KernelFailure> CheckRmsNormThenMul(const ggml_tensor* norm,
+                                                       const ggml_tensor* mul);
 // A ggml_add or ggml_mul node (op), all F32, with broadcasting.
 std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op op);
 // A ggml_mul_mat node, F16, BF16 or F32 weights and F32 activations and

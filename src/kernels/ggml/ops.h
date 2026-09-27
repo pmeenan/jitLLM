@@ -38,6 +38,12 @@ std::expected<void, KernelFailure> RmsNorm(LaunchContext& launch, ggml_tensor* n
 std::expected<void, KernelFailure> RmsNormMul(LaunchContext& launch, ggml_tensor* norm,
                                               ggml_tensor* mul);
 
+// The same nodes unfused, as GGML runs them with fusion off: rms_norm's
+// launcher writes the norm into its own memory, the plan's intermediate,
+// and mul's launcher scales it into `mul`, both in one run.
+std::expected<void, KernelFailure> RmsNormThenMul(LaunchContext& launch, ggml_tensor* norm,
+                                                  ggml_tensor* mul);
+
 // ggml_add and ggml_mul nodes with broadcasting, all F32.
 std::expected<void, KernelFailure> Add(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> Mul(LaunchContext& launch, ggml_tensor* node);

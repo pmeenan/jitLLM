@@ -49,6 +49,17 @@ std::expected<void, KernelFailure> RmsNormMul(LaunchContext& launch, ggml_tensor
   });
 }
 
+std::expected<void, KernelFailure> RmsNormThenMul(LaunchContext& launch, ggml_tensor* norm,
+                                                  ggml_tensor* mul) {
+  if (auto checked = CheckRmsNormThenMul(norm, mul); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [norm, mul](ggml_backend_cuda_context& context) {
+    ggml_cuda_op_rms_norm(context, norm);
+    ggml_cuda_op_mul(context, mul);
+  });
+}
+
 std::expected<void, KernelFailure> Add(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckBinary(node, GGML_OP_ADD); !checked) {
     return checked;

@@ -11,7 +11,9 @@
 #                        handle (cublas.h), the operation implementations
 #                        (ops.h, mul_mat_cublas.cu) and jitLLM's definitions
 #                        of the ggml-cuda.cu symbols GGML's launchers use
-#                        (ggml_support.cu). CUDA builds only.
+#                        (ggml_support.cu), and the module's declarations
+#                        in the implementation registry
+#                        (implementations.h). CUDA builds only.
 add_library(jitllm_ggml_tensors STATIC tensors.cc validate.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base PRIVATE jitllm_warnings)
@@ -39,16 +41,74 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         cublas.cc)
+                                         cublas.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(jitllm_ggml_kernels
                         PUBLIC jitllm_ggml_tensors jitllm_ggml_cuda jitllm_device_memory
-                               jitllm_cublas jitllm_cublaslt
+                               jitllm_cublas jitllm_cublaslt jitllm_execution
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE jitllm_cuda_device_memory jitllm_warnings)
-  set_target_properties(jitllm_ggml_kernels PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  set(architectures 121a-real)
+  set_target_properties(jitllm_ggml_kernels PROPERTIES CUDA_ARCHITECTURES ${architectures})
+  # What each implementation's identity records of the build (D-053): the
+  # prepared GGML tree the build used, as the source receipt records it
+  # (D-057), the SDK, the target, the device architectures, the build type
+  # (NDEBUG, and with it GGML's device asserts) and any sanitizers.
+  # A missing receipt, entry or digest fails configure: never an identity
+  # without the tree.
+  get_property(sources GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
+  set(ggml_tree "")
+  string(JSON count ERROR_VARIABLE error LENGTH "${sources}")
+  if(NOT error AND count GREATER 0)
+    # foreach(RANGE -1) would still run, for 0 and -1.
+    math(EXPR last "${count} - 1")
+    foreach(i RANGE ${last})
+      string(JSON id ERROR_VARIABLE error GET "${sources}" ${i} id)
+      if(NOT error AND id STREQUAL "ggml")
+        string(JSON ggml_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
+      endif()
+    endforeach()
+  endif()
+  string(LENGTH "${ggml_tree}" length)
+  if(NOT length EQUAL 64 OR NOT ggml_tree MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "The source receipt has no GGML tree digest for the registry's identities")
+  endif()
+  string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
+  set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
+    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architectures}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
+
+  # And jitLLM's own code in the module: every file in this directory, whose
+  # digest a build-time command writes into a generated source
+  # (module_digest.cmake). Editing any of them regenerates and recompiles
+  # only that source. A file added here without being listed fails the next
+  # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
+  # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
+  # are not sources and are skipped (as in ggml_module_digest_test.cmake).
+  set(module_files CMakeLists.txt cublas.cc cublas.h ggml_support.cu ggml_support.h
+                   implementations.cc implementations.h launch.cu launch.h module_digest.cmake
+                   mul_mat_cublas.cu ops.cu ops.h tensors.cc tensors.h validate.cc validate.h)
+  file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+       "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
+  foreach(name IN LISTS present)
+    if(NOT name IN_LIST module_files AND NOT name MATCHES "(^#|~$|\\.orig$|\\.rej$)")
+      message(FATAL_ERROR "src/kernels/ggml/${name} is not in module_files, so the "
+                          "implementations' identity would not cover it")
+    endif()
+  endforeach()
+  string(JOIN ":" module_names ${module_files})
+  set_property(GLOBAL PROPERTY JITLLM_GGML_MODULE_NAMES "${module_names}")
+  list(TRANSFORM module_files PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE module_paths)
+  set(module_digest "${CMAKE_CURRENT_BINARY_DIR}/module_digest.cc")
+  add_custom_command(
+    OUTPUT "${module_digest}"
+    COMMAND "${CMAKE_COMMAND}" "-DBASE=${CMAKE_CURRENT_SOURCE_DIR}" "-DNAMES=${module_names}"
+            "-DOUTPUT=${module_digest}" -P "${CMAKE_CURRENT_SOURCE_DIR}/module_digest.cmake"
+    DEPENDS ${module_paths}
+    COMMENT "Hashing the GGML module's sources for its implementation identities (D-053)"
+    VERBATIM)
+  target_sources(jitllm_ggml_kernels PRIVATE "${module_digest}")
   # The copy of upstream's cuBLAS path builds with the FP16 bridge's device
   # flag, as GGML's own files do (third_party/patches/ggml/0002), so that its
   # kernel's SASS compares with the bridge's. (NVCC's -O sets only the host

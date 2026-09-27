@@ -29,6 +29,7 @@ using jitllm::kernels::ggml::CheckMulMatCublas;
 using jitllm::kernels::ggml::CheckMulMatF;
 using jitllm::kernels::ggml::CheckRmsNorm;
 using jitllm::kernels::ggml::CheckRmsNormMul;
+using jitllm::kernels::ggml::CheckRmsNormThenMul;
 using jitllm::kernels::ggml::CublasGemm;
 using jitllm::kernels::ggml::CublasOperand;
 using jitllm::kernels::ggml::KernelError;
@@ -162,6 +163,41 @@ TEST_F(GgmlValidateTest, TheFusedNormNeverReadsWhatItDoesNotWrite) {
   // An in-place norm is a view of x: scaling it by x reads the norm's bytes.
   ggml_tensor* in_place = ggml_rms_norm_inplace(context(), x, 0.0f);
   Rejected(CheckRmsNormMul(in_place, Bound(ggml_mul(context(), in_place, x))));
+}
+
+// The unfused implementation writes the norm, so the norm must be memory of
+// its own: it may not alter the input or the weight, which the fused
+// implementation leaves alone.
+TEST_F(GgmlValidateTest, TheUnfusedNormWritesOnlyItsOwnIntermediate) {
+  ggml_tensor* x = F32(kWidth, 5);
+  ggml_tensor* w = F32(kWidth);
+  ggml_tensor* norm = Bound(ggml_rms_norm(context(), x, 1e-6f));
+  ggml_tensor* scaled = Bound(ggml_mul(context(), norm, w));
+  EXPECT_TRUE(CheckRmsNormThenMul(norm, scaled).has_value());
+  // The same nodes pass the fused implementation's check: one plan's
+  // operands serve either implementation.
+  EXPECT_TRUE(CheckRmsNormMul(norm, scaled).has_value());
+  // The mul in place over the norm is still the norm's own memory.
+  EXPECT_TRUE(CheckRmsNormThenMul(norm, ggml_mul_inplace(context(), norm, w)).has_value());
+
+  // Not this norm's mul, or no norm at all.
+  ggml_tensor* other = Bound(ggml_rms_norm(context(), x, 1e-6f));
+  Rejected(CheckRmsNormThenMul(other, scaled));
+  Rejected(CheckRmsNormThenMul(norm, Bound(ggml_add(context(), norm, w))));
+  Rejected(CheckRmsNormThenMul(nullptr, scaled));
+  Rejected(CheckRmsNormThenMul(norm, nullptr));
+  // Unbound: the unfused norm needs memory.
+  ggml_tensor* unbound = ggml_rms_norm(context(), x, 1e-6f);
+  Rejected(CheckRmsNormThenMul(unbound, Bound(ggml_mul(context(), unbound, w))));
+  // In place over its input: the fused implementation leaves x alone.
+  ggml_tensor* in_place = ggml_rms_norm_inplace(context(), x, 1e-6f);
+  Rejected(CheckRmsNormThenMul(in_place, Bound(ggml_mul(context(), in_place, w))));
+  // Over the weight, which the mul would then read.
+  ggml_tensor* wide = F32(kWidth, 5);
+  ggml_tensor* weight_view = ggml_view_1d(context(), wide, kWidth, 0);
+  ggml_tensor* over_weight = ggml_rms_norm(context(), x, 1e-6f);
+  TensorArena::Bind(over_weight, reinterpret_cast<std::uintptr_t>(wide->data));
+  Rejected(CheckRmsNormThenMul(over_weight, Bound(ggml_mul(context(), over_weight, weight_view))));
 }
 
 TEST_F(GgmlValidateTest, AViewThatNoLongerFollowsItsSourceIsRefused) {

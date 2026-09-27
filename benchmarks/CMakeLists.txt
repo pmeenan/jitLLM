@@ -20,4 +20,16 @@ if(JITLLM_CUDA)
   target_include_directories(jitllm_vmm_counters SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(jitllm_vmm_counters PRIVATE jitllm_cuda_device_memory jitllm_warnings)
+
+  # Host time per launch of RMSNorm-mul, for each implementation a plan can
+  # select, through the launch context and around it (BP-F4 in backend-proof
+  # P1; docs/experiments/launch-overhead/). Needs a GB10.
+  add_executable(jitllm_launch_bench launch_bench.cc)
+  target_include_directories(jitllm_launch_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_launch_bench PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                    jitllm_warnings)
+  # It links cuBLAS dynamically (D-076), found as the GPU tests find it.
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(jitllm_launch_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
 endif()

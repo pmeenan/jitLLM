@@ -393,11 +393,41 @@ reservation policy) were recorded in M0.
           SASS (`37c97848…`, 200 instructions; cuobjdump 13.0.85 on
           `spark`, 2026-09-26).
 
+      - **Plan selection between implementations (D-053).** The
+        implementation registry (`src/execution/registry.h`) holds each
+        compiled implementation with its identity: source, prepared tree
+        digest, a build-time digest of the module's own files, SDK, target,
+        device architecture, build type and variant. A plan names
+        one implementation per operation and records its identity, and the
+        plan's identity is a SHA-256 of them in order. Resolving binds
+        every operation or rejects the plan; nothing is substituted. The
+        GGML module declares fused RMSNorm-mul and rms_norm then mul
+        (`implementations.h`).
+        - On every profile, `unit.PlanRegistryTest.*` shows, on fake
+          declarations, the plan identity following each implementation's
+          (BP-S2), a plan made for an old identity rejected as stale
+          (BP-S2), and one naming an implementation the build lacks
+          rejected as unsupported, never bound to the other one (BP-S4).
+          `unit.GgmlValidateTest.*` covers the unfused implementation's
+          operand checks, and `unit.GgmlModuleDigest` (CUDA profiles)
+          that the GGML identities cover every file of the module.
+        - On `spark`, `unit.GgmlPlanTest.*` runs both selections by plan
+          in one process: each is bit-identical across cudaMalloc, device
+          VMM and host VMM and close to a CPU reference, at widths 896 and
+          4,096. Fused and unfused outputs were also bit-identical to each
+          other there (reported, not gated). A stale or foreign declaration
+          binds no kernel. BP-S1's exactness against the bridge arms closes
+          in P2.
+      - **Per-launch host cost (BP-F4, reported).** On `spark`, one
+        decode-row RMSNorm-mul costs about 1.76 µs of host time in GGML's
+        fused launcher alone and 1.88 µs through a bound plan; unfused,
+        3.6 µs and 3.95 µs (medians;
+        [report](experiments/launch-overhead/README.md)). Per-token figures
+        against upstream's decode wait for a native decode step (P2).
+
       Remaining in P1:
       - kernel times on host VMM versus cudaMalloc;
       - the allocation census;
-      - per-launch host cost;
-      - plan selection between implementations;
       - the first native EXL3 linear.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria

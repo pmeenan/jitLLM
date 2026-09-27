@@ -11,7 +11,7 @@ jitllm_gtest(cli_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(base_test base_test.cc)
-target_link_libraries(base_test PRIVATE jitllm_report)
+target_link_libraries(base_test PRIVATE jitllm_report jitllm_base)
 jitllm_gtest(base_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(platform_test platform_test.cc)
@@ -103,6 +103,11 @@ if(JITLLM_CUDA)
                ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
 
+# The implementation registry and plans (D-053), on fake declarations.
+add_executable(execution_test execution_test.cc)
+target_link_libraries(execution_test PRIVATE jitllm_execution)
+jitllm_gtest(execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # GGML tensor descriptors over jitLLM memory, in every profile, and GGML's
 # CUDA launchers and the cuBLAS path under jitLLM's launch context on a
 # real device (label `gpu`, so only on a Spark).
@@ -120,6 +125,18 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_kernels_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(ggml_kernels_test)
+
+  # The module's implementation identities follow every one of its source
+  # files (src/kernels/ggml/module_digest.cmake). A script on the build
+  # host, so it runs in every CUDA profile without a GPU.
+  get_property(module_names GLOBAL PROPERTY JITLLM_GGML_MODULE_NAMES)
+  add_test(NAME unit.GgmlModuleDigest
+           COMMAND ${CMAKE_COMMAND} "-DBASE=${PROJECT_SOURCE_DIR}/src/kernels/ggml"
+                   "-DNAMES=${module_names}"
+                   "-DGENERATED=${PROJECT_BINARY_DIR}/src/kernels/ggml/module_digest.cc"
+                   "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/module_digest"
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/ggml_module_digest_test.cmake)
+  set_tests_properties(unit.GgmlModuleDigest PROPERTIES LABELS unit)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE

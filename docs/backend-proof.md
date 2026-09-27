@@ -349,6 +349,28 @@ on the same stream. No segment boundaries or cross-stream events are needed.
 - The FP16 and EXL3 models, using different kernel sources, are resident and
   run alternately in one process.
 
+As built in P1, the core case is GGML's fused RMSNorm-mul
+(`ggml.rms_norm_mul.fused`, FP16-F's launcher) against rms_norm then mul
+(`ggml.rms_norm_mul.unfused`, FP16-U's). Both take the same pair of nodes.
+The unfused one writes the norm into memory of its own, an intermediate the
+plan provides, and refuses a norm over its input or the weight, so on nodes
+both accept the two differ only in that intermediate. (Like GGML with
+fusion off, the unfused one also accepts a norm broadcast as the mul's
+second operand, which the fused one refuses.) The registry
+(`src/execution/registry.h`) holds each compiled implementation's
+identity: name, operation, source, the prepared source tree's digest, a
+digest of every file of jitLLM's own code in the module (written at build
+time, so any edit there changes the identity), the SDK, target, device
+architecture, build type and sanitizers, and a variant naming the
+launchers. A plan records each operation's
+implementation and identity, and the plan's identity is a SHA-256 of them in
+order. Resolution binds every operation or rejects the plan: a name the
+build lacks is unsupported (BP-S4), a changed identity stale (BP-S2), and no
+other implementation is ever bound in its place. The GGML module turns only
+its own current declarations into kernels. Until P6 settles the operation
+contract and the build-generated table, each program assembles the registry
+from the modules it links.
+
 **Dispatch overhead.** Upstream decodes these fixtures at about 3.4–3.7 ms per
 token with captured blocks ([report](experiments/exl3-reference/README.md)),
 and a decode token runs 169 linear layers plus norm, RoPE and attention
