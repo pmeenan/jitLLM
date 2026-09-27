@@ -42,6 +42,7 @@
 #include "base/bytes.h"
 #include "base/wake.h"
 #include "catalog/catalog.h"
+#include "expected_error.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
 #include "providers/direct_reader.h"
@@ -116,6 +117,7 @@ using jitllm::scheduler::TaskOutcome;
 using jitllm::scheduler::TaskProgram;
 using jitllm::scheduler::Terminal;
 using jitllm::scheduler::WorkError;
+using jitllm::test_support::Failed;
 
 constexpr std::uint64_t kSize = 64ULL * 1024;          // one extent
 constexpr std::size_t kSources = 4;                    // extents loaded from the file
@@ -846,7 +848,7 @@ TEST_F(SchedulerTest, ContradictoryObservationsQuarantineAndStopAdmission) {
   EXPECT_EQ(reports_[0].outcome, TaskOutcome::kFailed);
   EXPECT_FALSE(reports_[0].retired);
   EXPECT_EQ(View(scratch_[0]).leases, 1U);
-  EXPECT_EQ(scheduler_->Start(2, CopyTask(1, 1, 1)).error(), StartError::kStopped);
+  EXPECT_EQ(Failed(scheduler_->Start(2, CopyTask(1, 1, 1))), StartError::kStopped);
 
   Settle();  // the device finishes; the quarantine stands
   EXPECT_EQ(View(sources_[0]).leases, 1U);
@@ -1126,7 +1128,7 @@ TEST_F(SchedulerTest, ExhaustedOperationIdentitiesStopAdmissionWithoutAborting) 
   EXPECT_EQ(board.open(), 0U);
   EXPECT_EQ(View(scratch_[0]).leases, 0U);
   EXPECT_EQ(
-      scheduler.Start(2, std::make_unique<RepeatProgram>(reports_[1], Of({scratch_[1]}))).error(),
+      Failed(scheduler.Start(2, std::make_unique<RepeatProgram>(reports_[1], Of({scratch_[1]})))),
       StartError::kStopped);
   scheduler.RequestShutdown();
   while (!scheduler.Stopped() && std::chrono::steady_clock::now() < give_up) {

@@ -1,11 +1,17 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# Support for tests and benchmarks: recording an executed plan to compare
-# with a recorded one (docs/backend-proof.md, the FP16 Tier E gate;
+# Support for tests and benchmarks: reading a std::expected's error safely,
+# and recording an executed plan to compare with a recorded one
+# (docs/backend-proof.md, the FP16 Tier E gate;
 # docs/experiments/backend-proof-p2/plan_compare.py). No production target
 # may link any of it; the check at the end of this file fails the configure
 # if one does.
+
+# Reading a std::expected's error only when it holds one (expected_error.h,
+# D-083), for every GoogleTest executable (jitllm_gtest links it).
+add_library(jitllm_test_expected INTERFACE)
+target_include_directories(jitllm_test_expected INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # The recording's events and JSON lines, in every profile.
 add_library(jitllm_plan_record STATIC plan_record.cc)
@@ -53,7 +59,7 @@ function(jitllm_check_no_test_support)
   while(pending)
     list(POP_FRONT pending target)
     # Anywhere in the item, so that a generator expression cannot hide it.
-    if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(plan_record|plan_record_sample|launch_recorder)([^A-Za-z0-9_]|$)")
+    if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(test_expected|plan_record|plan_record_sample|launch_recorder)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")

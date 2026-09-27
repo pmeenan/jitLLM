@@ -18,10 +18,12 @@
 #include "base/bytes.h"
 #include "base/check.h"
 #include "base/ids.h"
+#include "expected_error.h"
 
 namespace {
 
 using jitllm::base::Bytes;
+using jitllm::test_support::Failed;
 using jitllm::base::operator""_KiB;
 using jitllm::base::operator""_MiB;
 using jitllm::catalog::Catalog;
@@ -142,25 +144,25 @@ TEST_F(CatalogTest, StaleTicketsCannotTouchANewerOperation) {
   auto first = catalog_.BeginLoad(extent, kBudget).value();
   ASSERT_TRUE(catalog_.FailLoad(first, /*completion_known=*/true).has_value());
   auto second = catalog_.BeginLoad(extent, kBudget).value();
-  EXPECT_EQ(catalog_.CompleteLoad(first).error(), CatalogError::kStaleTicket);
-  EXPECT_EQ(catalog_.FailLoad(first, false).error(), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.CompleteLoad(first)), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.FailLoad(first, false)), CatalogError::kStaleTicket);
   EXPECT_EQ(State(extent), ExtentState::kLoading);
   ASSERT_TRUE(catalog_.CompleteLoad(second).has_value());
   // An eviction cancelled, then begun again: the first ticket is dead.
   auto cancelled = catalog_.BeginEvict(extent).value();
   ASSERT_TRUE(catalog_.CancelEvict(cancelled).has_value());
   auto evict = catalog_.BeginEvict(extent).value();
-  EXPECT_EQ(catalog_.CompleteEvict(cancelled).error(), CatalogError::kStaleTicket);
-  EXPECT_EQ(catalog_.QuarantineEviction(cancelled).error(), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.CompleteEvict(cancelled)), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.QuarantineEviction(cancelled)), CatalogError::kStaleTicket);
   EXPECT_EQ(State(extent), ExtentState::kEvicting);
   // A load ticket cannot finish an eviction, nor the reverse.
   const jitllm::catalog::Ticket as_load{
       .extent = extent, .operation = Operation::kLoad, .serial = evict.serial};
-  EXPECT_EQ(catalog_.CompleteLoad(as_load).error(), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.CompleteLoad(as_load)), CatalogError::kStaleTicket);
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
-  EXPECT_EQ(catalog_.CompleteEvict(evict).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.CompleteEvict(evict)), CatalogError::kWrongState);
   auto reload = catalog_.BeginLoad(extent, kBudget).value();
-  EXPECT_EQ(catalog_.CancelEvict(evict).error(), CatalogError::kStaleTicket);
+  EXPECT_EQ(Failed(catalog_.CancelEvict(evict)), CatalogError::kStaleTicket);
   EXPECT_TRUE(catalog_.CompleteLoad(reload).has_value());
 }
 
@@ -169,10 +171,10 @@ TEST_F(CatalogTest, StaleTicketsCannotTouchANewerOperation) {
 TEST_F(CatalogTest, ALoadInProgressIsNotStartedTwice) {
   const ExtentId extent = Weights(0);
   auto ticket = catalog_.BeginLoad(extent, kBudget).value();
-  EXPECT_EQ(catalog_.BeginLoad(extent, kBudget).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(extent, kBudget)), CatalogError::kWrongState);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).loading, 2_MiB);  // charged once
   ASSERT_TRUE(catalog_.CompleteLoad(ticket).has_value());
-  EXPECT_EQ(catalog_.CompleteLoad(ticket).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.CompleteLoad(ticket)), CatalogError::kWrongState);
 }
 
 // Every materialization checks actual occupancy against B (D-050), and
@@ -181,11 +183,11 @@ TEST_F(CatalogTest, LoadsNeverExceedTheBudget) {
   const ExtentId first = Weights(0);
   const ExtentId second = Weights(1);
   auto ticket = catalog_.BeginLoad(first, 3_MiB).value();
-  EXPECT_EQ(catalog_.BeginLoad(second, 3_MiB).error(), CatalogError::kOverBudget);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(second, 3_MiB)), CatalogError::kOverBudget);
   EXPECT_EQ(State(second), ExtentState::kNonresident);
   ASSERT_TRUE(catalog_.CompleteLoad(ticket).has_value());
   auto evict = catalog_.BeginEvict(first).value();
-  EXPECT_EQ(catalog_.BeginLoad(second, 3_MiB).error(), CatalogError::kOverBudget);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(second, 3_MiB)), CatalogError::kOverBudget);
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
   EXPECT_TRUE(catalog_.BeginLoad(second, 4_MiB).has_value());  // exactly B
 }
@@ -197,9 +199,9 @@ TEST_F(CatalogTest, UnknownCompletionQuarantinesAndStaysCharged) {
   ASSERT_TRUE(catalog_.FailLoad(ticket, /*completion_known=*/false).has_value());
   EXPECT_EQ(State(extent), ExtentState::kQuarantined);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).quarantined, 2_MiB);
-  EXPECT_EQ(catalog_.BeginLoad(extent, kBudget).error(), CatalogError::kWrongState);
-  EXPECT_EQ(catalog_.BeginEvict(extent).error(), CatalogError::kWrongState);
-  EXPECT_EQ(catalog_.RemoveExtent(extent).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(extent, kBudget)), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(extent)), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.RemoveExtent(extent)), CatalogError::kWrongState);
 
   const ExtentId other = Weights(1);
   Load(other);
@@ -223,9 +225,9 @@ TEST_F(CatalogTest, ClosuresCountSharedExtentsOnce) {
   EXPECT_EQ(closure.bytes_by_domain.at(domain_), 4_MiB);
   // A range must lie inside its extent.
   const std::vector<Range> outside = {{.extent = own, .offset = 1_MiB, .length = 2_MiB}};
-  EXPECT_EQ(catalog_.AddResource(outside).error(), CatalogError::kBadRange);
+  EXPECT_EQ(Failed(catalog_.AddResource(outside)), CatalogError::kBadRange);
   // An extent a resource uses cannot be forgotten.
-  EXPECT_EQ(catalog_.RemoveExtent(own).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.RemoveExtent(own)), CatalogError::kWrongState);
   ASSERT_TRUE(catalog_.RemoveResource(b).has_value());
   EXPECT_TRUE(catalog_.RemoveExtent(own).has_value());
 }
@@ -238,28 +240,28 @@ TEST_F(CatalogTest, LeasesAndEvictionExcludeEachOther) {
   Load(a);
   const Closure only_a = Of({a});
   const Closure both = Of({a, b});
-  EXPECT_EQ(catalog_.AcquireLease(both).error(), CatalogError::kNotResident);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(both)), CatalogError::kNotResident);
   EXPECT_EQ(catalog_.Describe(a).value().leases, 0U);  // nothing half-leased
   const auto lease = catalog_.AcquireLease(only_a).value();
   EXPECT_EQ(catalog_.OccupancyOf(domain_).held, 2_MiB);
-  EXPECT_EQ(catalog_.BeginEvict(a).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(a)), CatalogError::kHeld);
   ASSERT_TRUE(catalog_.ReleaseLease(lease).has_value());
   // Releasing is not evicting: the contents stay resident and eligible.
   EXPECT_EQ(State(a), ExtentState::kResident);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).idle, 2_MiB);
-  EXPECT_EQ(catalog_.ReleaseLease(lease).error(), CatalogError::kUnknownId);
+  EXPECT_EQ(Failed(catalog_.ReleaseLease(lease)), CatalogError::kUnknownId);
   auto evict = catalog_.BeginEvict(a).value();
-  EXPECT_EQ(catalog_.AcquireLease(only_a).error(), CatalogError::kNotResident);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(only_a)), CatalogError::kNotResident);
   ASSERT_TRUE(catalog_.CancelEvict(evict).has_value());
   EXPECT_TRUE(catalog_.AcquireLease(only_a).has_value());
 }
 
 TEST_F(CatalogTest, RegistrationsHoldLikeLeases) {
   const ExtentId extent = Weights(0);
-  EXPECT_EQ(catalog_.AddRegistration(extent).error(), CatalogError::kNotResident);
+  EXPECT_EQ(Failed(catalog_.AddRegistration(extent)), CatalogError::kNotResident);
   Load(extent);
   const auto registration = catalog_.AddRegistration(extent).value();
-  EXPECT_EQ(catalog_.BeginEvict(extent).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(extent)), CatalogError::kHeld);
   ASSERT_TRUE(catalog_.RetireRegistration(registration).has_value());
   EXPECT_TRUE(catalog_.BeginEvict(extent).has_value());
 }
@@ -275,7 +277,7 @@ TEST_F(CatalogTest, MutableStateMustBeInvalidatedBeforeEviction) {
                                      .content = {}})
                          .value();
   Load(state);
-  EXPECT_EQ(catalog_.BeginEvict(state).error(), CatalogError::kNotEvictable);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
   const Closure old = Of({state});
   const auto before = catalog_.Describe(state).value().content_generation;
   ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
@@ -283,24 +285,24 @@ TEST_F(CatalogTest, MutableStateMustBeInvalidatedBeforeEviction) {
   EXPECT_TRUE(catalog_.Describe(state).value().discarded);
   // Recovery is intrinsic: invalidating does not relabel the extent.
   EXPECT_EQ(catalog_.Describe(state).value().descriptor.recovery, Recovery::kPreserve);
-  EXPECT_EQ(catalog_.AcquireLease(old).error(), CatalogError::kStaleContent);
-  EXPECT_EQ(catalog_.AcquireLease(Of({state})).error(), CatalogError::kStaleContent);  // discarded
+  EXPECT_EQ(Failed(catalog_.AcquireLease(old)), CatalogError::kStaleContent);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(Of({state}))), CatalogError::kStaleContent);  // discarded
   auto evict = catalog_.BeginEvict(state).value();
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
   EXPECT_EQ(catalog_.Describe(state).value().content_generation, before + 2);  // gone
   // New contents are preserved again: not evictable until invalidated.
   Load(state);
   EXPECT_FALSE(catalog_.Describe(state).value().discarded);
-  EXPECT_EQ(catalog_.BeginEvict(state).error(), CatalogError::kNotEvictable);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
   const auto lease = catalog_.AcquireLease(Of({state})).value();
   const Closure taken = Of({state});
   ASSERT_TRUE(catalog_.ReplaceContents(state).has_value());  // the writer, under its lease
-  EXPECT_EQ(catalog_.AcquireLease(taken).error(), CatalogError::kStaleContent);
-  EXPECT_EQ(catalog_.BeginEvict(state).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(taken)), CatalogError::kStaleContent);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kHeld);
   // Leased contents cannot be invalidated under their readers.
-  EXPECT_EQ(catalog_.InvalidateContents(state).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.InvalidateContents(state)), CatalogError::kHeld);
   ASSERT_TRUE(catalog_.ReleaseLease(lease).has_value());
-  EXPECT_EQ(catalog_.BeginEvict(state).error(), CatalogError::kNotEvictable);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
 }
 
 TEST_F(CatalogTest, ReplacingContentsRequiresExclusiveAccess) {
@@ -315,15 +317,15 @@ TEST_F(CatalogTest, ReplacingContentsRequiresExclusiveAccess) {
   const Closure contents = Of({state});
   const auto writer = catalog_.AcquireLease(contents).value();
   const auto reader = catalog_.AcquireLease(contents).value();
-  EXPECT_EQ(catalog_.ReplaceContents(state).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.ReplaceContents(state)), CatalogError::kHeld);
   EXPECT_EQ(catalog_.Describe(state).value().content_generation, 1U);
   ASSERT_TRUE(catalog_.ReleaseLease(reader).has_value());
   const auto registration = catalog_.AddRegistration(state).value();
-  EXPECT_EQ(catalog_.ReplaceContents(state).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.ReplaceContents(state)), CatalogError::kHeld);
   EXPECT_EQ(catalog_.Describe(state).value().content_generation, 1U);
   ASSERT_TRUE(catalog_.RetireRegistration(registration).has_value());
   ASSERT_TRUE(catalog_.ReplaceContents(state).has_value());
-  EXPECT_EQ(catalog_.AcquireLease(contents).error(), CatalogError::kStaleContent);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(contents)), CatalogError::kStaleContent);
   EXPECT_TRUE(catalog_.ReleaseLease(writer).has_value());
 }
 
@@ -332,7 +334,7 @@ TEST_F(CatalogTest, ReplacingContentsRequiresExclusiveAccess) {
 TEST_F(CatalogTest, ArtifactContentsAreNotReplaced) {
   const ExtentId extent = Weights(0);
   Load(extent);
-  EXPECT_EQ(catalog_.ReplaceContents(extent).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.ReplaceContents(extent)), CatalogError::kWrongState);
   const Closure closure = Of({extent});
   auto evict = catalog_.BeginEvict(extent).value();
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
@@ -353,28 +355,26 @@ TEST_F(CatalogTest, UnknownAllocationsArePinned) {
   const auto occupancy = catalog_.OccupancyOf(domain_);
   EXPECT_EQ(occupancy.pinned, 3_MiB);
   EXPECT_EQ(occupancy.by_class.at(static_cast<std::size_t>(MemoryClass::kUnknown)), 3_MiB);
-  EXPECT_EQ(catalog_.BeginEvict(unknown).error(), CatalogError::kNotEvictable);
-  EXPECT_EQ(catalog_.InvalidateContents(unknown).error(), CatalogError::kWrongState);
-  EXPECT_EQ(catalog_.ReplaceContents(unknown).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(unknown)), CatalogError::kNotEvictable);
+  EXPECT_EQ(Failed(catalog_.InvalidateContents(unknown)), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.ReplaceContents(unknown)), CatalogError::kWrongState);
   EXPECT_FALSE(Catalog::Evictable(catalog_.Describe(unknown).value()));
   // An unknown allocation that is not pinned is refused.
-  EXPECT_EQ(catalog_
-                .AddExtent({.domain = domain_,
-                            .memory_class = MemoryClass::kUnknown,
-                            .recovery = Recovery::kFromArtifact,
-                            .size = 2_MiB,
-                            .content = {}},
-                           /*resident=*/true)
-                .error(),
+  EXPECT_EQ(Failed(catalog_.AddExtent({.domain = domain_,
+                                       .memory_class = MemoryClass::kUnknown,
+                                       .recovery = Recovery::kFromArtifact,
+                                       .size = 2_MiB,
+                                       .content = {}},
+                                      /*resident=*/true)),
             CatalogError::kBadRange);
   // Its owner releases it once nothing holds it.
   const auto registration = catalog_.AddRegistration(unknown).value();
-  EXPECT_EQ(catalog_.ReleasePinned(unknown).error(), CatalogError::kHeld);
+  EXPECT_EQ(Failed(catalog_.ReleasePinned(unknown)), CatalogError::kHeld);
   ASSERT_TRUE(catalog_.RetireRegistration(registration).has_value());
   ASSERT_TRUE(catalog_.ReleasePinned(unknown).has_value());
   EXPECT_EQ(State(unknown), ExtentState::kNonresident);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).Total(), Bytes());
-  EXPECT_EQ(catalog_.ReleasePinned(Weights(1)).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.ReleasePinned(Weights(1))), CatalogError::kWrongState);
 }
 
 // Descriptors come from untrusted manifests: out-of-range fields and sizes
@@ -393,13 +393,13 @@ TEST_F(CatalogTest, DescriptorsAreChecked) {
       static_cast<MemoryClass>(9);  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
   const auto bad_recovery =
       static_cast<Recovery>(4);  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
-  EXPECT_EQ(add(bad_class, Recovery::kPinned, 2_MiB).error(), CatalogError::kBadRange);
-  EXPECT_EQ(add(MemoryClass::kScratch, bad_recovery, 2_MiB).error(), CatalogError::kBadRange);
-  EXPECT_EQ(add(MemoryClass::kScratch, Recovery::kDiscardable, Bytes()).error(),
+  EXPECT_EQ(Failed(add(bad_class, Recovery::kPinned, 2_MiB)), CatalogError::kBadRange);
+  EXPECT_EQ(Failed(add(MemoryClass::kScratch, bad_recovery, 2_MiB)), CatalogError::kBadRange);
+  EXPECT_EQ(Failed(add(MemoryClass::kScratch, Recovery::kDiscardable, Bytes())),
             CatalogError::kBadRange);
   const Bytes half(std::uint64_t{1} << 63);
   ASSERT_TRUE(add(MemoryClass::kScratch, Recovery::kDiscardable, half).has_value());
-  EXPECT_EQ(add(MemoryClass::kScratch, Recovery::kDiscardable, half).error(),
+  EXPECT_EQ(Failed(add(MemoryClass::kScratch, Recovery::kDiscardable, half)),
             CatalogError::kBadRange);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).Total(), half);
 }
@@ -425,8 +425,8 @@ TEST_F(CatalogTest, ContentChangesNeedTheRightHolder) {
   Load(scratch);
   Load(state);
   Load(weights);
-  EXPECT_EQ(catalog_.ReplaceContents(state).error(), CatalogError::kWrongState);  // no lease
-  EXPECT_EQ(catalog_.InvalidateContents(weights).error(), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.ReplaceContents(state)), CatalogError::kWrongState);  // no lease
+  EXPECT_EQ(Failed(catalog_.InvalidateContents(weights)), CatalogError::kWrongState);
   ASSERT_TRUE(catalog_.InvalidateContents(scratch).has_value());
   auto evict = catalog_.BeginEvict(scratch).value();
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
@@ -451,16 +451,14 @@ TEST_F(CatalogTest, DomainsAreSeparateAndIdentitiesChecked) {
   // A resource cannot span domains.
   const std::vector<Range> spanning = {{.extent = here, .offset = Bytes(0), .length = 1_MiB},
                                        {.extent = there, .offset = Bytes(0), .length = 1_MiB}};
-  EXPECT_EQ(catalog_.AddResource(spanning).error(), CatalogError::kBadRange);
-  EXPECT_EQ(catalog_
-                .AddExtent({.domain = DomainId{},
-                            .memory_class = MemoryClass::kWeights,
-                            .recovery = Recovery::kFromArtifact,
-                            .size = 2_MiB,
-                            .content = {}})
-                .error(),
+  EXPECT_EQ(Failed(catalog_.AddResource(spanning)), CatalogError::kBadRange);
+  EXPECT_EQ(Failed(catalog_.AddExtent({.domain = DomainId{},
+                                       .memory_class = MemoryClass::kWeights,
+                                       .recovery = Recovery::kFromArtifact,
+                                       .size = 2_MiB,
+                                       .content = {}})),
             CatalogError::kUnknownDomain);
-  EXPECT_EQ(catalog_.Describe(ExtentId{}).error(), CatalogError::kUnknownId);
+  EXPECT_EQ(Failed(catalog_.Describe(ExtentId{})), CatalogError::kUnknownId);
 }
 
 TEST_F(CatalogTest, UseIsRecordedThroughLeases) {

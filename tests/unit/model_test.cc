@@ -19,6 +19,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "catalog/catalog.h"
+#include "expected_error.h"
 #include "model/context.h"
 #include "model/state.h"
 
@@ -37,16 +38,9 @@ using jitllm::model::StateCapability;
 using jitllm::model::StateCursor;
 using jitllm::model::StateError;
 using jitllm::model::StateRepresentation;
+using jitllm::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
-
-// The error of a result that must have failed, or nothing if it succeeded:
-// a wrong success never reads as the error expected, as calling .error()
-// on a value would.
-template <typename T, typename E>
-std::optional<E> Failed(const std::expected<T, E>& result) {
-  return result.has_value() ? std::nullopt : std::optional<E>(result.error());
-}
 
 // A paged KV cache: 16 positions per 1000-byte block, append and truncate.
 StateRepresentation Paged() {

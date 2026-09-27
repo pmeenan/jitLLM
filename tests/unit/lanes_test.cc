@@ -25,6 +25,7 @@
 
 #include "base/bounded_queue.h"
 #include "base/wake.h"
+#include "expected_error.h"
 #include "scheduler/completions.h"
 #include "scheduler/lane.h"
 #include "scheduler/tasks.h"
@@ -49,6 +50,7 @@ using jitllm::scheduler::TaskId;
 using jitllm::scheduler::TaskOutcome;
 using jitllm::scheduler::TaskTable;
 using jitllm::scheduler::Terminal;
+using jitllm::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::Pair;
 
@@ -609,16 +611,16 @@ TEST(TaskTable, ATreeUnwindsOnlyWhenEverythingHasDrained) {
   ASSERT_TRUE(tasks.Cancel(a).has_value());
   EXPECT_TRUE(View(tasks, a1).cancelled);
   EXPECT_FALSE(View(tasks, b).cancelled);
-  EXPECT_EQ(tasks.Create(a).error(), TaskError::kClosed);
-  EXPECT_EQ(tasks.PrepareOperation(a1).error(), TaskError::kClosed);
+  EXPECT_EQ(Failed(tasks.Create(a)), TaskError::kClosed);
+  EXPECT_EQ(Failed(tasks.PrepareOperation(a1)), TaskError::kClosed);
   EXPECT_EQ(View(tasks, a1).operations, 1U);
 
   // A late success of a cancelled task is a cancellation.
   ASSERT_TRUE(tasks.Finish(a1, TaskOutcome::kSucceeded).has_value());
   EXPECT_EQ(View(tasks, a1).outcome, TaskOutcome::kCancelled);
-  EXPECT_EQ(tasks.Retire(a1).error(), TaskError::kBusy);  // its read is in flight
+  EXPECT_EQ(Failed(tasks.Retire(a1)), TaskError::kBusy);  // its read is in flight
   ASSERT_TRUE(tasks.Finish(a, TaskOutcome::kCancelled).has_value());
-  EXPECT_EQ(tasks.Retire(a).error(), TaskError::kBusy);  // its child has not retired
+  EXPECT_EQ(Failed(tasks.Retire(a)), TaskError::kBusy);  // its child has not retired
   ASSERT_TRUE(tasks.RetireOperation(a1).has_value());
   ASSERT_TRUE(tasks.Retire(a1).has_value());
   ASSERT_TRUE(tasks.Retire(a).has_value());
@@ -626,7 +628,7 @@ TEST(TaskTable, ATreeUnwindsOnlyWhenEverythingHasDrained) {
   // A child's failure reaches its parent, which still drains the child.
   ASSERT_TRUE(tasks.Finish(b, TaskOutcome::kFailed).has_value());
   EXPECT_TRUE(View(tasks, root).child_failed);
-  EXPECT_EQ(tasks.Retire(b).error(), TaskError::kBusy);
+  EXPECT_EQ(Failed(tasks.Retire(b)), TaskError::kBusy);
   ASSERT_TRUE(tasks.RetireOperation(b).has_value());
   ASSERT_TRUE(tasks.Retire(b).has_value());
   EXPECT_EQ(View(tasks, root).children, 0U);
@@ -638,7 +640,7 @@ TEST(TaskTable, ATreeUnwindsOnlyWhenEverythingHasDrained) {
   const TaskId reused = tasks.Create().value();
   EXPECT_FALSE(tasks.Describe(root).has_value());
   EXPECT_NE(reused, root);
-  EXPECT_EQ(tasks.Retire(a1).error(), TaskError::kUnknownTask);
+  EXPECT_EQ(Failed(tasks.Retire(a1)), TaskError::kUnknownTask);
 }
 
 // A late wakeup for a retired task neither runs it nor blocks the task
@@ -650,11 +652,11 @@ TEST(TaskTable, ReadinessFollowsTheLiveTask) {
   EXPECT_FALSE(tasks.MakeReady(old, 1).value());  // coalesced
   ASSERT_TRUE(tasks.Finish(old, TaskOutcome::kSucceeded).has_value());
   EXPECT_EQ(tasks.ready(), 0U);  // a finished task takes no more steps
-  EXPECT_EQ(tasks.MakeReady(old, 1).error(), TaskError::kFinished);
+  EXPECT_EQ(Failed(tasks.MakeReady(old, 1)), TaskError::kFinished);
   ASSERT_TRUE(tasks.Retire(old).has_value());
   const TaskId reused = tasks.Create().value();
   ASSERT_EQ(reused.index(), old.index());
-  EXPECT_EQ(tasks.MakeReady(old, 1).error(), TaskError::kUnknownTask);
+  EXPECT_EQ(Failed(tasks.MakeReady(old, 1)), TaskError::kUnknownTask);
   EXPECT_TRUE(tasks.MakeReady(reused, 0).value());
   EXPECT_EQ(tasks.NextReady(), reused);
   EXPECT_FALSE(tasks.NextReady().has_value());
@@ -668,7 +670,7 @@ TEST(TaskTable, CancellationReachesADeepTreeAndCapacityIsFixed) {
     at = tasks.Create(at).value();
   }
   const TaskId sibling = tasks.Create(root).value();
-  EXPECT_EQ(tasks.Create(root).error(), TaskError::kFull);
+  EXPECT_EQ(Failed(tasks.Create(root)), TaskError::kFull);
   ASSERT_TRUE(tasks.Cancel(root).has_value());
   EXPECT_TRUE(View(tasks, at).cancelled);
   EXPECT_TRUE(View(tasks, sibling).cancelled);
@@ -685,14 +687,14 @@ TEST(TaskTable, CancellationDuringSubmissionRetainsThePreparedOperation) {
   ASSERT_TRUE(tasks.PrepareOperation(task).has_value());
   ASSERT_TRUE(tasks.Cancel(task).has_value());
   ASSERT_TRUE(tasks.Finish(task, TaskOutcome::kCancelled).has_value());
-  EXPECT_EQ(tasks.Retire(task).error(), TaskError::kBusy);
-  EXPECT_EQ(tasks.Create().error(), TaskError::kFull);
-  EXPECT_EQ(tasks.PrepareOperation(task).error(), TaskError::kClosed);
+  EXPECT_EQ(Failed(tasks.Retire(task)), TaskError::kBusy);
+  EXPECT_EQ(Failed(tasks.Create()), TaskError::kFull);
+  EXPECT_EQ(Failed(tasks.PrepareOperation(task)), TaskError::kClosed);
 
   // Late acceptance keeps the same hold; it requires no new admission.
   ASSERT_EQ(board.Accept(op, Acceptance::kAccepted), Published::kRecorded);
   EXPECT_FALSE(board.Close(op));
-  EXPECT_EQ(tasks.Retire(task).error(), TaskError::kBusy);
+  EXPECT_EQ(Failed(tasks.Retire(task)), TaskError::kBusy);
   ASSERT_EQ(
       board.Complete(op, {.outcome = Outcome::kCancelled, .bytes = 0, .no_further_access = true}),
       Published::kRecorded);
@@ -711,7 +713,7 @@ TEST(TaskTable, ANotStartedSubmissionReleasesThePreparedOperation) {
   ASSERT_TRUE(tasks.PrepareOperation(task).has_value());
   ASSERT_TRUE(tasks.Cancel(task).has_value());
   ASSERT_TRUE(tasks.Finish(task, TaskOutcome::kCancelled).has_value());
-  EXPECT_EQ(tasks.Retire(task).error(), TaskError::kBusy);
+  EXPECT_EQ(Failed(tasks.Retire(task)), TaskError::kBusy);
 
   ASSERT_EQ(board.Accept(op, Acceptance::kNotStarted), Published::kRecorded);
   ASSERT_TRUE(board.Close(op));
@@ -746,15 +748,15 @@ TEST(TaskTable, AnExhaustedSlotRetiresAndIsSkipped) {
   EXPECT_FALSE(tasks.exhausted());
   const TaskId b = tasks.Create().value();
   EXPECT_EQ(b, TaskId(1, UINT32_MAX));  // slot 0 retired: skipped
-  EXPECT_EQ(tasks.Create().error(), TaskError::kFull);
-  EXPECT_EQ(tasks.MakeReady(a, 1).error(), TaskError::kUnknownTask);
+  EXPECT_EQ(Failed(tasks.Create()), TaskError::kFull);
+  EXPECT_EQ(Failed(tasks.MakeReady(a, 1)), TaskError::kUnknownTask);
   EXPECT_TRUE(tasks.MakeReady(b, 1).value());
   EXPECT_EQ(tasks.NextReady(), b);
   ASSERT_TRUE(tasks.Finish(b, TaskOutcome::kSucceeded).has_value());
   ASSERT_TRUE(tasks.Retire(b).has_value());
   EXPECT_EQ(tasks.size(), 0U);
   EXPECT_TRUE(tasks.exhausted());
-  EXPECT_EQ(tasks.Create().error(), TaskError::kFull);
+  EXPECT_EQ(Failed(tasks.Create()), TaskError::kFull);
   EXPECT_FALSE(tasks.Describe(b).has_value());
 }
 

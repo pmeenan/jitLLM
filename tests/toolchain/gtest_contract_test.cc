@@ -3,26 +3,33 @@
 
 // The test-framework contract (D-059, D-066): GoogleTest 1.18.0 and gMock,
 // built from the source lock (D-057) without exceptions, run the features
-// jitLLM's tests use, in every profile. NegativeControl.DISABLED_Fails runs
+// jitLLM's tests use, in every profile, death tests of libstdc++'s
+// assertions (D-083) where the preset has them. NegativeControl.DISABLED_Fails runs
 // only when asked for, to show that a failure fails the run
 // (check_gtest_failure.cmake).
 
 #include <gmock/gmock.h>
+#include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
 #include <limits>
+#include <optional>
 #include <print>
 #include <string>
 #include <vector>
+
+#include "expected_error.h"
 
 #if GTEST_HAS_EXCEPTIONS
 #error "GoogleTest must build without exceptions, like the tests that use it (D-066)"
 #endif
 
 namespace {
+
+using jitllm::test_support::Failed;
 
 struct Bytes {
   std::uint64_t value{};
@@ -89,6 +96,15 @@ TEST(Expected, ReportsShortRead) {
   EXPECT_EQ(FinishRead(Bytes{8}, Bytes{8}).value_or(Bytes{}), Bytes{8});
 }
 
+// The safe reading of an error (D-083): a result that wrongly succeeded
+// fails the expectation that names its error, whatever its value's bytes.
+TEST(Expected, AWrongSuccessFailsTheExpectedError) {
+  EXPECT_EQ(Failed(FinishRead(Bytes{8}, Bytes{4})), ReadError::kShortRead);
+  EXPECT_EQ(Failed(FinishRead(Bytes{0}, Bytes{0})), std::nullopt);
+  EXPECT_NONFATAL_FAILURE(EXPECT_EQ(Failed(FinishRead(Bytes{0}, Bytes{0})), ReadError::kShortRead),
+                          "Failed");
+}
+
 struct AlignCase {
   std::uint64_t size;
   std::uint64_t expected;
@@ -143,6 +159,16 @@ TEST(DeathTest, ThrowingLibraryPathTerminates) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_DEATH(ReadPastTheEnd(), "out_of_range");
 }
+
+#ifdef _GLIBCXX_ASSERTIONS
+// With libstdc++'s assertions (D-083), a death test sees a precondition
+// violation end the process, with the runtime's report of the condition.
+TEST(DeathTest, ErrorOfAValueAborts) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const auto success = FinishRead(Bytes{8}, Bytes{8});
+  EXPECT_DEATH(std::println("{}", static_cast<int>(success.error())), "_M_has_value");
+}
+#endif
 
 TEST(NegativeControl, DISABLED_Fails) {
   ADD_FAILURE() << "negative control: this test always fails";

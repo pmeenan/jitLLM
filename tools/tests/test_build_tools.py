@@ -44,6 +44,15 @@ def inherited(kind: str, name: str, key: str, default=None):
     return preset.get(key, default)
 
 
+def cache_variable(name: str, variable: str):
+    """A configure preset's value for one cache variable: CMake merges cacheVariables per variable."""
+    presets = {p["name"]: p for p in PRESETS["configurePresets"]}
+    preset = presets[name]
+    while variable not in preset.get("cacheVariables", {}) and "inherits" in preset:
+        preset = presets[preset["inherits"]]
+    return preset.get("cacheVariables", {}).get(variable)
+
+
 def environment(test_preset: str) -> dict:
     return inherited("testPresets", test_preset, "environment", {})
 
@@ -76,10 +85,12 @@ class Presets(unittest.TestCase):
                 self.assertIn(name, tests)
 
     def test_sanitizer_presets_and_their_run_time_options(self):
-        sanitize = lambda name: inherited("configurePresets", name, "cacheVariables")  # noqa: E731
-        self.assertEqual(sanitize("cpu-asan"), {"JITLLM_SANITIZE": "address;undefined"})
-        self.assertEqual(sanitize("cross-asan"), {"JITLLM_SANITIZE": "address;undefined"})
-        self.assertEqual(sanitize("cross-tsan"), {"JITLLM_SANITIZE": "thread"})
+        sanitize = lambda name: cache_variable(name, "JITLLM_SANITIZE")  # noqa: E731
+        self.assertEqual(sanitize("cpu-asan"), "address;undefined")
+        self.assertEqual(sanitize("cross-asan"), "address;undefined")
+        self.assertEqual(sanitize("cross-tsan"), "thread")
+        for name in ("native", "cpu", "cross", "spark-native"):
+            self.assertIsNone(sanitize(name))
         for name in ("cpu-asan", "cross-asan", "cross-tsan"):
             self.assertEqual(inherited("configurePresets", name, "binaryDir"), "${sourceDir}/build/${presetName}")
         # Leak detection is on natively and on a Spark, off only under qemu-user (RE-014).
@@ -92,6 +103,16 @@ class Presets(unittest.TestCase):
         # Only the options run-target forwards reach a Spark.
         for name in ("cross-asan-remote", "cross-tsan-remote"):
             self.assertLessEqual(set(environment(name)), set(run_target.FORWARD_NAMES))
+
+    def test_libstdcxx_assertions_in_the_test_presets_and_not_the_package(self):
+        # D-083: the test and development presets, spark-native (D-084's per-slice
+        # test build) included, check libstdc++'s preconditions; only the package's build (cross) does not.
+        visible = {p["name"] for p in PRESETS["configurePresets"] if not p.get("hidden")}
+        on = {n for n in visible if cache_variable(n, "JITLLM_LIBSTDCXX_ASSERTIONS") == "ON"}
+        self.assertEqual(on, {"native", "cpu", "spark-native", "cpu-asan", "cross-asan", "cross-tsan"})
+        self.assertEqual(visible - on, {"cross"})
+        for name in visible - on:
+            self.assertIsNone(cache_variable(name, "JITLLM_LIBSTDCXX_ASSERTIONS"), name)
 
     def test_build_dir_matches_the_presets_binary_dir(self):
         base = next(p for p in PRESETS["configurePresets"] if p["name"] == "base")

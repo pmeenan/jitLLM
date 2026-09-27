@@ -56,6 +56,12 @@ constexpr std::string_view kAsserts = "NDEBUG";
 #else
 constexpr std::string_view kAsserts = "asserts";
 #endif
+// And whether it checks libstdc++'s preconditions (D-083).
+#ifdef _GLIBCXX_ASSERTIONS
+constexpr std::string_view kLibraryAsserts = "libstdc++ assertions";
+#else
+constexpr std::string_view kLibraryAsserts = "no libstdc++ assertions";
+#endif
 
 constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
     {.name = "ggml.rms_norm_mul.fused",
@@ -192,15 +198,16 @@ constexpr std::array<Kernel::Entry, 15> kKernels = {{
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,
                                   std::string_view variant) {
-  return {.name = std::string(name),
-          .operation = operation,
-          .source = "ggml",
-          .revision = std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
-                                  ModuleSourcesDigest()),
-          .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; sanitizers {}",
-                               JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
-                               JITLLM_GGML_BUILD_TYPE, kAsserts, JITLLM_GGML_SANITIZE),
-          .variant = std::string(variant)};
+  return {
+      .name = std::string(name),
+      .operation = operation,
+      .source = "ggml",
+      .revision = std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
+                              ModuleSourcesDigest()),
+      .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
+                           JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
+                           JITLLM_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, JITLLM_GGML_SANITIZE),
+      .variant = std::string(variant)};
 }
 
 execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {

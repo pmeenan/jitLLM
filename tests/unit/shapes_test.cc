@@ -54,6 +54,7 @@
 #include "base/sha256.h"
 #include "catalog/catalog.h"
 #include "execution/program.h"
+#include "expected_error.h"
 #include "memory/commitment.h"
 #include "memory/materialize.h"
 #include "model/context.h"
@@ -102,6 +103,8 @@ using jitllm::scheduler::RequestId;
 using jitllm::scheduler::RequestSpec;
 using jitllm::scheduler::RequestState;
 using jitllm::scheduler::Tick;
+using jitllm::test_support::Failed;
+using jitllm::test_support::FailedCode;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 
@@ -122,19 +125,11 @@ Bytes Wire(std::uint64_t positions) { return Bytes(positions * kWire.value()); }
 // Whole units of the fake's granularity.
 Bytes RoundUp(Bytes bytes) { return U((bytes.value() + kUnit - 1) / kUnit); }
 
-// The error of a result that must have failed, or nothing if it succeeded:
-// a wrong success never reads as the error expected, as calling .error()
-// on a value would (it reinterprets the value's bytes, and an admitted
-// plan's first bytes read as ProgramError::kInvalid).
-template <typename T, typename E>
-std::optional<E> Failed(const std::expected<T, E>& result) {
-  return result.has_value() ? std::nullopt : std::optional<E>(result.error());
-}
-
-// The error a refused plan names, or nothing if it was admitted.
+// The error a refused plan names, or nothing if it was admitted (an admitted
+// plan's first bytes would read as ProgramError::kInvalid through .error()).
 std::optional<ProgramError> Refused(
     const std::expected<ProgramPlan, jitllm::execution::ProgramRejection>& plan) {
-  return plan.has_value() ? std::nullopt : std::optional<ProgramError>(plan.error().error);
+  return FailedCode(plan);
 }
 
 class Driver;

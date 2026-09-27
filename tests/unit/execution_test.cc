@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "execution/registry.h"
+#include "expected_error.h"
 
 namespace {
 
@@ -29,8 +30,11 @@ using jitllm::execution::Operation;
 using jitllm::execution::OperationName;
 using jitllm::execution::Plan;
 using jitllm::execution::PlanError;
+using jitllm::execution::PlanRejection;
 using jitllm::execution::Registry;
 using jitllm::execution::Resolve;
+using jitllm::test_support::Failed;
+using jitllm::test_support::FailedCode;
 
 Implementation Fake(std::string name, Operation operation, std::string revision = "r1") {
   return {.name = std::move(name),
@@ -161,8 +165,8 @@ TEST(PlanRegistryTest, AnImplementationThisBuildLacksIsUnsupported) {
 
   // A build with no implementation of an operation at all.
   const auto empty = Registry::Create({}).value();
-  EXPECT_EQ(Resolve(empty, plan).error().error, PlanError::kUnsupported);
-  EXPECT_EQ(Resolve(empty, plan).error().operation, 0U);
+  EXPECT_EQ(FailedCode(Resolve(empty, plan)), PlanError::kUnsupported);
+  EXPECT_EQ(Failed(Resolve(empty, plan), &PlanRejection::operation), 0U);
 }
 
 TEST(PlanRegistryTest, AnImplementationOfAnotherOperationDoesNotBind) {
@@ -209,12 +213,12 @@ TEST(PlanRegistryTest, RefusesMalformedRegistriesAndPlans) {
   EXPECT_TRUE(Registry::Create(std::move(many)).has_value());
 
   const auto registry = Registry::Create(Core()).value();
-  EXPECT_EQ(Plan::Build(registry, {}).error().error, PlanError::kInvalid);
+  EXPECT_EQ(FailedCode(Plan::Build(registry, {})), PlanError::kInvalid);
   const std::vector<Choice> too_many(Plan::kMaxOperations + 1,
                                      {.operation = Operation::kAdd, .implementation = "fake.add"});
-  EXPECT_EQ(Plan::Build(registry, too_many).error().error, PlanError::kInvalid);
+  EXPECT_EQ(FailedCode(Plan::Build(registry, too_many)), PlanError::kInvalid);
   const std::vector<Choice> junk = {{.operation = Operation::kAdd, .implementation = "fake.add\n"}};
-  EXPECT_EQ(Plan::Build(registry, junk).error().error, PlanError::kInvalid);
+  EXPECT_EQ(FailedCode(Plan::Build(registry, junk)), PlanError::kInvalid);
 }
 
 }  // namespace

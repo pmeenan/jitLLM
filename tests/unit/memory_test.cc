@@ -13,6 +13,7 @@
 
 #include "base/bytes.h"
 #include "catalog/catalog.h"
+#include "expected_error.h"
 #include "memory/commitment.h"
 #include "memory/materialize.h"
 #include "memory/victims.h"
@@ -20,6 +21,7 @@
 namespace {
 
 using jitllm::base::Bytes;
+using jitllm::test_support::Failed;
 using jitllm::base::operator""_MiB;
 using jitllm::catalog::Catalog;
 using jitllm::catalog::ExtentId;
@@ -59,28 +61,28 @@ TEST(CommitmentLedger, TheWorkedCases) {
   const GrantId a = ledger.Grant(kSpark, E(20, 50)).value();
   const GrantId b = ledger.Grant(kSpark, E(20, 50)).value();
   EXPECT_EQ(Totals(ledger).required, Bytes(100));
-  EXPECT_EQ(ledger.Grant(kSpark, E(1, 1)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.Grant(kSpark, E(1, 1))), CommitmentError::kDoesNotFit);
   // Both phases at once would need 10 + 40 + 100.
   const std::vector<GrantId> cohort = {a, b};
-  EXPECT_EQ(ledger.SetCohort(kSpark, cohort).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.SetCohort(kSpark, cohort)), CommitmentError::kDoesNotFit);
   const std::vector<GrantId> alone = {a};
   EXPECT_TRUE(ledger.SetCohort(kSpark, alone).has_value());
 
   CommitmentLedger empty = Ledger(100);
   ASSERT_TRUE(empty.AddFixed(kSpark, Bytes(10)).has_value());
-  EXPECT_EQ(empty.Grant(kSpark, E(41, 50)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(empty.Grant(kSpark, E(41, 50))), CommitmentError::kDoesNotFit);
 }
 
 TEST(CommitmentLedger, ReplacementIsAtomicAndRetirementNeverRefused) {
   CommitmentLedger ledger = Ledger(100);
   const GrantId a = ledger.Grant(kSpark, E(20, 50)).value();
-  EXPECT_EQ(ledger.Replace(a, E(60, 50)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.Replace(a, E(60, 50))), CommitmentError::kDoesNotFit);
   EXPECT_EQ(ledger.EnvelopeOf(a).value_or(Envelope{}).retained, Bytes(20));  // the old grant stands
   ASSERT_TRUE(ledger.Replace(a, E(30, 50)).has_value());
   EXPECT_EQ(Totals(ledger).required, Bytes(80));
   ASSERT_TRUE(ledger.Retire(a).has_value());
-  EXPECT_EQ(ledger.Retire(a).error(), CommitmentError::kUnknownGrant);
-  EXPECT_EQ(ledger.Replace(a, E(1, 1)).error(), CommitmentError::kUnknownGrant);
+  EXPECT_EQ(Failed(ledger.Retire(a)), CommitmentError::kUnknownGrant);
+  EXPECT_EQ(Failed(ledger.Replace(a, E(1, 1))), CommitmentError::kUnknownGrant);
   EXPECT_EQ(Totals(ledger).required, Bytes(0));
 }
 
@@ -93,9 +95,9 @@ TEST(CommitmentLedger, ChangesAreCheckedAgainstTheActiveCohort) {
   const GrantId b = ledger.Grant(kSpark, E(0, 40)).value();
   const std::vector<GrantId> both = {a, b};
   ASSERT_TRUE(ledger.SetCohort(kSpark, both).has_value());
-  EXPECT_EQ(ledger.Replace(a, E(0, 70)).error(), CommitmentError::kDoesNotFit);  // 70 + 40
-  EXPECT_EQ(ledger.AddFixed(kSpark, Bytes(21)).error(), CommitmentError::kDoesNotFit);
-  EXPECT_EQ(ledger.SetBudget(kSpark, Bytes(79)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.Replace(a, E(0, 70))), CommitmentError::kDoesNotFit);  // 70 + 40
+  EXPECT_EQ(Failed(ledger.AddFixed(kSpark, Bytes(21))), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.SetBudget(kSpark, Bytes(79))), CommitmentError::kDoesNotFit);
   // Retiring a member leaves the cohort, and never fails.
   ASSERT_TRUE(ledger.Retire(b).has_value());
   EXPECT_EQ(Totals(ledger).cohort_phase, Bytes(40));
@@ -107,22 +109,22 @@ TEST(CommitmentLedger, TheBudgetNeverDropsBelowClaims) {
   CommitmentLedger ledger = Ledger(100);
   ASSERT_TRUE(ledger.AddBackground(kSpark, Bytes(10)).has_value());
   ASSERT_TRUE(ledger.Grant(kSpark, E(20, 50)).has_value());
-  EXPECT_EQ(ledger.SetBudget(kSpark, Bytes(79)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.SetBudget(kSpark, Bytes(79))), CommitmentError::kDoesNotFit);
   EXPECT_EQ(Totals(ledger).budget, Bytes(100));
   ASSERT_TRUE(ledger.SetBudget(kSpark, Bytes(80)).has_value());
   // F and J increases are checked too; releases are not.
-  EXPECT_EQ(ledger.AddFixed(kSpark, Bytes(1)).error(), CommitmentError::kDoesNotFit);
-  EXPECT_EQ(ledger.AddBackground(kSpark, Bytes(1)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.AddFixed(kSpark, Bytes(1))), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.AddBackground(kSpark, Bytes(1))), CommitmentError::kDoesNotFit);
   ASSERT_TRUE(ledger.ReleaseBackground(kSpark, Bytes(10)).has_value());
-  EXPECT_EQ(ledger.ReleaseBackground(kSpark, Bytes(1)).error(), CommitmentError::kUnderflow);
-  EXPECT_EQ(ledger.ReleaseFixed(kSpark, Bytes(1)).error(), CommitmentError::kUnderflow);
+  EXPECT_EQ(Failed(ledger.ReleaseBackground(kSpark, Bytes(1))), CommitmentError::kUnderflow);
+  EXPECT_EQ(Failed(ledger.ReleaseFixed(kSpark, Bytes(1))), CommitmentError::kUnderflow);
 }
 
 TEST(CommitmentLedger, ArithmeticOverflowIsRefused) {
   CommitmentLedger ledger = Ledger(UINT64_MAX);
   ASSERT_TRUE(ledger.Grant(kSpark, E(UINT64_MAX - 1, 1)).has_value());
-  EXPECT_EQ(ledger.Grant(kSpark, E(1, 0)).error(), CommitmentError::kOverflow);
-  EXPECT_EQ(ledger.AddFixed(kSpark, Bytes(UINT64_MAX)).error(), CommitmentError::kOverflow);
+  EXPECT_EQ(Failed(ledger.Grant(kSpark, E(1, 0))), CommitmentError::kOverflow);
+  EXPECT_EQ(Failed(ledger.AddFixed(kSpark, Bytes(UINT64_MAX))), CommitmentError::kOverflow);
 }
 
 TEST(CommitmentLedger, ResumptionOverflowDefersAChangeThatFitsNow) {
@@ -134,7 +136,7 @@ TEST(CommitmentLedger, ResumptionOverflowDefersAChangeThatFitsNow) {
   const std::vector<GrantId> resuming = {paused, peer};
   ASSERT_TRUE(ledger.SetCohort(kSpark, running).has_value());
   ASSERT_TRUE(ledger.SetResumption(kSpark, resuming, substitute).has_value());
-  EXPECT_EQ(ledger.Replace(peer, E(0, 20)).error(), CommitmentError::kBreaksResumption);
+  EXPECT_EQ(Failed(ledger.Replace(peer, E(0, 20))), CommitmentError::kBreaksResumption);
   const auto envelope = ledger.EnvelopeOf(peer);
   ASSERT_TRUE(envelope.has_value());
   EXPECT_EQ(envelope.value_or(Envelope{}).phase, Bytes(10));
@@ -144,17 +146,17 @@ TEST(CommitmentLedger, ResumptionOverflowDefersAChangeThatFitsNow) {
 TEST(CommitmentLedger, DomainsAreSeparate) {
   CommitmentLedger ledger = Ledger(100);
   ASSERT_TRUE(ledger.AddDomain(kSparkB, Bytes(50)).has_value());
-  EXPECT_EQ(ledger.AddDomain(kSparkB, Bytes(50)).error(), CommitmentError::kUnknownDomain);
+  EXPECT_EQ(Failed(ledger.AddDomain(kSparkB, Bytes(50))), CommitmentError::kUnknownDomain);
   const GrantId here = ledger.Grant(kSpark, E(0, 80)).value();
-  EXPECT_EQ(ledger.Grant(kSparkB, E(0, 80)).error(), CommitmentError::kDoesNotFit);
+  EXPECT_EQ(Failed(ledger.Grant(kSparkB, E(0, 80))), CommitmentError::kDoesNotFit);
   const GrantId there = ledger.Grant(kSparkB, E(0, 40)).value();
   EXPECT_NE(here, there);
   EXPECT_EQ(ledger.DomainOf(there), kSparkB);
   const std::vector<GrantId> mixed = {here, there};
-  EXPECT_EQ(ledger.SetCohort(kSpark, mixed).error(), CommitmentError::kUnknownGrant);
+  EXPECT_EQ(Failed(ledger.SetCohort(kSpark, mixed)), CommitmentError::kUnknownGrant);
   const std::vector<GrantId> twice = {here, here};
-  EXPECT_EQ(ledger.SetCohort(kSpark, twice).error(), CommitmentError::kUnknownGrant);
-  EXPECT_EQ(ledger.Grant(jitllm::catalog::DomainId(9, 1), E(1, 1)).error(),
+  EXPECT_EQ(Failed(ledger.SetCohort(kSpark, twice)), CommitmentError::kUnknownGrant);
+  EXPECT_EQ(Failed(ledger.Grant(jitllm::catalog::DomainId(9, 1), E(1, 1))),
             CommitmentError::kUnknownDomain);
 }
 
@@ -292,9 +294,9 @@ TEST_F(MaterializeTest, OnlyTheShortfallIsReclaimed) {
   EXPECT_FALSE(plan.ready);
   // Loads wait for the victim's eviction to complete.
   EXPECT_EQ(catalog_.BeginLoad(x, 10_MiB).value_or(jitllm::catalog::Ticket{}).extent, x);
-  EXPECT_EQ(catalog_.BeginLoad(y, 10_MiB).error(), jitllm::catalog::CatalogError::kOverBudget);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), jitllm::catalog::CatalogError::kOverBudget);
   auto evict = catalog_.BeginEvict(old).value();
-  EXPECT_EQ(catalog_.BeginLoad(y, 10_MiB).error(), jitllm::catalog::CatalogError::kOverBudget);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), jitllm::catalog::CatalogError::kOverBudget);
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
   EXPECT_TRUE(catalog_.BeginLoad(y, 10_MiB).has_value());
   plan =

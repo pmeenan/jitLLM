@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The toolchain contract, checked in a binary the build produced: C++23 with
-// the GCC 16.2 library (D-032, D-060), Clang 22, no exceptions (D-066), and
-// the profile's explicit CPU baseline (D-011). Runs in every profile, cross
+// the GCC 16.2 library (D-032, D-060), Clang 22, no exceptions (D-066),
+// libstdc++'s assertions where the preset asks for them (D-083), and the
+// profile's explicit CPU baseline (D-011). Runs in every profile, cross
 // builds included (under qemu-user or on a Spark).
 
 #include <sys/prctl.h>
@@ -29,6 +30,16 @@ static_assert(__cplusplus >= 202302L, "C++23 throughout (D-032)");
 #endif
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
 #error "jitLLM builds with -fno-exceptions (D-066)"
+#endif
+
+// libstdc++'s precondition checks are on exactly where the preset asks for
+// them (D-083): the test and development presets, not the package's build.
+#ifndef JITLLM_TEST_LIBSTDCXX_ASSERTIONS
+#error "define JITLLM_TEST_LIBSTDCXX_ASSERTIONS to the configured JITLLM_LIBSTDCXX_ASSERTIONS"
+#elif JITLLM_TEST_LIBSTDCXX_ASSERTIONS && !defined(_GLIBCXX_ASSERTIONS)
+#error "JITLLM_LIBSTDCXX_ASSERTIONS builds define _GLIBCXX_ASSERTIONS (D-083)"
+#elif !JITLLM_TEST_LIBSTDCXX_ASSERTIONS && defined(_GLIBCXX_ASSERTIONS)
+#error "_GLIBCXX_ASSERTIONS is only for JITLLM_LIBSTDCXX_ASSERTIONS builds (D-083)"
 #endif
 
 // The target is the profile's, at its explicit baseline: nothing that
@@ -104,16 +115,45 @@ void CheckThrowPathTerminates(Checks& checks) {
                 "a throwing library path aborts the process");
 }
 
+#ifdef _GLIBCXX_ASSERTIONS
+// With libstdc++'s assertions (D-083), reading the error of a std::expected
+// that holds a value ends the process, with the static runtime's report,
+// instead of reading indeterminate storage.
+void CheckPreconditionAborts(Checks& checks) {
+  const pid_t child = fork();
+  if (child == 0) {
+    const rlimit no_core{.rlim_cur = 0, .rlim_max = 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+    if (std::freopen("/dev/null", "w", stderr) == nullptr) {
+      _exit(2);
+    }
+    const std::expected<int, int> success = getpid();
+    std::println("{}", success.error());  // A precondition violation: aborts.
+    _exit(0);
+  }
+  int status = 0;
+  const bool waited = child > 0 && waitpid(child, &status, 0) == child;
+  checks.Expect(waited && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+                "a libstdc++ precondition violation aborts the process");
+}
+#endif
+
 }  // namespace
 
 int main() {
   Checks checks;
   CheckLibrary(checks);
   CheckThrowPathTerminates(checks);
+#ifdef _GLIBCXX_ASSERTIONS
+  CheckPreconditionAborts(checks);
+#endif
   if (checks.failures() != 0) {
     return 1;
   }
-  std::println("toolchain contract: C++ {}, libstdc++ {}, Clang {}, no exceptions", __cplusplus,
-               __GLIBCXX__, __clang_version__);
+  std::println(
+      "toolchain contract: C++ {}, libstdc++ {}, Clang {}, no exceptions, {}", __cplusplus,
+      __GLIBCXX__, __clang_version__,
+      JITLLM_TEST_LIBSTDCXX_ASSERTIONS ? "libstdc++ assertions" : "no libstdc++ assertions");
   return 0;
 }

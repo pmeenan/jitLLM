@@ -19,15 +19,19 @@ add_test(NAME sources.receipt
                  -DSDK_IDENTITY=${JITLLM_SDK_IDENTITY} -P ${CMAKE_CURRENT_SOURCE_DIR}/check_receipt.cmake)
 
 # What the build actually compiled and linked is the receipt's closure, from
-# allowed places only, and without exceptions.
-set(cross_flag "")
+# allowed places only, without exceptions, and with libstdc++'s assertions
+# exactly where the preset asks for them (D-083).
+set(closure_flags "")
 if(CMAKE_CROSSCOMPILING)
-  set(cross_flag --cross)
+  list(APPEND closure_flags --cross)
+endif()
+if(JITLLM_LIBSTDCXX_ASSERTIONS)
+  list(APPEND closure_flags --libstdcxx-assertions)
 endif()
 add_test(NAME sources.closure
          COMMAND ${JITLLM_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/check_closure.py
                  --build-dir ${PROJECT_BINARY_DIR} --source-dir ${PROJECT_SOURCE_DIR}
-                 --sdk ${JITLLM_SDK} --ninja ${CMAKE_MAKE_PROGRAM} ${cross_flag})
+                 --sdk ${JITLLM_SDK} --ninja ${CMAKE_MAKE_PROGRAM} ${closure_flags})
 set_tests_properties(sources.lock sources.receipt sources.closure PROPERTIES LABELS sources)
 
 # The mechanism's gates on fixtures. They build natively for the host, so

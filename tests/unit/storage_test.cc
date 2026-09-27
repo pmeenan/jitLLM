@@ -31,6 +31,7 @@
 #include <thread>
 #include <vector>
 
+#include "expected_error.h"
 #include "platform/direct_io.h"
 #include "providers/direct_reader.h"
 #include "providers/fake/fake_storage.h"
@@ -58,6 +59,7 @@ using jitllm::providers::ReadSpec;
 using jitllm::providers::Submission;
 using jitllm::providers::UringStorage;
 using jitllm::providers::fake::FakeStorage;
+using jitllm::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 
@@ -179,30 +181,30 @@ TEST_F(ReaderTest, DuplicatesCoalesceAndTheLastWaiterCancels) {
   EXPECT_FALSE(reader_.Read(1, spec, 100).value());
   EXPECT_TRUE(reader_.Read(1, spec, 100).value());  // repeating an interest is idempotent
   EXPECT_TRUE(reader_.Read(1, spec, 101).value());  // joined: no second request
-  EXPECT_EQ(reader_.Read(1, spec, 102).error(), ReadError::kTooManyWaiters);
+  EXPECT_EQ(Failed(reader_.Read(1, spec, 102)), ReadError::kTooManyWaiters);
   ReadSpec other = spec;
   other.offset = kAlignment;
-  EXPECT_EQ(reader_.Read(1, other, 103).error(), ReadError::kMismatch);
+  EXPECT_EQ(Failed(reader_.Read(1, other, 103)), ReadError::kMismatch);
   EXPECT_EQ(storage_.submitted().size(), 1U);
   ASSERT_TRUE(reader_.Withdraw(1, 100).has_value());  // one waiter leaves: the read goes on
   EXPECT_EQ(storage_.in_flight(), 1U);
   ASSERT_TRUE(reader_.Withdraw(1, 101).has_value());  // the last: cancelled, draining
-  EXPECT_EQ(reader_.Read(1, spec, 104).error(), ReadError::kDraining);
+  EXPECT_EQ(Failed(reader_.Read(1, spec, 104)), ReadError::kDraining);
   const auto finished = PollUntilDone(reader_);
   ASSERT_EQ(finished.size(), 1U);
   EXPECT_EQ(finished[0].outcome, ReadOutcome::kCancelled);
   EXPECT_THAT(finished[0].waiters, IsEmpty());
   EXPECT_EQ(storage_.in_flight(), 0U);
-  EXPECT_EQ(reader_.Withdraw(1, 101).error(), ReadError::kUnknownRead);
+  EXPECT_EQ(Failed(reader_.Withdraw(1, 101)), ReadError::kUnknownRead);
 }
 
 TEST_F(ReaderTest, AlignmentIsCheckedAndAFullProviderWaits) {
   const ReadSpec unaligned{
       .fd = fd_, .offset = 512, .memory = buffer_.data, .length = 4 * kAlignment};
-  EXPECT_EQ(reader_.Read(1, unaligned, 100).error(), ReadError::kUnaligned);
+  EXPECT_EQ(Failed(reader_.Read(1, unaligned, 100)), ReadError::kUnaligned);
   const ReadSpec odd{
       .fd = fd_, .offset = 0, .memory = buffer_.data + 512, .length = 4 * kAlignment};
-  EXPECT_EQ(reader_.Read(1, odd, 100).error(), ReadError::kUnaligned);
+  EXPECT_EQ(Failed(reader_.Read(1, odd, 100)), ReadError::kUnaligned);
   // The provider refuses the first attempt; the next poll starts it.
   storage_.ScriptNext(
       {.submission = Submission::kNotStarted, .result = std::nullopt, .hold = false});
@@ -220,14 +222,14 @@ TEST_F(ReaderTest, OverflowingRangesAreRefusedBeforeAnyIo) {
       .offset = std::numeric_limits<std::uint64_t>::max() - (kAlignment - 1),
       .memory = buffer_.data,
       .length = 2 * kAlignment};
-  EXPECT_EQ(reader_.Read(1, wrapped_file, 100).error(), ReadError::kInvalidRange);
+  EXPECT_EQ(Failed(reader_.Read(1, wrapped_file, 100)), ReadError::kInvalidRange);
   const ReadSpec wrapped_memory{
       .fd = fd_,
       .offset = 0,
       .memory = reinterpret_cast<std::byte*>(  // NOLINT(performance-no-int-to-ptr)
           std::numeric_limits<std::uintptr_t>::max() - (kAlignment - 1)),
       .length = 2 * kAlignment};
-  EXPECT_EQ(reader_.Read(2, wrapped_memory, 100).error(), ReadError::kInvalidRange);
+  EXPECT_EQ(Failed(reader_.Read(2, wrapped_memory, 100)), ReadError::kInvalidRange);
   EXPECT_TRUE(storage_.submitted().empty());
 }
 

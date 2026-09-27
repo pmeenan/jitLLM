@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "expected_error.h"
 #include "memory/commitment.h"
 
 namespace {
@@ -32,6 +33,7 @@ using jitllm::scheduler::RequestId;
 using jitllm::scheduler::RequestSpec;
 using jitllm::scheduler::RequestState;
 using jitllm::scheduler::SwitchingPolicy;
+using jitllm::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 using ::testing::Pair;
@@ -83,7 +85,7 @@ TEST(Admission, SameClassRunsToCompletion) {
   }
   const RequestId c = Admit(admission, Spec(1, 1));
   EXPECT_EQ(admission.StateOf(c), RequestState::kQueued);  // 101 with A and B
-  EXPECT_EQ(admission.Submit(Spec(41, 50), 10).error(), AdmissionError::kImpossible);
+  EXPECT_EQ(Failed(admission.Submit(Spec(41, 50), 10)), AdmissionError::kImpossible);
   const auto decision = admission.Retire(a, 10).value();
   EXPECT_EQ(decision.run, b);
   EXPECT_EQ(admission.StateOf(c), RequestState::kWaiting);  // admitted once A's allowance is gone
@@ -158,7 +160,7 @@ TEST(Admission, AnUnmeetableDeadlineIsRefusedUpFront) {
   (void)Admit(admission, Spec(20, 50, RequestClass::kInteractive, 50));
   RequestSpec late = Spec(10, 10, RequestClass::kInteractive, 10);
   late.deadline = 40;
-  EXPECT_EQ(admission.Submit(late, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(late, 0)), AdmissionError::kDeadline);
   late.deadline = 70;
   EXPECT_TRUE(admission.Submit(late, 0).has_value());
 }
@@ -179,16 +181,16 @@ TEST(Admission, ChangesDuringAPauseKeepTheResumption) {
   const RequestId b = Admit(admission, Spec(0, 30, RequestClass::kInteractive), 1);
   EXPECT_EQ(admission.Boundary(a, 1, 2).value().paused, a);
   EXPECT_THAT(admission.Running(), ElementsAre(c, b));
-  EXPECT_EQ(admission.ReplaceEnvelope(c, {.retained = Bytes(0), .phase = Bytes(50)}, 0).error(),
+  EXPECT_EQ(Failed(admission.ReplaceEnvelope(c, {.retained = Bytes(0), .phase = Bytes(50)}, 0)),
             AdmissionError::kDeferred);
-  EXPECT_EQ(admission.AddFixed(Bytes(1), 0).error(), AdmissionError::kDeferred);
-  EXPECT_EQ(admission.AddBackground(Bytes(1), 0).error(), AdmissionError::kDeferred);
-  EXPECT_EQ(admission.SetBudget(Bytes(99), 0).error(), AdmissionError::kDeferred);
+  EXPECT_EQ(Failed(admission.AddFixed(Bytes(1), 0)), AdmissionError::kDeferred);
+  EXPECT_EQ(Failed(admission.AddBackground(Bytes(1), 0)), AdmissionError::kDeferred);
+  EXPECT_EQ(Failed(admission.SetBudget(Bytes(99), 0)), AdmissionError::kDeferred);
   const RequestId d = Admit(admission, Spec(1, 1, RequestClass::kBackground), 3);
   EXPECT_EQ(admission.StateOf(d), RequestState::kQueued);
   // After the resumption the same change is judged normally (and fails).
   EXPECT_EQ(admission.Retire(b, 4).value().run, a);
-  EXPECT_EQ(admission.ReplaceEnvelope(c, {.retained = Bytes(0), .phase = Bytes(50)}, 0).error(),
+  EXPECT_EQ(Failed(admission.ReplaceEnvelope(c, {.retained = Bytes(0), .phase = Bytes(50)}, 0)),
             AdmissionError::kRefused);
 }
 
@@ -201,7 +203,7 @@ TEST(Admission, TheSubstitutesChangesAreRefusedNotDeferred) {
   const RequestId a = Admit(admission, Spec(20, 40, RequestClass::kBackground));
   const RequestId b = Admit(admission, Spec(20, 40, RequestClass::kInteractive), 1);
   EXPECT_EQ(admission.Boundary(a, 1, 2).value().paused, a);
-  EXPECT_EQ(admission.ReplaceEnvelope(b, {.retained = Bytes(20), .phase = Bytes(70)}, 0).error(),
+  EXPECT_EQ(Failed(admission.ReplaceEnvelope(b, {.retained = Bytes(20), .phase = Bytes(70)}, 0)),
             AdmissionError::kRefused);
   EXPECT_TRUE(
       admission.ReplaceEnvelope(b, {.retained = Bytes(20), .phase = Bytes(60)}, 0).has_value());
@@ -235,7 +237,7 @@ TEST(Admission, RetirementIsNeverRefused) {
   EXPECT_FALSE(admission.Retire(a, 3).value().run.has_value());
   EXPECT_FALSE(admission.PausedRequest().has_value());
   EXPECT_TRUE(admission.Retire(b, 4).has_value());
-  EXPECT_EQ(admission.Retire(b, 5).error(), AdmissionError::kUnknownRequest);
+  EXPECT_EQ(Failed(admission.Retire(b, 5)), AdmissionError::kUnknownRequest);
   EXPECT_THAT(admission.Running(), IsEmpty());
   EXPECT_EQ(admission.Totals().required, Bytes(0));
 }
@@ -245,7 +247,7 @@ TEST(Admission, TheQueueIsBounded) {
   Admission& admission = node.admission;
   (void)Admit(admission, Spec(50, 50));
   (void)Admit(admission, Spec(50, 50));  // queued
-  EXPECT_EQ(admission.Submit(Spec(50, 50), 1).error(), AdmissionError::kQueueFull);
+  EXPECT_EQ(Failed(admission.Submit(Spec(50, 50), 1)), AdmissionError::kQueueFull);
 }
 
 // A queued request that can no longer fit alone, after a budget reduction
@@ -321,9 +323,9 @@ TEST(Admission, TheLedgerItselfKeepsTheResumption) {
   ASSERT_TRUE(admission.Join(c, 0).has_value());
   const RequestId b = Admit(admission, Spec(0, 30, RequestClass::kInteractive), 1);
   EXPECT_EQ(admission.Boundary(a, 1, 2).value().paused, a);
-  EXPECT_EQ(node.ledger.AddBackground(kSpark, Bytes(5)).error(),
+  EXPECT_EQ(Failed(node.ledger.AddBackground(kSpark, Bytes(5))),
             CommitmentError::kBreaksResumption);
-  EXPECT_EQ(node.ledger.Grant(kSpark, {.retained = Bytes(1), .phase = Bytes(1)}).error(),
+  EXPECT_EQ(Failed(node.ledger.Grant(kSpark, {.retained = Bytes(1), .phase = Bytes(1)})),
             CommitmentError::kBreaksResumption);
   // A cohort peer retires during the pause; then the substitute.
   ASSERT_TRUE(admission.Retire(c, 3).has_value());
@@ -341,15 +343,15 @@ TEST(Admission, JoinsAndPausesPassTheCohortCheck) {
   const RequestId c = Admit(admission, Spec(0, 40, RequestClass::kBackground));
   ASSERT_TRUE(admission.Join(c, 0).has_value());
   const RequestId big = Admit(admission, Spec(0, 30, RequestClass::kBackground));
-  EXPECT_EQ(admission.Join(big, 0).error(), AdmissionError::kRefused);  // 110
-  EXPECT_EQ(admission.Join(a, 0).error(), AdmissionError::kWrongState);
+  EXPECT_EQ(Failed(admission.Join(big, 0)), AdmissionError::kRefused);  // 110
+  EXPECT_EQ(Failed(admission.Join(a, 0)), AdmissionError::kWrongState);
   ASSERT_TRUE(admission.Retire(big, 0).has_value());  // a waiting request retires
   const RequestId b = Admit(admission, Spec(0, 70, RequestClass::kInteractive), 1);
   EXPECT_FALSE(admission.Boundary(a, 1, 2).value().paused.has_value());  // C and B: 110
   ASSERT_TRUE(admission.Retire(c, 3).has_value());
   EXPECT_EQ(admission.Boundary(a, 2, 4).value().paused, a);  // B alone: 70
   const RequestId d = Admit(admission, Spec(0, 10, RequestClass::kInteractive), 5);
-  EXPECT_EQ(admission.Join(d, 5).error(), AdmissionError::kDeferred);
+  EXPECT_EQ(Failed(admission.Join(d, 5)), AdmissionError::kDeferred);
   (void)b;
 }
 
@@ -370,7 +372,7 @@ TEST(Admission, ADeadlineCannotAssumeAPauseWithoutCapacity) {
   (void)Admit(admission, Spec(60, 40, RequestClass::kBackground, 1000));
   RequestSpec urgent = Spec(60, 40, RequestClass::kInteractive, 10);
   urgent.deadline = 50;
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, ADeadlineCannotAssumeAnInfeasibleReplacementCohort) {
@@ -381,7 +383,7 @@ TEST(Admission, ADeadlineCannotAssumeAnInfeasibleReplacementCohort) {
   ASSERT_TRUE(admission.Join(peer, 0).has_value());
   RequestSpec urgent = Spec(0, 70, RequestClass::kInteractive, 10);
   urgent.deadline = 50;  // its grant fits, but replacing either member needs 110
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, ADeadlineCannotSpendAnotherSubstitutesPause) {
@@ -391,7 +393,7 @@ TEST(Admission, ADeadlineCannotSpendAnotherSubstitutesPause) {
   (void)Admit(admission, Spec(20, 30, RequestClass::kInteractive, 10));
   RequestSpec urgent = Spec(20, 30, RequestClass::kInteractive, 10);
   urgent.deadline = 50;  // the earlier interactive request gets the sole pause
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, ADeadlineIncludesLowerClassQueuePredecessors) {
@@ -401,7 +403,7 @@ TEST(Admission, ADeadlineIncludesLowerClassQueuePredecessors) {
   (void)Admit(admission, Spec(50, 50, RequestClass::kBackground, 1000));
   RequestSpec urgent = Spec(50, 50, RequestClass::kInteractive, 10);
   urgent.deadline = 50;  // the lower-class queue head cannot be bypassed
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, ADeadlineIncludesLowerClassGrantsThatBlockAdmission) {
@@ -411,7 +413,7 @@ TEST(Admission, ADeadlineIncludesLowerClassGrantsThatBlockAdmission) {
   (void)Admit(admission, Spec(60, 30, RequestClass::kBackground, 1000));
   RequestSpec urgent = Spec(50, 30, RequestClass::kInteractive, 10);
   urgent.deadline = 50;  // the waiting background grant must retire first
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, AQueuedDeadlineCountsHigherClassSuccessorsGrantedInTheSameDrain) {
@@ -437,7 +439,7 @@ TEST(Admission, ADeadlineIncludesRequestsAgedByEarlierSelections) {
   (void)Admit(admission, Spec(0, 10, RequestClass::kInteractive, 1));
   RequestSpec urgent = Spec(0, 10, RequestClass::kInteractive, 1);
   urgent.deadline = 50;  // the first waiting interactive request ages the background one
-  EXPECT_EQ(admission.Submit(urgent, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(urgent, 0)), AdmissionError::kDeadline);
 }
 
 TEST(Admission, AFeasibleImmediatePauseCanPassLowerClassWaitingWork) {
@@ -456,7 +458,7 @@ TEST(Admission, TickOverflowCannotMeetADeadline) {
   Admission& admission = node.admission;
   RequestSpec too_long = Spec(20, 30, RequestClass::kBackground, UINT64_MAX);
   too_long.deadline = UINT64_MAX;
-  EXPECT_EQ(admission.Submit(too_long, 0).error(), AdmissionError::kDeadline);
+  EXPECT_EQ(Failed(admission.Submit(too_long, 0)), AdmissionError::kDeadline);
   too_long.work = UINT64_MAX - 1;  // exactly fits before any pause
   const RequestId running = Admit(admission, too_long);
   (void)Admit(admission, Spec(20, 30, RequestClass::kInteractive, 1));

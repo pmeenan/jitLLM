@@ -19,6 +19,7 @@
 
 #include "base/bounded_queue.h"
 #include "base/bytes.h"
+#include "expected_error.h"
 #include "providers/device_memory.h"
 #include "providers/fake/fake_device_execution.h"
 #include "providers/fake/fake_device_memory.h"
@@ -26,6 +27,7 @@
 namespace {
 
 using jitllm::base::Bytes;
+using jitllm::test_support::FailedCode;
 using jitllm::base::operator""_MiB;
 using jitllm::providers::Access;
 using jitllm::providers::FenceState;
@@ -66,16 +68,16 @@ TEST_F(DeviceExecutionTest, AFenceNamesTheWorkBeforeIt) {
   const auto fence = execution_.Record(stream).value();
   EXPECT_EQ(execution_.Query(fence).value(), FenceState::kPending);
   EXPECT_NE(Data(1)[0], std::byte{1});  // not run yet: the consumer must wait
-  EXPECT_EQ(execution_.Release(fence).error().error,
+  EXPECT_EQ(FailedCode(execution_.Release(fence)),
             ProviderError::kInvalid);  // never seen complete
-  EXPECT_EQ(execution_.DestroyStream(stream).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_.DestroyStream(stream)), ProviderError::kInvalid);
   ASSERT_TRUE(execution_.Step(stream));  // the copy
   EXPECT_EQ(Data(1)[0], std::byte{1});
   EXPECT_EQ(execution_.Query(fence).value(), FenceState::kPending);
   ASSERT_TRUE(execution_.Step(stream));  // the fence
   EXPECT_EQ(execution_.Query(fence).value(), FenceState::kComplete);
   ASSERT_TRUE(execution_.Release(fence).has_value());
-  EXPECT_EQ(execution_.Query(fence).error().error, ProviderError::kInvalid);  // stale
+  EXPECT_EQ(FailedCode(execution_.Query(fence)), ProviderError::kInvalid);  // stale
   ASSERT_TRUE(execution_.DestroyStream(stream).has_value());
 }
 
@@ -104,8 +106,8 @@ TEST_F(DeviceExecutionTest, AFaultIsNotACompletion) {
   const auto fence = execution_.Record(stream).value();
   execution_.Drain();
   execution_.FailNextQuery(fence, ProviderError::kUnknown);
-  EXPECT_EQ(execution_.Query(fence).error().error, ProviderError::kUnknown);
-  EXPECT_EQ(execution_.Release(fence).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_.Query(fence)), ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(execution_.Release(fence)), ProviderError::kInvalid);
   EXPECT_EQ(execution_.Query(fence).value(), FenceState::kComplete);
   ASSERT_TRUE(execution_.Release(fence).has_value());
 }
@@ -116,11 +118,11 @@ TEST_F(DeviceExecutionTest, AStreamWithUnfencedWorkIsNotDestroyed) {
   const auto stream = execution_.CreateStream().value();
   ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), jitllm::base::Bytes(16)).has_value());
   execution_.Drain();  // it ran, but nothing proved it did
-  EXPECT_EQ(execution_.DestroyStream(stream).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_.DestroyStream(stream)), ProviderError::kInvalid);
   const auto fence = execution_.Record(stream).value();
   execution_.Drain();
   ASSERT_EQ(execution_.Query(fence).value(), FenceState::kComplete);
-  EXPECT_EQ(execution_.DestroyStream(stream).error().error, ProviderError::kInvalid);  // unreleased
+  EXPECT_EQ(FailedCode(execution_.DestroyStream(stream)), ProviderError::kInvalid);  // unreleased
   ASSERT_TRUE(execution_.Release(fence).has_value());
   EXPECT_TRUE(execution_.DestroyStream(stream).has_value());
 }
@@ -135,7 +137,7 @@ TEST_F(DeviceExecutionTest, ASubmissionHandleIsQueuedWork) {
   EXPECT_NE(handle.handle, nullptr);
   EXPECT_EQ(execution_.Submission(first).value().handle, handle.handle);
   EXPECT_NE(execution_.Submission(second).value().handle, handle.handle);
-  EXPECT_EQ(execution_.DestroyStream(first).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_.DestroyStream(first)), ProviderError::kInvalid);
   for (const auto stream : {first, second}) {
     const auto fence = execution_.Record(stream).value();
     execution_.Drain();
@@ -143,7 +145,7 @@ TEST_F(DeviceExecutionTest, ASubmissionHandleIsQueuedWork) {
     ASSERT_TRUE(execution_.Release(fence).has_value());
     EXPECT_TRUE(execution_.DestroyStream(stream).has_value());
   }
-  EXPECT_EQ(execution_.Submission(first).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_.Submission(first)), ProviderError::kInvalid);
 }
 
 // The submission lane records and releases while the completion lane

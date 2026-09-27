@@ -36,6 +36,7 @@
 
 #include "base/bytes.h"
 #include "execution/registry.h"
+#include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
@@ -64,6 +65,7 @@ using jitllm::providers::DeviceExecution;
 using jitllm::providers::FenceState;
 using jitllm::providers::StreamId;
 using jitllm::providers::VmmProvider;
+using jitllm::test_support::FailedCode;
 
 constexpr std::int64_t kWidth = 896;  // Qwen2.5-0.5B's hidden size
 constexpr std::int64_t kOutputs = 1024;
@@ -327,7 +329,7 @@ class GgmlMemoryTest : public GgmlKernelsTest {
     EXPECT_TRUE(jitllm::kernels::ggml::Add(*launch, added).has_value());
     EXPECT_TRUE(jitllm::kernels::ggml::Add(*launch, biased).has_value());
     // MMVF is upstream's choice for one column only.
-    EXPECT_EQ(jitllm::kernels::ggml::MulMatVecF(*launch, product).error().error,
+    EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, product)),
               KernelError::kRejected);
     EXPECT_EQ(launch->scratch_peak(), Bytes(0));
 
@@ -462,7 +464,7 @@ TEST_F(GgmlKernelsTest, AnUnknownSubmissionFaultsTheContext) {
   ASSERT_FALSE(failed.has_value());
   EXPECT_EQ(failed.error().error, KernelError::kUnknown);
   EXPECT_TRUE((*launch)->faulted());
-  EXPECT_EQ((*launch)->Run(Bytes(0), [](ggml_backend_cuda_context&) {}).error().error,
+  EXPECT_EQ(FailedCode((*launch)->Run(Bytes(0), [](ggml_backend_cuda_context&) {})),
             KernelError::kRejected);
 }
 
@@ -480,7 +482,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   auto launch = Launcher();
   ASSERT_NE(launch, nullptr);
   // No workspace: an operation that needs scratch is refused.
-  EXPECT_EQ(launch->Run(Bytes(1), [](ggml_backend_cuda_context&) {}).error().error,
+  EXPECT_EQ(FailedCode(launch->Run(Bytes(1), [](ggml_backend_cuda_context&) {})),
             KernelError::kRejected);
 
   // 70,000 channels exceed the row kernel's grid (65,535).
@@ -491,7 +493,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(x, rows);
   ggml_tensor* norm = ggml_rms_norm(arena.context(), x, kEps);
   TensorArena::Bind(norm, rows);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNorm(*launch, norm).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, norm)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 
   // Operands GGML's launchers would abort on, or index past: none is
@@ -506,34 +508,31 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   }
   ggml_tensor* sum = ggml_add(context, empty, empty);  // divides by its extents
   TensorArena::Bind(sum, rows);
-  EXPECT_EQ(jitllm::kernels::ggml::Add(*launch, sum).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, sum)), KernelError::kRejected);
   // Two rows at a stride of kWidth + 1: normalized in place, the kernel
   // would write them densely.
   ggml_tensor* spaced = ggml_view_2d(context, strided, kWidth, 2, (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* in_place = ggml_rms_norm_inplace(context, spaced, kEps);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNorm(*launch, in_place).error().error,
-            KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, in_place)), KernelError::kRejected);
   // An odd activation column stride, which MMVF's launcher asserts on: MMVF
   // loads float2 pairs, so the alignment check refuses it first.
   ggml_tensor* column = ggml_view_2d(context, strided, kWidth, 1, (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* vector = ggml_mul_mat(context, matrix, column);
   TensorArena::Bind(vector, rows);
-  EXPECT_EQ(jitllm::kernels::ggml::MulMatVecF(*launch, vector).error().error,
-            KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, vector)), KernelError::kRejected);
   // A misaligned operand, which would be a sticky fault for the process.
   ggml_tensor* odd = ggml_new_tensor_1d(context, GGML_TYPE_F32, kWidth);
   TensorArena::Bind(odd, rows + 2);
   ggml_tensor* odd_norm = ggml_rms_norm(context, odd, kEps);
   TensorArena::Bind(odd_norm, rows);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNorm(*launch, odd_norm).error().error,
-            KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, odd_norm)), KernelError::kRejected);
   // A norm scaled by itself: the fused kernel would read the norm it never
   // writes.
   ggml_tensor* self_norm = ggml_rms_norm(context, strided, kEps);
   ggml_tensor* squared = ggml_mul(context, self_norm, self_norm);
   TensorArena::Bind(self_norm, rows);
   TensorArena::Bind(squared, rows + 8192U);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNormMul(*launch, self_norm, squared).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMul(*launch, self_norm, squared)),
             KernelError::kRejected);
   // In place into a transposed view: the kernel would write it densely.
   ggml_tensor* square = ggml_new_tensor_2d(context, GGML_TYPE_F32, 4, 4);
@@ -541,21 +540,21 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(square, rows);
   TensorArena::Bind(addend, rows + 4096U);
   ggml_tensor* transposed_sum = ggml_add_inplace(context, ggml_transpose(context, square), addend);
-  EXPECT_EQ(jitllm::kernels::ggml::Add(*launch, transposed_sum).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, transposed_sum)),
             KernelError::kRejected);
   // An output one row into its input.
   ggml_tensor* two_rows = ggml_new_tensor_2d(context, GGML_TYPE_F32, kWidth, 2);
   TensorArena::Bind(two_rows, rows);
   ggml_tensor* shifted = ggml_rms_norm(context, two_rows, kEps);
   TensorArena::Bind(shifted, rows + (kWidth * sizeof(float)));
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNorm(*launch, shifted).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, shifted)), KernelError::kRejected);
   // An odd channel stride: MMVF loads activations as float2 from every
   // channel's offset.
   ggml_tensor* channels = ggml_view_3d(context, strided, kWidth, 1, 2, kWidth * sizeof(float),
                                        (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* per_channel = ggml_mul_mat(context, matrix, channels);
   TensorArena::Bind(per_channel, rows + 65536U);
-  EXPECT_EQ(jitllm::kernels::ggml::MulMatVecF(*launch, per_channel).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, per_channel)),
             KernelError::kRejected);
   // A dimension of one with an unpacked stride: GGML counts it contiguous,
   // and the broadcast launcher's dimension merging would misindex it.
@@ -564,7 +563,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(four, rows + 4096U);
   ggml_tensor* loose_sum = ggml_add(context, loose, four);
   TensorArena::Bind(loose_sum, rows + 65536U);
-  EXPECT_EQ(jitllm::kernels::ggml::Add(*launch, loose_sum).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, loose_sum)), KernelError::kRejected);
   // Strides that wrap: ggml_nbytes sums them to a few hundred bytes, while
   // the kernel would read gigabytes away.
   ggml_tensor* small = ggml_new_tensor_2d(context, GGML_TYPE_F16, 64, 16);
@@ -574,7 +573,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
                    (~std::size_t{0} - (std::size_t{1} << 33)) + 1, (std::size_t{1} << 33) + 256, 0);
   ggml_tensor* wrapped_product = ggml_mul_mat(context, small, wrapped);
   TensorArena::Bind(wrapped_product, rows + 65536U);
-  EXPECT_EQ(jitllm::kernels::ggml::MulMatVecF(*launch, wrapped_product).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, wrapped_product)),
             KernelError::kRejected);
   // A view made before its source was bound again keeps the old address.
   ggml_tensor* source = ggml_new_tensor_1d(context, GGML_TYPE_F32, kWidth);
@@ -583,7 +582,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(source, rows + 4096U);
   ggml_tensor* stale_norm = ggml_rms_norm(context, stale, kEps);
   TensorArena::Bind(stale_norm, rows + 65536U);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNorm(*launch, stale_norm).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, stale_norm)),
             KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 
@@ -597,7 +596,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   // The detail names the failed CUDA call and where GGML made it.
   EXPECT_NE(failed.error().detail.find("common.cuh"), std::string::npos) << failed.error().detail;
   EXPECT_TRUE(launch->faulted());
-  EXPECT_EQ(launch->Run(Bytes(0), [](ggml_backend_cuda_context&) {}).error().error,
+  EXPECT_EQ(FailedCode(launch->Run(Bytes(0), [](ggml_backend_cuda_context&) {})),
             KernelError::kRejected);
 }
 
@@ -770,7 +769,7 @@ TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
   ASSERT_FALSE(stale.has_value());
   EXPECT_EQ(stale.error().error, PlanError::kStale);
   // Nor does the stale declaration itself select a kernel.
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNormMulKernel::Bind(older[0]).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMulKernel::Bind(older[0])),
             KernelError::kRejected);
 
   // A plan naming an implementation of a module this build lacks (BP-S4).
@@ -787,7 +786,7 @@ TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
       jitllm::execution::Resolve(registry, NormPlan(module_registry, "module.rms_norm_mul.other"));
   ASSERT_FALSE(unsupported.has_value());
   EXPECT_EQ(unsupported.error().error, PlanError::kUnsupported);
-  EXPECT_EQ(jitllm::kernels::ggml::RmsNormMulKernel::Bind(with_module.back()).error().error,
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMulKernel::Bind(with_module.back())),
             KernelError::kRejected);
 
   // A bound kernel refuses operands it cannot take, before any launch: the
@@ -805,7 +804,7 @@ TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
   ggml_tensor* scaled = ggml_mul(arena.context(), norm, w);
   TensorArena::Bind(scaled, rows + (2 * kWidth * sizeof(float)));
   auto launch = Launcher();
-  EXPECT_EQ(kernel.Run(*launch, norm, scaled).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(kernel.Run(*launch, norm, scaled)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 }
 

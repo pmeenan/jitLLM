@@ -13,6 +13,7 @@
 #include <cstring>
 #include <utility>
 
+#include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
@@ -20,6 +21,7 @@ namespace {
 
 using jitllm::kernels::ggml::KernelError;
 using jitllm::kernels::ggml::TensorArena;
+using jitllm::test_support::FailedCode;
 
 std::uint64_t Address(const ggml_tensor* tensor) {
   return reinterpret_cast<std::uintptr_t>(tensor->data);
@@ -67,20 +69,20 @@ TEST(GgmlTensors, ViewsFollowTheirBoundSource) {
 }
 
 TEST(GgmlTensors, AnArenaRefusesMoreThanItHolds) {
-  EXPECT_EQ(TensorArena::Create(0).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(TensorArena::Create(0)), KernelError::kRejected);
   auto arena = TensorArena::Create(3).value();
   EXPECT_TRUE(arena.Reserve(3).has_value());
-  EXPECT_EQ(arena.Reserve(4).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(arena.Reserve(4)), KernelError::kRejected);
   ggml_tensor* a = ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, 8);
   ggml_tensor* b = ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, 8);
   EXPECT_TRUE(arena.Reserve(1).has_value());
-  EXPECT_EQ(arena.Reserve(2).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(arena.Reserve(2)), KernelError::kRejected);
   (void)ggml_add(arena.context(), a, b);
-  EXPECT_EQ(arena.Reserve(1).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(arena.Reserve(1)), KernelError::kRejected);
   EXPECT_TRUE(arena.Reserve(0).has_value());
 
   TensorArena moved = std::move(arena);
-  EXPECT_EQ(moved.Reserve(1).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(moved.Reserve(1)), KernelError::kRejected);
   EXPECT_NE(moved.context(), nullptr);
 }
 

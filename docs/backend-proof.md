@@ -371,8 +371,8 @@ second operand, which the fused one refuses.) The registry
 identity: name, operation, source, the prepared source tree's digest, a
 digest of every file of jitLLM's own code in the module (written at build
 time, so any edit there changes the identity), the SDK, target, device
-architecture, build type and sanitizers, and a variant naming the
-launchers. A plan records each operation's
+architecture, build type, libstdc++ assertions (D-083) and sanitizers,
+and a variant naming the launchers. A plan records each operation's
 implementation and identity, and the plan's identity is a SHA-256 of them in
 order. Resolution binds every operation or rejects the plan: a name the
 build lacks is unsupported (BP-S4), a changed identity stale (BP-S2), and no

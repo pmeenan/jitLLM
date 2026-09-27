@@ -77,6 +77,81 @@ twice at once on one tree.
 caught costs more than the contention it avoids, hosted CI arrives, or the
 workstation stops hosting measurements.
 
+## D-083: Test and development builds check libstdc++'s preconditions; the package's build does not  (2026-09-27, status: accepted; amends D-059's project conventions; specializes D-066's standard-library rule)
+
+**Decision.** The owner's decision of 2026-09-27, after an adversarial
+challenge:
+
+- **Where.** The `native`, `cpu`, `spark-native`, `cpu-asan`,
+  `cross-asan` and `cross-tsan` presets set `JITLLM_LIBSTDCXX_ASSERTIONS`, which defines
+  `_GLIBCXX_ASSERTIONS` for every compile in the build: jitLLM's libraries
+  and executables, tests, benchmarks and third-party code, C++ and both of
+  NVCC's passes. Never for test targets alone: an inline function or
+  template instantiation compiled both with and without the checks is one
+  symbol, and the linker keeps either copy, so a test could run the
+  unchecked one.
+- **Not the package.** Only `cross`, which builds the package, does not
+  set it. `spark-native` does: D-084 made it the build each slice is
+  tested with (`mise run test -- spark-native --locked` on a Spark), so it
+  is a test preset, and the unchecked configuration is still built and
+  tested as `cross`, on a Spark included (`check:spark`).
+- **What it does.** A violated precondition in libstdc++ (`error()` on a
+  `std::expected` that holds a value, `*` on an empty `optional` or
+  `expected`, an index out of range in `operator[]`, `front()` of an empty
+  container and the like) calls the static runtime's
+  `std::__glibcxx_assert_fail`, which prints the file, line, function and
+  condition and aborts, with or without exceptions and not through
+  D-066's fatal path. Like a throwing library path (D-066), reaching one
+  is a bug.
+- **Tests read errors safely.** A test reads a `std::expected`'s error
+  through `tests/support/expected_error.h` (`Failed`, `FailedCode`, or
+  `Failed` with a projection), which gives nothing for a result that holds
+  a value, so a wrong success fails its expectation; or after
+  `ASSERT_FALSE(result.has_value())`. Never `.error()` of a result that
+  may hold a value.
+- **Enforced.** The toolchain contract test requires the macro exactly
+  where the preset asks for it and a violation to abort; a death test
+  sees one end the process; `sources.closure` requires every C++ and CUDA
+  compile in the build's compile database to define it, or none to, not
+  even as libstdc++ does itself for an unoptimized compile. GGML
+  implementation identities (D-053) record whether the build has it.
+
+**Context.** The challenge found that `EXPECT_EQ(result.error(), E::kX)`
+on a result that holds a value reads the value's bytes as an `E`, and can
+pass: an admitted plan's first bytes read as `ProgramError::kInvalid`
+(shapes_test.cc had fixed its cases with a local helper, which the shared
+one replaces). In the pinned GCC 16.2 library, `expected::error()` checks
+`!_M_has_value` only under `_GLIBCXX_ASSERTIONS` or in constant
+evaluation, and libstdc++ defines the macro by default only for
+unoptimized builds; every preset builds RelWithDebInfo at `-O2`. Before the
+tests were converted, the suite was built with the macro alone and run
+(`native` and `cpu` on the workstation, `spark-native` with its GPU tests
+on `spark-b`): nothing aborted, so no test read the error of a success
+and no other expectation was passing vacuously. The 209 unguarded reads
+in `tests/unit/` were then converted.
+
+The package keeps libstdc++ as D-060 ships it. The checks add a branch to
+every checked access, the hot path's included, and their cost is not
+measured; and `__glibcxx_assert_fail` aborts directly, past D-066's single
+fatal path and its bounded diagnostic. The sanitizer presets already run
+the target's code with the checks, on a Spark included (D-061).
+
+**Consequences.** New tests use the helper; review treats a bare
+`.error()` in an expectation as a defect unless a preceding
+`ASSERT_FALSE(...has_value())` or a failure branch guards it.
+`_GLIBCXX_ASSERTIONS` also turns off
+libstdc++'s explicit instantiation declarations for `std::string`, so
+checked builds instantiate those members themselves; it changes nothing
+in the package.
+
+**Reopen if.** The checks' cost on the hot path is measured and found
+negligible, and a violation can reach D-066's fatal path (then the
+package may take them); a libstdc++ update replaces or redefines the
+macro (a hardened mode or C++26 contracts); or a third-party component
+cannot build with it.
+
+## D-079: The remaining backend-proof approvals are delegated and pre-registered; the EXL3 GEMV kernel may be ported into an optional module while its provenance stays open  (2026-09-26, status: accepted; amends backend-proof.md's owner approval of thresholds before native output, and its GEMV gate for development builds only)
+
 ## D-081: Weights and state live in device VMM; direct reads land in a bounded host-VMM zone and the GPU copies each extent in  (2026-09-27, status: accepted; amends D-034's in-place consumption, and so D-034's amendment of D-004's staging copy)
 
 **Decision.** The owner, on 2026-09-27: "If it fixes the L2 cache issue
@@ -2308,7 +2383,7 @@ above is needed.
   C++ runtime.
 - Static runtimes break a sanitizer or profiler that M1 needs.
 
-## D-059: Pin Ninja, GoogleTest, LLVM developer tools and GCC 14.2 libstdc++  (2026-09-23, status: accepted; libstdc++ 14.2 pin superseded by D-060; amends D-032's libstdc++ development files; implements D-049's tool set; GoogleTest is D-057's M1 test dependency)
+## D-059: Pin Ninja, GoogleTest, LLVM developer tools and GCC 14.2 libstdc++  (2026-09-23, status: accepted; libstdc++ 14.2 pin superseded by D-060; amends D-032's libstdc++ development files; implements D-049's tool set; GoogleTest is D-057's M1 test dependency; libstdc++ assertions in the test and development presets added by D-083)
 
 **Decision.** The owner chose GoogleTest and GCC 14.2 headers on 2026-09-23.
 Exact URLs, hashes and sizes are in the

@@ -51,6 +51,7 @@
 
 #include "base/bytes.h"
 #include "execution/registry.h"
+#include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
@@ -79,6 +80,7 @@ using jitllm::providers::StreamId;
 using jitllm::providers::VmmProvider;
 using jitllm::test_support::Event;
 using jitllm::test_support::EventKind;
+using jitllm::test_support::FailedCode;
 
 // Qwen2.5-0.5B's shapes.
 constexpr std::int64_t kWidth = 896;
@@ -965,10 +967,8 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
   ggml_tensor* q2 = ggml_mul_mat(c, wq, two);
   EXPECT_FALSE(jitllm::kernels::ggml::MulMatVecFusible(*launch, q2));
   EXPECT_EQ(
-      jitllm::kernels::ggml::MulMatVecBias(
-          *launch, q2, At(ggml_add(c, q2, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, 2)))))
-          .error()
-          .error,
+      FailedCode(jitllm::kernels::ggml::MulMatVecBias(
+          *launch, q2, At(ggml_add(c, q2, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, 2)))))),
       KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 }
@@ -1090,7 +1090,7 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   // A declaration from a build with another module digest binds nothing.
   jitllm::execution::Implementation stale = declared.back();
   stale.revision = "ggml tree 0; jitllm module 0";
-  EXPECT_EQ(jitllm::kernels::ggml::Kernel::Bind(stale).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Kernel::Bind(stale)), KernelError::kRejected);
 
   // A bound kernel runs its operation over its nodes, as the operation
   // does, and refuses the wrong number of nodes before any launch.
@@ -1113,7 +1113,7 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   Launched(jitllm::kernels::ggml::SwiGlu(*launch, direct), "swiglu");
   EXPECT_EQ(Bits(Download(by_kernel)), Bits(Download(direct)));
   const std::array<ggml_tensor*, 2> two = {by_kernel, direct};
-  EXPECT_EQ(swiglu.Run(*launch, two).error().error, KernelError::kRejected);
+  EXPECT_EQ(FailedCode(swiglu.Run(*launch, two)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 }
 

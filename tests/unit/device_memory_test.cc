@@ -16,11 +16,13 @@
 #include <limits>
 
 #include "base/bytes.h"
+#include "expected_error.h"
 #include "providers/fake/fake_device_memory.h"
 
 namespace {
 
 using jitllm::base::Bytes;
+using jitllm::test_support::FailedCode;
 using jitllm::base::operator""_MiB;
 using jitllm::providers::Access;
 using jitllm::providers::BackingId;
@@ -70,45 +72,45 @@ TEST_F(DeviceMemoryTest, BackingIsMappedWholeAndAccessIsExplicit) {
 }
 
 TEST_F(DeviceMemoryTest, MisuseIsRefused) {
-  EXPECT_EQ(memory_.Reserve(Bytes(4096)).error().error, ProviderError::kInvalid);  // not a granule
+  EXPECT_EQ(FailedCode(memory_.Reserve(Bytes(4096))), ProviderError::kInvalid);  // not a granule
   const ReservationId reservation = memory_.Reserve(6_MiB).value();
   const BackingId a = memory_.Create(kDevice, 4_MiB).value();
   const BackingId b = memory_.Create(kDevice, 2_MiB).value();
-  EXPECT_EQ(memory_.Create(kDevice, Bytes(4096)).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Create(7, 2_MiB).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Map(reservation, 4_MiB, a).error().error,
+  EXPECT_EQ(FailedCode(memory_.Create(kDevice, Bytes(4096))), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Create(7, 2_MiB)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 4_MiB, a)),
             ProviderError::kInvalid);  // runs outside
-  EXPECT_EQ(memory_.Map(reservation, Bytes(4096), a).error().error,
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, Bytes(4096), a)),
             ProviderError::kInvalid);  // unaligned
   ASSERT_TRUE(memory_.Map(reservation, 0_MiB, a).has_value());
-  EXPECT_EQ(memory_.Map(reservation, 2_MiB, b).error().error, ProviderError::kInvalid);  // overlaps
-  EXPECT_EQ(memory_.Map(reservation, 4_MiB, a).error().error,
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 2_MiB, b)), ProviderError::kInvalid);  // overlaps
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 4_MiB, a)),
             ProviderError::kInvalid);  // mapped twice
   ASSERT_TRUE(memory_.Map(reservation, 4_MiB, b).has_value());
   // Unmap and access take whole mappings only.
-  EXPECT_EQ(memory_.Unmap(reservation, 0_MiB, 2_MiB).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.SetAccess(reservation, 2_MiB, 4_MiB, Access::kRead).error().error,
+  EXPECT_EQ(FailedCode(memory_.Unmap(reservation, 0_MiB, 2_MiB)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.SetAccess(reservation, 2_MiB, 4_MiB, Access::kRead)),
             ProviderError::kInvalid);
   EXPECT_TRUE(memory_.SetAccess(reservation, 0_MiB, 6_MiB, Access::kRead).has_value());
   // Nothing mapped is released or freed.
-  EXPECT_EQ(memory_.Release(a).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Free(reservation).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Release(a)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Free(reservation)), ProviderError::kInvalid);
   ASSERT_TRUE(memory_.Unmap(reservation, 0_MiB, 6_MiB).has_value());  // both at once
   ASSERT_TRUE(memory_.Release(a).has_value());
-  EXPECT_EQ(memory_.Release(a).error().error, ProviderError::kInvalid);  // stale
+  EXPECT_EQ(FailedCode(memory_.Release(a)), ProviderError::kInvalid);  // stale
   ASSERT_TRUE(memory_.Release(b).has_value());
   ASSERT_TRUE(memory_.Free(reservation).has_value());
-  EXPECT_EQ(memory_.RangeOf(reservation).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kInvalid);
 }
 
 TEST_F(DeviceMemoryTest, CapacityAndScriptedFailuresChangeNothing) {
   const BackingId all = memory_.Create(kHost, 16_MiB).value();
-  EXPECT_EQ(memory_.Create(kHost, 2_MiB).error().error, ProviderError::kOutOfMemory);
+  EXPECT_EQ(FailedCode(memory_.Create(kHost, 2_MiB)), ProviderError::kOutOfMemory);
   ASSERT_TRUE(memory_.Release(all).has_value());
   const ReservationId reservation = memory_.Reserve(2_MiB).value();
   const BackingId backing = memory_.Create(kHost, 2_MiB).value();
   memory_.FailNext(Operation::kMap, ProviderError::kFailed);
-  EXPECT_EQ(memory_.Map(reservation, 0_MiB, backing).error().error, ProviderError::kFailed);
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 0_MiB, backing)), ProviderError::kFailed);
   ASSERT_TRUE(
       memory_.Map(reservation, 0_MiB, backing).has_value());  // nothing changed: it maps now
   ASSERT_TRUE(memory_.Unmap(reservation, 0_MiB, 2_MiB).has_value());
@@ -120,7 +122,7 @@ TEST(DeviceMemoryRangeTest, AlignmentPaddingCannotWrapAReservation) {
   constexpr std::uint64_t kGranularity = std::uint64_t{3} * 4096;
   FakeDeviceMemory memory(Bytes(kGranularity), Bytes(0));
   const Bytes largest((std::numeric_limits<std::uint64_t>::max() / kGranularity) * kGranularity);
-  EXPECT_EQ(memory.Reserve(largest).error().error, ProviderError::kOutOfMemory);
+  EXPECT_EQ(FailedCode(memory.Reserve(largest)), ProviderError::kOutOfMemory);
   EXPECT_EQ(memory.reservations(), 0U);
 }
 
@@ -132,22 +134,22 @@ TEST_F(DeviceMemoryTest, UnknownOutcomesAreNeverRetried) {
   const BackingId first = memory_.Create(kHost, 2_MiB).value();
   const BackingId second = memory_.Create(kHost, 2_MiB).value();
   memory_.FailNext(Operation::kMap, ProviderError::kUnknown, /*applied=*/true);
-  EXPECT_EQ(memory_.Map(reservation, 0_MiB, first).error().error, ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 0_MiB, first)), ProviderError::kUnknown);
   EXPECT_TRUE(memory_.Undetermined(reservation));
   EXPECT_TRUE(memory_.Undetermined(first));
-  EXPECT_EQ(memory_.RangeOf(reservation).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Map(reservation, 2_MiB, second).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Release(first).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Free(reservation).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 2_MiB, second)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Release(first)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Free(reservation)), ProviderError::kInvalid);
   EXPECT_FALSE(memory_.Undetermined(second));
   // A release whose outcome is unknown is never repeated.
   memory_.FailNext(Operation::kRelease, ProviderError::kUnknown, /*applied=*/true);
-  EXPECT_EQ(memory_.Release(second).error().error, ProviderError::kUnknown);
-  EXPECT_EQ(memory_.Release(second).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Release(second)), ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(memory_.Release(second)), ProviderError::kInvalid);
   // A create whose outcome is unknown may have made backing: it stays
   // charged, with no handle anyone can use.
   memory_.FailNext(Operation::kCreate, ProviderError::kUnknown, /*applied=*/true);
-  EXPECT_EQ(memory_.Create(kHost, 2_MiB).error().error, ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(memory_.Create(kHost, 2_MiB)), ProviderError::kUnknown);
   // What is left is the owner's to quarantine; the fake cleans up at the end.
   EXPECT_EQ(memory_.backings(), 3U);
   EXPECT_EQ(memory_.UndeterminedBytes(), 6_MiB);
@@ -160,13 +162,13 @@ TEST_F(DeviceMemoryTest, UnknownAccessKeepsItsBackingChargedAsUndetermined) {
   ASSERT_TRUE(memory_.Map(reservation, 0_MiB, first).has_value());
   ASSERT_TRUE(memory_.Map(reservation, 2_MiB, second).has_value());
   memory_.FailNext(Operation::kSetAccess, ProviderError::kUnknown, /*applied=*/true);
-  EXPECT_EQ(memory_.SetAccess(reservation, 0_MiB, 4_MiB, Access::kReadWrite).error().error,
+  EXPECT_EQ(FailedCode(memory_.SetAccess(reservation, 0_MiB, 4_MiB, Access::kReadWrite)),
             ProviderError::kUnknown);
   EXPECT_TRUE(memory_.Undetermined(first));
   EXPECT_TRUE(memory_.Undetermined(second));
   EXPECT_EQ(memory_.UndeterminedBytes(), 4_MiB);
-  EXPECT_EQ(memory_.RangeOf(reservation).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(memory_.Unmap(reservation, 0_MiB, 4_MiB).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Unmap(reservation, 0_MiB, 4_MiB)), ProviderError::kInvalid);
 }
 
 // Touching absent backing is a bug, and the fake makes it fault: reserved
@@ -201,18 +203,18 @@ TEST_F(DeviceMemoryDeathTest, AddressOnlyBackingKeepsTheRulesAndFaults) {
   FakeDeviceMemory memory(2_MiB, Bytes(kHuge), Contents::kNone);
   const ReservationId reservation = memory.Reserve(Bytes(kHuge)).value();
   const BackingId big = memory.Create(kHost, Bytes(kHuge - (2_MiB).value())).value();
-  EXPECT_EQ(memory.Create(kHost, 4_MiB).error().error, ProviderError::kOutOfMemory);
+  EXPECT_EQ(FailedCode(memory.Create(kHost, 4_MiB)), ProviderError::kOutOfMemory);
   const BackingId small = memory.Create(kHost, 2_MiB).value();
   EXPECT_EQ(memory.in_use(), Bytes(kHuge));
   ASSERT_TRUE(memory.Map(reservation, 0_MiB, small).has_value());
-  EXPECT_EQ(memory.Map(reservation, 0_MiB, big).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory.Map(reservation, 0_MiB, big)), ProviderError::kInvalid);
   ASSERT_TRUE(memory.Map(reservation, 2_MiB, big).has_value());
   ASSERT_TRUE(memory.SetAccess(reservation, 0_MiB, 2_MiB, Access::kReadWrite).has_value());
   const std::uint64_t base = memory.RangeOf(reservation).value().base;
   volatile auto* granted =
       reinterpret_cast<volatile std::byte*>(base);  // NOLINT(performance-no-int-to-ptr)
   EXPECT_DEATH((void)granted[0], "");               // no bytes behind it
-  EXPECT_EQ(memory.Release(small).error().error, ProviderError::kInvalid);  // still mapped
+  EXPECT_EQ(FailedCode(memory.Release(small)), ProviderError::kInvalid);  // still mapped
   ASSERT_TRUE(memory.Unmap(reservation, 0_MiB, Bytes(kHuge)).has_value());
   ASSERT_TRUE(memory.Release(small).has_value());
   ASSERT_TRUE(memory.Release(big).has_value());

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "expected_error.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_memory.h"
 #include "providers/direct_reader.h"
@@ -35,6 +36,7 @@ using jitllm::providers::Access;
 using jitllm::providers::BackingKind;
 using jitllm::providers::ProviderError;
 using jitllm::providers::VmmProvider;
+using jitllm::test_support::FailedCode;
 
 std::unique_ptr<VmmProvider> Open() {
   auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
@@ -97,13 +99,13 @@ TEST(CudaDeviceMemory, DeviceBackingMapsAndTheRulesHold) {
   const auto device = memory->Create(ClassOf(*memory, BackingKind::kDevice), granule).value();
   const auto other = memory->Create(ClassOf(*memory, BackingKind::kDevice), granule).value();
   ASSERT_TRUE(memory->Map(reservation, Bytes(0), device).has_value());
-  EXPECT_EQ(memory->Map(reservation, Bytes(0), other).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory->Map(reservation, Bytes(0), other)), ProviderError::kInvalid);
   ASSERT_TRUE(memory->Map(reservation, granule, other).has_value());
   ASSERT_TRUE(
       memory->SetAccess(reservation, Bytes(0), Bytes(granule.value() * 2), Access::kReadWrite)
           .has_value());
-  EXPECT_EQ(memory->Release(device).error().error, ProviderError::kInvalid);  // still mapped
-  EXPECT_EQ(memory->Free(reservation).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory->Release(device)), ProviderError::kInvalid);  // still mapped
+  EXPECT_EQ(FailedCode(memory->Free(reservation)), ProviderError::kInvalid);
   ASSERT_TRUE(memory->Unmap(reservation, Bytes(0), Bytes(granule.value() * 2)).has_value());
   ASSERT_TRUE(memory->Release(device).has_value());
   ASSERT_TRUE(memory->Release(other).has_value());
@@ -203,7 +205,7 @@ TEST(CudaDeviceExecution, CopiesFollowTheirFences) {
       state = execution.Query(downloaded);
     }
   });
-  EXPECT_EQ(execution.DestroyStream(download).error().error,
+  EXPECT_EQ(FailedCode(execution.DestroyStream(download)),
             ProviderError::kInvalid);  // unreleased fence
   completion.join();
   ASSERT_TRUE(state.has_value()) << state.error().detail;

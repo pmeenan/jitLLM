@@ -41,6 +41,20 @@ set(BUILD_SHARED_LIBS OFF)
 # (D-066).
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>")
 
+# libstdc++'s precondition checks (D-083): `error()` on a std::expected that
+# holds a value, `*` on an empty optional, an index out of range and the
+# like end the process instead of reading whatever is there. The test and
+# development presets set it, `spark-native` included; only `cross`, which
+# builds the package, does not. Every target in the build gets it, libraries,
+# tests and third-party code alike, and every language (NVCC passes it to
+# both of its passes): an inline function compiled both with and without it
+# would leave the linker to keep either copy.
+option(JITLLM_LIBSTDCXX_ASSERTIONS "Build with _GLIBCXX_ASSERTIONS (D-083)" OFF)
+if(JITLLM_LIBSTDCXX_ASSERTIONS)
+  message(STATUS "libstdc++ assertions: on")
+  add_compile_definitions(_GLIBCXX_ASSERTIONS)
+endif()
+
 if(JITLLM_CUDA)
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 23)
@@ -122,12 +136,13 @@ endfunction()
 include(cmake/JitllmSources.cmake)
 jitllm_sources_add()
 
-# A GoogleTest (with gMock) test executable (D-059). CTest lists its tests
+# A GoogleTest (with gMock) test executable (D-059), with the safe reading of
+# a std::expected's error (tests/support/expected_error.h). CTest lists its tests
 # when it runs them (PRE_TEST), so a cross build never runs target code at
 # build time; ARGN goes to gtest_discover_tests().
 include(GoogleTest)
 function(jitllm_gtest target)
-  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_warnings)
+  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_test_expected jitllm_warnings)
   jitllm_test_executable(${target})
   gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
 endfunction()
@@ -139,7 +154,7 @@ endfunction()
 # the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH relative to
 # itself, which a deployed copy of the build tree keeps.
 function(jitllm_gpu_gtest target)
-  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_warnings)
+  target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_test_expected jitllm_warnings)
   jitllm_test_executable(${target})
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")

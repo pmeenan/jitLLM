@@ -427,9 +427,9 @@ def files_named(root: pathlib.Path, name: str) -> list[pathlib.Path]:
     return list(root.rglob(name))
 
 
-def check_closure(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None) -> str:
+def check_closure(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None, extra=()) -> str:
     return run([sys.executable, pathlib.Path(__file__).with_name("check_closure.py"), "--build-dir", build_dir,
-                "--source-dir", fx.project, "--sdk", ARGS.sdk, "--ninja", ARGS.ninja], ok=ok, expect=expect)
+                "--source-dir", fx.project, "--sdk", ARGS.sdk, "--ninja", ARGS.ninja, *extra], ok=ok, expect=expect)
 
 
 def check_receipt(fx: Fixture, build_dir: pathlib.Path) -> str:
@@ -481,6 +481,9 @@ def main() -> int:
         check("opt-lib" not in text and "fixture_opt" not in text, f"{name} mentions the optional module")
     check_receipt(fx, b)
     check_closure(fx, b)
+    # This build defines _GLIBCXX_ASSERTIONS nowhere, so one that must define
+    # it everywhere fails (D-083).
+    check_closure(fx, b, ok=False, expect="does not define _GLIBCXX_ASSERTIONS", extra=["--libstdcxx-assertions"])
 
     step("missing inputs fail before any third-party CMake code runs")
     reset_markers(fx)

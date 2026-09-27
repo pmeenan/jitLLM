@@ -11,9 +11,12 @@
 
 #include <memory>
 
+#include "expected_error.h"
 #include "providers/device_execution.h"
 
 namespace {
+
+using jitllm::test_support::FailedCode;
 
 struct Driver {
   CUresult current = CUDA_SUCCESS;
@@ -103,16 +106,16 @@ class CudaExecutionFailureTest : public ::testing::Test {
 
 TEST_F(CudaExecutionFailureTest, AnUnknownStreamDestructionCannotRecordNewWork) {
   driver.destroy_stream = CUDA_ERROR_UNKNOWN;
-  EXPECT_EQ(execution_->DestroyStream(stream_).error().error, ProviderError::kUnknown);
-  EXPECT_EQ(execution_->Record(stream_).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->DestroyStream(stream_)), ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(execution_->Record(stream_)), ProviderError::kInvalid);
   EXPECT_EQ(driver.records, 0);
 }
 
 TEST_F(CudaExecutionFailureTest, ARefusedEventDestructionKeepsTheFenceForRetry) {
   const FenceId fence = CompleteFence();
   driver.destroy_event = CUDA_ERROR_INVALID_CONTEXT;
-  EXPECT_EQ(execution_->Release(fence).error().error, ProviderError::kFailed);
-  EXPECT_EQ(execution_->DestroyStream(stream_).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->Release(fence)), ProviderError::kFailed);
+  EXPECT_EQ(FailedCode(execution_->DestroyStream(stream_)), ProviderError::kInvalid);
   driver.destroy_event = CUDA_SUCCESS;
   EXPECT_TRUE(execution_->Release(fence).has_value());
   EXPECT_TRUE(execution_->DestroyStream(stream_).has_value());
@@ -122,7 +125,7 @@ TEST_F(CudaExecutionFailureTest, ARefusedEventDestructionKeepsTheFenceForRetry) 
 TEST_F(CudaExecutionFailureTest, ARefusedContextChangeDoesNotForgetTheFence) {
   const FenceId fence = CompleteFence();
   driver.current = CUDA_ERROR_INVALID_CONTEXT;
-  EXPECT_EQ(execution_->Release(fence).error().error, ProviderError::kFailed);
+  EXPECT_EQ(FailedCode(execution_->Release(fence)), ProviderError::kFailed);
   EXPECT_EQ(driver.event_destroys, 0);
   driver.current = CUDA_SUCCESS;
   EXPECT_TRUE(execution_->Release(fence).has_value());
@@ -131,11 +134,11 @@ TEST_F(CudaExecutionFailureTest, ARefusedContextChangeDoesNotForgetTheFence) {
 
 TEST_F(CudaExecutionFailureTest, ASubmissionHandleIsTheStreamAndCountsAsQueuedWork) {
   driver.current = CUDA_ERROR_INVALID_CONTEXT;
-  EXPECT_EQ(execution_->Submission(stream_).error().error, ProviderError::kFailed);
+  EXPECT_EQ(FailedCode(execution_->Submission(stream_)), ProviderError::kFailed);
   driver.current = CUDA_SUCCESS;
   EXPECT_EQ(execution_->Submission(stream_).value().handle,
             reinterpret_cast<void*>(2));  // NOLINT(performance-no-int-to-ptr)
-  EXPECT_EQ(execution_->DestroyStream(stream_).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->DestroyStream(stream_)), ProviderError::kInvalid);
   EXPECT_TRUE(execution_->Release(CompleteFence()).has_value());
   EXPECT_TRUE(execution_->DestroyStream(stream_).has_value());
 }
@@ -143,12 +146,12 @@ TEST_F(CudaExecutionFailureTest, ASubmissionHandleIsTheStreamAndCountsAsQueuedWo
 TEST_F(CudaExecutionFailureTest, AnUnknownEventDestructionQuarantinesItsHandle) {
   const FenceId fence = CompleteFence();
   driver.destroy_event = CUDA_ERROR_UNKNOWN;
-  EXPECT_EQ(execution_->Release(fence).error().error, ProviderError::kUnknown);
+  EXPECT_EQ(FailedCode(execution_->Release(fence)), ProviderError::kUnknown);
   driver.destroy_event = CUDA_SUCCESS;
-  EXPECT_EQ(execution_->Release(fence).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(execution_->Query(fence).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(execution_->Wait(stream_, fence).error().error, ProviderError::kInvalid);
-  EXPECT_EQ(execution_->DestroyStream(stream_).error().error, ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->Release(fence)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->Query(fence)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->Wait(stream_, fence)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(execution_->DestroyStream(stream_)), ProviderError::kInvalid);
   EXPECT_EQ(driver.event_destroys, 1);
 }
 

@@ -41,7 +41,8 @@
 //     src/kernels/ggml, written at build time (module_digest.cmake), so any
 //     edit here changes every identity the module declares;
 //   - the SDK, target, device architecture, build type (NDEBUG, and with it
-//     GGML's device asserts) and sanitizers;
+//     GGML's device asserts), libstdc++'s assertions (D-083) and
+//     sanitizers;
 //   - the name, and a variant naming the launcher sequence.
 // Code outside the module, such as the provider that supplies the stream,
 // is not covered: it does not choose what is launched.

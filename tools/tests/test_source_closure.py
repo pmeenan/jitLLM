@@ -39,7 +39,7 @@ class Inventory(unittest.TestCase):
         (self.build / "CMakeCache.txt").write_text(f"JITLLM_SOURCES_DIR:PATH={self.prepared}\n")
         self.commands = [{"directory": str(self.build), "file": str(self.tree / "source.cc"),
                           "output": str(self.build / "object.o"),
-                          "command": "clang++ -fno-exceptions -c source.cc -o object.o"}]
+                          "command": "clang++ -O2 -fno-exceptions -c source.cc -o object.o"}]
         self.targets = {"object.o": "CXX_COMPILER__example", "app": "CXX_EXECUTABLE_LINKER__app"}
         self.recording_rules = set(self.targets.values())
         self.default_inputs = set(self.targets)
@@ -318,6 +318,44 @@ class Inventory(unittest.TestCase):
         import jitllm_package  # noqa: PLC0415 (the package tool needs the tools directory on the path)
 
         self.assertEqual(closure.SHIPPED_EXECUTABLES, tuple(built for built, _ in jitllm_package.EXECUTABLES))
+
+    def test_libstdcxx_assertions_all_or_none(self):
+        # D-083: as libstdc++'s c++config.h decides, explicitly or for an unoptimized compile.
+        on, off = "does not define _GLIBCXX_ASSERTIONS", "defines _GLIBCXX_ASSERTIONS"
+        for command, want, problem in (
+                ("clang++ -O2 -c a.cc", False, None),
+                ("clang++ -O2 -D_GLIBCXX_ASSERTIONS -c a.cc", True, None),
+                ("clang++ -O2 -D _GLIBCXX_ASSERTIONS -c a.cc", True, None),
+                ("clang++ -O2 -D_GLIBCXX_ASSERTIONS -D_GLIBCXX_NO_ASSERTIONS -c a.cc", True, None),
+                ("clang++ -O2 -c a.cc", True, on),
+                ("clang++ -O2 -D_GLIBCXX_ASSERTIONS -U_GLIBCXX_ASSERTIONS -c a.cc", True, on),
+                ("clang++ -O2 -D_GLIBCXX_ASSERTIONS -c a.cc", False, off),
+                ("clang++ -O2 -D_GLIBCXX_DEBUG -c a.cc", False, off),
+                ("clang++ -c a.cc", False, off),
+                ("clang++ -O2 -O0 -c a.cc", False, off),
+                ("clang++ -O0 -D_GLIBCXX_NO_ASSERTIONS -c a.cc", False, None),
+                ("clang++ -O0 -c a.cc", True, None),
+                ("nvcc -O3 -Xcompiler=-U_GLIBCXX_ASSERTIONS -D_GLIBCXX_ASSERTIONS -c a.cu", True, None),
+                ("nvcc -O3 -D_GLIBCXX_ASSERTIONS -Xcompiler=-fPIC,-U_GLIBCXX_ASSERTIONS -c a.cu", True, on),
+                ("nvcc -O3 --compiler-options -D_GLIBCXX_ASSERTIONS -c a.cu", False, off),
+                ("nvcc -O3 --define-macro=_GLIBCXX_ASSERTIONS -c a.cu", False, off),
+                ("nvcc -O3 -Xcompiler=-O0 -c a.cu", False, off),
+                ("nvcc -c a.cu", False, off),
+                ("nvcc --optimize 0 -c a.cu", False, off),
+                ("nvcc -O3 -Xptxas -O0 -c a.cu", False, None)):
+            with self.subTest(command=command, want=want):
+                found = closure.assertions_problem(command.split(), want)
+                if problem is None:
+                    self.assertIsNone(found)
+                else:
+                    self.assertIsNotNone(found)
+                    self.assertTrue(found.startswith(problem), found)
+
+    def test_unoptimized_compile_rejected_where_the_build_has_no_assertions(self):
+        # libstdc++ turns its assertions on for a compile without -O, whatever the preset says.
+        self.commands[0]["command"] = "clang++ -fno-exceptions -c source.cc -o object.o"
+        self.check(1, "defines _GLIBCXX_ASSERTIONS (unoptimized, or through _GLIBCXX_DEBUG), which this build "
+                      "defines nowhere")
 
     def test_static_archive_external_object_rejected(self):
         self.link_rule = self.targets["app"] = "CXX_STATIC_LIBRARY_LINKER__app"

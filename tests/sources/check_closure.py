@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Checks a build's actual compile and link inventory against its receipt (D-017, D-057, D-066).
+"""Checks a build's actual compile and link inventory against its receipt (D-017, D-057, D-066, D-083).
 
-    python3 check_closure.py --build-dir DIR --source-dir REPO --sdk SDK --ninja NINJA
+    python3 check_closure.py --build-dir DIR --source-dir REPO --sdk SDK --ninja NINJA [--cross]
+                             [--libstdcxx-assertions]
 
 Reads every input Ninja recorded for the current outputs (each compile's
 headers and, where supported, each link's objects and libraries, from the
@@ -29,6 +30,10 @@ and checks:
   response file that could hide flags; and no object or archive compiled or
   linked from outside the SDK has exception support (throw, catch or
   personality symbols, or a landing-pad table), whatever the flags said;
+- with --libstdcxx-assertions every C++ and CUDA compile, third-party code
+  included, defines _GLIBCXX_ASSERTIONS, and without it none does, not even
+  as libstdc++ does itself for an unoptimized compile, so no inline function
+  is compiled both ways (D-083);
 - every link input from outside the SDK and platform is, by its content, an
   object file or archive (audited as above): never a shared library (D-064),
   a linker script or anything else; and the only shared libraries linked
@@ -116,6 +121,51 @@ def exception_problem(tokens: list[str]) -> str | None:
     decisive = [f for f in flags if f in EXCEPTION_FLAGS]
     if "-fno-exceptions" not in decisive or decisive[-1] not in ("-fno-exceptions", "-fno-cxx-exceptions"):
         return f"does not end its exception flags with -fno-exceptions ({' '.join(decisive) or 'none'})"
+    return None
+
+
+def assertions_problem(tokens: list[str], want: bool) -> str | None:
+    """Why a C++ or CUDA compile's libstdc++ assertions differ from the build's (D-083), or None.
+
+    As libstdc++'s c++config.h decides: the macro is on when the last -D/-U of
+    it defines it, when _GLIBCXX_DEBUG is defined, or when the compile is
+    unoptimized (no -O, or a last -O0) without _GLIBCXX_NO_ASSERTIONS. NVCC's
+    -Xcompiler flags reach its host pass, so they count.
+    """
+    host = ("-Xcompiler", "--compiler-options")
+    # Options whose value is for another tool (the assembler, the device
+    # linker, the frontend...), never the host compile's -D or -O.
+    elsewhere = ("-Xptxas", "--ptxas-options", "-Xnvlink", "--nvlink-options", "-Xlinker", "--linker-options",
+                 "-Xfatbin", "--fatbin-options", "-Xarchive", "--archive-options", "-Xcudafe", "-Xclang")
+    flags = []
+    for previous, token in zip([""] + tokens, tokens):
+        if previous in host:
+            flags += token.split(",")
+        elif token.startswith(tuple(f"{option}=" for option in host)):
+            flags += token.split("=", 1)[1].split(",")
+        elif previous not in elsewhere and token not in host and not token.startswith(
+                tuple(f"{option}=" for option in elsewhere)):
+            flags.append(token)
+    macros: dict[str, bool] = {}
+    optimized = False
+    for previous, flag in zip([""] + flags, flags):
+        if previous in ("-D", "-U", "--define-macro", "--undefine-macro"):
+            flag = ("-U" if previous in ("-U", "--undefine-macro") else "-D") + flag
+        elif flag.startswith(("--define-macro=", "--undefine-macro=")):
+            flag = ("-U" if flag.startswith("--undefine-macro=") else "-D") + flag.split("=", 1)[1]
+        if previous == "--optimize":
+            optimized = flag != "0"
+        elif flag.startswith(("-D", "-U")) and len(flag) > 2:
+            macros[flag[2:].split("=", 1)[0]] = flag.startswith("-D")
+        elif re.fullmatch(r"-O[0-9sgz]?|-Ofast|--optimize=[0-9]+", flag):
+            optimized = flag not in ("-O0", "--optimize=0")
+    on = (macros.get("_GLIBCXX_ASSERTIONS", False) or macros.get("_GLIBCXX_DEBUG", False)
+          or (not optimized and not macros.get("_GLIBCXX_NO_ASSERTIONS", False)))
+    if want and not on:
+        return "does not define _GLIBCXX_ASSERTIONS, which this build defines everywhere"
+    if not want and on:
+        how = "" if macros.get("_GLIBCXX_ASSERTIONS") else " (unoptimized, or through _GLIBCXX_DEBUG)"
+        return f"defines _GLIBCXX_ASSERTIONS{how}, which this build defines nowhere"
     return None
 
 
@@ -256,6 +306,8 @@ def main() -> int:
     parser.add_argument("--sdk", type=pathlib.Path, required=True)
     parser.add_argument("--ninja", required=True)
     parser.add_argument("--cross", action="store_true", help="a cross build: nothing from the host")
+    parser.add_argument("--libstdcxx-assertions", action="store_true",
+                        help="every C++ and CUDA compile defines _GLIBCXX_ASSERTIONS (otherwise none does)")
     args = parser.parse_args()
     build = os.path.realpath(args.build_dir)
     source = os.path.realpath(args.source_dir)
@@ -422,6 +474,9 @@ def main() -> int:
         problem = exception_problem(joined)
         if problem:
             problems.append(f"{entry['file']} {problem} (D-066)")
+        problem = assertions_problem(tokens, args.libstdcxx_assertions)
+        if problem:
+            problems.append(f"{entry['file']} {problem} (D-083)")
 
     # Everything else a link consumes (a custom command's output, a prebuilt
     # file in a component) is audited the same way, chosen by content, not

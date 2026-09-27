@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The toolchain contract, tested in what each profile produces (D-011, D-026,
-# D-032, D-057, D-059, D-060, D-066). Every test carries the `toolchain` label; `gpu`
+# D-032, D-057, D-059, D-060, D-066, D-083). Every test carries the `toolchain` label; `gpu`
 # marks those that need a GB10, which run only on a Spark.
 
 string(REGEX MATCH "^[^-]+" target_arch "${JITLLM_TARGET_TRIPLE}")
@@ -32,7 +32,8 @@ function(jitllm_toolchain_test target)
 endfunction()
 
 add_executable(toolchain_contract_test toolchain_contract_test.cc)
-target_compile_definitions(toolchain_contract_test PRIVATE JITLLM_TEST_TARGET_${target_arch})
+target_compile_definitions(toolchain_contract_test PRIVATE JITLLM_TEST_TARGET_${target_arch}
+                           "JITLLM_TEST_LIBSTDCXX_ASSERTIONS=$<BOOL:${JITLLM_LIBSTDCXX_ASSERTIONS}>")
 jitllm_toolchain_test(toolchain_contract_test)
 
 # GoogleTest and gMock from the source lock, without exceptions (D-057,
