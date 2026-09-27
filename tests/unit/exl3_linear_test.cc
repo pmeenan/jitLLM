@@ -18,7 +18,17 @@
 //   than the device holds at once, a lock area another live context uses,
 //   and anything after a fault, which returns as a fault;
 // - the registry binds each implementation to its own path only, and a
-//   stale or foreign declaration binds nothing (BP-S2, BP-S4).
+//   stale or foreign declaration binds nothing (BP-S2, BP-S4);
+// - the over-read probe at every linear shape and rate of both fixtures,
+//   with random weights: the GEMV in both configurations at one to eight
+//   rows, the GEMM at every tile shape the shape takes (and at tile shape 4
+//   on a synthetic 896 × 1,024, which no fixture shape takes) and the
+//   multi-GEMM at the gate/up shape;
+// - two contexts on two streams, each launching cooperative grids at the
+//   device's co-resident limit, both complete: cooperative grids from
+//   different streams do not deadlock each other;
+// - a reconstruction GEMM runs only its own pin, and the multi-GEMM refuses
+//   tables written for tensors that have moved (BP-P5).
 // The per-linear exactness against upstream is the sweep's
 // (docs/experiments/backend-proof-p3/), not this test's.
 
@@ -26,21 +36,28 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
+#include <map>
 #include <memory>
 #include <print>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "base/bytes.h"
 #include "execution/registry.h"
+#include "expected_error.h"
 #include "kernels/exl3/implementations.h"
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/linear.h"
@@ -61,15 +78,27 @@ using jitllm::providers::BackingKind;
 using jitllm::providers::DeviceExecution;
 using jitllm::providers::FenceState;
 using jitllm::providers::StreamId;
+using jitllm::test_support::FailedCode;
 
 constexpr int kK = 896;
 constexpr int kN = 896;
 constexpr int kBits = 4;
 
-// exl3-recon-pin.json's algorithms for 896 × 896 at 145 rows (F16 and F32
-// outputs alike) and at 1,024 rows.
-constexpr exl3::LtAlgorithm kPin145{{67, 316, 1, 0, 0, 66, 35, 0, 0}};
-constexpr exl3::LtAlgorithm kPin1024{{67, 409, 1, 0, 0, 30, 35, 0, 0}};
+// exl3-recon-pin.json's algorithms for 896 × 896 at 145 rows with an F32
+// output (HSS) and at 1,024 rows with an F16 output (HSH), each with the
+// GEMM it was pinned for.
+constexpr exl3::LtAlgorithm kPin145{.config = {67, 316, 1, 0, 0, 66, 35, 0, 0},
+                                    .m = 145,
+                                    .k = kK,
+                                    .n = kN,
+                                    .ldc = kN,
+                                    .output = Output::kF32};
+constexpr exl3::LtAlgorithm kPin1024{.config = {67, 409, 1, 0, 0, 30, 35, 0, 0},
+                                     .m = 1024,
+                                     .k = kK,
+                                     .n = kN,
+                                     .ldc = kN,
+                                     .output = Output::kF16};
 
 std::uint64_t Mix(std::uint64_t x) {
   x += 0x9E3779B97F4A7C15ULL;
@@ -175,8 +204,10 @@ class Exl3LinearTest : public ::testing::Test {
     return placement == Placement::kFlushEnd ? base + mapped - bytes : base;
   }
 
-  void Finish() {
-    const auto fence = execution_->Record(stream_).value();
+  void Finish() { Finish(stream_); }
+
+  void Finish(StreamId stream) {
+    const auto fence = execution_->Record(stream).value();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     FenceState state = FenceState::kPending;
     while ((state = execution_->Query(fence).value()) == FenceState::kPending &&
@@ -218,11 +249,13 @@ class Exl3LinearTest : public ::testing::Test {
     return launch ? std::move(*launch) : nullptr;
   }
 
-  exl3::Weights Linear(Placement placement, std::uint64_t seed) {
-    exl3::Weights w{.trellis = 0, .suh = 0, .svh = 0, .k = kK, .n = kN, .bits = kBits};
+  exl3::Weights Linear(Placement placement, std::uint64_t seed, int k = kK, int n = kN,
+                       int bits = kBits) {
+    exl3::Weights w{.trellis = 0, .suh = 0, .svh = 0, .k = k, .n = n, .bits = bits};
     w.trellis = Upload(placement, Words(exl3::TrellisBytes(w) / 2, seed));
-    w.suh = Upload(placement, Signs(kK, seed + 1, 1.0F / std::sqrt(static_cast<float>(kK))));
-    w.svh = Upload(placement, Signs(kN, seed + 2, 1.0F));
+    w.suh = Upload(placement, Signs(static_cast<std::size_t>(k), seed + 1,
+                                    1.0F / std::sqrt(static_cast<float>(k))));
+    w.svh = Upload(placement, Signs(static_cast<std::size_t>(n), seed + 2, 1.0F));
     return w;
   }
 
@@ -280,15 +313,16 @@ class Exl3LinearTest : public ::testing::Test {
     // The fused gate/up multi-GEMM: two linears of one input, F32 outputs.
     {
       const exl3::Weights second = Linear(placement, 200);
-      const std::vector<std::uint64_t> table{w.trellis,  second.trellis, w.suh,
-                                             second.suh, w.svh,          second.svh};
-      const std::uint64_t tables = Upload(placement, table);
+      const auto written = exl3::MultiGemmTables(w, second);
+      const std::uint64_t tables =
+          Upload(placement, std::vector<std::uint64_t>(written.begin(), written.end()));
       const std::uint64_t x = Upload(placement, Halves(Bytes16(8, kK) / 2, 3, 1.0F));
       const exl3::MultiLinearOperands o{.first = w,
                                         .second = second,
                                         .trellis_table = tables,
                                         .suh_table = tables + 16,
                                         .svh_table = tables + 32,
+                                        .written = written,
                                         .x = x,
                                         .a_had = Allocate(placement, 2 * Bytes16(8, kK)),
                                         .y = Allocate(placement, 4 * Bytes16(8, kN)),
@@ -335,6 +369,162 @@ class Exl3LinearTest : public ::testing::Test {
     EXPECT_FALSE(launch->faulted());
     return r;
   }
+
+  // The over-read probe at the fixtures' shapes: every packed launch the
+  // shape and rate take, each result hashed by its case. Operands are
+  // placed afresh for each shape and row count, so under kFlushEnd or
+  // kFlushStart each launch's x, a_had and y sit flush against an unmapped
+  // granule, as its weights do.
+  std::map<std::string, std::uint64_t> Probe(Placement placement) {
+    std::map<std::string, std::uint64_t> hashes;
+    auto check = [](const std::expected<void, exl3::KernelFailure>& result, const std::string& id) {
+      EXPECT_TRUE(result.has_value()) << id << ": " << (result ? "" : result.error().detail);
+      return result.has_value();
+    };
+    for (const ProbeShape& shape : kProbeShapes) {
+      auto launch = Context(placement);
+      if (!launch) {
+        return hashes;
+      }
+      const std::uint64_t seed = static_cast<std::uint64_t>(shape.k) * 1000003U +
+                                 static_cast<std::uint64_t>(shape.n) * 101U +
+                                 static_cast<std::uint64_t>(shape.bits);
+      const exl3::Weights w = Linear(placement, seed, shape.k, shape.n, shape.bits);
+      const bool gate_up = shape.k == 896 && shape.n == 4864;
+      const exl3::Weights second =
+          gate_up ? Linear(placement, seed + 7, shape.k, shape.n, shape.bits) : exl3::Weights{};
+      std::uint64_t tables = 0;
+      if (gate_up) {
+        const auto written = exl3::MultiGemmTables(w, second);
+        tables = Upload(placement, std::vector<std::uint64_t>(written.begin(), written.end()));
+      }
+      for (const Output output : {Output::kF16, Output::kF32}) {
+        const int out_bytes = exl3::OutputBytes(output);
+        for (int m = 1; m <= 16; ++m) {
+          const bool gemv_rows = m <= exl3::kGemvMaxRows && shape.bits == 4;
+          const bool gemm_rows = m == 1 || m == 3 || m == 8 || m == 16;
+          if (!gemv_rows && !gemm_rows) {
+            continue;
+          }
+          const std::uint64_t x = Upload(
+              placement, Halves(static_cast<std::size_t>(m) * static_cast<std::size_t>(shape.k),
+                                seed + static_cast<std::uint64_t>(m), 1.0F));
+          const std::uint64_t y_bytes = static_cast<std::uint64_t>(m) *
+                                        static_cast<std::uint64_t>(shape.n) *
+                                        static_cast<std::uint64_t>(out_bytes);
+          const exl3::LinearOperands o{.weights = w,
+                                       .x = x,
+                                       .a_had = Allocate(placement, Bytes16(m, shape.k)),
+                                       .y = Allocate(placement, y_bytes),
+                                       .output = output,
+                                       .m = m};
+          const std::string at = std::format("{}x{} K{} {} m{}", shape.k, shape.n, shape.bits,
+                                             output == Output::kF32 ? "F32" : "F16", m);
+          if (gemv_rows) {
+            for (const int config : {0, 1}) {
+              const auto coresident = launch->GemvCoresident(shape.bits, output, m, config);
+              if (!coresident) {
+                ADD_FAILURE() << at << ": " << coresident.error().detail;
+                return hashes;
+              }
+              const int blocks = std::min(shape.n / exl3::GemvColumns(config), *coresident);
+              const std::string id = std::format("{} gemv {} {}", at, config, blocks);
+              if (check(launch->Gemv(o, {.config = config, .blocks = blocks}), id)) {
+                hashes[id] = Hash(Download(o.y, y_bytes));
+              }
+            }
+          }
+          if (!gemm_rows) {
+            continue;
+          }
+          for (int tile = 1; tile <= exl3::kShapes; ++tile) {
+            const auto index = static_cast<std::size_t>(tile);
+            if (shape.k % exl3::kTileK.at(index) != 0 || shape.n % exl3::kTileN.at(index) != 0) {
+              continue;
+            }
+            const int slices =
+                (shape.k / exl3::kTileK.at(index)) * (shape.n / exl3::kTileN.at(index));
+            const auto coresident = launch->GemmCoresident(shape.bits, tile, output);
+            if (!coresident) {
+              ADD_FAILURE() << at << ": " << coresident.error().detail;
+              return hashes;
+            }
+            for (const int blocks : {std::min(slices, *coresident), std::min(slices, 7)}) {
+              const std::string id = std::format("{} gemm {} {}", at, tile, blocks);
+              if (check(launch->Gemm(o, {.shape = tile, .blocks = blocks}), id)) {
+                hashes[id] = Hash(Download(o.y, y_bytes));
+              }
+            }
+            if (!gate_up || m == 3) {
+              continue;
+            }
+            const exl3::MultiLinearOperands mo{
+                .first = w,
+                .second = second,
+                .trellis_table = tables,
+                .suh_table = tables + 16,
+                .svh_table = tables + 32,
+                .written = exl3::MultiGemmTables(w, second),
+                .x = x,
+                .a_had = Allocate(placement, 2 * Bytes16(m, shape.k)),
+                .y = Allocate(placement, 2 * y_bytes),
+                .output = output,
+                .m = m};
+            const auto multi = launch->MultiGemmCoresident(shape.bits, tile, output);
+            if (!multi) {
+              ADD_FAILURE() << at << ": " << multi.error().detail;
+              return hashes;
+            }
+            for (const int concurrency : {1, 2}) {
+              const int blocks = std::min(slices, *multi / concurrency);
+              const std::string id =
+                  std::format("{} multi {} {} {}", at, tile, blocks, concurrency);
+              if (check(launch->MultiGemm(
+                            mo, {.shape = tile, .blocks = blocks, .concurrency = concurrency}),
+                        id)) {
+                hashes[id] = Hash(Download(mo.y, 2 * y_bytes));
+              }
+            }
+          }
+        }
+      }
+      Finish();
+      EXPECT_FALSE(launch->faulted()) << shape.k << "x" << shape.n;
+      launch.reset();
+      FreeAll();
+    }
+    return hashes;
+  }
+
+  static std::uint64_t Hash(const std::vector<std::byte>& bytes) {
+    std::uint64_t hash = 0xCBF29CE484222325ULL;  // FNV-1a
+    for (const std::byte b : bytes) {
+      hash = (hash ^ static_cast<std::uint64_t>(b)) * 0x100000001B3ULL;
+    }
+    return hash;
+  }
+
+  // Each linear shape and rate of the two fixtures (results.json's
+  // weights: q_proj and o_proj, k_proj and v_proj, gate and up, down, and
+  // the head), and a synthetic 896 × 1,024, the smallest q_proj-wide shape
+  // that tile shape 4 (n a multiple of 512) takes.
+  struct ProbeShape {
+    int k;
+    int n;
+    int bits;
+  };
+  static constexpr std::array<ProbeShape, 12> kProbeShapes{{{896, 128, 4},
+                                                            {896, 896, 4},
+                                                            {896, 4864, 4},
+                                                            {4864, 896, 4},
+                                                            {896, 151936, 8},
+                                                            {896, 128, 5},
+                                                            {896, 128, 6},
+                                                            {896, 896, 5},
+                                                            {896, 896, 6},
+                                                            {896, 4864, 5},
+                                                            {4864, 896, 5},
+                                                            {896, 1024, 4}}};
 
   std::unique_ptr<jitllm::providers::VmmProvider> memory_;
   std::unique_ptr<DeviceExecution> execution_;
@@ -569,6 +759,189 @@ TEST_F(Exl3LinearTest, NoKernelReadsOrWritesOutsideItsOperands) {
   EXPECT_EQ(malloced.recon, start.recon);
   EXPECT_EQ(malloced.fused, start.fused);
   EXPECT_EQ(malloced.fused_as_recon, start.fused_as_recon);
+}
+
+}  // namespace
+
+namespace {
+
+// The over-read probe at the fixtures' shapes (see Probe): the kernels and
+// variants the sweep never launched there (the GEMV's wide configuration,
+// its row-guarded mode at two to seven rows, the GEMM at tile shapes 3 and
+// 4, the multi-GEMM at tile shapes 1 and 4, grids below the co-resident
+// limit) stay inside their operands, and give the cudaMalloc run's bits.
+TEST_F(Exl3LinearTest, NoPackedKernelReadsOutsideItsOperandsAtTheFixturesShapes) {
+  const auto malloced = Probe(Placement::kCudaMalloc);
+  ASSERT_FALSE(malloced.empty());
+  std::size_t gemv_mode1 = 0;
+  std::size_t tile4 = 0;
+  for (const auto& [id, hash] : malloced) {
+    gemv_mode1 +=
+        id.find(" gemv ") != std::string::npos && id.find(" m1 ") == std::string::npos ? 1 : 0;
+    tile4 += id.find(" gemm 4 ") != std::string::npos ? 1 : 0;
+  }
+  EXPECT_GT(gemv_mode1, 0U);
+  EXPECT_GT(tile4, 0U);
+  for (const Placement placement : {Placement::kFlushEnd, Placement::kFlushStart}) {
+    const auto flush = Probe(placement);
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+    EXPECT_EQ(flush.size(), malloced.size());
+    for (const auto& [id, hash] : malloced) {
+      const auto found = flush.find(id);
+      ASSERT_NE(found, flush.end()) << id;
+      EXPECT_EQ(found->second, hash) << id;
+    }
+  }
+  std::println("{} packed launches, {} of the GEMV at 2 to 8 rows and {} at tile shape 4",
+               malloced.size(), gemv_mode1, tile4);
+}
+
+// Cooperative grids need every block co-resident; the limit each launch is
+// held to is the whole device's. Two contexts on two streams, each
+// launching grids at that limit back to back, must both complete: the
+// device admits a cooperative grid whole, so neither can hold half the
+// device while waiting on the other.
+TEST_F(Exl3LinearTest, TwoContextsAtTheCoresidentLimitBothComplete) {
+  // Gate/up-shaped linears at 16 rows, so that each launch runs long enough
+  // for the two streams' launches to meet on the device.
+  constexpr int kGateN = 4864;
+  constexpr int kRows = 16;
+  const StreamId other = execution_->CreateStream().value();
+  const exl3::Weights w = Linear(Placement::kCudaMalloc, 1, kK, kGateN);
+  const exl3::Weights second = Linear(Placement::kCudaMalloc, 2, kK, kGateN);
+  const auto written = exl3::MultiGemmTables(w, second);
+  const std::uint64_t tables =
+      Upload(Placement::kCudaMalloc, std::vector<std::uint64_t>(written.begin(), written.end()));
+  const std::uint64_t x = Upload(Placement::kCudaMalloc, Halves(Bytes16(kRows, kK) / 2, 3, 1.0F));
+  struct Lane {
+    std::unique_ptr<exl3::LaunchContext> launch;
+    exl3::LinearOperands gemm;
+    exl3::MultiLinearOperands multi;
+  };
+  std::array<Lane, 2> lanes;
+  for (std::size_t i = 0; i < lanes.size(); ++i) {
+    auto created = exl3::LaunchContext::Create(0, *execution_, i == 0 ? stream_ : other,
+                                               Allocate(Placement::kCudaMalloc, exl3::kLockBytes));
+    ASSERT_TRUE(created.has_value());
+    lanes[i].launch = std::move(*created);
+    lanes[i].gemm = {.weights = w,
+                     .x = x,
+                     .a_had = Allocate(Placement::kCudaMalloc, Bytes16(kRows, kK)),
+                     .y = Allocate(Placement::kCudaMalloc, Bytes16(kRows, kGateN)),
+                     .output = Output::kF16,
+                     .m = kRows};
+    lanes[i].multi = {.first = w,
+                      .second = second,
+                      .trellis_table = tables,
+                      .suh_table = tables + 16,
+                      .svh_table = tables + 32,
+                      .written = written,
+                      .x = x,
+                      .a_had = Allocate(Placement::kCudaMalloc, 2 * Bytes16(kRows, kK)),
+                      .y = Allocate(Placement::kCudaMalloc, 2 * Bytes16(kRows, kGateN)),
+                      .output = Output::kF16,
+                      .m = kRows};
+  }
+  exl3::LaunchContext& first = *lanes[0].launch;
+  const int gemm_limit = first.GemmCoresident(kBits, 2, Output::kF16).value();
+  const int multi_limit = first.MultiGemmCoresident(kBits, 2, Output::kF16).value();
+  const int gemv_limit = first.GemvCoresident(kBits, Output::kF16, 8, 1).value();
+  // 896 × 4,864 at tile shape 2 has 1,064 split-K slices and the GEMV's
+  // wide configuration 76 column groups: each grid is the most the device
+  // holds at once, or the most the problem takes.
+  const exl3::GemmPlan gemm{.shape = 2, .blocks = gemm_limit};
+  const exl3::MultiGemmPlan multi{.shape = 2, .blocks = multi_limit / 2, .concurrency = 2};
+  const exl3::GemvPlan gemv{.config = 1, .blocks = std::min(gemv_limit, kGateN / 64)};
+  ASSERT_LE(gemm.blocks, 1064);
+  exl3::LinearOperands gemv_operands = lanes[0].gemm;
+  constexpr int kRounds = 100;
+  auto run = [&](std::span<Lane> running) {
+    const auto started = std::chrono::steady_clock::now();
+    for (int round = 0; round < kRounds; ++round) {
+      for (Lane& lane : running) {
+        gemv_operands.a_had = lane.gemm.a_had;
+        gemv_operands.y = lane.gemm.y;
+        gemv_operands.m = 8;
+        EXPECT_TRUE(lane.launch->Gemm(lane.gemm, gemm).has_value());
+        EXPECT_TRUE(lane.launch->MultiGemm(lane.multi, multi).has_value());
+        EXPECT_TRUE(lane.launch->Gemv(gemv_operands, gemv).has_value());
+      }
+    }
+    Finish(stream_);
+    Finish(other);
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+        .count();
+  };
+  const double alone = run(std::span<Lane>(lanes).first(1));
+  const double both = run(lanes);
+  EXPECT_EQ(Download(lanes[0].gemm.y, Bytes16(8, kGateN)),
+            Download(lanes[1].gemm.y, Bytes16(8, kGateN)));
+  EXPECT_EQ(Download(lanes[0].multi.y, 2 * Bytes16(kRows, kGateN)),
+            Download(lanes[1].multi.y, 2 * Bytes16(kRows, kGateN)));
+  for (Lane& lane : lanes) {
+    EXPECT_FALSE(lane.launch->faulted());
+    lane.launch.reset();
+  }
+  EXPECT_TRUE(execution_->DestroyStream(other).has_value());
+  std::println(
+      "{} rounds of GEMM ({} blocks), multi-GEMM ({} x 2) and GEMV ({}): {:.1f} ms on one "
+      "stream, {:.1f} ms on two",
+      kRounds, gemm.blocks, multi.blocks, gemv.blocks, alone, both);
+}
+
+// A pin runs only the GEMM exl3-recon-pin.json recorded it for: the same
+// attributes named for another row count, output or width are refused
+// before anything is queued, and the context stays usable.
+TEST_F(Exl3LinearTest, AReconstructionGemmRunsOnlyItsOwnPin) {
+  auto launch = Context(Placement::kCudaMalloc);
+  ASSERT_NE(launch, nullptr);
+  auto gemm = exl3::ReconGemm::Create();
+  ASSERT_TRUE(gemm.has_value());
+  const exl3::ReconGemmOperands o{.w = Allocate(Placement::kCudaMalloc, Bytes16(kK, kN)),
+                                  .x = Allocate(Placement::kCudaMalloc, Bytes16(145, kK)),
+                                  .y = Allocate(Placement::kCudaMalloc, 2 * Bytes16(145, kN)),
+                                  .m = 145,
+                                  .k = kK,
+                                  .n = kN,
+                                  .ldc = kN,
+                                  .output = Output::kF32};
+  const int sms = launch->sm_count();
+  EXPECT_TRUE((*gemm)->Check(o, kPin145, sms).has_value());
+  // 1,024 rows' pin, a valid algorithm for this GEMM too, at 145 rows.
+  exl3::LtAlgorithm other = kPin1024;
+  other.output = Output::kF32;
+  EXPECT_EQ(FailedCode((*gemm)->Check(o, other, sms)), exl3::KernelError::kRejected);
+  EXPECT_EQ(FailedCode((*gemm)->Run(*launch, o, other, sms)), exl3::KernelError::kRejected);
+  // 145 rows' pin at an unpinned 146 rows, and for the F16 output.
+  exl3::ReconGemmOperands unpinned = o;
+  unpinned.m = 146;
+  EXPECT_EQ(FailedCode((*gemm)->Check(unpinned, kPin145, sms)), exl3::KernelError::kRejected);
+  other = kPin145;
+  other.output = Output::kF16;
+  EXPECT_EQ(FailedCode((*gemm)->Check(o, other, sms)), exl3::KernelError::kRejected);
+  // A slice of a wider output: its pin names the slice's width and the
+  // output's row stride.
+  other = kPin145;
+  other.ldc = 2 * kN;
+  EXPECT_EQ(FailedCode((*gemm)->Check(o, other, sms)), exl3::KernelError::kRejected);
+  EXPECT_FALSE(launch->faulted());
+  EXPECT_TRUE((*gemm)->Run(*launch, o, kPin145, sms).has_value());
+  Finish();
+  EXPECT_FALSE(launch->faulted());
+}
+
+// Each identity records whether the build checks libstdc++'s preconditions
+// (D-083), as the GGML module's do.
+TEST(Exl3ImplementationsTest, IdentitiesRecordTheLibraryAssertions) {
+#ifdef _GLIBCXX_ASSERTIONS
+  constexpr std::string_view kExpected = ", libstdc++ assertions)";
+#else
+  constexpr std::string_view kExpected = ", no libstdc++ assertions)";
+#endif
+  for (const auto& implementation : exl3::Implementations()) {
+    EXPECT_NE(implementation.build.find(kExpected), std::string::npos)
+        << implementation.name << ": " << implementation.build;
+  }
 }
 
 }  // namespace

@@ -734,12 +734,18 @@ reservation policy) were recorded in M0.
         linear's reconstructed weights. It holds with operands in
         `cudaMalloc` memory, at their minimum alignments, and flush against
         unmapped VMM granules: no kernel the sweep launches over-reads at
-        these rates, shapes and plans (tile shape 4 never ran), so
+        these rates, shapes and plans, so
         v0 needs no over-read reservation for these fixtures' EXL3
         resources ([artifact-format.md](artifact-format.md)).
       - On `spark-b`, `unit.Exl3LinearTest.*` runs every path in
-        `cudaMalloc` memory and device VMM, the over-read probe, and the
-        refusals (a non-co-resident grid, a shared lock area, a fault).
+        `cudaMalloc` memory and device VMM, the over-read probe (also at
+        every fixture shape for the packed variants the sweep never
+        launched: the GEMV's wide configuration and its 2–8-row mode,
+        every tile shape each shape takes, tile shape 4 on a synthetic
+        shape since no fixture shape takes it), two contexts' cooperative
+        grids at the co-resident limit on two streams, and the refusals
+        (a non-co-resident grid, a shared lock area, a fault, a pin
+        recorded for another GEMM, stale multi-GEMM tables).
 
       Next (P3 part 2): both fixtures end to end under the operation plan
       (`exl3-op-plan.json`) and Tier C, then BP-F2 once its P3-entry

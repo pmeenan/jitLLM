@@ -21,13 +21,24 @@
 //   order. The registry knows only live contexts: a lock area passes to a
 //   context on another stream only once a fence after the previous
 //   holder's last launch has completed, or the new context's zeroing
-//   races those launches. A launch that completes returns its slots to
-//   zero; one that
-//   faults leaves them undetermined, so the context refuses every later
-//   launch, and recovery zeroes the area again in a new context;
+//   races those launches. That is the rule for every operand whose memory
+//   passes between streams (docs/async-model.md: retirement after a
+//   completion proof), and it is kept where memory is reassigned, not
+//   here: the registry cannot tell a lock area handed to another stream
+//   from one freed after its fence and allocated again at the same
+//   address, so refusing reuse here would refuse correct callers. A
+//   launch that completes returns its slots to zero; one that faults
+//   leaves them undetermined, so the context refuses every later launch,
+//   and recovery zeroes the area again in a new context;
 // - the co-resident block limit of each cooperative kernel on the device
 //   (occupancy per SM times SMs), which bounds every cooperative grid
-//   before launch.
+//   before launch. It is the whole device's, not a share of it: two
+//   contexts on two streams launching grids at that limit back to back
+//   both complete on GB10 (unit.Exl3LinearTest.
+//   TwoContextsAtTheCoresidentLimitBothComplete), consistent with the
+//   device admitting each cooperative grid whole. CUDA documents
+//   co-residency per launch, not across streams, so that is a measured
+//   behaviour of this driver and device, not a documented guarantee.
 // The multi-GEMM kernel's selection state (launch_contract.h, rule 2) is
 // never used: MultiGemm launches without expert indices, weights, ranges
 // or sliced sources, where the kernel reads none of it.

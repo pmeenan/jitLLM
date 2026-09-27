@@ -366,7 +366,11 @@ their kernels. Their SASS equals the reference extension's. The launchers
   (`validate.h`);
 - the forced plan is data: tile shape and grid (and concurrency) as the
   decoded tuning record gives them, the GEMV's configuration and grid, and
-  each reconstruction slice's pinned cuBLASLt algorithm (`recon_gemm.h`);
+  each reconstruction slice's pinned cuBLASLt algorithm with the GEMM it
+  was pinned for, so a pin never runs another GEMM or an unpinned size
+  (`recon_gemm.h`); the multi-GEMM's pointer tables come with the
+  caller's record of what they hold, and a launch whose record is not its
+  operands' weights is refused (BP-P5's stale-table case, before launch);
   a recorded copy of upstream's GEMV choice says where EXL3-O takes the
   GEMV (`upstream_gemv.h`);
 - each linear path runs upstream's kernels in upstream's order, with the

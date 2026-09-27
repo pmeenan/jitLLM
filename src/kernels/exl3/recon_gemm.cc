@@ -123,6 +123,16 @@ std::expected<std::unique_ptr<ReconGemm::Prepared>, KernelFailure> ReconGemm::Pr
   if (sm_count < 1) {
     return Rejected(std::format("{} SMs targeted", sm_count));
   }
+  // A pin runs only the GEMM it was pinned for (validate.h, LtAlgorithm).
+  if (algorithm.m != o.m || algorithm.k != o.k || algorithm.n != o.n || algorithm.ldc != o.ldc ||
+      algorithm.output != o.output) {
+    return Rejected(std::format(
+        "the algorithm was pinned for m = {}, k = {}, n = {}, ldc = {} ({}), not m = {}, k = {}, "
+        "n = {}, ldc = {} ({}): each GEMM runs its own pin",
+        algorithm.m, algorithm.k, algorithm.n, algorithm.ldc,
+        algorithm.output == Output::kF32 ? "HSS" : "HSH", o.m, o.k, o.n, o.ldc,
+        o.output == Output::kF32 ? "HSS" : "HSH"));
+  }
   auto prepared = std::make_unique<Prepared>();
   Descriptors& descriptors = prepared->descriptors;
   const cudaDataType_t out_type = o.output == Output::kF32 ? CUDA_R_32F : CUDA_R_16F;

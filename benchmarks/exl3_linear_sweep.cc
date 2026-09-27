@@ -309,7 +309,14 @@ std::expected<Plan, std::string> ReadPlan(const std::filesystem::path& path) {
         int slices = 0;
         words >> c.linears[0] >> slices;
         for (int s = 0; s < slices; ++s) {
+          // The GEMM the pin was recorded for, then its nine attributes.
           exl3::LtAlgorithm algorithm;
+          std::string gemm;
+          words >> gemm >> algorithm.m >> algorithm.k >> algorithm.n >> algorithm.ldc;
+          if (gemm != "HSH" && gemm != "HSS") {
+            return Error(std::format("a pin of kind {} in: {}", gemm, line));
+          }
+          algorithm.output = gemm == "HSS" ? exl3::Output::kF32 : exl3::Output::kF16;
           for (std::uint64_t& value : algorithm.config) {
             words >> value;
           }
@@ -646,9 +653,8 @@ class Sweep {
       }
     } else if (c.path == "multi") {
       const Linear& second = linears_.at(c.linears[1]);
-      const std::array<std::uint64_t, 6> table{first.weights.trellis, second.weights.trellis,
-                                               first.weights.suh,     second.weights.suh,
-                                               first.weights.svh,     second.weights.svh};
+      const std::array<std::uint64_t, 6> table =
+          exl3::MultiGemmTables(first.weights, second.weights);
       if (auto r = Upload(tables, table.data(), sizeof table); !r) {
         return r;
       }
@@ -657,6 +663,7 @@ class Sweep {
                                         .trellis_table = tables,
                                         .suh_table = tables + 16,
                                         .svh_table = tables + 32,
+                                        .written = table,
                                         .x = x_at,
                                         .a_had = a_had,
                                         .y = y_at,

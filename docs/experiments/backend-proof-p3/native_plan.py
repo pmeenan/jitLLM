@@ -18,7 +18,8 @@ planner or launchers.
         case ID ROWS gemm LINEAR SHAPE BLOCKS
         case ID ROWS gemv LINEAR CONFIG BLOCKS
         case ID ROWS multi GATE UP SHAPE BLOCKS CONCURRENCY
-        case ID ROWS recon|fused LINEAR SLICES (9 algorithm attributes per slice)...
+        case ID ROWS recon|fused LINEAR SLICES (per slice: the pinned GEMM's KIND M K N LDC, then its
+            9 algorithm attributes)...
       A packed case's plan is the cache record for its key (../backend-proof-p0/decode_tuning.py),
       or, where the reference launched the GEMV kernel, the configuration and grid it launched. The
       reconstruction paths take each slice's pinned algorithm (../backend-proof-p0/
@@ -98,7 +99,10 @@ def plan(reference, out, pins_path):
     pins = {}
     for g in json.loads(pins_path.read_text())["gemms"]:
         c = g["config"]
+        # The GEMM the pin was recorded for, as the table has it (the native side refuses a pin
+        # for any other GEMM), then its configuration.
         pins[(g["kind"], g["n"], g["k"], g["m"], g["lda"], g["ldb"], g["ldc"])] = [
+            g["kind"], g["m"], g["k"], g["n"], g["ldc"],
             c["algo_id"], c["tile"], c["splitk"], c["reduction"], c["swizzle"], c["custom"], c["stages"],
             c["inner_shape"], c["cluster_shape"]]
     weights = data["weights"]

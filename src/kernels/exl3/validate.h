@@ -151,13 +151,19 @@ std::expected<void, KernelFailure> CheckBiasApart(const LinearOperands& operands
 // kernel follows whatever addresses they hold, and `first` and `second`
 // are checked in their place. A caller rebuilds them whenever either
 // linear's tensors move, and never launches with stale ones
-// (docs/backend-proof.md, BP-P5).
+// (docs/backend-proof.md, BP-P5). `written` is the caller's record of what
+// it last wrote into the three tables (MultiGemmTables of the linears it
+// wrote them for); a launch whose record is not MultiGemmTables(first,
+// second) is refused, so a caller that moves a linear and updates its
+// operands but not its tables' record is caught before launch. Only the
+// record is checked: a caller keeps it with the upload it describes.
 struct MultiLinearOperands {
   Weights first;
   Weights second;
   std::uint64_t trellis_table = 0;
   std::uint64_t suh_table = 0;
   std::uint64_t svh_table = 0;
+  std::array<std::uint64_t, 6> written{};
   std::uint64_t x = 0;
   std::uint64_t a_had = 0;
   std::uint64_t y = 0;
@@ -165,6 +171,10 @@ struct MultiLinearOperands {
   int m = 0;
 };
 std::uint64_t ScratchBytes(const MultiLinearOperands& operands);
+// What the three tables hold for `first` and `second`, in the order the
+// kernel reads them: the trellis table's two addresses (16 bytes), then
+// the suh table's, then the svh table's.
+std::array<std::uint64_t, 6> MultiGemmTables(const Weights& first, const Weights& second);
 std::expected<void, KernelFailure> CheckMultiGemm(const MultiLinearOperands& operands,
                                                   const MultiGemmPlan& plan, int coresident,
                                                   std::uint64_t locks);
@@ -208,11 +218,21 @@ struct BiasOperands {
 };
 std::expected<void, KernelFailure> CheckBias(const BiasOperands& operands);
 
-// The nine CUBLASLT_ALGO_CONFIG attributes, in exl3-recon-pin.json's order:
-// algo_id, tile, splitk, reduction, swizzle, custom, stages, inner_shape,
-// cluster_shape.
+// A pinned algorithm (exl3-recon-pin.json): the nine CUBLASLT_ALGO_CONFIG
+// attributes, in the table's order (algo_id, tile, splitk, reduction,
+// swizzle, custom, stages, inner_shape, cluster_shape), and the GEMM they
+// were pinned for, as the table records it: m, k, n (the slice's columns,
+// the table's n and lda), ldc and the output (HSH F16, HSS F32). The
+// approved rule pins each GEMM on its own; ReconGemm runs a pin for exactly
+// its GEMM and refuses any other, an unpinned size included
+// (docs/backend-proof.md, "EXL3 reconstruction-path linears").
 struct LtAlgorithm {
   std::array<std::uint64_t, 9> config{};
+  int m = 0;
+  int k = 0;
+  int n = 0;
+  int ldc = 0;
+  Output output = Output::kF16;
 };
 
 // The reconstruction GEMM's operands (recon_gemm.h).

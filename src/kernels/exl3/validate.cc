@@ -245,6 +245,10 @@ std::uint64_t ScratchBytes(const MultiLinearOperands& o) {
                   static_cast<std::uint64_t>(o.first.k < 0 ? 0 : o.first.k));
 }
 
+std::array<std::uint64_t, 6> MultiGemmTables(const Weights& first, const Weights& second) {
+  return {first.trellis, second.trellis, first.suh, second.suh, first.svh, second.svh};
+}
+
 std::expected<void, KernelFailure> CheckMultiGemm(const MultiLinearOperands& o,
                                                   const MultiGemmPlan& plan, int coresident,
                                                   std::uint64_t locks) {
@@ -252,6 +256,11 @@ std::expected<void, KernelFailure> CheckMultiGemm(const MultiLinearOperands& o,
     if (auto weights = CheckWeights(*w); !weights) {
       return weights;
     }
+  }
+  if (o.written != MultiGemmTables(o.first, o.second)) {
+    return Rejected(
+        "the tables were written for other tensors than the operands' weights: rebuild them "
+        "after a move (BP-P5)");
   }
   if (o.first.k != o.second.k || o.first.n != o.second.n || o.first.bits != o.second.bits) {
     return Rejected("the two linears of a multi-GEMM share k, n and K");

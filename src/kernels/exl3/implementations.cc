@@ -55,6 +55,13 @@ constexpr std::string_view kAsserts = "NDEBUG";
 #else
 constexpr std::string_view kAsserts = "asserts";
 #endif
+// And whether it checks libstdc++'s preconditions (D-083), as the GGML
+// module's identities record.
+#ifdef _GLIBCXX_ASSERTIONS
+constexpr std::string_view kLibraryAsserts = "libstdc++ assertions";
+#else
+constexpr std::string_view kLibraryAsserts = "no libstdc++ assertions";
+#endif
 
 constexpr std::array<Kernel::Entry, 5> kEntries = {{
     {.name = "exl3.linear.gemm",
@@ -95,9 +102,9 @@ bool Reconstructs(Path path) {
 execution::Implementation Declaration(const Kernel::Entry& entry) {
   std::string build = std::format(
       "sdk {}; target {}; cuda architectures {} (upstream's units, jitllm_exl3_cuda); build type "
-      "{} ({}); sanitize {}; module sources {}",
+      "{} ({}, {}); sanitize {}; module sources {}",
       JITLLM_EXL3_SDK, JITLLM_EXL3_TARGET, JITLLM_EXL3_CUDA_ARCHITECTURES, JITLLM_EXL3_BUILD_TYPE,
-      kAsserts, JITLLM_EXL3_SANITIZE, ModuleSourcesDigest());
+      kAsserts, kLibraryAsserts, JITLLM_EXL3_SANITIZE, ModuleSourcesDigest());
   if (Reconstructs(entry.path)) {
     build += std::format("; cuBLASLt {}", CUBLAS_VERSION);
   }

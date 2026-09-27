@@ -48,12 +48,19 @@ class ReconGemm {
   ~ReconGemm();
 
   // Queues the GEMM on the context's stream with `algorithm`, targeting
-  // `sm_count` SMs. Which algorithm is the caller's plan: cuBLASLt checks
-  // only that it can run this GEMM, not that it is the one
-  // exl3-recon-pin.json records for the shape; a plan that takes another
-  // need not give upstream's bits. Refused, with nothing queued, if the operands do not
-  // check or cuBLASLt rejects the algorithm for them or it needs a
-  // workspace; a failed launch faults the context.
+  // `sm_count` SMs. Which algorithm is the caller's plan, taken from
+  // exl3-recon-pin.json with the GEMM it was pinned for (LtAlgorithm): a
+  // pin recorded for another GEMM (other m, k, n, ldc or output) is
+  // refused, so no GEMM runs at a size the table does not pin. That its
+  // nine attributes are the table's is the plan's to guarantee: cuBLASLt
+  // checks only that it can run this GEMM, and another valid algorithm
+  // need not give upstream's bits. Refused, with nothing queued, if the
+  // operands do not check, the pin is another GEMM's, cuBLASLt rejects the
+  // algorithm for them or it needs a workspace. Any error cublasLtMatmul
+  // returns faults the context: its documentation does not promise that
+  // an error leaves nothing queued, and Check has already run the same
+  // descriptors through cublasLtMatmulAlgoCheck, so only a device or
+  // launch failure is expected there.
   std::expected<void, KernelFailure> Run(LaunchContext& launch, const ReconGemmOperands& operands,
                                          const LtAlgorithm& algorithm, int sm_count);
   // Run's checks, cuBLASLt's included, without queueing anything.

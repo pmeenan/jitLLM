@@ -10,11 +10,14 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <tuple>
 #include <vector>
 
+#include "expected_error.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
 
@@ -22,6 +25,7 @@ namespace {
 
 namespace exl3 = jitllm::kernels::exl3;
 using exl3::Output;
+using jitllm::test_support::FailedCode;
 
 constexpr std::uint64_t kMiB = 1ULL << 20;
 
@@ -155,6 +159,7 @@ exl3::MultiLinearOperands GateUp(int m) {
           .trellis_table = 11 * kMiB,
           .suh_table = (11 * kMiB) + 16,
           .svh_table = (11 * kMiB) + 32,
+          .written = exl3::MultiGemmTables(gate, up),
           .x = 12 * kMiB,
           .a_had = 13 * kMiB,
           .y = 14 * kMiB,
@@ -187,6 +192,32 @@ TEST(Exl3ValidateTest, MultiGemmPlansBoundTheWholeGrid) {
   EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
   // Two slabs of transformed input.
   EXPECT_EQ(exl3::ScratchBytes(GateUp(8)), 2ULL * 8 * 896 * 2);
+}
+
+// BP-P5: the kernel follows the addresses in its device tables, which no
+// host check reads. A linear that moves after its tables were written, with
+// its operands updated and its tables not, is refused before launch.
+TEST(Exl3ValidateTest, MultiGemmRefusesTablesWrittenForOtherTensors) {
+  const exl3::MultiGemmPlan plan{.shape = 3, .blocks = 24, .concurrency = 2};
+  const exl3::MultiLinearOperands o = GateUp(1);
+  EXPECT_EQ(o.written, (std::array<std::uint64_t, 6>{o.first.trellis, o.second.trellis, o.first.suh,
+                                                     o.second.suh, o.first.svh, o.second.svh}));
+  ASSERT_TRUE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
+  for (std::size_t moved = 0; moved < 6; ++moved) {
+    exl3::MultiLinearOperands relocated = o;
+    exl3::Weights& w = moved % 2 == 0 ? relocated.first : relocated.second;
+    std::uint64_t& address = moved < 2 ? w.trellis : (moved < 4 ? w.suh : w.svh);
+    address += 20 * kMiB;
+    EXPECT_EQ(FailedCode(exl3::CheckMultiGemm(relocated, plan, kCoresident, kLocks)),
+              exl3::KernelError::kRejected)
+        << moved;
+    relocated.written = exl3::MultiGemmTables(relocated.first, relocated.second);
+    EXPECT_TRUE(exl3::CheckMultiGemm(relocated, plan, kCoresident, kLocks).has_value()) << moved;
+  }
+  // Nor may the record name the linears in the other order.
+  exl3::MultiLinearOperands swapped = o;
+  swapped.written = exl3::MultiGemmTables(o.second, o.first);
+  EXPECT_FALSE(exl3::CheckMultiGemm(swapped, plan, kCoresident, kLocks).has_value());
 }
 
 TEST(Exl3ValidateTest, ReconstructionTakesWholeColumnBlocks) {

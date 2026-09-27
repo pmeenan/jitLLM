@@ -156,8 +156,26 @@ of any operand would have faulted; none did. That settles the question
 [artifact-format.md](../../artifact-format.md) left open: for the kernels
 of these paths, at these shapes, rates and plans, EXL3 resources need no
 over-read reservation (`readable_bytes` = `bytes`). The GEMV's prefetch
-ring and every tile loop stop at their operands. The probe covers what
-this sweep launches, not other shapes or kernel variants.
+ring and every tile loop stop at their operands.
+
+The sweep's plans launched the GEMV only in its narrow configuration at
+one and eight rows, the GEMM at tile shapes 1 and 2 and the multi-GEMM at
+2 and 3, each at its tuned grid. A GPU unit test
+(`unit.Exl3LinearTest.NoPackedKernelReadsOutsideItsOperandsAtTheFixturesShapes`,
+added in the challenge round) runs the rest on random weights at every
+linear shape and rate of both fixtures (the eleven (k, n, K) of
+`results.json`, F16 and F32 outputs), in `cudaMalloc` memory and flush
+against an unmapped granule at either end: the GEMV in both
+configurations at one to eight rows (140 launches in its row-guarded
+mode at two to eight rows), the GEMM at every tile shape each shape takes
+at 1, 3, 8 and 16 rows, the multi-GEMM at every tile shape of the
+gate/up shape with concurrency 1 and 2, each at the co-resident grid and
+at 7 blocks. No fixture shape takes tile shape 4 (its n must be a
+multiple of 512, and none of 128, 896, 4,864 and 151,936 is), so it ran
+on a synthetic 896 × 1,024. All 680 launches per placement ran without a
+fault and gave the `cudaMalloc` run's bits (`spark-b`, 2026-09-27). The
+verdict covers those kernels at these rates and shapes, not other
+shapes, rates, codebooks or kernel variants.
 
 ## Launches
 
@@ -205,8 +223,17 @@ gated); the same over-read probe; a grid larger than the device holds
 refused before launch; no two live contexts sharing lock slots; a fault
 returned as a fault, after which the context refuses; and the registry
 binding each implementation to its own calls only, a stale or foreign
-declaration to none. `unit.Exl3ValidateTest.*` covers the host checks and
-the GEMV choice in every profile.
+declaration to none. Since the challenge round it also runs the over-read
+probe at the fixtures' shapes ([above](#placements-alignment-and-over-read));
+two contexts on two streams launching cooperative grids at the device's
+co-resident limit back to back, 100 rounds of GEMM, multi-GEMM and GEMV
+each, which both complete (5.0 ms on one stream, 8.3 ms on two: the grids
+partly overlap and neither starves the other); a reconstruction GEMM
+refusing a pin recorded for another GEMM (another row count, output or
+row stride); and each identity recording libstdc++'s assertions (D-083).
+`unit.Exl3ValidateTest.*` covers the host checks and the GEMV choice in
+every profile, the multi-GEMM's refusal of tables written for tensors
+that have since moved (BP-P5) among them.
 
 ## Not covered here
 
@@ -217,9 +244,10 @@ the GEMV choice in every profile.
   `cudaLaunchCooperativeKernel` or `cudaLaunchKernel`'s C entry point;
   native launches are checked here through nsys instead. Part 2's plan
   comparison against `exl3-op-plan.json` needs one or the other.
-- The over-read verdict holds for the kernels and shapes swept; the
-  artifact format keeps it as a measured fact of these fixtures, not a
-  rule for other rates, codebooks or kernels.
+- The over-read verdict holds for the kernels and shapes swept and
+  probed ([above](#placements-alignment-and-over-read)); the artifact
+  format keeps it as a measured fact of these fixtures, not a rule for
+  other rates, codebooks or kernels.
 
 ## Reproduction
 
@@ -230,7 +258,12 @@ reference image copied from `spark`:
 2. Per fixture and arm, copy the frozen cache and run `run_reference.sh`
    three times: a tuning pass (`--no-weights`, discarded), the measured
    pass (`--profile`) and its repeat.
-3. `native_plan.py plan ref-F-A.json --out plan-F-A.txt`.
+3. `native_plan.py plan ref-F-A.json --out plan-F-A.txt`. Since the
+   challenge round each reconstruction slice's plan names the GEMM its
+   pin was recorded for (kind, m, k, n, ldc), which the native side
+   requires; the recorded runs used the earlier format, and a re-run of
+   all four arms with the new plans, in `malloc` and `flush-end`
+   placement, was again exact in every case (`spark-b`, 2026-09-27).
 4. `jitllm_exl3_linear_sweep --artifact ART --fixture F --plan plan-F-A.txt
    --out native.jsonl --placement P` for each placement, then
    `compare.py ref-F-A.json native.jsonl --repeat repeat-F-A.json`.

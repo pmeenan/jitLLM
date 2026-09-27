@@ -218,8 +218,13 @@ Readable ranges of resources never overlap, and bytes between `bytes` and
   against an unmapped VMM granule on either side: no kernel faulted, and
   every output was upstream's
   ([report](experiments/backend-proof-p3/README.md#placements-alignment-and-over-read)).
-  Other rates, codebooks, kernels or tile shapes (the plans used GEMM
-  shapes 1 and 2 and multi-GEMM shapes 2 and 3) need their own probe.
+  A GPU unit test extends the probe, with random weights at every linear
+  shape and rate of both fixtures, to the packed variants those plans
+  never launched: the GEMV's wide configuration and its two-to-eight-row
+  mode, every GEMM and multi-GEMM tile shape each shape takes (tile
+  shape 4 takes none of them, so it ran on a synthetic 896 × 1,024) and
+  grids below the co-resident limit. Other rates, codebooks, kernels or
+  shapes need their own probe.
 - **Plain:** `{family: "plain", dtype, shape}`, for non-quantized EXL3-side
   tensors (BF16 embedding, norms). A name ending in an EXL3 part suffix
   (`.trellis`, `.suh`, `.svh`, `.su`, `.sv`, `.mcg`, `.mul1`) must have the
