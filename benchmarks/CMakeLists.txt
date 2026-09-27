@@ -60,6 +60,18 @@ if(JITLLM_CUDA)
                                                  jitllm_warnings)
   target_link_options(jitllm_fp16_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Backend-proof P2, rungs 4 and 5: the same fixture paged into device VMM
+  # through the landing zone by the scheduler and its lanes, executed as
+  # device jobs under leases, evicted and restored
+  # (docs/experiments/backend-proof-p2/). Links the launch recorder.
+  add_executable(jitllm_fp16_paged fp16_paged.cc fp16_common.cc)
+  target_include_directories(jitllm_fp16_paged SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_fp16_paged PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                  jitllm_scheduler jitllm_artifact jitllm_model
+                                                  jitllm_launch_recorder jitllm_warnings)
+  target_link_options(jitllm_fp16_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Why host VMM slowed BP-F1's products, and what the alternatives cost:
   # microkernels over each kind of memory, copies between them, and GGML
   # products with each buffer group placed separately

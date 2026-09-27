@@ -28,6 +28,12 @@ evaluation, run from a cleared cache in the same process, equals the first
 bit for bit. BP-S1 holds: the fused RMSNorm-mul implementation is exact
 against the fused arms and the unfused one against the unfused arms.
 
+Rungs 4 and 5 (the same fixture paged into device VMM through the landing
+zone, D-081, then evicted, restored and relocated) are
+[below](#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone):
+on all four arms the plan matches and every evaluation is bit-identical to
+the bridge.
+
 ## What runs
 
 - **Model description.** M2 has no GGUF reader, so the Qwen2.5-0.5B
@@ -219,14 +225,139 @@ was moved. What each arm shows (binary `0f4d6331…`, 2026-09-27, `spark-b`):
   run and failing in the next is itself a result: under this rule a single
   run's census verdict does not reproduce.
 
+## Rungs 4 and 5: paged into device VMM through the landing zone
+
+**Results** (2026-09-27, `spark-b`, the `spark-native` build,
+`jitllm_fp16_paged` SHA-256 `5b10fd5b…`):
+
+| Arm | Plan (`plan_compare.py`) | Evaluation 1 against the bridge | Evaluations 2–4 against 1 | Bound tensors outside the catalog |
+| --- | --- | --- | --- | --- |
+| FP16-U `control` | MATCH, exit 0 | bit-identical, `3560d337…` | 0, 0, 0 bit differences | 0 of 443,160 |
+| FP16-F `control` | MATCH, exit 0 | bit-identical, `bb8ae5e7…` | 0, 0, 0 | 0 of 443,160 |
+| FP16-U `heldout` | MATCH, exit 0 | bit-identical, `69ff0821…` | 0, 0, 0 | 0 of 344,680 |
+| FP16-F `heldout` | MATCH, exit 0 | bit-identical, `bfb36f19…` | 0, 0, 0 | 0 of 344,680 |
+
+Evaluation 1 is rung 4 (the weights paged in before it), 2 its repeat from
+a cleared cache, and 3 and 4 are rung 5: each evicts every weight at the
+profile's restore point (after 32 tokens for `control`, 33 for `heldout`),
+releasing its backing, pages it all back in and continues; evaluation 4
+brings the weights back at a second reservation (relocation). Rung 4 is
+therefore bit-identical to rung 3, and rung 5 to rung 4, on all four arms
+(Tier E, approved 2026-09-26).
+
+- **The harness.** [`fp16_paged.cc`](../../../benchmarks/fp16_paged.cc)
+  plans each chunk as rung 3's harness does (`fp16_common.cc` carries
+  a copy of its planning; the plan gate below checks the result), over memory that the scheduler and its lanes manage:
+  - *Weights:* every chunk of every group is an extent of device VMM with
+    managed backing (D-033). Group g has a 2 MiB-aligned region and chunk k
+    maps at its base + k × 2 MiB: 490 extents, 1,027,604,480 bytes of
+    backing for the artifact's 988,221,440 stored bytes (the groups' last
+    chunks round up to 2 MiB; the tensors' own bytes are 988,208,640).
+  - *The token table's host copy:* its group's 130 chunks again, read in
+    place into host VMM (272,273,408 bytes), because the recorded plan
+    looks embeddings up on the CPU, as the bridge does from its CUDA_Host
+    copy. The tied output head reads the device copy. This is BP-P3's
+    duplicated-storage arm, and the only weight bytes held twice.
+  - *The landing zone:* 8 slots of 2 MiB of host VMM (2 × depth 4, D-081),
+    mapped at setup and cataloged as pinned staging.
+  - *Mapped at setup, in 2 MiB extents of device VMM:* the cache (6 MiB for
+    `control`, 12 MiB for `heldout`), the activations (20 and 300 MiB), the
+    GGML pool scratch (10 and 150 MiB) and the 32 MiB cuBLAS workspace.
+    The input staging and the logits are pinned host memory, cataloged.
+- **The page-in** is the scheduler's (`scheduler.h`): per extent, the
+  device lane creates and maps its backing, the load waits in order for a
+  slot, the storage lane reads the chunk into it with `O_DIRECT` (io_uring,
+  depth 4), the device lane copies it into place with the copy engine on
+  its own stream, and the extent is published, and the slot freed, only
+  when that copy's fence has completed. Reads are one per chunk (at most
+  2 MiB), not coalesced across chunks.
+- **Execution.** Each chunk is one device job on the compute stream,
+  holding a lease on every extent above until the fence after it
+  completes: the embedding lookup from the host table, the inputs copied in
+  the bridge's order, the plan bound through the registry under the K-C
+  launch context, and the logits copied back. The cache clears and the
+  cuBLAS handle's creation (before the first chunk that calls cuBLAS, as
+  the bridge creates it) are jobs too. Eviction takes each weight extent
+  out of lease and unmaps and releases it on the device lane (the
+  provider's backing count drops by 620); the next load maps fresh
+  backing.
+- **BP-A1's in-process check.** Before each chunk, every tensor its graph
+  binds (each node and each of its sources, cuBLAS's operands among them)
+  must lie in resident, cataloged extents of device memory of one class,
+  and that class must be the tensor's: weights for weights (52,200 bindings
+  in `control`), live state for the cache (69,120) and scratch for the
+  activations and inputs (321,840). None fell outside. The GGML pool draws
+  only from the scratch region the launch context was given, and cuBLAS's
+  workspace is the cataloged workspace region.
+- **The plan gate.** [`run_paged.sh`](run_paged.sh) `plan` runs the harness
+  with every lane driven from the recording thread (`--lanes inline`: the
+  launch recorder sees only its own thread) under `nsys --trace=cuda`, with
+  cuBLAS's logs and the binary's SASS, and `plan_compare.py` compared all
+  four evaluations, 180 chunks (`control`) and 140 (`heldout`), with
+  `fp16-plan.json`. Between chunks ran 1,470 copies (490 per load, three
+  loads) and 4 memsets (the cache clears), and no kernel or cuBLAS call.
+  `logits` then checked the hashes. The distinct kernels and cuBLAS calls
+  are rung 3's (24, 26, 37 and 39 kernels; 7 and 14 calls).
+- **With threads.** `run_paged.sh threads` runs each lane on its own
+  thread, as a program wires them (no recording): all four arms gave the
+  same hashes, zero bit differences and no coverage violation. The
+  recorder cannot see the lanes' threads, so the plan gate runs inline;
+  to check that inline turns hide no ordering, `control-fused` was also
+  run threaded under `nsys --trace=cuda` and its trace compared with the
+  inline gate run's (binary `a4e1b759…`): the same 64,168 kernels in the
+  same order on the compute stream, the same copies and memsets per
+  stream and kind (the 1,470 page-in copies on the copy stream), and no
+  page-in copy overlapping a kernel in either.
+- **Conditions.** `spark-b` (GB10, kernel 7.0.0-1019-nvidia, driver
+  580.178.04), SDK `aarch64-e0a0c85c42806fb1`, cuBLAS 13.8.0.4, nsys
+  2025.3.2, cuobjdump 13.0.85, `CUDA_DISABLE_PTX_JIT=1`, the FP16 artifact
+  `b93cdc32…` on the NVMe root file system. Another agent's GPU jobs ran on
+  the host during the gate runs; the recording and trace are this
+  process's alone, and exactness does not depend on timing. The gates and
+  threaded runs were made twice, on binaries `832b06c9…` and `5b10fd5b…`
+  (the second adds a fence before teardown), with the same results.
+
+**Page-in throughput** (BP-P6, reported, not gated). `run_paged.sh loads`
+loads the 490 device weight chunks (988,221,440 bytes, reads of at most
+2 MiB, depth 4) and evicts them, five times per process, through the same
+scheduler and lanes on their own threads, in four variants interleaved over
+three rounds. Each process started once no other process had held the GPU
+for 10 s (one start found another process). GB/s of the second to fifth
+loads (the first includes the lanes' warm-up and ran 8.6–13.5):
+
+| Variant | Range | Median |
+| --- | ---: | ---: |
+| Through the zone, backing made on each load (the runtime's path) | 10.65–12.01 | 11.4 |
+| Through the zone, backing mapped once at setup | 11.67–12.18 | 11.9 |
+| In place into host VMM (D-034's path), backing made on each load | 6.50–7.23 | 6.9 |
+| In place into host VMM, backing mapped once | 13.02–13.94 | 13.8 |
+
+- D-033's per-load backing costs little through the zone (the device lane
+  maps ahead of the reads) but halves in-place loads: making host backing
+  the CPU maps is slow.
+- With backing mapped once, the zone's loads run about 14% below in-place
+  reads. The zone's size is not the limit: 12, 16 and 32 slots gave no
+  more, in runs made while another process's kernels ran. D-081's
+  standalone measurement (8 GiB of 2 MiB reads, a tight loop) found no
+  cost at depth 4, so the gap lies in this runtime's hand-offs, not
+  measured further here. Against D-081's reopen condition, which compares
+  loads through the zone with in-place reads, this is a measured shortfall
+  with like backing, and a gain with the runtime's managed backing.
+- The rung-5 restores in the final threaded gate runs took 94–106 ms for
+  the device weights (9.3–10.5 GB/s) and 37–51 ms for the host table's
+  272 MB (managed host backing).
+
 ## Not covered here
 
-- **Rung 4** (the same groups paged from the artifact into host VMM, and
-  bit-identity with these runs) and **rung 5** (the bridge's third,
-  restored evaluation: eviction, restore and relocation) are not run; the
-  harness runs two evaluations from a cleared cache.
-- **BP-A1's in-process check** that every bound tensor lies in a cataloged
-  range is not made: the harness checks 128-byte alignment and declares its
-  buffers as a ledger that stands in for the catalog, which rung 4 brings.
+- **The cache is not evicted at the restore point:** spilling state takes
+  the reverse path through the zone (write-back), which is not built yet.
+  Rung 5 here evicts and restores the weights, as BP-P1 asks; BP-P4's cache
+  eviction waits for it.
+- **Relocation rebuilds every descriptor** because each chunk is planned
+  and bound anew. Nothing captures a pointer across chunks here (no CUDA
+  graphs, no pointer tables), so BP-P5's rejection of stale ones is not
+  exercised.
+- The census (BP-A1's reconciliation with the system counters, BP-A2,
+  BP-A5) is not run on the paged harness; it is being redone (v2).
 - The census's charges are recorded as the rule makes them; the rule
   itself is not changed here.

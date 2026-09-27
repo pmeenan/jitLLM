@@ -115,6 +115,11 @@ class CountingMemory final : public providers::DeviceMemory {
                                                     providers::Access access) override;
   std::expected<void, providers::Failure> Unmap(providers::ReservationId reservation,
                                                 base::Bytes offset, base::Bytes size) override;
+  // A query, not a call the replay counts.
+  std::optional<providers::BackingId> MappedAt(providers::ReservationId reservation,
+                                               base::Bytes offset) const override {
+    return inner_.MappedAt(reservation, offset);
+  }
 
   // Registration is not a provider call: the design counts what it would
   // register with io_uring.

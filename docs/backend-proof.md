@@ -577,7 +577,14 @@ never bounded. Logits and restored storage must be bit-identical.
   mismatch already seen: that is a defect, localized and fixed.
 - **Rung 4 against rung 3, and rung 5 against rung 4 (approved)**, for every profile
   and fixture, including every eviction, restore and relocation arm and
-  every repeat.
+  every repeat. *Applied 2026-09-27 for FP16 (`spark-b`):* on all four
+  arms, paged into device VMM through the landing zone, the plan matches
+  `fp16-plan.json` over four evaluations (the repeat and two restores, the
+  second relocated), evaluation 1 has the bridge's logits, and the rest
+  equal it bit for bit
+  ([P2 report](experiments/backend-proof-p2/README.md#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone)).
+  The cache stays resident at the restore point (no spill yet); EXL3 waits
+  for P3.
 - **EXL3 packed linears (up to 144 rows) (approved)** against upstream's kernel at the
   same forced plan and inputs, and reconstructed FP16 weights against
   upstream's reconstruction.

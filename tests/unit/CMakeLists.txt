@@ -66,6 +66,12 @@ add_executable(scheduler_test scheduler_test.cc)
 target_link_libraries(scheduler_test PRIVATE jitllm_scheduler jitllm_fake_providers)
 jitllm_gtest(scheduler_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The D-081 page-in path, its evictions and kernel jobs' leases, over the
+# fake providers: deterministic turns and a threaded stress.
+add_executable(pagein_test pagein_test.cc)
+target_link_libraries(pagein_test PRIVATE jitllm_scheduler jitllm_fake_providers)
+jitllm_gtest(pagein_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Storage and whole reads, on the fake and on io_uring with a real file.
 add_executable(storage_test storage_test.cc)
 target_link_libraries(storage_test PRIVATE jitllm_fake_providers jitllm_storage jitllm_platform)
@@ -102,6 +108,13 @@ if(JITLLM_CUDA)
   add_executable(cuda_lanes_test cuda_lanes_test.cc)
   target_link_libraries(cuda_lanes_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
   jitllm_gtest(cuda_lanes_test TEST_PREFIX unit. PROPERTIES LABELS gpu
+               ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+  # The D-081 page-in path over io_uring, a host-VMM landing zone and
+  # device VMM (label `gpu`).
+  add_executable(cuda_pagein_test cuda_pagein_test.cc)
+  target_link_libraries(cuda_pagein_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
+  jitllm_gtest(cuda_pagein_test TEST_PREFIX unit. PROPERTIES LABELS gpu
                ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)

@@ -25,9 +25,10 @@
 //     when nothing is mapped in it.
 // Identities are generation-checked: a stale one names nothing. A primitive
 // whose outcome is unknown (kUnknown) leaves the reservation and backing it
-// touched undetermined: every later call on them is refused, never retried,
-// since a retried release or free could hit a handle or range the driver
-// has since handed to someone else. Their owner quarantines them (D-048).
+// touched undetermined: every later call on them is refused
+// (kUndetermined), never retried, since a retried release or free could hit
+// a handle or range the driver has since handed to someone else. Their
+// owner quarantines them (D-048), and anything a refusal names.
 //
 // Addresses are the device's virtual addresses. On validated Spark
 // configurations host-kind backing is GPU-accessible host memory, and with
@@ -41,6 +42,7 @@
 #include <cstdint>
 #include <expected>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -71,6 +73,10 @@ enum class ProviderError : std::uint8_t {
   kUnsupported,  // the provider cannot do this here
   kFailed,       // known failure; a primitive changes nothing, a composite may be partial
   kUnknown,      // the outcome is unknown: a fault (D-048), not a retry
+  // Refused, changing nothing: an earlier unknown outcome left the
+  // reservation or backing undetermined. Not a misuse and not proof of
+  // anything: the owner quarantines what it names, never retries.
+  kUndetermined,
 };
 
 struct Failure {
@@ -124,6 +130,10 @@ class DeviceMemory {
                                                  Bytes size, Access access) = 0;
   virtual std::expected<void, Failure> Unmap(ReservationId reservation, Bytes offset,
                                              Bytes size) = 0;
+  // The backing mapped at exactly `offset` of the reservation, if any: how
+  // an owner that tracks places, not handles, finds what to release after
+  // unmapping it.
+  virtual std::optional<BackingId> MappedAt(ReservationId reservation, Bytes offset) const = 0;
 };
 
 // The shared rules over an implementation's primitive operations.
@@ -141,6 +151,7 @@ class VmmProvider : public DeviceMemory {
   std::expected<void, Failure> SetAccess(ReservationId reservation, Bytes offset, Bytes size,
                                          Access access) override;
   std::expected<void, Failure> Unmap(ReservationId reservation, Bytes offset, Bytes size) override;
+  std::optional<BackingId> MappedAt(ReservationId reservation, Bytes offset) const override;
 
   // Whether an unknown outcome left it undetermined.
   bool Undetermined(ReservationId reservation) const;

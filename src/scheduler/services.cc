@@ -11,6 +11,7 @@
 #include <stop_token>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "base/bounded_queue.h"
 #include "base/check.h"
 #include "providers/device_execution.h"
+#include "providers/device_memory.h"
 #include "providers/direct_reader.h"
 #include "providers/storage.h"
 #include "scheduler/commands.h"
@@ -107,8 +109,9 @@ void StorageService::Run() {
 
 DeviceService::DeviceService(providers::DeviceExecution& execution,
                              std::span<const providers::StreamId> streams, CompletionBoard& board,
-                             DeviceSettings settings)
+                             DeviceSettings settings, providers::DeviceMemory* memory)
     : execution_(execution),
+      memory_(memory),
       streams_(streams.begin(), streams.end()),
       board_(board),
       settings_(settings),
@@ -120,9 +123,21 @@ DeviceService::DeviceService(providers::DeviceExecution& execution,
   releases_.reserve(settings_.handoff);
 }
 
-void DeviceService::Launch(const DeviceCommand& command) {
-  const OperationId operation = command.operation;
-  const DeviceWork& work = command.work;
+void DeviceService::Launch(DeviceCommand& command) {
+  std::visit(
+      [&]<typename Work>(Work& work) {
+        if constexpr (std::is_same_v<Work, DeviceWork>) {
+          Copy(command.operation, work);
+        } else if constexpr (std::is_same_v<Work, LaunchWork>) {
+          Run(command.operation, work);
+        } else {
+          Back(command.operation, work);
+        }
+      },
+      command.work);
+}
+
+void DeviceService::Copy(OperationId operation, const DeviceWork& work) {
   if (work.stream >= streams_.size() || work.count == 0 || work.count > kMaxDeviceCopies) {
     (void)board_.Accept(operation, Acceptance::kNotStarted);
     return;
@@ -145,8 +160,32 @@ void DeviceService::Launch(const DeviceCommand& command) {
     unknown = copied.error().error == providers::ProviderError::kUnknown;
     break;
   }
+  Fence(operation, stream, queued, refused, unknown, bytes);
+}
+
+void DeviceService::Run(OperationId operation, LaunchWork& work) {
+  if (work.stream >= streams_.size() || !work.job) {
+    (void)board_.Accept(operation, Acceptance::kNotStarted);
+    return;
+  }
+  const providers::StreamId stream = streams_[work.stream];
+  const auto native = execution_.Submission(stream);
+  JobResult result = JobResult::kNotStarted;
+  if (native) {
+    result = work.job(*native);
+  } else if (native.error().error == providers::ProviderError::kUnknown) {
+    result = JobResult::kUnknown;
+  }
+  Fence(operation, stream, result == JobResult::kQueued || result == JobResult::kFailed,
+        result == JobResult::kFailed || result == JobResult::kUnknown,
+        result == JobResult::kUnknown, 0);
+}
+
+void DeviceService::Fence(OperationId operation, providers::StreamId stream, bool queued,
+                          bool refused, bool unknown, std::uint64_t bytes) {
   // Recorded even when nothing started: the provider counts an attempted
-  // copy as queued work, and only a fence seen complete balances it.
+  // copy or launch as queued work, and only a fence seen complete balances
+  // it.
   const auto fence = execution_.Record(stream);
   if (!queued && !unknown) {
     (void)board_.Accept(operation, Acceptance::kNotStarted);
@@ -167,6 +206,84 @@ void DeviceService::Launch(const DeviceCommand& command) {
              .fence = *fence,
              .outcome = refused ? Outcome::kFailed : Outcome::kSucceeded,
              .bytes = bytes});
+}
+
+void DeviceService::Back(OperationId operation, const BackingWork& work) {
+  if (memory_ == nullptr) {
+    (void)board_.Accept(operation, Acceptance::kNotStarted);
+    return;
+  }
+  const auto not_started = [&] { (void)board_.Accept(operation, Acceptance::kNotStarted); };
+  // The provider's state is not what either outcome needs: the backing,
+  // or the place, is left in a state nobody may reuse.
+  const auto unproven = [&](Acceptance acceptance) {
+    (void)board_.Accept(operation, acceptance);
+    (void)board_.Complete(
+        operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
+  };
+  const auto unknown = [](const providers::Failure& failure) {
+    return failure.error == providers::ProviderError::kUnknown;
+  };
+  if (work.kind == BackingWork::Kind::kMap) {
+    const auto created = memory_->Create(work.allocation_class, work.size);
+    if (!created) {
+      unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
+      return;
+    }
+    const auto mapped = memory_->Map(work.reservation, work.offset, *created);
+    if (!mapped) {
+      if (unknown(mapped.error())) {
+        unproven(Acceptance::kUnknown);
+      } else {
+        memory_->Release(*created) ? not_started() : unproven(Acceptance::kAccepted);
+      }
+      return;
+    }
+    const auto access =
+        memory_->SetAccess(work.reservation, work.offset, work.size, providers::Access::kReadWrite);
+    if (!access) {
+      if (unknown(access.error())) {
+        unproven(Acceptance::kUnknown);
+      } else if (memory_->Unmap(work.reservation, work.offset, work.size) &&
+                 memory_->Release(*created)) {
+        not_started();
+      } else {
+        unproven(Acceptance::kAccepted);
+      }
+      return;
+    }
+  } else {
+    const std::optional<providers::BackingId> backing =
+        memory_->MappedAt(work.reservation, work.offset);
+    if (!backing) {
+      not_started();  // nothing is mapped there: nothing changed
+      return;
+    }
+    const auto unmapped = memory_->Unmap(work.reservation, work.offset, work.size);
+    if (!unmapped) {
+      if (unknown(unmapped.error())) {
+        unproven(Acceptance::kUnknown);
+      } else if (unmapped.error().error == providers::ProviderError::kUndetermined) {
+        // Refused because an earlier unknown outcome left the place
+        // undetermined: nothing changed, but nothing about the place is
+        // proven either, so it must never be handed back as resident.
+        unproven(Acceptance::kAccepted);
+      } else {
+        not_started();
+      }
+      return;
+    }
+    // Unmapped, but the backing still exists until it is released: a
+    // refusal here leaves it charged.
+    if (const auto released = memory_->Release(*backing); !released) {
+      unproven(unknown(released.error()) ? Acceptance::kUnknown : Acceptance::kAccepted);
+      return;
+    }
+  }
+  (void)board_.Accept(operation, Acceptance::kAccepted);
+  (void)board_.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
+                                            .bytes = work.size.value(),
+                                            .no_further_access = true});
 }
 
 void DeviceService::Hand(const Watch& watch) {

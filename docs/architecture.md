@@ -699,10 +699,29 @@ current content generation (no page-in hashing, D-056) →
 publish resident → grant lease. Duplicate requests for one content generation
 are coalesced.
 
+The scheduler runs each page-in in stages, each an operation of its own
+whose proven completion alone moves it on (`scheduler.h`): the device lane
+creates the extent's backing, maps it and sets access; the load waits, in
+order, for a landing slot; the storage lane reads the chunk into the slot;
+the device lane copies it into place on the zone's stream; and the extent
+is published, and the slot freed, only once that copy's fence has
+completed. At most twice the zone's slots of landed loads are in flight,
+so backing is mapped at most one zone ahead of the reads. A failed or
+withdrawn load unmaps and releases what it mapped before the extent is
+nonresident again; a read, copy or unmap whose completion is unproven,
+or an unmap the provider refuses because an earlier unknown outcome left
+its place undetermined, quarantines the extent and its slot, never
+reused. Extents the CPU must
+read (the FP16 token table's host copy) are read in place into host
+backing instead, with no slot or copy.
+
 Eviction: select specific eligible extents → atomically exclude new leases →
 wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
-and release or recycle → update occupancy and generation.
+and release or recycle → update occupancy and generation. The unmap and
+release run on the device lane while the extent is EVICTING (D-033: the
+backing is released, not pooled); write-back, the reverse path through the
+zone, is not built yet, so preserved state is not yet evictable.
 
 Storage backends sit behind one read/write completion interface. D-034 selects
 native direct-file I/O on validated Spark configurations, with bounded

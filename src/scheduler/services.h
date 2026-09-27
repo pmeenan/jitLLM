@@ -26,10 +26,12 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "base/bounded_queue.h"
 #include "providers/device_execution.h"
+#include "providers/device_memory.h"
 #include "providers/direct_reader.h"
 #include "providers/storage.h"
 #include "scheduler/commands.h"
@@ -116,18 +118,27 @@ struct DeviceSettings {
   std::uint32_t refusals = 8;
 };
 
-// The device service's two lanes over one provider. The submission lane
-// queues each operation's copies on one of its streams and records a fence
-// after them; the completion lane queries the fences without blocking and
-// publishes each completion, independent of any submission call that may
-// block (D-048). Releasing a fence is a submission-side call, so the
-// completion lane releases only when the submission lane is between calls
-// (never waiting for it) and otherwise tries again next turn.
+// The device service's two lanes over one execution provider, and the
+// device-memory provider if it manages backing. The submission lane queues
+// each operation's copies, or runs its job, on one of its streams and
+// records a fence after them; the completion lane queries the fences
+// without blocking and publishes each completion, independent of any
+// submission call that may block (D-048). Releasing a fence is a
+// submission-side call, so the completion lane releases only when the
+// submission lane is between calls (never waiting for it) and otherwise
+// tries again next turn. VMM work (BackingWork) runs on the submission
+// lane too, in order with the rest, and is published at once: there is
+// nothing to fence.
 //
 // A copy the provider refused queued nothing; if an operation's first copy
 // is refused it did not start. A later refusal leaves earlier copies
 // queued: the operation is accepted and fails once its fence completes. An
-// unknown outcome is accepted as unknown and fenced the same way. A fence
+// unknown outcome is accepted as unknown and fenced the same way. A job
+// reports the same three cases (JobResult). VMM work whose outcome is
+// known succeeded, or changed nothing (not started); an unknown outcome,
+// a mapping undone only in part, or an unmap the provider refuses because
+// an earlier unknown outcome left its place undetermined, is published
+// with no proof, and the scheduler quarantines what it names. A fence
 // that cannot be recorded, or a query whose outcome is unknown, leaves the
 // work unproven: the terminal result carries no proof, and the scheduler
 // quarantines what the operation holds. Such a fence is never released.
@@ -140,12 +151,16 @@ struct DeviceSettings {
 // have returned.
 class DeviceService {
  public:
+  // Without `memory`, VMM work is refused as not started.
   DeviceService(providers::DeviceExecution& execution, std::span<const providers::StreamId> streams,
-                CompletionBoard& board, DeviceSettings settings);
+                CompletionBoard& board, DeviceSettings settings,
+                providers::DeviceMemory* memory = nullptr);
 
-  base::PushResult Submit(const DeviceCommand& command,
+  std::size_t streams() const { return streams_.size(); }
+  // Moves from `command` only if it is accepted.
+  base::PushResult Submit(DeviceCommand&& command,
                           base::PushKind kind = base::PushKind::kOrdinary) {
-    return queue_.TryPush(DeviceCommand(command), kind);
+    return queue_.TryPush(std::move(command), kind);
   }
   // No new commands. The submission lane returns once it has carried out
   // what was queued; the completion lane, once every fence it was handed
@@ -172,7 +187,15 @@ class DeviceService {
     std::uint32_t refusals = 0;  // known release failures in a row
   };
 
-  void Launch(const DeviceCommand& command);
+  void Launch(DeviceCommand& command);
+  // The parts of Launch: each resolves the operation's acceptance, and its
+  // terminal result or the fence that will prove it.
+  void Copy(OperationId operation, const DeviceWork& work);
+  void Run(OperationId operation, LaunchWork& work);
+  void Back(OperationId operation, const BackingWork& work);
+  // Records a fence after what a copy or job queued and hands it over.
+  void Fence(OperationId operation, providers::StreamId stream, bool queued, bool refused,
+             bool unknown, std::uint64_t bytes);
   // Submission side: hands a fence to the completion lane, or keeps it
   // until there is room; nothing more launches meanwhile.
   void Hand(const Watch& watch);
@@ -181,6 +204,7 @@ class DeviceService {
   void Finish();
 
   providers::DeviceExecution& execution_;
+  providers::DeviceMemory* memory_;
   std::vector<providers::StreamId> streams_;
   CompletionBoard& board_;
   DeviceSettings settings_;

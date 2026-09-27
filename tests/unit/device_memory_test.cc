@@ -137,15 +137,15 @@ TEST_F(DeviceMemoryTest, UnknownOutcomesAreNeverRetried) {
   EXPECT_EQ(FailedCode(memory_.Map(reservation, 0_MiB, first)), ProviderError::kUnknown);
   EXPECT_TRUE(memory_.Undetermined(reservation));
   EXPECT_TRUE(memory_.Undetermined(first));
-  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kInvalid);
-  EXPECT_EQ(FailedCode(memory_.Map(reservation, 2_MiB, second)), ProviderError::kInvalid);
-  EXPECT_EQ(FailedCode(memory_.Release(first)), ProviderError::kInvalid);
-  EXPECT_EQ(FailedCode(memory_.Free(reservation)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kUndetermined);
+  EXPECT_EQ(FailedCode(memory_.Map(reservation, 2_MiB, second)), ProviderError::kUndetermined);
+  EXPECT_EQ(FailedCode(memory_.Release(first)), ProviderError::kUndetermined);
+  EXPECT_EQ(FailedCode(memory_.Free(reservation)), ProviderError::kUndetermined);
   EXPECT_FALSE(memory_.Undetermined(second));
   // A release whose outcome is unknown is never repeated.
   memory_.FailNext(Operation::kRelease, ProviderError::kUnknown, /*applied=*/true);
   EXPECT_EQ(FailedCode(memory_.Release(second)), ProviderError::kUnknown);
-  EXPECT_EQ(FailedCode(memory_.Release(second)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.Release(second)), ProviderError::kUndetermined);
   // A create whose outcome is unknown may have made backing: it stays
   // charged, with no handle anyone can use.
   memory_.FailNext(Operation::kCreate, ProviderError::kUnknown, /*applied=*/true);
@@ -167,8 +167,8 @@ TEST_F(DeviceMemoryTest, UnknownAccessKeepsItsBackingChargedAsUndetermined) {
   EXPECT_TRUE(memory_.Undetermined(first));
   EXPECT_TRUE(memory_.Undetermined(second));
   EXPECT_EQ(memory_.UndeterminedBytes(), 4_MiB);
-  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kInvalid);
-  EXPECT_EQ(FailedCode(memory_.Unmap(reservation, 0_MiB, 4_MiB)), ProviderError::kInvalid);
+  EXPECT_EQ(FailedCode(memory_.RangeOf(reservation)), ProviderError::kUndetermined);
+  EXPECT_EQ(FailedCode(memory_.Unmap(reservation, 0_MiB, 4_MiB)), ProviderError::kUndetermined);
 }
 
 // Touching absent backing is a bug, and the fake makes it fault: reserved

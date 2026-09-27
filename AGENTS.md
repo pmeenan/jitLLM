@@ -239,8 +239,11 @@ artifact reader; GGML's kernels under jitLLM's dispatch and ExLlamaV3's
 GEMM kernels in the build; plan selection between implementations; shape expressibility; and native
 Qwen2.5-0.5B FP16 matching the bridge bit for bit at rung 3. BP-F1 showed
 host VMM too slow for kernels, so weights and state move to device VMM
-behind a landing-zone copy (D-081); D-080 sets the license policy. Open:
-census rule v2 (measurement-accuracy allowances and an instrumented
-pass, at the owner's request), BP-F1's rerun against device VMM, rungs
-4–5, native EXL3 (P3), the retained-backing timed sessions, and P4–P6. Keep this
+behind a landing-zone copy (D-081); D-080 sets the license policy. The
+scheduler now pages through that zone into device VMM and releases
+backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
+relocated) are bit-identical. Open: census rule v2 (measurement-accuracy
+allowances and an instrumented pass, at the owner's request), BP-F1's
+rerun against device VMM, write-back and state spill, native EXL3 (P3),
+the retained-backing timed sessions, and P4–P6. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

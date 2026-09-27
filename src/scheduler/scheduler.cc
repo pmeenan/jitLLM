@@ -27,9 +27,7 @@
 #include "scheduler/tasks.h"
 
 namespace jitllm::scheduler {
-namespace {
-
-WorkError WorkErrorOf(catalog::CatalogError error) {
+WorkError Scheduler::ErrorOf(catalog::CatalogError error) {
   switch (error) {
     case catalog::CatalogError::kNotResident:
       return WorkError::kNotResident;
@@ -45,8 +43,6 @@ WorkError WorkErrorOf(catalog::CatalogError error) {
       return WorkError::kUnavailable;
   }
 }
-
-}  // namespace
 
 std::string ToString(WorkError error) {
   switch (error) {
@@ -74,12 +70,16 @@ std::string ToString(Fault fault) {
       return "a lane's observations contradict each other";
     case Fault::kUnproven:
       return "an operation ended without proof of no further access";
+    case Fault::kBacking:
+      return "backing could not be unmapped or released as the catalog needs";
+    case Fault::kExhausted:
+      return "a page-in stage can never get an operation identity (all retired or quarantined)";
   }
   return "unknown fault";
 }
 
 Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::WakeFlag& wake,
-                     Lanes lanes, SchedulerSettings settings)
+                     Lanes lanes, const SchedulerSettings& settings)
     : catalog_(catalog),
       board_(board),
       wake_(wake),
@@ -102,6 +102,12 @@ Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::Wa
                   settings_.poll_window <= SchedulerSettings::kLongest,
               "a scheduler poll window must be non-negative and at most kLongest");
   cancel_intents_.reserve(settings_.controls);
+  base::Check(settings_.landing.slots.empty() || settings_.landing.slot_bytes > Bytes(),
+              "a landing zone needs slots of a non-zero size");
+  base::Check(settings_.landing.slots.empty() ||
+                  (lanes_.device != nullptr && settings_.landing.stream < lanes_.device->streams()),
+              "a landing zone's stream must be one of the device lane's streams");
+  slots_.assign(settings_.landing.slots.size(), SlotState::kFree);
 }
 
 base::PushResult Scheduler::Post(Control&& control) {
@@ -160,10 +166,6 @@ Scheduler::Operation* Scheduler::Find(OperationId operation) {
   }
   std::optional<Operation>& record = operations_[operation.index()];
   return record && record->id == operation ? &*record : nullptr;
-}
-
-void Scheduler::SetSource(catalog::ExtentId extent, const providers::ReadSpec& source) {
-  sources_[extent] = source;
 }
 
 // Tasks ------------------------------------------------------------------------------
@@ -294,7 +296,8 @@ void Scheduler::FinishTask(TaskId task, TaskOutcome outcome) {
     for (std::deque<OperationId>& pending : pending_) {
       for (const OperationId id : std::vector<OperationId>(pending.begin(), pending.end())) {
         Operation* operation = Find(id);
-        if (operation != nullptr && !operation->published && operation->kind != Kind::kRead &&
+        if (operation != nullptr && !operation->published &&
+            (operation->kind == Kind::kDevice || operation->kind == Kind::kCpu) &&
             operation->task == task) {
           RollBack(*operation);
         }
@@ -349,85 +352,20 @@ void Scheduler::BeginStop() {
 
 // Work -------------------------------------------------------------------------------
 
-std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
-                                                           const catalog::Closure& closure) {
-  TaskRecord* record = Record(task);
-  const std::optional<TaskView> view = tasks_.Describe(task);
-  if (record == nullptr || record->finished || !view || view->cancelled) {
-    return std::unexpected(WorkError::kClosed);
-  }
-  bool waiting = false;
-  for (const auto& [extent, generation] : closure.extents) {
-    const auto found = catalog_.Describe(extent);
-    if (!found) {
-      return std::unexpected(WorkError::kUnavailable);
-    }
-    switch (found->state) {
-      case catalog::ExtentState::kResident:
-        if (found->content_generation != generation || found->discarded) {
-          return std::unexpected(WorkError::kStale);
-        }
-        continue;
-      case catalog::ExtentState::kLoading: {
-        const auto load = loads_.find(extent);
-        base::Check(load != loads_.end(), "a loading extent without its page-in");
-        Operation& operation = *Find(load->second);
-        if (std::ranges::find(operation.waiters, task) == operation.waiters.end()) {
-          if (operation.waiters.size() >= settings_.waiters) {
-            return std::unexpected(WorkError::kBusy);
-          }
-          operation.waiters.push_back(task);
-          ++record->waiting;
-          SetCritical(operation, true);
-        }
-        waiting = true;
-        continue;
-      }
-      case catalog::ExtentState::kNonresident: {
-        const auto source = sources_.find(extent);
-        if (source == sources_.end() || lanes_.storage == nullptr) {
-          return std::unexpected(WorkError::kUnavailable);
-        }
-        if (found->content_generation != generation) {
-          return std::unexpected(WorkError::kStale);  // a load restores current contents only
-        }
-        if (board_.available() == 0) {
-          return std::unexpected(board_.exhausted() ? WorkError::kUnavailable : WorkError::kBusy);
-        }
-        const auto ticket = catalog_.BeginLoad(extent, settings_.budget);
-        if (!ticket) {
-          return std::unexpected(WorkErrorOf(ticket.error()));
-        }
-        // Recorded before any lane can see it: the extent is LOADING and
-        // charged until the read's completion settles it.
-        Operation& operation = Open(Kind::kRead);
-        operation.ticket = *ticket;
-        operation.spec = source->second;
-        operation.waiters.reserve(settings_.waiters);
-        operation.waiters.push_back(task);
-        ++record->waiting;
-        SetCritical(operation, true);
-        loads_[extent] = operation.id;
-        Publish(operation);
-        waiting = true;
-        continue;
-      }
-      case catalog::ExtentState::kEvicting:
-        return std::unexpected(WorkError::kBusy);
-      case catalog::ExtentState::kQuarantined:
-        return std::unexpected(WorkError::kUnavailable);
-    }
-  }
-  return waiting ? Readiness::kWaiting : Readiness::kReady;
-}
-
 std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
                                                         const catalog::Closure& closure, Kind kind,
-                                                        std::optional<DeviceWork> work,
-                                                        CpuJob job) {
-  if ((kind == Kind::kDevice &&
-       (lanes_.device == nullptr || !work || work->count == 0 || work->count > kMaxDeviceCopies)) ||
-      (kind == Kind::kCpu && (lanes_.cpu == nullptr || !job))) {
+                                                        DeviceCommand& device, CpuJob& job) {
+  bool valid = false;
+  if (kind == Kind::kDevice && lanes_.device != nullptr) {
+    if (const auto* copies = std::get_if<DeviceWork>(&device.work)) {
+      valid = copies->count > 0 && copies->count <= kMaxDeviceCopies;
+    } else if (const auto* launch = std::get_if<LaunchWork>(&device.work)) {
+      valid = static_cast<bool>(launch->job);
+    }
+  } else if (kind == Kind::kCpu) {
+    valid = lanes_.cpu != nullptr && static_cast<bool>(job);
+  }
+  if (!valid) {
     return std::unexpected(WorkError::kInvalid);
   }
   TaskRecord* record = Record(task);
@@ -438,38 +376,32 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   // Not open() against capacity(): a mailbox whose generation is exhausted
   // is retired and never issued again.
   if (board_.available() == 0) {
-    return std::unexpected(board_.exhausted() ? WorkError::kUnavailable : WorkError::kBusy);
+    return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
   }
   // Prepare under the owner: generations checked and leases taken, all or
   // none, then the task's lifetime hold and the record, before any lane
   // can touch the memory.
   const auto lease = catalog_.AcquireLease(closure);
   if (!lease) {
-    return std::unexpected(WorkErrorOf(lease.error()));
+    return std::unexpected(ErrorOf(lease.error()));
   }
   base::Check(catalog_.RecordUse(*lease, turn_).has_value(), "recording a fresh lease's use");
   base::Check(tasks_.PrepareOperation(task).has_value(), "an open task takes an operation");
   Operation& operation = Open(kind);
+  operation.route = kind == Kind::kCpu ? Route::kCpu : Route::kDevice;
   operation.task = task;
   operation.lease = *lease;
-  operation.work = work.value_or(DeviceWork{});
   if (kind == Kind::kCpu) {
     operation.job = CpuCommand{.operation = operation.id, .job = std::move(job)};
+  } else {
+    operation.device = std::move(device);
+    operation.device.operation = operation.id;
   }
   ++record->waiting;
   SetCritical(operation, true);
   const OperationId id = operation.id;
   Publish(operation);
   return id;
-}
-
-std::expected<void, WorkError> Scheduler::Evict(catalog::ExtentId extent) {
-  const auto ticket = catalog_.BeginEvict(extent);
-  if (!ticket) {
-    return std::unexpected(WorkErrorOf(ticket.error()));
-  }
-  base::Check(catalog_.CompleteEvict(*ticket).has_value(), "completing a fresh eviction");
-  return {};
 }
 
 bool TaskContext::TakeFailure() {
@@ -523,21 +455,24 @@ void Scheduler::SetCritical(Operation& operation, bool critical) {
 }
 
 base::PushResult Scheduler::Push(Operation& operation) const {
-  switch (operation.kind) {
-    case Kind::kRead:
-      return lanes_.storage->Submit(ReadCommand{.operation = operation.id, .spec = operation.spec});
-    case Kind::kDevice:
-      return lanes_.device->Submit(
-          DeviceCommand{.operation = operation.id, .work = operation.work});
-    case Kind::kCpu:
-      // Moves the job only if the lane takes it.
-      return lanes_.cpu->Submit(std::move(operation.job));
+  // Each moves the command only if its lane takes it. An absent lane
+  // refuses it as closed: the operation is rolled back.
+  switch (operation.route) {
+    case Route::kStorage:
+      return lanes_.storage != nullptr ? lanes_.storage->Submit(operation.read)
+                                       : base::PushResult::kClosed;
+    case Route::kDevice:
+      return lanes_.device != nullptr ? lanes_.device->Submit(std::move(operation.device))
+                                      : base::PushResult::kClosed;
+    case Route::kCpu:
+      return lanes_.cpu != nullptr ? lanes_.cpu->Submit(std::move(operation.job))
+                                   : base::PushResult::kClosed;
   }
   return base::PushResult::kClosed;
 }
 
 void Scheduler::Publish(Operation& operation) {
-  std::deque<OperationId>& pending = pending_[static_cast<std::size_t>(operation.kind)];
+  std::deque<OperationId>& pending = pending_[static_cast<std::size_t>(operation.route)];
   if (!pending.empty()) {
     pending.push_back(operation.id);  // behind what the lane refused before
     return;
@@ -577,6 +512,7 @@ bool Scheduler::Flush() {
       }
     }
   }
+  progress = RetryBlocked() || progress;
   for (auto it = cancels_.begin(); it != cancels_.end();) {
     Operation* operation = Find(*it);
     if (operation != nullptr && !operation->quarantined) {
@@ -594,35 +530,32 @@ bool Scheduler::Flush() {
 }
 
 void Scheduler::Withdraw(TaskId task) {
-  for (const auto& [extent, id] : std::vector(loads_.begin(), loads_.end())) {
-    Operation* operation = Find(id);
-    if (operation == nullptr) {
+  // Every load this leaves without waiters is marked cancelling before any
+  // is cancelled: cancelling one can free a slot or a place in the window,
+  // and the drains that hand those on skip a cancelling load, so no
+  // withdrawn load starts a new stage (docs/async-model.md).
+  std::vector<catalog::ExtentId> withdrawn;
+  for (auto& [extent, load] : loads_) {
+    const auto waiter = std::ranges::find(load.waiters, task);
+    if (waiter == load.waiters.end()) {
       continue;
     }
-    const auto waiter = std::ranges::find(operation->waiters, task);
-    if (waiter == operation->waiters.end()) {
-      continue;
-    }
-    // Only this task's interest: other waiters and the read stay.
-    operation->waiters.erase(waiter);
-    if (operation->waiters.empty() && !operation->cancelling) {
-      CancelLoad(*operation);
+    // Only this task's interest: other waiters and the load stay.
+    load.waiters.erase(waiter);
+    if (load.waiters.empty() && !load.cancelling) {
+      load.cancelling = true;
+      withdrawn.push_back(extent);
     }
   }
-}
-
-void Scheduler::CancelLoad(Operation& operation) {
-  operation.cancelling = true;
-  SetCritical(operation, false);
-  if (!operation.published) {
-    RollBack(operation);  // no lane has it: nothing to drain
-    return;
+  for (auto& [extent, eviction] : evictions_) {
+    std::erase(eviction.waiters, task);  // the unmap drains either way
   }
-  // Best effort, from the cleanup reserve; the read drains either way.
-  const base::PushResult pushed =
-      lanes_.storage->Submit(CancelRead{.operation = operation.id}, base::PushKind::kCleanup);
-  if (pushed == base::PushResult::kFull) {
-    cancels_.push_back(operation.id);
+  // After the walk: cancelling a page-in may end it, erasing its entry.
+  for (const catalog::ExtentId extent : withdrawn) {
+    const auto load = loads_.find(extent);
+    if (load != loads_.end()) {
+      CancelPageIn(extent, load->second);
+    }
   }
 }
 
@@ -668,22 +601,9 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
     return;
   }
   SetCritical(operation, false);
-  if (operation.kind == Kind::kRead) {
-    const auto load = loads_.find(operation.ticket.extent);
-    base::Check(load != loads_.end() && load->second == operation.id, "a page-in lost its extent");
-    loads_.erase(load);
-    // Published only if the read moved the whole range; otherwise the
-    // backing is released, now that the read touches it no more.
-    const bool loaded = outcome == Outcome::kSucceeded && bytes == operation.spec.length;
-    base::Check(loaded ? catalog_.CompleteLoad(operation.ticket).has_value()
-                       : catalog_.FailLoad(operation.ticket, true).has_value(),
-                "settling a page-in's load");
-    // A task that joined after every other waiter left was waiting for the
-    // drain, not the contents: it is not told of a failure it did not cause.
-    for (const TaskId waiter : operation.waiters) {
-      Wake(waiter, !loaded && !operation.cancelling);
-    }
-  } else {
+  const Kind kind = operation.kind;
+  const catalog::ExtentId extent = operation.extent;
+  if (kind == Kind::kDevice || kind == Kind::kCpu) {
     base::Check(catalog_.ReleaseLease(operation.lease).has_value(),
                 "releasing an operation's lease");
     base::Check(tasks_.RetireOperation(operation.task).has_value(), "retiring a task's operation");
@@ -694,26 +614,35 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
     return;
   }
   operations_[id.index()].reset();
+  if (kind == Kind::kLoad) {
+    OnStage(extent, outcome, bytes);
+  } else {
+    OnEvicted(extent, outcome);
+  }
 }
+
+void Scheduler::Fail(Fault fault) { fault_ = fault_.value_or(fault); }
 
 void Scheduler::Quarantine(Operation& operation, Fault fault) {
   operation.quarantined = true;
   ++quarantined_;
-  fault_ = fault_.value_or(fault);
+  Fail(fault);
   SetCritical(operation, false);
-  if (operation.kind == Kind::kRead) {
-    // Its extent stays charged as quarantined; waiters stop waiting.
-    loads_.erase(operation.ticket.extent);
-    base::Check(catalog_.FailLoad(operation.ticket, false).has_value(),
-                "quarantining a page-in's load");
-    for (const TaskId waiter : operation.waiters) {
-      Wake(waiter, true);
-    }
-    operation.waiters.clear();
-    return;
+  switch (operation.kind) {
+    case Kind::kLoad:
+      // Its extent stays charged as quarantined, with its slot; waiters
+      // stop waiting.
+      QuarantineLoad(operation.extent, fault);
+      return;
+    case Kind::kEvict:
+      QuarantineEvicting(operation.extent, fault);
+      return;
+    case Kind::kDevice:
+    case Kind::kCpu:
+      // The lease and the task's hold stay: nothing it touched is reused.
+      Wake(operation.task, true);
+      return;
   }
-  // The lease and the task's hold stay: nothing it touched is reused.
-  Wake(operation.task, true);
 }
 
 // The turn loop ----------------------------------------------------------------------
@@ -756,13 +685,14 @@ bool Scheduler::Turn() {
 }
 
 std::optional<std::expected<void, Fault>> Scheduler::Stopped() const {
-  if (!stopping_ || board_.open() > quarantined_ || !cancels_.empty() || !controls_.drained()) {
+  if (!stopping_ || board_.open() > quarantined_ || !cancels_.empty() || !controls_.drained() ||
+      !loads_.empty() || !evictions_.empty()) {
     return std::nullopt;
   }
   // Every task finished at the stop; what remains is held by quarantined
   // work, whose capacity is not reclaimed.
-  if (quarantined_ > 0) {
-    return std::unexpected(fault_.value_or(Fault::kUnproven));
+  if (fault_) {
+    return std::unexpected(*fault_);
   }
   base::Check(tasks_.size() == 0, "a task outlived its operations after the stop");
   return std::expected<void, Fault>();

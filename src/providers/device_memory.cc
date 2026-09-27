@@ -23,7 +23,9 @@ std::unexpected<Failure> Invalid(std::string detail) {
 }
 
 std::unexpected<Failure> RefuseUndetermined() {
-  return Invalid("undetermined after an unknown outcome: the owner must quarantine it");
+  return std::unexpected(
+      Failure{.error = ProviderError::kUndetermined,
+              .detail = "undetermined after an unknown outcome: the owner must quarantine it"});
 }
 
 bool Unknown(const Failure& failure) { return failure.error == ProviderError::kUnknown; }
@@ -42,6 +44,8 @@ std::string ToString(ProviderError error) {
       return "failed";
     case ProviderError::kUnknown:
       return "outcome unknown";
+    case ProviderError::kUndetermined:
+      return "undetermined after an unknown outcome";
   }
   return "unknown provider error";
 }
@@ -102,6 +106,15 @@ std::expected<AddressRange, Failure> VmmProvider::RangeOf(ReservationId reservat
     return RefuseUndetermined();
   }
   return AddressRange{.base = found->base, .size = found->size};
+}
+
+std::optional<BackingId> VmmProvider::MappedAt(ReservationId reservation, Bytes offset) const {
+  const Reservation* found = reservations_.Find(reservation);
+  if (found == nullptr) {
+    return std::nullopt;
+  }
+  const auto mapping = found->mappings.find(offset.value());
+  return mapping != found->mappings.end() ? std::optional(mapping->second.backing) : std::nullopt;
 }
 
 std::expected<void, Failure> VmmProvider::Free(ReservationId reservation) {

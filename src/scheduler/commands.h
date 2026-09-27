@@ -19,6 +19,7 @@
 
 #include "base/bytes.h"
 #include "providers/device_execution.h"
+#include "providers/device_memory.h"
 #include "providers/direct_reader.h"
 #include "scheduler/completions.h"
 
@@ -60,9 +61,44 @@ struct DeviceWork {
   std::array<DeviceCopy, kMaxDeviceCopies> copies{};
   std::size_t count = 0;
 };
+
+// Device submission lane, VMM work (D-006, D-033): kMap creates backing
+// of `size` in the provider's allocation class, maps it at `offset` of the
+// reservation and gives it read-write access (the CPU's too, for host
+// backing); kUnmap unmaps the backing mapped there and releases it. Both
+// run at once on the lane, with nothing to fence: the lane publishes the
+// result, and whether the provider's state is known, directly. A kMap
+// whose later step fails undoes the earlier ones, so a known failure
+// changed nothing.
+struct BackingWork {
+  enum class Kind : std::uint8_t { kMap, kUnmap };
+  Kind kind = Kind::kMap;
+  providers::ReservationId reservation;
+  Bytes offset;
+  Bytes size;
+  std::size_t allocation_class = 0;
+};
+
+// Device submission lane: a job that queues kernel work on one of the
+// lane's streams (D-053), given the stream's native handle; the lane then
+// fences the stream, as it does copies. The job runs on the submission
+// lane's thread and must only queue work, never wait for it. It says what
+// it queued:
+enum class JobResult : std::uint8_t {
+  kNotStarted,  // nothing: refused before any launch
+  kQueued,      // everything it meant to
+  kFailed,      // some work, then a known refusal: it fails once its fence completes
+  kUnknown,     // a launch reported an error whose effect is unknown (a fault)
+};
+using DeviceJob = std::move_only_function<JobResult(providers::NativeStream)>;
+struct LaunchWork {
+  std::uint32_t stream = 0;  // an index into the lane's streams
+  DeviceJob job;
+};
+
 struct DeviceCommand {
   OperationId operation;
-  DeviceWork work;
+  std::variant<DeviceWork, BackingWork, LaunchWork> work;
 };
 
 // CPU worker lane: bounded host work, such as verification, over memory

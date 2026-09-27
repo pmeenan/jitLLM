@@ -240,8 +240,9 @@ reservation policy) were recorded in M0.
 
       All pass on a Spark (`spark-b`) in `check:spark` under the cross, ASan and TSan
       builds, and the fake cases pass on the workstation and under
-      qemu-user in `check`. Not yet wired: the memory manager's mapping,
-      backing release and victim selection on the device lane, and
+      qemu-user in `check`. Mapping and backing release on the device
+      lane arrived with the D-081 page-in path (backend proof, P2). Not
+      yet wired: victim selection on a miss, write-back and spill, and
       admission driving task starts.
 - [x] **Providers** (D-026): device-memory, device-execution and storage
       interfaces, each with a deterministic poison-filling fake; the CUDA VMM
@@ -647,11 +648,71 @@ reservation policy) were recorded in M0.
         `control` passed. For the owner: the rule as written resolves
         neither, nor says how many runs a verdict takes.
 
-      Left for rung 4 and the BP-A cases: page-in of the same groups into
-      device VMM through the landing zone (B2, D-081) and the rung-4
-      comparison against these runs; the
-      restore evaluation (rung 5); the in-process pointer-coverage check
-      of BP-A1 against a real catalog rather than the harness's ledger.
+      *The D-081 page-in path, and rungs 4 and 5*
+      ([report](experiments/backend-proof-p2/README.md#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone)):
+      - **The page-in path** (`scheduler.h`, `pagein.cc`). A page-in runs
+        in stages, each an operation proven complete before the next: the
+        device lane creates, maps and opens the extent's backing (D-033);
+        the load waits in order for a slot of the landing zone, a
+        persistent host-VMM pool; the storage lane reads the chunk into it
+        with direct I/O; the device lane copies it into device VMM on the
+        zone's stream; and the extent is published, and the slot freed,
+        only once the copy's fence completes. Failed or withdrawn loads
+        unmap and release what they mapped; unproven reads, copies or
+        unmaps quarantine the extent and its slot. Eviction unmaps and
+        releases the backing on the device lane. The device lane also runs
+        kernel jobs (`LaunchWork`) whose leases hold until their fence.
+        `unit.PageInTest.*` (every profile) covers stage order,
+        publication only after the fence, slot reuse only after the copy,
+        a full zone's order, failed and short reads, backing failures and
+        unknown outcomes (an unmap refused because an earlier unknown
+        outcome left its reservation undetermined quarantines the
+        extent; a map refused so fails its load cleanly), cancellation in
+        every stage (a withdrawn load starts no new stage, even when its
+        copy completes in the same turn), a stage that can never get a
+        mailbox (quarantined, so the stop reports the fault; one that
+        will free is waited for), eviction, reload and relocation, and
+        a threaded stress; `unit.CudaPageIn.*` (`gpu`) runs io_uring into
+        host VMM and the copy into device VMM on `spark-b`, with eviction,
+        relocation, and cancellation met during a read and during a copy.
+      - **Rungs 4 and 5 pass on all four FP16 arms** (2026-09-27,
+        `spark-b`). `benchmarks/fp16_paged.cc` pages the artifact into
+        device VMM through that path (the token table's host copy read in
+        place into host VMM for the CPU's embedding lookup) and runs each
+        chunk as a device job holding a lease on everything it touches.
+        With the plan recorded over four evaluations (a repeat and two
+        restores that evict every weight, release its backing and page it
+        back in, the second at another reservation), `plan_compare.py`
+        reports a complete match, the first evaluation's logits equal the
+        bridge's, and the rest equal it bit for bit. BP-A1's in-process
+        check found every bound tensor in cataloged device extents of its
+        class. Page-in through the zone ran at 11.4 GB/s (median) against
+        13.8 in place with backing mapped once, and 6.9 in place with
+        backing made per load: a measured shortfall against D-081's
+        in-place condition with like backing, for the owner.
+      - **Rows this closes or advances:** BP-N3 (FP16), BP-A1's in-process
+        pointer coverage (FP16), BP-A3 for FP16 (no F32 conversion and no
+        CPU extra buffer type; every weight once in device VMM, and the
+        one duplicate, the token table's 272 MB host copy for the CPU's
+        embedding lookup, declared and cataloged as the bridge's
+        `CUDA_Host` copy is, so not hidden; the row's "permanent FP16
+        shadow", which its next sentence pairs with transient
+        reconstruction, is EXL3's reconstructed weights, for P3), and in part BP-P1
+        (every weight evicted and restored bit-identically, but with one
+        read per chunk, not the coalesced chunk-closure reads the row
+        names), BP-L2 (cancellation in every stage drains before a slot or
+        backing is reused, on the fakes; on `spark-b` a request cancelled
+        while a slot is busy, and one cancelled while a copy is in flight
+        (it completes, publishes whole bytes, then frees its slot), drain,
+        but the `io_uring` cancellation race itself is not observed), BP-P5 (relocation, descriptors rebuilt),
+        BP-P6 (restore times reported), BP-L1 (a job's lease holds until
+        its fence, on the fake) and BP-V2 (VMM create and map failures
+        unwind, on the fake).
+      Left in P2: the census on the paged harness (BP-A1's
+      reconciliation, BP-A2, BP-A5; being redone as v2) and BP-A4's stale
+      binding and negative controls. Next for the pager: write-back and
+      state spill through the zone (BP-P4), coalesced vectored reads, and
+      the D-033 handoff of a victim's backing.
 - [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

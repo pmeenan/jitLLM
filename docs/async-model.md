@@ -239,6 +239,26 @@ with those tests (plan.md, task lanes). Choices they settle:
   the kernel cannot cancel still keeps its memory until it completes.
   Taking a cancellation publishes nothing, so the lane also wakes the
   scheduler, which may hold a command that the full queue refused.
+- A page-in is a chain of operations, each with its own mailbox: backing
+  created and mapped, a read into a landing slot, a copy into device VMM
+  (D-081). The scheduler starts each stage only on the previous one's
+  proven completion, publishes the extent only after the copy's fence,
+  and frees the slot only then. A withdrawn load starts no new stage:
+  every load a task leaves is marked cancelling before any is cancelled,
+  and a slot or window place freed meanwhile skips it. Mapping and
+  copying cannot be recalled, so they complete first. A stage that can
+  never get a mailbox (every one retired or held by quarantined work)
+  quarantines its load, so shutdown reports the fault instead of waiting.
+- VMM work runs on the device submission lane, in order with copies and
+  launches, and is published at once: create, map and access are undone
+  on a known failure, and anything left undetermined is published without
+  proof, so the scheduler quarantines it. That includes an unmap the
+  provider refuses (`kUndetermined`) because an earlier unknown outcome
+  left its reservation undetermined: nothing changed, but nothing is
+  proven, so the extent is quarantined, never resident again.
+- Kernel work is a job the submission lane runs on one of its streams; the
+  lane fences after it, and the job's lease holds until that fence is seen
+  complete.
 M4a/M6 add transport registration, lost-node and collective-order validation.
 Shutdown must stop admission, cancel queued work, drain accepted operations
 and registrations, then release backing; unreconciled work faults shutdown
