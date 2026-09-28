@@ -119,7 +119,7 @@ artifacts = ["deb/cccl-13-4"]
 category = "platform"
 license = "Apache-2.0 WITH LLVM-exception"
 ships = true
-enters = "libcu++ and nv/ headers that the CUDA headers include (cuda_fp16.h, cooperative_groups.h). Including CUB (BSD-3-Clause) or Thrust (Apache-2.0 AND BSL-1.0 AND BSD-2-Clause) directly would make them incorporated implementation, which needs its own D-017 decision first."
+enters = "libcu++ and nv/ headers that the CUDA headers include (cuda_fp16.h, cooperative_groups.h). Including CUB (BSD-3-Clause) or Thrust (Apache-2.0 AND BSL-1.0 AND BSD-2-Clause) directly would make them incorporated implementation: permissive, so D-091 admits them (the owner approved CUB on 2026-09-28), once this record names what is included and carries CUB's BSD-3-Clause notice."
 notices = []
 
 [units.gcc-runtime]

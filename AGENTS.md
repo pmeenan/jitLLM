@@ -123,18 +123,18 @@ affected docs. Until then, these govern.
   workstation tiers, timing batches, nsys passes) runs unless its result
   is needed now. (D-011, D-012, D-084, D-085)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
-  jitLLM's own code is Apache-2.0. Incorporated core implementation uses
-  Apache-2.0 / BSD / MIT / MPL-2.0, plus Unicode-3.0 for Unicode's data
-  (D-088); other implementation licenses live in
-  optional modules, which jitLLM's own builds ship by default; the
-  copyleft-disabled profile is the build-time opt-out. Unknown or
-  incompatible terms still block. A component counts
-  as copyleft once that is confirmed, not on suspicion. Declared tools and
+  jitLLM's own code is Apache-2.0. Any permissive license is allowed in
+  the core (D-091), as is MPL-2.0; copyleft lives in optional modules,
+  which jitLLM's own builds ship by default; the copyleft-disabled profile
+  is the build-time opt-out (D-080). Unknown, non-permissive or
+  proprietary terms need a decision; obligations are still recorded. A
+  component counts as copyleft once that is confirmed, not on suspicion.
+  Declared tools and
   platform runtimes (including system libraries and CUDA) have separate
   terms under D-017 and remain in the audit. Reuse follows actual licenses;
   no single engine's architecture is mandatory, and "reference" is not
   relicensing. Every dependency records its category and applicable tier.
-  (D-002, D-003, D-013, D-017, D-080)
+  (D-002, D-003, D-013, D-017, D-080, D-091)
 - **Local-first, privacy by default.** Management binds locally by default;
   remote access requires authentication and transport protection. Prompts and
   KV contents are never logged by default; spill files are protected with

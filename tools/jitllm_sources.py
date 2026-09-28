@@ -35,8 +35,14 @@ LOCK = REPO / "third_party" / "sources.lock.json"
 SOURCES_DIR = REPO / "build" / "sources"
 SCHEMA = 1
 
-# D-017's allowlist for incorporated implementation in the core.
-CORE_LICENSES = frozenset({"Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "MIT", "MPL-2.0"})
+# The licenses incorporated implementation in the core may carry: D-017's allowlist as D-091 widens it to
+# every permissive license (no copyleft or share-alike obligation, no field-of-use or non-commercial
+# restriction), plus MPL-2.0, which D-017 names, with its file-level obligations. These are the permissive
+# SPDX IDs recognized so far; adding another, or a LicenseRef- for custom terms read and found permissive, needs
+# no decision, only the heavy-path review of the change. A copyleft license belongs to an optional module
+# (D-080); unknown, non-permissive or proprietary terms need a decision first.
+CORE_LICENSES = frozenset({"0BSD", "Apache-2.0", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "ISC",
+                           "MIT", "MIT-0", "MPL-2.0", "NCSA", "Unicode-3.0", "X11", "Zlib"})
 CATEGORIES = ("implementation",)  # build tools and generators land with the first one
 TIERS = ("core", "optional")
 USES = ("product", "test")
@@ -168,8 +174,10 @@ def _license_problems(where: str, tier: str, license_: object) -> list[str]:
         problems.append(f"{where}: license.expression {expression!r} must be SPDX identifiers joined by ' AND '; "
                         "anything else needs a reviewed extension of this schema")
     elif tier == "core" and not set(ids) <= CORE_LICENSES:
-        problems.append(f"{where}: {expression} is outside D-017's core allowlist "
-                        f"({', '.join(sorted(CORE_LICENSES))}); it can only be an optional module")
+        problems.append(f"{where}: {expression} is outside D-017's core allowlist as D-091 widens it "
+                        f"({', '.join(sorted(CORE_LICENSES))}): a permissive license not yet recognized is "
+                        "added to CORE_LICENSES, a copyleft one can only be an optional module, and any other "
+                        "terms need a decision")
     files = license_.get("files")
     if not isinstance(files, list) or not files or not all(_relative_path(f) for f in files):
         problems.append(f"{where}: license.files must list the license texts in the source")

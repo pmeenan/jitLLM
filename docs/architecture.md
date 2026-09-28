@@ -301,8 +301,9 @@ substitute a fake at any provider boundary.
 - A build-generated table registers the compiled implementations, and the
   `runtime` program links it. The execution layer never includes a kernel
   module, and nothing is loaded at run time (D-028).
-- An implementation under a license outside D-017's allowlist lives in its
-  own optional module with its own license and CMake option. jitLLM's own
+- An implementation under a license the core does not admit (copyleft;
+  the core admits any permissive license, D-091) lives in its own optional
+  module with its own license and CMake option. jitLLM's own
   builds and packages include it by default (D-080); the copyleft-disabled
   profile excludes it before any source is fetched (D-057), and the
   registry then never sees it.

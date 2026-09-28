@@ -3,8 +3,26 @@
 
 # Licensing and provenance
 
-jitLLM-authored code is Apache-2.0. [D-002, D-003 and D-017](decisions.md)
-govern incorporation, optional modules, tools and platform dependencies.
+jitLLM-authored code is Apache-2.0. [D-002, D-003, D-017, D-080 and
+D-091](decisions.md) govern incorporation, optional modules, tools and
+platform dependencies.
+
+**What the core admits** (the owner, 2026-09-28; D-091). Any permissive
+license (no copyleft or share-alike obligation, no field-of-use or
+non-commercial restriction) may enter the core without a decision of its
+own, beside MPL-2.0 with its file-level obligations. Copyleft code lives in
+optional modules, which jitLLM's own builds ship by default, with the
+copyleft-disabled profile as the build-time opt-out (D-080). Unknown,
+non-permissive or proprietary terms still need a decision. Every component
+still gets its provenance record, and its notices and attribution still
+ship. `CORE_LICENSES` in [tools/jitllm_sources.py](../tools/jitllm_sources.py)
+lists the permissive SPDX identifiers recognized so far; adding one (or a
+`LicenseRef-` for custom terms read and found permissive) needs no
+decision, only the heavy-path review of the change. The source lock
+refuses a core component outside the list, and packaging refuses a `src/`
+file outside it, or under a license no source-lock component or shipped
+provenance unit declares, that has no record (below).
+
 The first three sections record how the repository declares licenses and
 what the pinned toolchain puts into a jitLLM binary (M1, checked
 **2026-09-24**; D-071). The rest is the M0 reference inventory, checked on
@@ -76,15 +94,16 @@ tree (the lock's `license.scope` lists it); every added file is under the
 root MIT license with no header of its own (checked 2026-09-28; the NVFP4
 MMQ instance unit Qwen3.8 added, `template-instances/mmq-instance-nvfp4.cu`,
 likewise, checked the same day). Upstream's
-`argsort.cu` and `top-k.cu` would include CUB directly, which the rule
-below does not admit without a D-017 decision, so jitLLM's patch builds
-them without it (bitonic argsort; top-k's radix select, upstream's HIP
-path). Whether to admit CUB, and take upstream's CUDA top-k, is the
-owner's call. D-080 cleared libcu++ only. CUB's own headers in the SDK's
-CCCL are BSD-3-Clause, Apache-2.0 or Apache-2.0 WITH LLVM-exception, but
-what `argsort.cu` and `top-k.cu` would include also reaches two BSL-1.0
-Thrust headers, `thrust/detail/preprocessor.h` and `type_deduction.h`
-(checked 2026-09-28). ExLlamaV3's GEMM kernels (MIT) also link only into tests so
+`argsort.cu` and `top-k.cu` include CUB directly, and jitLLM's patch
+builds them without it (bitonic argsort; top-k's radix select, upstream's
+HIP path). CUB's own headers in the SDK's CCCL are BSD-3-Clause,
+Apache-2.0 or Apache-2.0 WITH LLVM-exception, and what `argsort.cu` and
+`top-k.cu` would include also reaches two BSL-1.0 Thrust headers,
+`thrust/detail/preprocessor.h` and `type_deduction.h` (checked
+2026-09-28). The owner approved CUB, with those two headers, on 2026-09-28
+(D-091). Whether GGML's argsort and top-k take it follows a measured A/B;
+adopting it records in provenance.toml's `cccl` unit what is reached, and
+the package then carries CUB's BSD-3-Clause notice. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)).
 
@@ -159,9 +178,10 @@ Three constraints follow:
   LGPL-3.0 Qt.
 - **Release packages come from the `cross` profile.** `spark-native` links
   the Spark's own, unpinned `libc6-dev` and GNU linker.
-- **Don't adopt CUB or Thrust directly without a D-017 decision.** Used
-  directly they are incorporated implementation, and Thrust includes
-  BSL-1.0 files, which the core allowlist does not name.
+- **CUB or Thrust included directly is incorporated implementation**, not
+  platform. Their licenses are permissive, so D-091 admits them (CUB by
+  the owner's name), but `cccl`'s record must first name what is included
+  and carry the notices that follow.
 
 **How the package carries them** (D-074): `tools/jitllm_package.py` writes
 `/usr/share/doc/jitllm/THIRD-PARTY-NOTICES` from the source lock's notices
@@ -243,7 +263,8 @@ The current [Unicode license](https://www.unicode.org/license.txt) is Unicode
 License V3 with notice requirements. D-017 did not list that license;
 D-088, which the owner accepted on 2026-09-28, amends its core allowlist to
 admit Unicode-3.0 for data derived from Unicode's data files, not code
-([below](#tokenizer-unicode-tables-m3)).
+([below](#tokenizer-unicode-tables-m3)); D-091 has since admitted every
+permissive license, which subsumes it.
 No whole-vendor-tree, complete-image or redistribution clearance follows from
 root MIT.
 
@@ -253,7 +274,8 @@ The provenance record for the native tokenizer's Unicode data (D-017's
 fields; checked 2026-09-28). D-088, which the owner accepted on 2026-09-28
 ("Unicode license accepted"), admits the Unicode License V3 (SPDX
 `Unicode-3.0`) to D-017's core allowlist for data: the generated tables
-below, not code.
+below, not code. D-091 (2026-09-28), which admits every permissive
+license, subsumes that admission; the record below stands.
 
 **llama.cpp's tables, traced.** At the pinned `b29c606e`,
 `src/unicode-data.cpp` says only "generated with
@@ -287,7 +309,7 @@ Apache-2.0; a developer-run build tool) generates
 | Version | Unicode Character Database 15.1.0 (release 2023-09) |
 | License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
 | In a binary | None shipped yet: `jitllm` and `jitllm-runtime` do not link `jitllm_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
-| Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/jitllm_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside D-017's code allowlist without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
+| Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/jitllm_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside the core's (`CORE_LICENSES`, D-091), one no source-lock component or shipped provenance unit declares, or Unicode-3.0, which only this record lists, without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
 | Source file | `src/tokenizer/unicode_data.cc` declares `Apache-2.0 AND Unicode-3.0` and "1991-2023 Unicode, Inc."; [NOTICE](../NOTICE) names it |
 
 **Chat templates' text.** The renderers write the format text their
@@ -297,9 +319,10 @@ repeats) and Qwen3.8's tool and reasoning-effort instructions (from the
 NVFP4 checkpoint's `chat_template.jinja`; the card declares Apache-2.0, the
 base model the Qwen Community License 1.0). These are format constants a
 compatible prompt must contain, recorded here as model-format data, like
-the special-token strings; whether that reading needs the owner's
-confirmation is an open question (D-087 makes weight licenses
-informational; templates are not named there).
+the special-token strings. The owner confirmed that reading on 2026-09-28:
+chat-template text is model data, so the renderers' embedded template
+wording follows D-087's rule that model licenses are informational and
+gate nothing.
 
 **Reference tools** (run, never incorporated;
 [tokenizer-reference](experiments/tokenizer-reference/README.md)): the
@@ -598,7 +621,7 @@ are made locally from them. A weight license therefore blocks no import,
 execution, baseline or support; the rows below record it for information,
 and the support matrix may note it for users. Code licenses (kernels,
 runtimes, and scripts or recipes we incorporate or run) still follow
-D-002, D-017 and D-080.
+D-002, D-017, D-080 and D-091.
 
 ### M3 pins
 
@@ -693,7 +716,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | vLLM `model_executor/layers/fused_moe/oracle/nvfp4.py`, `experts/flashinfer_cutlass_moe.py` | NVFP4 routed experts through FlashInfer's CUTLASS fused MoE. The default lane always mounts Mia's copy of this file (its determinism patch), so it is very likely that lane's MoE backend; the engine log confirms it | Apache-2.0, as above |
 | vLLM `csrc/libtorch_stable/quantization/fp4/` | vLLM's NVFP4 activation quantization and CUTLASS GEMMs, `nvfp4_scaled_mm_sm120_kernels.cu` among them | Apache-2.0: 9 files "Copyright (c) 2025, NVIDIA CORPORATION" with the Apache notice, 2 MXFP4 files vLLM's SPDX header |
 | FlashInfer `csrc/fused_moe/cutlass_backend/`, `csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/`, `csrc/cute_sm120_mxfp8_groupwise/` (97 files) | The CUTLASS fused MoE and FP4 GEMMs, from TensorRT-LLM, and an sm_120 MXFP8 groupwise GEMM | Apache-2.0 notices, NVIDIA or FlashInfer team copyright. Root `LICENSE` Apache-2.0; `NOTICE` names NVIDIA and the FlashInfer community; `licenses/` holds CUTLASS's BSD-3-Clause, FlashAttention-3's, fmt's and spdlog's texts |
-| FlashInfer `flashinfer/gemm/kernels/` CuTe-DSL kernels, `dense_blockscaled_gemm_sm120_b12x.py` among them | Block-scaled FP4 and FP8 GEMMs written in CUTLASS's Python DSL | BSD-3-Clause SPDX headers (NVIDIA); three cuTile files MIT. They compile through `nvidia-cutlass-dsl` 4.7.1, whose wheel is under NVIDIA's proprietary CUTLASS Python DSL license (PyPI "Other/Proprietary License"; [terms](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html)). D-017 names no such category for incorporated code, so reusing a CuTe-DSL kernel would need a decision |
+| FlashInfer `flashinfer/gemm/kernels/` CuTe-DSL kernels, `dense_blockscaled_gemm_sm120_b12x.py` among them | Block-scaled FP4 and FP8 GEMMs written in CUTLASS's Python DSL | BSD-3-Clause SPDX headers (NVIDIA); three cuTile files MIT. They compile through `nvidia-cutlass-dsl` 4.7.1, whose wheel is under NVIDIA's proprietary CUTLASS Python DSL license (PyPI "Other/Proprietary License"; [terms](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html)). Those terms are proprietary, not permissive, so reusing a CuTe-DSL kernel would need a decision (D-091) |
 | CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause |
 | `humming-kernels` 0.1.12, the `b12x` extra | Other vLLM candidates | PyPI declares no license for `humming-kernels`; `b12x` not checked. Unknown until needed |
 

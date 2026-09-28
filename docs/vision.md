@@ -135,7 +135,7 @@ in the model support matrix, not to arbitrary checkpoints.
   reaches a working build through the checked-in setup path, which reports
   the exact toolchain, driver, and SDK identities it installed or found.
 - **The default build meets its dependency policy.** Incorporated core
-  implementation satisfies the Apache-2.0 / BSD / MIT / MPL-2.0 allowlist;
+  implementation is under permissive licenses or MPL-2.0 (D-017, D-091);
   declared tools and platform runtimes are recorded under their separate
   terms (D-017). It and the copyleft-disabled profile build, pass the core
   tests, and have their full dependency closures audited. jitLLM's own

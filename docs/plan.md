@@ -294,8 +294,10 @@ it appears.
       change.
       Open: the vector attention at D = 256, which
       upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
-      runs it meanwhile); and whether to admit CUB, which the build leaves
-      out (top-k takes GGML's radix select; [licensing.md](licensing.md)).
+      runs it meanwhile); and whether GGML's argsort and top-k take CUB,
+      which the owner approved on 2026-09-28 (D-091) and the build still
+      leaves out (top-k takes GGML's radix select; an A/B decides;
+      [licensing.md](licensing.md)).
 - [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
       compressed sparse attention with its indexer (CSA/HCA) and mHC;
       Qwen3.8's QSA, hyper-connections and Gated DeltaNet layers; the
@@ -439,7 +441,11 @@ it appears.
       48.3–48.6 ms, and the rest is the paged node's per-step round trip.
       The job's host time per token fell from ~41.5 ms (launches waiting on
       a full stream) to 0.13–0.16 ms. Open: Qwen3.8's graphs, once it runs
-      on the paged node, and the per-step round trip.
+      on the paged node, and the per-step round trip. The owner
+      (2026-09-28) questioned whether graphs are worth their complexity at
+      1.04–1.05×: re-measure them once leases are held per request rather
+      than per step, and remove capture and caching if the gain is a
+      rounding error; pinned places stay on their own merits (D-090).
 - [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
       on the GB10, one `cuDeviceGetAttribute` call. Mia's
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`

@@ -136,6 +136,15 @@ class InTreeUnits(unittest.TestCase):
                                                "src/a/adapted.cu": "MIT AND Apache-2.0"}))  # a lock component's
         for files in ({listed: mixed, "src/tokenizer/renamed_data.cc": mixed},  # moved or copied tables
                       {listed: mixed, "src/a/other.cc": "Apache-2.0 AND CC-BY-4.0"},  # any other data license
+                      # Admitted by D-091, but no lock component or shipped unit records them yet, so no notice
+                      # would ship: a CUB-derived file waits for the cccl unit's record.
+                      {listed: mixed, "src/a/sort.cu": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0"},
+                      {listed: mixed, "src/a/hash.cc": "Apache-2.0 AND Zlib"},
+                      {listed: mixed, "src/a/gpl.cc": "Apache-2.0 AND GPL-2.0-only"},  # copyleft (D-080)
+                      {listed: mixed, "src/a/lgpl.cc": "Apache-2.0 AND LGPL-2.1-only"},
+                      {listed: mixed, "src/a/nc.cc": "Apache-2.0 AND CC-BY-NC-4.0"},  # non-commercial
+                      {listed: mixed, "src/a/dsl.cc": "Apache-2.0 AND LicenseRef-NVIDIA-cutlass-dsl"},  # proprietary
+                      {listed: mixed, "src/a/ref.cc": "MIT AND LicenseRef-unknown"},  # unknown terms
                       {listed: mixed, "src/tokenizer/unicode_data.inc": mixed},  # tables in an included file
                       {listed: mixed, "src/a/no_header.cc": None},
                       {"src/tokenizer/renamed_data.cc": mixed}):  # the listed file is gone

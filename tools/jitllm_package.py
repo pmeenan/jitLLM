@@ -19,8 +19,10 @@ covers: an extra notice costs nothing, a missing one is a defect. Third-party
 data in jitLLM's own files (IN_TREE_UNITS: the tokenizer's Unicode tables)
 is listed, with its license and notice, whenever Ninja's record shows a
 packaged executable built from it; a src/ file declaring a license outside
-D-017's code allowlist that IN_TREE_UNITS does not list, a listed file that
-is gone, or a failed Ninja query stops the package.
+the core's (D-017 as D-091 widens it), one no source-lock component or
+shipped platform unit declares, or one only IN_TREE_UNITS brings, that
+IN_TREE_UNITS does not list, a listed file that is gone, or a failed Ninja
+query stops the package.
 """
 
 from __future__ import annotations
@@ -64,9 +66,11 @@ CUDA_UNITS = ("cuda-runtime", "cccl")
 # in the copyright file, lists it in the SBOM and carries its `notice` (a
 # provenance.toml [notices] record) under its own heading. So that no such
 # file is missed, every file under src/ whose SPDX header declares a license
-# outside D-017's code allowlist must be listed here, and every listed file
-# must be a translation unit that exists: Ninja's inputs name sources, not
-# the headers they include.
+# outside the core's (srclib.CORE_LICENSES: D-017's allowlist as D-091 widens
+# it), one no source-lock component or shipped provenance unit declares, or a
+# license a unit here records, must be listed here, and every
+# listed file must be a translation unit that exists: Ninja's inputs name
+# sources, not the headers they include.
 TRANSLATION_UNITS = (".c", ".cc", ".cpp", ".cu")
 IN_TREE_UNITS = {
     "unicode-data": {
@@ -210,10 +214,26 @@ def declared_license(path: pathlib.Path) -> str | None:
 
 
 def check_in_tree_units(root: pathlib.Path = REPO) -> None:
-    """Fails unless IN_TREE_UNITS lists every file under root/src that declares a license outside D-017's code
-    allowlist (srclib.CORE_LICENSES), or no license, and lists only translation units that exist. Allowlisted
-    licenses beside Apache-2.0 mark code adapted from a source-lock component, whose notices come with it."""
+    """Fails unless IN_TREE_UNITS lists every file under root/src that declares a license outside the core's
+    (srclib.CORE_LICENSES: D-017's allowlist as D-091 widens it to every recognized permissive license), a
+    core license that no source-lock component or shipped provenance unit declares, a license an IN_TREE_UNITS
+    entry records, or no license, and lists only translation units that exist. The core's licenses beside
+    Apache-2.0 mark code adapted from a source-lock component or platform unit, whose notices come with it, so
+    that component's record must name the license; a license only an in-tree unit brings (Unicode-3.0 for the
+    tokenizer's tables) has no such component, so its files always need their record."""
     listed = {path for unit in IN_TREE_UNITS.values() for path in unit["files"]}
+    # A core license admits a file; a record carries its notice. So beside Apache-2.0 an unlisted file may
+    # declare only licenses that a source-lock component or a shipped platform unit declares too (a CUB-derived
+    # file waits for provenance.toml's cccl unit to name BSD-3-Clause and BSL-1.0 and carry their notices).
+    try:
+        recorded = {i for comp in srclib.load_lock(modules=[])["components"].values()
+                    for i in comp["license"]["expression"].split(" AND ")}
+    except srclib.SourceError as e:
+        raise PackageError(str(e)) from None
+    recorded |= {i for unit in tomllib.loads(PROVENANCE.read_text())["units"].values() if unit["ships"]
+                 for i in re.findall(r"[A-Za-z0-9.+-]+", unit["license"])}
+    unrecorded = ((srclib.CORE_LICENSES & recorded) | {"Apache-2.0"}) - {unit["license"]
+                                                                           for unit in IN_TREE_UNITS.values()}
     for path in sorted(listed):
         if pathlib.PurePosixPath(path).suffix not in TRANSLATION_UNITS or not (root / path).is_file():
             raise PackageError(f"IN_TREE_UNITS lists {path}, which is not a translation unit in the repository, "
@@ -222,9 +242,11 @@ def check_in_tree_units(root: pathlib.Path = REPO) -> None:
         rel = path.relative_to(root).as_posix()
         declared = declared_license(path)
         ids = set(re.findall(r"[A-Za-z0-9.+-]+", declared or "")) - {"AND", "OR", "WITH"}
-        if (not ids or not ids <= srclib.CORE_LICENSES) and rel not in listed:
-            raise PackageError(f"{rel} declares {declared or 'no license'}, beyond D-017's code allowlist, and no "
-                               "IN_TREE_UNITS entry lists it (its license and notice would not reach the package)")
+        if (not ids or not ids <= unrecorded) and rel not in listed:
+            raise PackageError(f"{rel} declares {declared or 'no license'}, beyond the core's licenses (D-017, "
+                               "D-091), recorded only in IN_TREE_UNITS or declared by no source-lock component "
+                               "or shipped platform unit, and no IN_TREE_UNITS entry lists it (its license and "
+                               "notice would not reach the package)")
 
 
 def in_tree_units(inputs: set[pathlib.Path]) -> list[tuple[str, dict]]:

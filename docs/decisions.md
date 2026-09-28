@@ -39,7 +39,52 @@ one Spark and on two.
 
 ---
 
-## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
+## D-091: Any permissive license may enter the core without a decision of its own; CUB is approved  (2026-09-28, status: accepted by the owner on 2026-09-28; amends D-017's core allowlist and D-002 where they require a license to be named before use; subsumes D-088's admission of Unicode-3.0)
+
+**Decision.** The owner, on 2026-09-28: "All permissive licenses are
+allowed even if not explicitly listed. CUB is approved."
+
+- **Permissive.** A license with no copyleft or share-alike obligation and
+  no field-of-use or non-commercial restriction (BSL-1.0, ISC, Zlib, 0BSD
+  and Unicode-3.0, for example) is allowed in the core, for code and data,
+  without a new decision. D-017's named list stands beside it, MPL-2.0
+  with its file-level obligations.
+- **Copyleft** is unchanged: optional modules, shipped by default, with
+  the copyleft-disabled profile as the build-time opt-out (D-080).
+- **Still a decision:** unknown terms, and non-permissive or proprietary
+  ones, such as NVIDIA's proprietary CUTLASS Python DSL license
+  (`nvidia-cutlass-dsl`), source-available or non-commercial licenses.
+- **Obligations still apply** and are still recorded: each component keeps
+  D-017's provenance record, and its notices and attribution ship. D-017's
+  platform family and D-002's provenance rules are unchanged.
+- **CUB** is approved for the core, with the two BSL-1.0 Thrust headers its
+  include closure reaches (`thrust/detail/preprocessor.h`,
+  `type_deduction.h`; licensing.md). Whether GGML's argsort and top-k use
+  it is settled by a measured A/B, not here; only the license question is.
+
+**Context.** D-017 kept D-015's five named licenses, so each other
+license, however permissive, needed its own decision: Unicode-3.0 took
+D-088, and CUB's two Thrust headers (BSL-1.0) kept GGML's argsort and
+top-k on a patched path without it (licensing.md).
+
+**Consequences.**
+- `CORE_LICENSES` in `tools/jitllm_sources.py` lists the permissive SPDX
+  identifiers recognized so far. Adding one, or a `LicenseRef-` for custom
+  terms read and found permissive, needs no decision, only the heavy-path
+  review of the change. The source lock refuses a core component outside
+  it; packaging refuses a `src/` file outside it, under a license no
+  source-lock component or shipped provenance unit declares (so no record
+  carries its notice), or under one only an in-tree data record brings
+  (Unicode-3.0), unless `IN_TREE_UNITS` records it.
+- D-088's Unicode-3.0 admission and its data-only limit are subsumed; its
+  provenance record and notice routing stand.
+- Adopting CUB records what is included in provenance.toml's `cccl` unit,
+  and the package then carries CUB's BSD-3-Clause notice.
+
+**Reopen if.** A license admitted as permissive turns out to carry an
+obligation or restriction above, or the owner narrows the rule.
+
+## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth to be re-measured (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
 
 **Decision.**
 - **What a graph holds.** A graph is captured per model, plan and chunk
@@ -123,13 +168,20 @@ account; the runtime's reservation policy counts it with the model's fixed
 overhead when graphs leave the harness. Captured graphs carry the plan's
 identity implicitly: a new plan is a new graph.
 
+**The owner, 2026-09-28.** Pinned places are confirmed. The owner
+questioned whether the decode-graph cache is worth its complexity for a
+gain of 1.04–1.05× ([graphs](experiments/fast-swap/graphs.md)). Graphs are
+re-measured once leases are held per request rather than per step; if
+their gain is then a rounding error, graph capture and caching are
+removed, and pinned places may stay on their own merits.
+
 **Reopen if.** A model must move between swaps (then per-node parameter
 updates or re-capture after a relocation), a kernel's parameters come to
 depend on per-step host data, graph memory grows past what a fixed
 per-model allowance covers, or captured replays stop matching launches
 bit for bit.
 
-## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); the owner may amend; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
+## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
 
 **Decision.**
 
@@ -180,7 +232,7 @@ than artifact granularity in a way roles cannot express; the installer's
 dependency tracking proves cleaner with components embedded; D-018's gate
 fixes a different compatibility policy.
 
-## D-088: Unicode data under the Unicode License V3 may enter the core; the tokenizer's tables are generated by jitLLM from pinned UCD 15.1.0 files  (2026-09-28, status: accepted by the owner on 2026-09-28, "Unicode license accepted"; proposed by the M3 tokenizer slice while the owner was away; amends D-017's core allowlist, for data only; closes first-slice.md's Unicode-table gate)
+## D-088: Unicode data under the Unicode License V3 may enter the core; the tokenizer's tables are generated by jitLLM from pinned UCD 15.1.0 files  (2026-09-28, status: accepted by the owner on 2026-09-28, "Unicode license accepted"; proposed by the M3 tokenizer slice while the owner was away; amends D-017's core allowlist, for data only; closes first-slice.md's Unicode-table gate; the explicit Unicode-3.0 admission subsumed by D-091, which admits every permissive license)
 
 **Decision.** The owner accepted it on 2026-09-28: "Unicode license
 accepted".
@@ -5480,7 +5532,7 @@ not implied merely by completing a milestone.
 before both model paths have been validated; that requires an explicit
 narrower contract and its own evidence.
 
-## D-017: Dependency policy distinguishes incorporated code, tools, and platform runtimes  (2026-09-20, status: accepted; supersedes D-015; optional modules shipped by default under D-080; 2026-09-28: D-088 amends the core allowlist, admitting Unicode-3.0 for data derived from Unicode's data files, not code)
+## D-017: Dependency policy distinguishes incorporated code, tools, and platform runtimes  (2026-09-20, status: accepted; supersedes D-015; optional modules shipped by default under D-080; 2026-09-28: D-088 amends the core allowlist, admitting Unicode-3.0 for data derived from Unicode's data files, not code; 2026-09-28: D-091 admits every permissive license to the core without a decision of its own, subsuming D-088's admission)
 
 **Decision.** jitLLM-authored code remains Apache-2.0. Classify dependencies
 by how they are used, and audit the full selected build, including its
@@ -5910,7 +5962,7 @@ D-015.
 for a different arrangement, or a core dependency turns out to be
 incompatible with Apache-2.0 distribution.
 
-## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate; optional copyleft shipped by default, with an opt-out, and suspected but unconfirmed provenance shipped under its declared license, under D-080)
+## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate; optional copyleft shipped by default, with an opt-out, and suspected but unconfirmed provenance shipped under its declared license, under D-080; any permissive license admitted to the core without being named first, under D-091)
 
 *Scope note (owner, 2026-09-20): model weights are outside the project's
 licensing scope. Users download them directly; jitLLM supports loading them

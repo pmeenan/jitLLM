@@ -122,7 +122,8 @@ not hardcoded application topology or a settled jitLLM configuration format.
 | `spark` | `enp1s0f1np1` | `10.100.208.2/24` | `rocep1s0f1/1` |
 | `spark` | `enP2p1s0f1np1` | `10.100.209.2/24` | `roceP2p1s0f1/1` |
 
-All four interfaces report `UP`, **200,000 Mb/s** link rate and **MTU 1500**;
+All four interfaces report `UP`, **200,000 Mb/s** link rate and **MTU 1500**
+(9000 since 2026-09-28: [jumbo frames](#jumbo-frames-on-the-direct-link-2026-09-28));
 their RDMA ports report `ACTIVE / LINK_UP`. Each node's route to its peer's
 address selects the corresponding interface and local source address.
 The other two ConnectX netdevs (`enp1s0f0np0`, `enP2p1s0f0np0`) are down.
@@ -390,9 +391,38 @@ over the direct link. One sample each, on 2026-09-28:
   in parallel ran at 0.350 and 0.338 GB/s, 0.69 GB/s together; Qwen-Image
   (33.1 GB) alone to `10.100.208.1` ran at 0.39 GB/s. `spark` was also
   downloading at the time, and part of each source was in its page cache.
-  This matches the 0.45 GB/s of SSH with AES-128-GCM above: SSH limits
-  it, far below the link, and unencrypted `nc` (1.05 GB/s above) or more
-  parallel streams would be faster.
+  That is far below the link; SSH's default cipher, chacha20-poly1305,
+  caps one stream at about 0.60 GB/s
+  ([jumbo frames](#jumbo-frames-on-the-direct-link-2026-09-28), which also
+  gives the faster recipe).
+
+### Jumbo frames on the direct link (2026-09-28)
+
+Approved by the owner and applied on 2026-09-28. Owner environment, not
+application configuration. Both Sparks' QSFP interfaces (`enp1s0f1np1`,
+`enP2p1s0f1np1`) have **MTU 9000**, set persistently in
+`/etc/netplan/99-nvidia-sync-cluster.yaml` (the prior file kept as
+`.bak-20260928` beside it), rendered by NetworkManager, and applied live
+with `ip link`. The management interface `enP7s7` is unchanged. RoCE
+`active_mtu` is 4096.
+
+One sample each, `spark` → `spark-b`, a single stream of zeros to
+`/dev/null` unless noted, on 2026-09-28:
+
+| Transfer | MTU 1500 | MTU 9000 |
+| --- | --- | --- |
+| SSH, default cipher (chacha20-poly1305) | 0.60 GB/s | — |
+| SSH, `aes128-gcm@openssh.com` | 1.12 GB/s | 1.01 GB/s |
+| Raw TCP (`nc`) | 1.75 GB/s | 2.45 GB/s |
+| Four parallel `nc` streams, two per address | — | 8.07 GB/s |
+
+So the default cipher's single-stream ceiling is consistent with the
+0.35 GB/s per stream of the `rsync` copy above, which also read from disk
+and was not profiled. **To copy between the Sparks,** use parallel `nc`
+streams, or SSH with AES-128-GCM (`scp -c aes128-gcm@openssh.com`;
+`rsync -e 'ssh -c aes128-gcm@openssh.com'`, since rsync's own `-c` means
+`--checksum`), split across both addresses (`10.100.208.x` and
+`10.100.209.x`).
 
 ### Front-door TLS certificates (2026-09-23)
 

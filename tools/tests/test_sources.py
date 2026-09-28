@@ -314,11 +314,20 @@ class Validation(unittest.TestCase):
         self.assertIn("license must be an object", self.problems(lock({"x": comp})))
         comp = component(license={"files": ["LICENSE"], "scope": "s", "evidence": "e"})
         self.assertIn("unclassified components are rejected", self.problems(lock({"x": comp})))
-        for expression in ("GPL-3.0-only", "MIT AND GPL-2.0-only", "BSL-1.0"):
+        for expression in ("GPL-3.0-only", "MIT AND GPL-2.0-only", "LGPL-2.1-only", "CC-BY-NC-4.0",
+                           "LicenseRef-NVIDIA-cutlass-dsl", "MIT AND LicenseRef-unknown"):
             comp = component(license=dict(component()["license"], expression=expression))
             self.assertIn("outside D-017's core allowlist", self.problems(lock({"x": comp})))
         comp = component(license=dict(component()["license"], expression="MIT OR GPL-2.0-only"))
         self.assertIn("joined by ' AND '", self.problems(lock({"x": comp})))
+
+    def test_any_recognized_permissive_license_is_core(self):
+        # D-091: a permissive license needs no decision of its own, CUB's and Thrust's among them.
+        for expression in ("BSL-1.0", "BSD-3-Clause AND BSL-1.0 AND Apache-2.0", "ISC", "Zlib", "0BSD",
+                           "Unicode-3.0", "MPL-2.0"):
+            with self.subTest(expression=expression):
+                comp = component(license=dict(component()["license"], expression=expression))
+                self.assertEqual(self.problems(lock({"x": comp})), "")
 
     def test_optional_components_need_a_declared_module(self):
         comp = component(tier="optional", license=dict(component()["license"], expression="AGPL-3.0-only"))
