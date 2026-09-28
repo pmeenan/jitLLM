@@ -153,13 +153,19 @@ class CalibrationGate(unittest.TestCase):
                          session.sha256(P1 / "bpf1-v2-calibration.json"))
         self.assertEqual(session.registered(registry, "cases", "v2"), session.sha256(P1 / "bpf1-cases.txt"))
         self.assertNotEqual(session.registered(registry, "harness", "v2"), session.registered(registry, "harness"))
-        record = json.loads((P1 / "bpf1-v2-timing.json").read_text())
-        self.assertEqual(record["rule"]["calibration_sha256"], session.registered_calibration(registry, "v2"))
-        for name, s in record["sessions"].items():
-            with self.subTest(session=name):
-                identities = s["manifest"]["identities"]
-                self.assertEqual(identities["harness_sha256"], session.registered(registry, "harness", "v2"))
-                self.assertEqual(identities["cases_sha256"], session.registered(registry, "cases", "v2"))
+        for record_name in ("bpf1-v2-timing.json", "bpf1-v2-comparison.json"):
+            record = json.loads((P1 / record_name).read_text())
+            self.assertEqual(record["rule"]["calibration_sha256"], session.registered_calibration(registry, "v2"))
+            for name, s in record["sessions"].items():
+                with self.subTest(record=record_name, session=name):
+                    identities = s["manifest"]["identities"]
+                    self.assertEqual(identities["harness_sha256"], session.registered(registry, "harness", "v2"))
+                    self.assertEqual(identities["cases_sha256"], session.registered(registry, "cases", "v2"))
+        comparison = json.loads((P1 / "bpf1-v2-comparison.json").read_text())
+        for name, s in comparison["sessions"].items():
+            with self.subTest(comparison=name):
+                self.assertEqual(s["manifest"]["arms"], {"A": "cuda-malloc", "B": "device-vmm"})
+                self.assertEqual(s["manifest"]["calibration_sha256"], session.registered_calibration(registry, "v2"))
 
 
 class SessionChecks(unittest.TestCase):

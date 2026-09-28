@@ -202,8 +202,8 @@ downstream performance problems."
 **Consequences.** Host VMM holds only the landing zone and buffers the CPU
 must map; device VMM is not CPU-mapped, so CPU diagnostics read a copy.
 The backend proof's rung 4 is device VMM, and rung 5 restores through the
-zone. At the owner's request, BP-F1 is rerun against device VMM in this
-cycle, under a newly pre-registered rule.
+zone. At the owner's request, BP-F1 was rerun against device VMM in this
+cycle, under a newly pre-registered rule (v2).
 The copier (copy engine or SM kernel) is a provider tuning choice. Not
 measured: the copy's effect on concurrently running kernels, which matters
 for partial paging during decode, not for cold loads.
@@ -225,12 +225,20 @@ flight, RE-027). Evidence: [pagein-perf](experiments/pagein-perf/README.md).
 On these measurements the condition no longer holds at D-034's two to
 four in flight; the decision is unchanged.
 
-**Reopen if.** BP-F1's rerun against device VMM fails, or the runtime's
-loads through the zone measurably fall below in-place direct reads (the
-owner's conditions were that the copy fix the L2 issue and not degrade
-loading), a driver exports device memory with page-backed mappings that
-direct I/O can pin, the kernel gains a dma-buf file-read path, or the copy
-measurably slows concurrent decode.
+**Update (2026-09-27): BP-F1 passes on device VMM.** Under rule v2
+(committed pre-registration `72c7c62`), no case failed both the primary
+and the mirrored confirmation session, and the aggregate passed in both
+(`t` 0.58 and −0.36, limit 3.143). All 53 cases' ratios to `cudaMalloc`
+were 0.957–1.037, as in the A/A sessions, with identical launches and
+outputs ([comparison](experiments/backend-proof-p1/README.md#comparison-device-vmm-against-cudamalloc-bp-f1-rule-v2-gated)).
+The BP-F1 reopen condition below did not trigger; D-081 stands.
+
+**Reopen if.** BP-F1 against device VMM fails (it passed on 2026-09-27),
+or the runtime's loads through the zone measurably fall below in-place
+direct reads (the owner's conditions were that the copy fix the L2 issue
+and not degrade loading), a driver exports device memory with page-backed
+mappings that direct I/O can pin, the kernel gains a dma-buf file-read
+path, or the copy measurably slows concurrent decode.
 
 ## D-080: jitLLM ships its optional copyleft modules by default, with a build-time opt-out; ExLlamaV3's GEMV is core-eligible, and its GEMM kernels and the direct CCCL include are cleared  (2026-09-27, status: accepted; amends D-079's distributed-build rule and GEMV's optional-module placement, how D-017's optional tier is applied, D-057's default-off optional modules, D-027's core-only default install and D-002's rule for ambiguous provenance)
 

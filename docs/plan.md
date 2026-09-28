@@ -422,7 +422,14 @@ reservation policy) were recorded in M0.
         `cudaMalloc` sessions on `spark` gave a median `σ` of 1.17%, and
         both holdout sessions passed alone. The new harness, the
         unchanged cases and the calibration are registered as "BP-F1 v2".
-        Next: the gated comparison, `cudaMalloc` against device VMM.
+      - **BP-F1 passes on device VMM** (2026-09-27, on `spark`, under the
+        committed pre-registration `72c7c62`). The primary session had two
+        cases over `z` (KQV and the k/v projection at 17 rows); the
+        mirrored confirmation had none, and the aggregate passed in both
+        (`t` 0.58 and −0.36). Every case's ratio to `cudaMalloc` was
+        0.957–1.037, with identical launches and outputs
+        ([comparison](experiments/backend-proof-p1/README.md#comparison-device-vmm-against-cudamalloc-bp-f1-rule-v2-gated)).
+        D-081 stands.
 
       - **Plan selection between implementations (D-053).** The
         implementation registry (`src/execution/registry.h`) holds each

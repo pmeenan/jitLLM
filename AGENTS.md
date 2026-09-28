@@ -242,12 +242,13 @@ end to end under the native operation plan, its executed plan equal to
 the record, exact at operation level, within Tier C's bounds and
 bit-identical when paged, evicted and restored. BP-F1 showed
 host VMM too slow for kernels, so weights and state move to device VMM
-behind a landing-zone copy (D-081); D-080 sets the license policy. The
+behind a landing-zone copy (D-081), where BP-F1's rerun passed; D-080
+sets the license policy. The
 scheduler now pages through that zone into device VMM and releases
 backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
 relocated) are bit-identical. Open: census rule v2 (measurement-accuracy
-allowances and an instrumented pass, at the owner's request), BP-F1's
-rerun against device VMM, write-back and state spill, BP-F2 (pre-registered;
+allowances and an instrumented pass, at the owner's request), write-back
+and state spill, BP-F2 (pre-registered;
 its timing sessions and native timing harness to come), the EXL3 census,
 the retained-backing timed sessions, and P4–P6. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

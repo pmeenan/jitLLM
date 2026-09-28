@@ -1,26 +1,36 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Backend proof P1: BP-F1, host VMM against cudaMalloc — 2026-09-27
+# Backend proof P1: BP-F1, host and device VMM against cudaMalloc — 2026-09-27
 
 BP-F1 asks whether jitLLM's GGML kernels run slower when their memory is
-host VMM than when it is `cudaMalloc` memory (D-034's reopen condition;
+jitLLM's VMM than when it is `cudaMalloc` memory: host VMM under rule v1
+(D-034's reopen condition), device VMM under rule v2 (D-081's;
 [backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry)).
 The approved kernel-timing rule needs BP-F1's own noise calibration and
 holdout before any comparison. This report records that calibration, which
 settles BP-F1's rule under D-079, and then the gated comparison, run once
-the pre-registration was reviewed and committed.
+the pre-registration was reviewed and committed; then the same for rule v2.
 
 **Results in brief.**
 
-- **Rule v2 (device VMM, D-081) is pre-registered; its holdout passes.**
-  The harness gained a device-VMM memory kind, so the rerun D-081 asks
-  for needed a new calibration. Four A/A `cudaMalloc` sessions with the
-  new binary give a median `σ` of 1.17% (0.15–3.15%). Both holdout
+- **BP-F1 passes on device VMM (rule v2).** Under the committed
+  pre-registration (`72c7c62`), no case fails the stage and the aggregate
+  passes in both sessions (`t` 0.58 and −0.36, limit 3.143). In the
+  primary session two cases went over `z`, which triggered the mirrored
+  confirmation: KQV at 17 rows (d = 4.45) and the k/v projection at 17
+  rows (d = 3.65). Neither did in the confirmation (2.2 and 2.0). Every
+  case's ratio of arm medians is 0.957–1.037 across both sessions; the
+  output head at one row takes 1,048.8 µs on `cudaMalloc` and 0.999× that on
+  device VMM. Launches and outputs are identical in both memory kinds.
+  D-081 stands ([comparison](#comparison-device-vmm-against-cudamalloc-bp-f1-rule-v2-gated)).
+- **Rule v2 (device VMM, D-081) was pre-registered, and its holdout
+  passed.** The harness gained a device-VMM memory kind, so the rerun D-081
+  asks for needed a new calibration. Four A/A `cudaMalloc` sessions with
+  the new binary give a median `σ` of 1.17% (0.15–3.15%). Both holdout
   sessions pass alone, with no case over `z` and aggregate `t` 0.03 and
   −0.59. backend-proof.md registers the harness (`0c191da7…`), the
-  unchanged case file and the calibration (`567cb849…`) as "BP-F1 v2".
-  The device-VMM comparison has not run yet
+  unchanged case file and the calibration (`567cb849…`) as "BP-F1 v2"
   ([rule v2](#rule-v2-device-vmm-d-081)).
 
 - **BP-F1 fails: host VMM is slower.** Under the pre-registered rule, 41
@@ -506,11 +516,134 @@ A subset slowed together (the stage fails at or above):
 The raw sessions and the harness copy stay on `spark` in
 `~/.local/share/jitllm/bpf1v2-20260927/`.
 
+## Comparison: device VMM against `cudaMalloc` (BP-F1 rule v2, gated)
+
+Run 2026-09-27 on `spark` after the pre-registration was reviewed and
+committed (`72c7c62`), exactly under it. The session driver checked the
+registered harness (`0c191da7…`), case file (`fe78d033…`) and calibration
+(`567cb849…`) against the committed backend-proof.md before running; each
+session's manifest and every device-VMM block record them. A is
+`cudaMalloc` (the reference), B device VMM (the candidate).
+
+**Outcome: BP-F1 passes.** No case fails both sessions, and the aggregate
+passes in both (`t` 0.58 and −0.36, limit 3.143). D-081 stands.
+
+| Session | Order | When (UTC) | Cases over `z` | Aggregate `t` | Candidate slower / faster |
+| --- | --- | --- | --- | --- | --- |
+| `p1` (primary) | A1 B1 B2 A2 B3 A3 A4 B4 | 23:47–23:49 | 2 | 0.58 | 28 / 22 |
+| `m1` (confirmation) | B1 A1 A2 B2 A3 B3 B4 A4 | 23:51–23:53 | 0 | −0.36 | 17 / 34 |
+
+The primary had two cases over `z`, so the mirrored confirmation ran, as
+the procedure requires: `attn.kqv.kv256` at 17 rows (ratio 1.026, d =
+4.45) and `linear.k_v` at 17 rows (1.027, d = 3.65). In `m1` they were
+1.013 (d = 2.2) and 1.015 (d = 2.0), under `z`, so neither fails the
+stage. Both are short kernels (about 9 and 8 µs) with calibrated `σ` of
+0.81% and 1.03%, so their thresholds are 2.0% and 2.6%. In the six A/A
+sessions of the calibration and holdout no case reached `z` (largest d
+2.83); here two did in one session and none in the other.
+`timing_protocol.py`
+at `c05fd2dd…` applied the rule; the current script gives the same
+outcome. Nothing in the rule was ambiguous in applying it, and no session
+was set aside.
+
+- **Conditions.** The sessions were queued behind another agent's SSD
+  sweep on `spark`, which the owner cancelled at 23:46:41 UTC. Each
+  session started only after the sweep's results file had ended with its
+  `done` line, no `fio`, `dd`, sweep or jitLLM benchmark process was
+  running, no compute process was on the GPU, and the load average was
+  below 0.5, at two checks 30 s apart. The load average was 0.27 and
+  0.20 at the starts, and 0.46–0.90 at block boundaries (the sessions'
+  own processes). No other compute process appeared before any block.
+  SM clock 2,411–2,437 MHz and 50–60 °C at block boundaries, with no
+  active throttle reason; application clock 2,418 MHz, driver 580.178.04,
+  kernel 7.0.0-1019-nvidia, CPU governor `performance`. Source: commit
+  `72c7c62` with no uncommitted changes; the session driver was the
+  committed `bpf1_session.py` (`7ba32a7e…`), which is also the copy the
+  calibration ran.
+- **The validity checks held in every block of both arms.** Every
+  captured launch matched the recorded plan on device VMM as on
+  `cudaMalloc`, and each case's output hash was the same in all 16 blocks.
+- **The ratios.** Every case's ratio of arm medians is 0.957–1.037
+  across both sessions, as in the six A/A sessions of the calibration
+  and holdout (0.957–1.039). The
+  cases host VMM slowed most are at 0.999–1.000 here: KQV at one row and
+  768 cells (4.90× on host VMM), the output head at one row (2.14×) and
+  at 512 rows (2.88×). The stream-launched arm (reported, not gated) is
+  0.92–1.09, its extremes the 17-row multiply (0.92 in `p1`, 1.09 in
+  `m1`).
+
+Per case: the reference's median (µs, the median of its four block
+medians in `p1`), each session's ratio of arm medians and its `d`
+(threshold `z` = 3.555), the stream-launched ratios, and the stage verdict.
+
+| Case | Rows | `cudaMalloc` µs | `p1` ratio | `p1` d | `m1` ratio | `m1` d | Stream `p1` / `m1` | Stage |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `add.bias_128` | 1 | 1.84 | 1.002 | 0.2 | 0.997 | -0.4 | 1.00 / 1.00 | passes |
+| `add.bias_896` | 1 | 2.03 | 0.957 | -2.8 | 1.016 | 1.0 | 1.00 / 1.00 | passes |
+| `attn.kq.kv256` | 1 | 5.52 | 1.001 | 0.8 | 0.999 | -0.4 | 0.99 / 1.00 | passes |
+| `attn.kq.kv768` | 1 | 3.68 | 0.999 | -0.4 | 1.001 | 0.2 | 1.00 / 1.01 | passes |
+| `attn.kqv.kv256` | 1 | 3.48 | 0.999 | -0.3 | 0.998 | -0.5 | 1.00 / 1.00 | passes |
+| `attn.kqv.kv768` | 1 | 4.91 | 0.999 | -0.2 | 0.999 | -0.2 | 1.00 / 1.00 | passes |
+| `linear.down` | 1 | 36.49 | 1.003 | 0.3 | 0.996 | -0.4 | 1.00 / 1.00 | passes |
+| `linear.gate_up` | 1 | 34.92 | 1.005 | 0.5 | 0.988 | -1.1 | 1.00 / 1.00 | passes |
+| `linear.k_v` | 1 | 2.80 | 0.993 | -0.3 | 0.971 | -1.3 | 1.01 / 1.00 | passes |
+| `linear.lm_head` | 1 | 1,048.80 | 0.999 | -0.5 | 1.000 | 0.2 | 1.00 / 1.00 | passes |
+| `linear.q_o` | 1 | 8.25 | 1.004 | 0.5 | 0.998 | -0.2 | 1.01 / 1.00 | passes |
+| `mul` | 1 | 1.94 | 0.995 | -0.2 | 1.022 | 1.1 | 0.99 / 1.00 | passes |
+| `rms_norm` | 1 | 2.68 | 1.000 | 0.0 | 0.998 | -0.6 | 0.97 / 1.00 | passes |
+| `rms_norm_mul` | 1 | 4.29 | 0.999 | -0.3 | 1.001 | 0.3 | 1.00 / 1.00 | passes |
+| `add.bias_128` | 16 | 2.03 | 1.002 | 0.1 | 1.037 | 2.3 | 1.00 / 1.03 | passes |
+| `add.bias_896` | 16 | 2.25 | 0.996 | -0.6 | 0.998 | -0.3 | 0.97 / 1.00 | passes |
+| `add.residual` | 16 | 2.44 | 1.005 | 0.4 | 0.996 | -0.3 | 0.98 / 0.98 | passes |
+| `attn.kq.kv256` | 16 | 3.89 | 0.995 | -0.5 | 0.988 | -1.1 | 1.00 / 0.99 | passes |
+| `attn.kqv.kv256` | 16 | 4.97 | 1.005 | 0.4 | 0.987 | -1.2 | 1.00 / 1.00 | passes |
+| `linear.down` | 16 | 41.11 | 1.004 | 0.4 | 1.001 | 0.1 | 1.00 / 0.99 | passes |
+| `linear.gate_up` | 16 | 39.79 | 1.000 | 0.0 | 0.982 | -1.8 | 1.00 / 0.99 | passes |
+| `linear.k_v` | 16 | 5.51 | 1.000 | 0.0 | 0.998 | -0.4 | 1.00 / 1.00 | passes |
+| `linear.lm_head` | 16 | 1,184.75 | 0.999 | -1.0 | 0.999 | -1.2 | 1.00 / 1.00 | passes |
+| `linear.q_o` | 16 | 9.97 | 1.000 | 0.0 | 0.976 | -2.1 | 1.01 / 0.98 | passes |
+| `mul` | 16 | 2.25 | 0.997 | -0.6 | 1.000 | 0.0 | 1.00 / 1.00 | passes |
+| `rms_norm` | 16 | 3.00 | 1.004 | 0.5 | 1.017 | 1.8 | 1.00 / 1.00 | passes |
+| `rms_norm_mul` | 16 | 4.18 | 1.000 | -0.1 | 0.999 | -0.3 | 1.00 / 1.00 | passes |
+| `add.bias_128` | 17 | 1.97 | 1.018 | 1.2 | 1.003 | 0.2 | 1.02 / 1.00 | passes |
+| `add.bias_896` | 17 | 2.25 | 1.002 | 0.3 | 0.997 | -0.4 | 0.99 / 0.98 | passes |
+| `add.residual` | 17 | 2.46 | 1.000 | 0.0 | 1.000 | 0.0 | 1.00 / 1.00 | passes |
+| `attn.kq.kv256` | 17 | 7.47 | 1.004 | 0.3 | 0.999 | -0.1 | 1.00 / 1.00 | passes |
+| `attn.kqv.kv256` | 17 | 8.92 | 1.026 | 4.5 | 1.013 | 2.2 | 1.01 / 1.00 | passes (over `z` in `p1` only) |
+| `linear.down` | 17 | 42.87 | 1.009 | 0.9 | 0.989 | -1.1 | 1.01 / 0.99 | passes |
+| `linear.gate_up` | 17 | 44.81 | 1.016 | 1.8 | 0.990 | -1.1 | 1.01 / 1.00 | passes |
+| `linear.k_v` | 17 | 8.08 | 1.027 | 3.6 | 1.015 | 2.0 | 1.03 / 0.95 | passes (over `z` in `p1` only) |
+| `linear.lm_head` | 17 | 1,320.44 | 0.999 | -0.4 | 1.001 | 0.7 | 1.00 / 1.00 | passes |
+| `linear.q_o` | 17 | 13.12 | 1.011 | 1.2 | 0.994 | -0.6 | 1.00 / 0.99 | passes |
+| `mul` | 17 | 2.25 | 0.997 | -0.5 | 1.009 | 1.6 | 0.92 / 1.09 | passes |
+| `rms_norm` | 17 | 3.05 | 1.002 | 0.3 | 0.998 | -0.3 | 1.03 / 1.00 | passes |
+| `rms_norm_mul` | 17 | 4.15 | 1.001 | 0.2 | 0.996 | -0.6 | 1.00 / 1.00 | passes |
+| `add.bias_128` | 512 | 4.08 | 1.006 | 0.6 | 0.995 | -0.4 | 1.00 / 1.00 | passes |
+| `add.bias_896` | 512 | 17.06 | 0.998 | -0.2 | 0.983 | -1.9 | 0.99 / 0.98 | passes |
+| `add.residual` | 512 | 23.88 | 0.989 | -0.8 | 0.995 | -0.4 | 1.01 / 0.98 | passes |
+| `attn.kq.kv768` | 512 | 128.38 | 0.997 | -0.7 | 1.000 | 0.0 | 1.00 / 1.00 | passes |
+| `attn.kqv.kv768` | 512 | 188.38 | 1.005 | 1.2 | 0.994 | -1.2 | 1.00 / 1.00 | passes |
+| `linear.down` | 512 | 123.68 | 0.999 | -0.1 | 0.994 | -0.6 | 0.99 / 0.99 | passes |
+| `linear.gate_up` | 512 | 138.50 | 1.012 | 2.8 | 1.002 | 0.4 | 1.01 / 1.00 | passes |
+| `linear.k_v` | 512 | 17.62 | 0.991 | -1.8 | 1.003 | 0.5 | 1.00 / 1.00 | passes |
+| `linear.lm_head` | 512 | 4,135.06 | 0.999 | -0.4 | 1.000 | 0.0 | 1.00 / 1.00 | passes |
+| `linear.q_o` | 512 | 34.41 | 1.003 | 0.3 | 1.016 | 1.2 | 1.00 / 1.00 | passes |
+| `mul` | 512 | 17.29 | 1.002 | 0.2 | 1.021 | 2.0 | 1.01 / 1.00 | passes |
+| `rms_norm` | 512 | 17.76 | 0.996 | -0.4 | 0.984 | -1.7 | 1.00 / 0.99 | passes |
+| `rms_norm_mul` | 512 | 18.10 | 1.006 | 0.8 | 0.983 | -2.1 | 1.00 / 0.99 | passes |
+
+[`bpf1-v2-comparison.json`](bpf1-v2-comparison.json) holds both sessions'
+manifests, block medians and `d`, and the rule's outcome, written by
+[`bpf1_compare_record.py`](bpf1_compare_record.py). The raw samples and
+logs stay on `spark` in `~/.local/share/jitllm/bpf1v2-20260927/p1` and
+`m1`.
+
 ## Limitations
 
 - **One host, one day.** All sessions ran on `spark` on 2026-09-27:
   rule v1's calibration and holdout in 05:27–05:51 UTC and its comparison
-  in 06:30–06:37; rule v2's calibration and holdout in 23:00–23:17.
+  in 06:30–06:37; rule v2's calibration and holdout in 23:00–23:17 and
+  its comparison in 23:47–23:53.
   `spark-b` served only development runs, which are not evidence.
 - **Not the whole model.** The cases are the kernels jitLLM has; RoPE,
   softmax, the KV writes, the SiLU gate and the fused single-row MMVF
@@ -580,4 +713,6 @@ Rule v2 differs in two places. The harness is built on a Spark
 with the mise-pinned Python, from sessions named `c1`–`c4`, `h1` and `h2`
 as for v1. A device-VMM comparison session passes `--arm-b device-vmm
 --registry docs/backend-proof.md --calibration bpf1-v2-calibration.json`
-with the v2 harness and case file.
+with the v2 harness and case file; `bpf1_stats.py --registry` summarizes
+it, and `bpf1_compare_record.py --calibration bpf1-v2-calibration.json`
+wrote `bpf1-v2-comparison.json`.

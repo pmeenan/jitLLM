@@ -27,7 +27,7 @@ consumes or hosts them.
 | The operation contract: dependencies, workspace, streams/fences, captured pointers, backend allocations, errors (ideation §10) | All stages | Decision entry at M2 close, before M3 builds on it |
 | Executable-layout constraints: alignment, padding, kernel-readable ranges, tile rules | P2–P4 against D-056's v0 encoding | Validates or amends the experimental artifact |
 | Phase envelopes and fixed runtime overhead `F` for the declared profiles | P6 | D-050 admission numbers for M2/M3 |
-| Whether actual kernels regress on jitLLM's VMM (host VMM failed; device VMM since D-081) | BP-F1 | D-081 reopen check |
+| Whether actual kernels regress on jitLLM's VMM (host VMM failed; device VMM, D-081, passed) | BP-F1 | D-081 reopen check |
 | EXL3 per-kernel time and workspace parity with upstream | BP-F2 | D-052 M2 gate |
 
 The proof is not complete with a loader, one matrix multiply, an external
@@ -530,7 +530,8 @@ before the native output it governs.
     2026-09-27, it fails: host VMM is slower. The owner answered with
     D-081 (device VMM). BP-F1 rule v2, for device VMM, was pre-registered
     the same day with its own harness, calibration and a passing holdout,
-    before any device-VMM session ran on `spark`.
+    before any device-VMM session ran on `spark`. Applied the same day, it
+    passes: no case fails, and the aggregate passes in both sessions.
   - *Pre-registered on 2026-09-27 (D-079), before any native FP16 run:*
     the FP16 memory limits and M2's census rule
     ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
@@ -1473,8 +1474,8 @@ reference container.
   is the reference, under this rule. The session must pass before any
   native kernel is timed.
 - **BP-F1: jitLLM's VMM against `cudaMalloc`.** Host VMM failed rule v1
-  below; under D-081 BP-F1 is rerun against device VMM under rule v2,
-  pre-registered below.
+  below; under D-081 BP-F1 was rerun against device VMM under rule v2,
+  pre-registered below, and passed.
   - Compares the same GGML kernels, at the held-out trajectory's chunk
     shapes (1, 16, 17 and 512 rows).
   - Each sample rotates through weight buffers whose total exceeds four
@@ -1583,6 +1584,17 @@ reference container.
       mirrored confirmation. A case fails BP-F1 only when it fails both;
       the aggregate must pass in the confirmation too. The stream-launched
       arm is reported, not gated. A failure reopens D-081.
+  - **Result under rule v2 (2026-09-27): BP-F1 passes; D-081 stands.**
+    Run under the committed pre-registration (`72c7c62`) on `spark`. The
+    primary session `p1` had two cases over `z`: KQV at 17 rows (d =
+    4.45) and the k/v projection at 17 rows (d = 3.65). Its aggregate
+    passed (`t` 0.58). The mirrored confirmation `m1` had no case over
+    `z` (those two at 2.2 and 2.0) and aggregate `t` −0.36, so no case
+    fails the stage. Every case's ratio of arm medians was 0.957–1.037
+    across both sessions, as in the six A/A sessions (0.957–1.039);
+    the cases host VMM slowed most (the output head, single-row KQV)
+    were at 0.999–1.000. Launches and outputs were identical in both memory kinds
+    ([comparison](experiments/backend-proof-p1/README.md#comparison-device-vmm-against-cudamalloc-bp-f1-rule-v2-gated)).
 - **BP-F2: EXL3 kernels.**
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
     matched plan; EXL3-O since D-080, with the case set fixed at P3 entry
@@ -1829,7 +1841,8 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 beside the candidate)
 
 - **BP-F1:** GGML kernel times on jitLLM's VMM versus `cudaMalloc` memory
-  (the D-081 check; host VMM failed it, 2026-09-27).
+  (the D-081 check; host VMM failed it, and device VMM passed it,
+  2026-09-27).
 - **BP-F2:** EXL3 kernel parity on the 176 declared cases (the D-052 M2
   gate).
 - **BP-F3:** Resident full-model timings for all three fixtures, reported
