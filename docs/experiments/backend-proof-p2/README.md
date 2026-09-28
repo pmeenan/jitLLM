@@ -6,19 +6,21 @@
 This is P2 of the [backend proof](../../backend-proof.md#stages): native
 execution of the Qwen2.5-0.5B FP16 fixture from its v0 prepared artifact,
 judged by the FP16 Tier E gate (the recorded-plan match, then bit-exact
-logits against the toolchain bridge) and by the allocation census. The gate
-order is pre-registered: the bridge's `F` cap first, then FP16-U `control`,
-then FP16-F `control`, then `heldout` for both, each plan match before its
-logits.
+logits against the toolchain bridge) and by memory. The memory judgment
+was the allocation census until D-085 replaced it with a coarse peak check
+([below](#memory-check-d-085)). The gate order is pre-registered: the
+bridge's `F` cap first, then FP16-U `control`, then FP16-F `control`, then
+`heldout` for both, each plan match before its logits.
 
-**Results in brief** (2026-09-27, `spark-b`, rung 3: `cudaMalloc`):
+**Results in brief** (2026-09-27, `spark-b`, rung 3: `cudaMalloc`; peaks on
+`spark`):
 
-| Arm | Plan (`plan_compare.py`) | Logits against the bridge | Repeat | Census |
-| --- | --- | --- | --- | --- |
-| FP16-U `control` | MATCH, exit 0 | bit-identical, `3560d337…` | exact | FAIL (below) |
-| FP16-F `control` | MATCH, exit 0 | bit-identical, `bb8ae5e7…` | exact | FAIL (below) |
-| FP16-U `heldout` | MATCH, exit 0 | bit-identical, `69ff0821…` | exact | FAIL (below) |
-| FP16-F `heldout` | MATCH, exit 0 | bit-identical, `bfb36f19…` | exact | FAIL (below) |
+| Arm | Plan (`plan_compare.py`) | Logits against the bridge | Repeat | Census v1 | Peak against the bridge (D-085) |
+| --- | --- | --- | --- | --- | ---: |
+| FP16-U `control` | MATCH, exit 0 | bit-identical, `3560d337…` | exact | FAIL (below) | 0.96× |
+| FP16-F `control` | MATCH, exit 0 | bit-identical, `bb8ae5e7…` | exact | FAIL (below) | 0.81× |
+| FP16-U `heldout` | MATCH, exit 0 | bit-identical, `69ff0821…` | exact | FAIL (below) | 0.95× |
+| FP16-F `heldout` | MATCH, exit 0 | bit-identical, `bfb36f19…` | exact | FAIL (below) | 0.94× |
 
 Each arm's plan matched `fp16-plan.json` completely (every chunk of both
 evaluations run, with cuBLAS's logs, SASS hashes and an nsys trace of the
@@ -88,8 +90,12 @@ the bridge.
 recorded run under `nsys profile --trace=cuda` with cuBLAS's and
 cuBLASLt's logs, the binary's SASS hashes from `cuobjdump -sass`, then
 `plan_compare.py convert` and `compare`), `logits` (the same run's logits
-against the arm's recorded SHA-256), and `census` (a separate run, judged
-by `census.py`). Conditions of the runs above: `spark-b` (GB10, kernel
+against the arm's recorded SHA-256), and `census`. The census runs below
+were made under rule version 1, by the `census` stage of the commit that
+recorded them (`d2601ad`, judged by `census.py`). Since D-085 the stage is
+`peak`, the [memory check](#memory-check-d-085), and `census.py` and
+`fp16-f-caps.json` are in Git history only. Conditions of the runs
+above: `spark-b` (GB10, kernel
 7.0.0-1019-nvidia, driver 580.178.04), the `cross` build (SDK
 `x86_64-e0a0c85c42806fb1`) deployed there, `jitllm_fp16_exec` SHA-256
 `0f4d6331…`, cuBLAS 13.8.0.4 (the libraries' hashes equal the record's),
@@ -116,12 +122,15 @@ before any native census result was seen.
   API as [`fp16_reference.cc`](../backend-proof-p0/fp16_reference.cc) does,
   first evaluation only, reading the census counters at every step and
   running the rule's controls after the context and after the evaluation.
+  (That is the revision of `d2601ad`, binary `b6bd4f6b…`. The file now
+  takes three reads per reading and two evaluations; the memory check
+  runs it.)
   [`census_bridge.sh`](census_bridge.sh) compiles it on a Spark and links it
   with the P0 bridge build's own libraries and link line.
-  [`census.py`](census.py) attributes each interval
+  `census.py` (removed under D-085) attributed each interval
   (`bridge RUN... --plan fp16-plan.json --arm ARM`), adding the buffers the
-  API cannot report from P0's record, and writes the caps
-  ([`fp16-f-caps.json`](fp16-f-caps.json), `--caps-out`).
+  API cannot report from P0's record, and wrote the caps
+  (`fp16-f-caps.json`, `--caps-out`).
 - **Conditions.** `spark-b` (`spark-56f5`; GB10, kernel 7.0.0-1019-nvidia,
   driver 580.178.04), no other GPU work, the GGUF (`8e0ae260…`) read into
   the page cache first, P0's environment (`CUDA_DISABLE_PTX_JIT=1`,
@@ -361,6 +370,34 @@ with it (binary `a60ec0cd…`): `threads` on all four arms gave the recorded
 hashes, zero bit differences and no coverage violation, and `plan` on
 `control-fused` matched every chunk.
 
+## Memory check (D-085)
+
+D-085 stopped the census rules and their nsys passes. Memory is judged
+loosely: a native run's peak, by ordinary counters, may be at most about
+10% above the bridge's. On `spark` (idle, 2026-09-27) each engine ran once
+per arm under [`peak_memory.sh`](peak_memory.sh) (`run_native.sh peak`, and
+`fp16_census` for the bridge, both with a 50 ms settle). All four arms pass:
+
+| Arm | Native peak (MiB) | Bridge peak (MiB) | Ratio |
+| --- | ---: | ---: | ---: |
+| FP16-F `control` | 1,886 | 2,321 | 0.81 |
+| FP16-U `control` | 2,019 | 2,108 | 0.96 |
+| FP16-F `heldout` | 3,716 | 3,973 | 0.94 |
+| FP16-U `heldout` | 3,473 | 3,654 | 0.95 |
+
+Method, conditions and the `spark-b` run that was not used are in
+[backend-proof.md](../../backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd).
+Before D-085, two more census rules were tried; their text and tools are
+in Git history:
+- **Version 2** added an exact nsys tier to the counters. Its counter tier
+  failed a holdout on the bridge itself (a 675 MiB jump with nothing
+  API-visible behind it), and it was never registered.
+- **Version 3** gated on the nsys tier alone. It passed its bridge holdout
+  on all four arms and was dropped before registration.
+
+What the nsys passes found: cuBLAS's handle creation keeps a 64.1 MiB
+default workspace pool that `cublasSetWorkspace` does not free (RE-028).
+
 ## Not covered here
 
 - **The cache is not evicted at the restore point:** spilling state takes
@@ -371,7 +408,6 @@ hashes, zero bit differences and no coverage violation, and `plan` on
   and bound anew. Nothing captures a pointer across chunks here (no CUDA
   graphs, no pointer tables), so BP-P5's rejection of stale ones is not
   exercised.
-- The census (BP-A1's reconciliation with the system counters, BP-A2,
-  BP-A5) is not run on the paged harness; it is being redone (v2).
-- The census's charges are recorded as the rule makes them; the rule
-  itself is not changed here.
+- **The memory check covers rung 3 only.** The paged harness (rungs 4
+  and 5) has not been measured against the bridge. Version 1's census
+  charges are recorded as that rule made them.

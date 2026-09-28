@@ -1,39 +1,48 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
-// External llama.cpp reference harness for backend-proof P2's allocation
-// census (docs/backend-proof.md, "Memory and workspace", the census rule):
-// the FP16 toolchain bridge's own unexplained memory growth, measured with
-// the counters and controls the rule names, so that native's `F` can be
-// capped at it. It does not implement jitLLM inference. It links the
+// External llama.cpp reference harness for backend-proof P2's memory
+// measurements (docs/backend-proof.md, "Memory and workspace"): the FP16
+// toolchain bridge run with the census readings and controls, the
+// reference side of the coarse memory check (D-085, which ended the census
+// rules). It does not implement jitLLM inference. It links the
 // bridge's existing build (census_bridge.sh) and evaluates the trajectories
-// of ../backend-proof-p0/fp16_reference.cc (first evaluation only), with
-// readings at quiescent points:
+// of ../backend-proof-p0/fp16_reference.cc twice on one context (the second
+// from a cleared cache, as native's second evaluation runs), with readings
+// at quiescent points:
 //
 //   fp16_census MODEL OUTPUT_JSON control|heldout [IDS_FILE]
 //
-// Readings (each after a settle, below): /proc/meminfo's MemAvailable and
-// SUnreclaim, the pages on the per-CPU page lists (/proc/zoneinfo), the process's RssAnon and RssFile (/proc/self/status), and
-// mallinfo2. Steps: process start; after the CUDA context (cudaFree(0));
-// after the backends' initialization; after the model load; after the
-// context's creation (KV, compute and output buffers); then after every
-// chunk of the first evaluation, once llama_synchronize has returned.
+// Readings (each after a fixed settle, below):
+// /proc/meminfo's MemAvailable and SUnreclaim and the pages on the per-CPU
+// page lists (/proc/zoneinfo), three times back to back; the process's
+// RssAnon and RssFile (/proc/self/status); mallinfo2; every other process's
+// RssAnon, summed (/proc/*/status); and CLOCK_REALTIME and
+// CLOCK_MONOTONIC_RAW, which place the reading on an nsys trace's
+// timeline. Steps: process start; after the CUDA context
+// (cudaFree(0)); after the backends' initialization; after the model load;
+// after the context's creation (KV, compute and output buffers); then, in
+// each evaluation, before every chunk and after it, once llama_synchronize
+// has returned; then six tail readings with no work between them.
 // Every buffer the bridge declares is recorded with each reading: model,
 // KV and compute buffers by buffer type (llama_get_memory_breakdown) and
 // the output buffer (llama_context::output_reserve's size). The GGML
 // pool's committed bytes and the cuBLAS workspace are not visible through
-// the API; census.py takes them from fp16-plan.json's record.
+// the API; fp16-plan.json records them.
 //
 // Controls, three repeats each, read before, while held and after being
 // freed, once after the context (followed by a reading of its own, so any
 // residue the controls leave is an interval of its own) and once after the
-// last chunk: a 64 MiB
+// tail readings: a 64 MiB
 // cudaMalloc (cleared), a 64 MiB VMM mapping in 2 MiB extents
 // (cuMemCreate, cuMemMap, cuMemSetAccess), and 64 MiB of host memory from
 // malloc, written. At the end only, a 64 MiB cudaMallocHost probe is read
 // the same way; it is not a control, it shows which counters pinned host
 // memory moves.
 // The logits' SHA-256 is written too: the harness must reproduce the
-// bridge's recorded logits for its counts to be the bridge's.
+// bridge's recorded logits for its counts to be the bridge's, and the
+// second evaluation must equal the first bit for bit. Every host page either
+// evaluation's logits are kept in is touched before the context is created,
+// so no reading interval faults them in (native does the same).
 #include "llama.h"
 #include "llama-ext.h"
 #include "ggml-backend.h"
@@ -52,6 +61,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <dirent.h>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -85,25 +96,52 @@ static std::string slurp(const char * path) {
 
 struct Reading {
     std::string step;
+    int evaluation = 0;
     int chunk = -1;
-    uint64_t mem_available = 0, pcp = 0, sunreclaim = 0, rss_anon = 0, rss_file = 0;
+    // Three back-to-back reads of the system counters (a list drained
+    // between two files' reads tears only one of them).
+    std::array<uint64_t, 3> mem_available{}, pcp{}, sunreclaim{};
+    uint64_t rss_anon = 0, rss_file = 0;
     uint64_t malloc_arena = 0, malloc_hblkhd = 0, malloc_uordblks = 0;
+    uint64_t others_rss_anon = 0, others_processes = 0;
+    int64_t settle_from_raw_ns = 0, realtime_ns = 0, raw_ns = 0;
     std::map<std::string, uint64_t> declared;
 };
 
 static std::map<std::string, uint64_t> g_declared;
 
-// Each reading waits CENSUS_SETTLE_MS (default 250 ms) first.
+// Each reading waits CENSUS_SETTLE_MS first (2,500 ms by default, more
+// than twice vm.stat_interval; the coarse memory check uses 50 ms).
 static int settle_ms() {
     const char * env = std::getenv("CENSUS_SETTLE_MS");
-    return env ? std::atoi(env) : 250;
+    return env ? std::atoi(env) : 2500;
+}
+
+// Every other process's RssAnon, summed, and how many there are: memory
+// another process takes moves MemAvailable too.
+static void others(uint64_t & rss_anon, uint64_t & processes) {
+    rss_anon = processes = 0;
+    const long self = long(getpid());
+    DIR * proc = opendir("/proc");
+    require(proc != nullptr, "/proc");
+    while (const dirent * entry = readdir(proc)) {
+        char * end = nullptr;
+        const long pid = std::strtol(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '\0' || pid == self) continue;
+        const std::string status = slurp(("/proc/" + std::string(entry->d_name) + "/status").c_str());
+        if (status.empty()) continue;  // exited meanwhile
+        ++processes;
+        const size_t at = ("\n" + status).find("\nRssAnon:");
+        if (at != std::string::npos) rss_anon += std::strtoull(status.c_str() + at + 8, nullptr, 10) * 1024;
+    }
+    closedir(proc);
 }
 
 // The pages on every CPU's per-CPU page lists, in bytes: /proc/zoneinfo's
 // `count:` under each zone's pagesets. Freed pages wait there, and
 // allocations are served from there, without moving the free-page counter
 // that MemAvailable reads, so MemAvailable plus these is what tracks an
-// allocation (census.py).
+// allocation (RE-024).
 static uint64_t pcp_bytes() {
     std::ifstream file("/proc/zoneinfo");
     std::string line;
@@ -117,33 +155,54 @@ static uint64_t pcp_bytes() {
     return pages * uint64_t(sysconf(_SC_PAGESIZE));
 }
 
-static Reading read(const std::string & step, int chunk = -1) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms()));
+static int64_t clock_ns(clockid_t clock) {
+    timespec now{};
+    clock_gettime(clock, &now);
+    return int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+}
+
+static Reading read(const std::string & step, int evaluation = 0, int chunk = -1) {
     Reading r;
+    r.settle_from_raw_ns = clock_ns(CLOCK_MONOTONIC_RAW);
+    std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms()));
     r.step = step;
+    r.evaluation = evaluation;
     r.chunk = chunk;
-    const std::string meminfo = slurp("/proc/meminfo");
+    r.realtime_ns = clock_ns(CLOCK_REALTIME);
+    r.raw_ns = clock_ns(CLOCK_MONOTONIC_RAW);
+    for (size_t i = 0; i < r.mem_available.size(); ++i) {
+        const std::string meminfo = slurp("/proc/meminfo");
+        r.mem_available[i] = field_kib(meminfo, "MemAvailable");
+        r.pcp[i] = pcp_bytes();
+        r.sunreclaim[i] = field_kib(meminfo, "SUnreclaim");
+    }
     const std::string status = slurp("/proc/self/status");
-    r.mem_available = field_kib(meminfo, "MemAvailable");
-    r.pcp = pcp_bytes();
-    r.sunreclaim = field_kib(meminfo, "SUnreclaim");
     r.rss_anon = field_kib(status, "RssAnon");
     r.rss_file = field_kib(status, "RssFile");
     const struct mallinfo2 m = mallinfo2();
     r.malloc_arena = m.arena;
     r.malloc_hblkhd = m.hblkhd;
     r.malloc_uordblks = m.uordblks;
+    others(r.others_rss_anon, r.others_processes);
     r.declared = g_declared;
     return r;
 }
 
+static std::string triple(const std::array<uint64_t, 3> & v) {
+    return "[" + std::to_string(v[0]) + "," + std::to_string(v[1]) + "," + std::to_string(v[2]) + "]";
+}
+
 static std::string json(const Reading & r) {
-    std::string out = "{\"step\":\"" + r.step + "\",\"chunk\":" + std::to_string(r.chunk) +
-        ",\"mem_available\":" + std::to_string(r.mem_available) + ",\"pcp\":" + std::to_string(r.pcp) +
-        ",\"sunreclaim\":" + std::to_string(r.sunreclaim) + ",\"rss_anon\":" + std::to_string(r.rss_anon) +
+    std::string out = "{\"step\":\"" + r.step + "\",\"evaluation\":" + std::to_string(r.evaluation) +
+        ",\"chunk\":" + std::to_string(r.chunk) + ",\"settle_from_raw_ns\":" + std::to_string(r.settle_from_raw_ns) +
+        ",\"realtime_ns\":" + std::to_string(r.realtime_ns) + ",\"raw_ns\":" + std::to_string(r.raw_ns) +
+        ",\"mem_available\":" + triple(r.mem_available) + ",\"pcp\":" + triple(r.pcp) +
+        ",\"sunreclaim\":" + triple(r.sunreclaim) + ",\"rss_anon\":" + std::to_string(r.rss_anon) +
         ",\"rss_file\":" + std::to_string(r.rss_file) + ",\"malloc_arena\":" + std::to_string(r.malloc_arena) +
         ",\"malloc_hblkhd\":" + std::to_string(r.malloc_hblkhd) +
-        ",\"malloc_uordblks\":" + std::to_string(r.malloc_uordblks) + ",\"declared\":{";
+        ",\"malloc_uordblks\":" + std::to_string(r.malloc_uordblks) +
+        ",\"others_rss_anon\":" + std::to_string(r.others_rss_anon) +
+        ",\"others_processes\":" + std::to_string(r.others_processes) + ",\"declared\":{";
     bool first = true;
     for (const auto & [name, bytes] : r.declared) {
         out += (first ? "\"" : ",\"") + name + "\":" + std::to_string(bytes);
@@ -155,6 +214,9 @@ static std::string json(const Reading & r) {
 // ---------------------------------------------------------------- controls
 
 static constexpr size_t kControl = size_t{64} << 20;
+static constexpr int kEvaluations = 2;
+// Readings after the last evaluation with no work between them.
+static constexpr int kTailReadings = 6;
 static constexpr size_t kExtent = size_t{2} << 20;
 
 static void cuda_ok(cudaError_t e, const char * what) { require(e == cudaSuccess, what); }
@@ -371,9 +433,10 @@ int main(int argc, char ** argv) try {
     cp.type_k = cp.type_v = GGML_TYPE_F16;
     cp.offload_kqv = cp.op_offload = true;
     const int n_vocab = 151936;
-    // The logits kept for the hash: reserved and touched before the first
-    // chunk, so they add nothing inside a chunk.
-    std::vector<float> logits(t.tokens.size() * size_t(n_vocab), 0.0f);
+    // Both evaluations' logits, kept for the hash: reserved and touched
+    // before the context, so they add nothing inside a chunk.
+    std::vector<std::vector<float>> logits(kEvaluations,
+                                           std::vector<float>(t.tokens.size() * size_t(n_vocab), 0.0f));
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(llama_init_from_model(model.get(), cp), llama_free);
     require(bool(ctx), "Context creation failed");
     declare_breakdown(ctx.get());
@@ -382,40 +445,57 @@ int main(int argc, char ** argv) try {
     g_declared["output:CUDA_Host"] = outputs * size_t(n_vocab) * sizeof(float);
     readings.push_back(read("context-created"));
 
-    int pos = 0;
-    int chunk = 0;
-    for (const int count : t.chunks) {
-        auto batch = llama_batch_init(count, 0, 1);
-        batch.n_tokens = count;
-        for (int i = 0; i < count; ++i) {
-            batch.token[i] = t.tokens[size_t(pos + i)];
-            batch.pos[i] = pos + i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i] = true;
+    for (int e = 1; e <= kEvaluations; ++e) {
+        // The second evaluation runs from a cleared cache on the same
+        // context, as native's does: its buffers are the first's.
+        if (e > 1) llama_memory_clear(llama_get_memory(ctx.get()), true);
+        int pos = 0;
+        int chunk = 0;
+        for (const int count : t.chunks) {
+            readings.push_back(read("before", e, chunk));
+            auto batch = llama_batch_init(count, 0, 1);
+            batch.n_tokens = count;
+            for (int i = 0; i < count; ++i) {
+                batch.token[i] = t.tokens[size_t(pos + i)];
+                batch.pos[i] = pos + i;
+                batch.n_seq_id[i] = 1;
+                batch.seq_id[i][0] = 0;
+                batch.logits[i] = true;
+            }
+            const int status = llama_decode(ctx.get(), batch);
+            llama_synchronize(ctx.get());
+            llama_batch_free(batch);
+            require(status == 0, "Decode failed");
+            for (int i = 0; i < count; ++i) {
+                const float * row = llama_get_logits_ith(ctx.get(), i);
+                require(row != nullptr, "Missing logits");
+                std::memcpy(logits[size_t(e - 1)].data() + size_t(pos + i) * size_t(n_vocab), row,
+                            size_t(n_vocab) * sizeof(float));
+            }
+            outputs = std::max(outputs, size_t(count));
+            g_declared["output:CUDA_Host"] = outputs * size_t(n_vocab) * sizeof(float);
+            declare_breakdown(ctx.get());
+            readings.push_back(read("chunk", e, chunk));
+            pos += count;
+            ++chunk;
         }
-        const int status = llama_decode(ctx.get(), batch);
-        llama_synchronize(ctx.get());
-        llama_batch_free(batch);
-        require(status == 0, "Decode failed");
-        for (int i = 0; i < count; ++i) {
-            const float * row = llama_get_logits_ith(ctx.get(), i);
-            require(row != nullptr, "Missing logits");
-            std::memcpy(logits.data() + size_t(pos + i) * size_t(n_vocab), row, size_t(n_vocab) * sizeof(float));
-        }
-        outputs = std::max(outputs, size_t(count));
-        g_declared["output:CUDA_Host"] = outputs * size_t(n_vocab) * sizeof(float);
-        declare_breakdown(ctx.get());
-        readings.push_back(read("chunk", chunk));
-        pos += count;
-        ++chunk;
     }
-    run_controls("after the evaluation", true);
-    const std::string hash = sha256(reinterpret_cast<const unsigned char *>(logits.data()), logits.size() * sizeof(float));
+    for (int i = 0; i < kTailReadings; ++i) readings.push_back(read("tail", 0, i));
+    run_controls("after the evaluations", true);
+    const std::string hash = sha256(reinterpret_cast<const unsigned char *>(logits[0].data()),
+                                    logits[0].size() * sizeof(float));
+    size_t repeat_differences = 0;
+    for (int e = 1; e < kEvaluations; ++e) {
+        for (size_t i = 0; i < logits[0].size(); ++i) {
+            repeat_differences += std::bit_cast<uint32_t>(logits[0][i]) != std::bit_cast<uint32_t>(logits[size_t(e)][i]);
+        }
+    }
 
     std::ofstream out(argv[2]);
-    out << "{\"format\":\"jitllm-census/1\",\"source\":\"fp16_census (bridge)\",\"trajectory\":\"" << which
+    out << "{\"format\":\"jitllm-census/2\",\"source\":\"fp16_census (bridge)\",\"trajectory\":\"" << which
         << "\",\"fusion\":" << (std::getenv("GGML_CUDA_DISABLE_FUSION") ? "false" : "true")
+        << ",\"settle_ms\":" << settle_ms() << ",\"evaluations\":" << kEvaluations
+        << ",\"repeat_bit_differences\":" << repeat_differences
         << ",\"logits_sha256\":\"" << hash << "\",\"chunks\":[";
     for (size_t i = 0; i < t.chunks.size(); ++i) out << (i ? "," : "") << t.chunks[i];
     out << "],\"readings\":[";
@@ -430,12 +510,12 @@ int main(int argc, char ** argv) try {
     out << "]}\n";
     out.close();
     require(bool(out), "Output write failed");
-    std::printf("%s %s logits %s\n", which.c_str(), std::getenv("GGML_CUDA_DISABLE_FUSION") ? "unfused" : "fused",
-                hash.c_str());
+    std::printf("%s %s logits %s, repeat differences %zu\n", which.c_str(),
+                std::getenv("GGML_CUDA_DISABLE_FUSION") ? "unfused" : "fused", hash.c_str(), repeat_differences);
     ctx.reset();
     model.reset();
     llama_backend_free();
-    return 0;
+    return repeat_differences == 0 ? 0 : 1;
 } catch (const std::exception & error) {
     std::fprintf(stderr, "%s\n", error.what());
     return 1;

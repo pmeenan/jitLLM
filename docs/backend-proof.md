@@ -507,8 +507,8 @@ before the native output it governs.
   - *The EXL3 phase memory limits,* tightened against native's itemized
     buffer plan
     ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
-    The EXL3 `F` cap is set from a reference census before any native
-    EXL3 census.
+    Since D-085 a native EXL3 run is judged by the coarse memory check
+    against EXL3-O instead of a census.
   - *A recorded phase kind* the trajectories reach but P0's record lacked:
     the single-token step with K padded to 1,024 (the first step after
     the 1,023-row prefix), recorded from a reference-only run, with
@@ -533,7 +533,8 @@ before the native output it governs.
     before any device-VMM session ran on `spark`. Applied the same day, it
     passes: no case fails, and the aggregate passes in both sessions.
   - *Pre-registered on 2026-09-27 (D-079), before any native FP16 run:*
-    the FP16 memory limits and M2's census rule
+    the FP16 memory limits and M2's census rule, which D-085 replaced
+    with a coarse peak check
     ([memory and workspace](#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
 
 Each part is approved, or pre-registered under D-079, before any native
@@ -974,8 +975,9 @@ EXL3 weights (`oracle.py`). Its calibration is in the report's
 ### Memory and workspace (the M2 gate in exl3-bringup.md)
 
 **FP16: the limits are pre-registered under D-079 (2026-09-27)**, before
-any native FP16 run. They follow the envelope rules below, and the census
-rule at the end of this section judges them. Evidence: the report's
+any native FP16 run. They follow the envelope rules below. Since D-085,
+the memory check at the end of this section judges a run, and these
+limits are the plan's declared budget. Evidence: the report's
 [FP16 executed plan and workspace](experiments/backend-proof-p0/README.md#fp16-executed-plan-and-workspace)
 and `fp16-plan.json`.
 
@@ -1045,8 +1047,9 @@ They are identical under cuBLAS 13.1.1 and 13.8.0.4.
     `E` before the run. `E` covers everything the phase allocates or holds
     as scratch: activations and intermediates, operation scratch (the
     attention pool), transient reconstruction and the logits output.
-  - Its observed peak, from the BP-A1 census (jitLLM's catalog plus the
-    driver and library census), must stay within `E`.
+  - Its observed peak, from jitLLM's catalog, must stay within `E`. Since
+    D-085, the process as a whole is judged by the memory check below,
+    not by a driver and library census.
   - Weights must equal the artifact's bytes. Padding is reported
     separately.
   - KV must equal the declared layout.
@@ -1119,8 +1122,8 @@ slots in every layer), so its own need is known without running it:
   parallel blocks equal the record's in six of the eight kinds in
   `unit.GgmlExl3OpsTest.VectorAttentionMatchesTheRecordAndAnFp64Reference`,
   and in all eight in the plan gate's attention grids).
-- *Limit `E`* is region plus pool: the tightened limit each phase's census
-  is judged against. Every one is below the approved limit.
+- *Limit `E`* is region plus pool: the tightened limit of each phase's declared
+  budget. Every one is below the approved limit.
 
   | Phase kind | Region | Pool | Limit `E` (bytes) | Approved limit |
   | --- | ---: | ---: | ---: | ---: |
@@ -1148,170 +1151,47 @@ slots in every layer), so its own need is known without running it:
     3,584 = 175,616 bytes) and each layer's multi-GEMM tables (24 × 48 =
     1,152 bytes), rewritten when the weights move;
   - the GGML pool is allocated once at the run's largest phase: what a
-    smaller phase does not draw is pool-held occupancy, as the census rule
-    reports backing kept between phases.
-- *Not set here:* the EXL3 `F` cap. It is the reference's own unexplained
-  growth per step, measured with the census rule's counters and controls
-  as the FP16 bridge's was, and is set, from a reference-only census,
-  before any native EXL3 census result is seen.
+    smaller phase does not draw is pool-held occupancy.
 
-**The census rule for M2: pre-registered under D-079 (2026-09-27).** It
-covers BP-A1, BP-A2 and BP-A5 for both representations. The SDK has no
-CUPTI, and M2 pins none. The census uses three instruments:
+**The memory check (D-085, 2026-09-27).** Census rules v1–v3 and nsys
+passes stopped under D-085. Memory is judged loosely: a native run's peak
+may be at most about 10% above the reference's (≤ ~1.1×), by ordinary
+counters. There is no calibration, holdout or pre-registration. This
+check replaces the census for FP16 and for EXL3, and the itemized
+limits above remain the plan's declared budget. History: version 1
+(pre-registered, counters only) failed all four native FP16 arms on
+sub-resolution and reversing charges. Neither later version was
+registered (details are in Git history).
 
-- **The catalog is authoritative for jitLLM's own memory.** It records
-  every reservation, backing and mapping, and each phase's placements and
-  scratch draws, the host buffers of `I` and `L` included. The launch
-  context's pool reports its peak, as in P1.
-  - A phase's observed peak, the figure judged against `E`, is the largest
-    total charged to that phase at once.
-  - Backing kept between phases is released but still resident (D-007).
-    An example is a region sized for the largest phase. Such backing is
-    reported as pool-held occupancy, not charged to a smaller phase.
-- **In-process checks, where jitLLM makes the call.** Every tensor bound
-  to a GGML launch, and every cuBLAS operand, must lie in a cataloged
-  range.
-- **System counters, read at quiescent points,** when all submitted work
-  has completed. The counters:
-  - `MemAvailable`, which on the GB10 is the driver's free memory
-    ([vmm-counters](experiments/vmm-counters/README.md));
-  - `SUnreclaim`, for the driver's bookkeeping per extent;
-  - the process's `RssAnon`, with `mallinfo2`, for ordinary allocations.
+- **Method.** Each engine runs once per workload. Peak is the fall in
+  `MemAvailable` (the GB10's free memory, which includes the driver's),
+  sampled every 20 ms, below its median over the second before the start.
+  The runner is [`peak_memory.sh`](experiments/backend-proof-p2/peak_memory.sh).
+  Both FP16 engines run their census harnesses with a 50 ms settle:
+  the bridge is `fp16_census` and native is `jitllm_fp16_exec --census`
+  (rung 3, `cudaMalloc`). They make the same 64 MiB controls, so both
+  peaks include one pinned 64 MiB probe.
+- **FP16, rung 3** (`spark`, idle, 2026-09-27; kernel 7.0.0-1019-nvidia,
+  driver 580.178.04, cuBLAS 13.8.0.4 for both; native binary `35c99c03…`,
+  bridge `33bbf331…`; every native run reproduced its arm's logits hash):
 
-  They are read at process start, after the context, after the cuBLAS
-  handle and workspace, after weights and KV are mapped, and before and
-  after every phase.
+  | Arm | Native peak (MiB) | Bridge peak (MiB) | Ratio |
+  | --- | ---: | ---: | ---: |
+  | FP16-F `control` | 1,886 | 2,321 | 0.81 |
+  | FP16-U `control` | 2,019 | 2,108 | 0.96 |
+  | FP16-F `heldout` | 3,716 | 3,973 | 0.94 |
+  | FP16-U `heldout` | 3,473 | 3,654 | 0.95 |
 
-**Controls.** Every census run carries three, each read before it is
-made, while it is held and after it is freed: a 64 MiB `cudaMalloc`, a
-64 MiB VMM mapping in 2 MiB extents, and a 64 MiB host allocation that is
-written.
-- Each is checked against its counters: `MemAvailable` for all three,
-  and `RssAnon` too for the host allocation.
-- R, the census's resolution, is the largest gap between a control's size
-  and its counter's move, over three repeats. For the VMM control, the
-  move is taken net of `SUnreclaim`'s. R is reported with every result.
-- Opaque growth below R cannot be seen. The catalog still judges jitLLM's
-  own bytes exactly.
-- A run is void if a control's counter moves the wrong way, or by less
-  than half the control's size.
-- No other GPU work runs on the host.
-
-**Attribution.** For each interval between readings, the unexplained
-bytes are the drop in `MemAvailable`, less three things: the catalog's
-backing, the driver's bookkeeping (`SUnreclaim`'s move) and ordinary
-allocations (`RssAnon`'s move). A byte both the catalog and `RssAnon`
-count is subtracted once. They are charged as follows:
-- *From process start to the end of the first evaluation,* the warm-up,
-  where the context, lazy module loading and a library's first-use state
-  appear: to `F`, itemized by step. `F`'s share at each step is capped at
-  the reference's own unexplained growth at that step.
-  - The excess is charged to the phase it appears in. Before the first
-    phase, it is charged to the persistent library workspace.
-  - For FP16, that reference is the bridge, measured with the same
-    counters and controls. Its unexplained growth is net of every buffer
-    it declares: model, KV, compute and output buffers, the GGML pool's
-    committed bytes and the cuBLAS workspace. So the cap holds only its
-    handles and module state, and `F` cannot hide a workspace. Its figures
-    are written here before any native census result is seen.
-  - For EXL3, whose reference process carries PyTorch's own state, the
-    cap is set at P3 entry with the phase limits.
-- *During the second and third evaluations:* growth beyond R over any
-  interval is charged to the phase it falls in, or to the next phase if
-  it falls between two. It must fit in that phase's `E` (BP-A2: lazy
-  growth after the warm-up). `E` holds no allowance for it.
-
-**The FP16 `F` cap: measured and pre-registered under D-079 (2026-09-27),
-before any native census result was seen.** The bridge's census ran on
-`spark-b`, the host of the native runs
-([P2 report](experiments/backend-proof-p2/README.md#the-bridges-census-the-fp16-f-cap)):
-[`fp16_census.cc`](experiments/backend-proof-p2/fp16_census.cc), a
-reference-only harness linked against the P0 bridge build, and
-[`census.py`](experiments/backend-proof-p2/census.py), which attributes
-both harnesses' readings. Three processes per arm, all four arms; every
-run reproduced its arm's recorded logits.
-
-- **One amendment to the counters, made before any native census.** On
-  this kernel `MemAvailable` misses host memory: freed pages wait on the
-  per-CPU page lists, and allocations are served from them, without
-  moving the free-page count it reads. The host control, 64 MiB written,
-  moved `MemAvailable` by −15.8 to +70.6 MiB across the 12 runs, which
-  voids every run under the rule as written (RE-024). Every reading therefore adds the pages on those
-  lists (`/proc/zoneinfo`, each zone's pagesets `count`) to
-  `MemAvailable`, for the bridge and native alike. With that, the host
-  control moved 63.7 to 64.4 MiB (144 moves), the VMM control 64.0 to
-  64.6 MiB, and `cudaMalloc` 36.1 to 65.2 MiB (the one outlier below). Wherever this section says `MemAvailable`, it means that
-  sum.
-- **R** was 0.92 to 1.19 MiB in 11 of the 12 runs. In one, one
-  `cudaMalloc` control repeat moved 36 MiB (27.9 MiB gap; not void).
-- **Pinned host memory** (`cudaMallocHost`, 64 MiB) moved `MemAvailable`
-  by 65.4 to 65.9 MiB and `RssAnon` by nothing, so a pinned buffer is
-  counted once, by the catalog. The runtime keeps freed pinned memory, so
-  that probe runs only after the evaluation.
-- **The bridge's declared buffers** are its model, KV and compute buffers
-  by buffer type (`llama_get_memory_breakdown`), its output buffer (rows ×
-  151,936 × 4, as `output_reserve` sizes it), the GGML pool's committed
-  bytes after each chunk (P0's pool-peak record) and the 32 MiB cuBLAS
-  workspace.
-- **Steps.** A reading after the CUDA context (`cudaFree(0)`), one after
-  the controls, the end of setup (everything before the first phase: the
-  bridge's model and context creation, native's weights, KV and buffers),
-  and one after each chunk of the first evaluation. The bridge creates its
-  cuBLAS handle and workspace lazily, in its first phase that calls cuBLAS
-  (`control` chunk 0, `heldout` chunk 1), with cuBLAS's first-use state.
-  Native creates its handle at the same point, before that phase's first
-  launch, so the handle's growth falls in the same step on both sides.
-- **The cap** at each step is the largest of the three bridge processes'
-  cumulative unexplained growth at that step. Native's cumulative `F` at a
-  step is its cumulative unexplained growth, at most the cap. What exceeds
-  the cap and was not already charged at an earlier step is charged to
-  the step's phase, or, at the end of setup, to the persistent library
-  workspace. Every step's cap for every arm is in
-  [`fp16-f-caps.json`](experiments/backend-proof-p2/fp16-f-caps.json).
-
-  | Step (cumulative, MiB) | `control` fused | `control` unfused | `heldout` fused | `heldout` unfused |
-  | --- | ---: | ---: | ---: | ---: |
-  | context | 240.56 | 240.63 | 240.71 | 242.33 |
-  | end of setup | 256.85 | 256.54 | 260.86 | 262.52 |
-  | chunk 0 | 326.93 | 326.63 | 278.74 | 280.41 |
-  | chunk 1 | 326.98 | 326.68 | 346.08 | 347.75 |
-  | 512-row prefill (chunk 18) | — | — | 351.55 | 353.00 |
-  | last chunk | 327.00 | 326.69 | 351.56 | 353.02 |
-
-  The CUDA context accounts for about 240 MiB, and the first phase that
-  calls cuBLAS for about 67 to 70 MiB (cuBLAS's handle and first-use
-  state, and lazily loaded modules).
-- *Applied 2026-09-27 (native rung 3, `spark-b`):* all four arms fail.
-  Every phase places exactly its limit (A, S, I and L equal the itemized
-  terms), KV passes, and native's cumulative unexplained growth ends each
-  evaluation below the cap. What fails are charges of two kinds: warm-up
-  excesses of 0.08 to 0.70 MiB over the cap at single steps, below each
-  run's R (1.8 to 4.1 MiB), which the rule does not allow for (one, at
-  FP16-U `control`'s controls step, is charged to the persistent
-  workspace and takes it over its limit); and single-interval growth of
-  4.6 to 137 MiB that reverses within a few intervals. Native's readings
-  wait 1.5 s rather than the bridge's 250 ms. That wait moves no bound, but
-  it was set after the first native census readings (a void run at
-  250 ms) had been seen, and the bridge was not re-measured at 1.5 s. In
-  an earlier batch set aside for the final binary, FP16-F `control`
-  passed in a run valid under the rule
-  ([P2 report](experiments/backend-proof-p2/README.md#the-native-census)).
-  The outcome stands as measured; whether the rule should resolve
-  sub-R steps and reversing transients, and how many runs a verdict
-  takes, is for the owner.
-
-**What waits for CUPTI.** Without it, or an nsys trace (a host tool, used
-as P0 used it), these are out of reach:
-- attributing an opaque allocation to its caller (driver, runtime, cuBLAS
-  or module load) and its kind, rather than to the interval it appears in;
-- allocations made and freed inside a phase, that is, transient library
-  peaks, which quiescent readings cannot see;
-- pointer coverage for the kernels cuBLAS launches itself;
-- a continuous census in the runtime, rather than a harness's readings.
-
-An nsys trace with `--cuda-memory-usage=true`, taken in a separate run,
-may attribute an unexplained delta in the report. It does not replace the
-counters' run, because its own instrumentation allocates.
+  All four pass. A first pass on `spark-b`, shared with other agents' GPU
+  tests, is not used: its baseline fell by 4.5 GB during the batch. Its
+  `control` ratios were 0.99 and 1.01, and FP16-F `heldout` read 1.66.
+- **EXL3** runs end to end natively since P3; it takes the same check
+  against EXL3-O (pending).
+- **What the nsys passes found** stays recorded: cuBLAS's handle creation
+  keeps a 64.1 MiB default workspace pool that `cublasSetWorkspace` does
+  not free (RE-028). By the owner's decision (2026-09-27), the pool does
+  not count against the 32 MiB persistent-workspace figure, and native
+  may hold what the bridge holds.
 
 ### Performance protocol (rule approved 2026-09-26; BP-F2's reference pre-registered at P3 entry)
 
@@ -1691,8 +1571,8 @@ P4 harness, but its acceptance stays a separate plan item.
 ### P2 prerequisites
 
 Three things are in place before any native FP16 run: the FP16 memory
-limits, the census rule (both under "Memory and workspace" above), and the
-plan comparator.
+limits, the memory check (D-085, which replaced the census rule; both are
+under "Memory and workspace" above), and the plan comparator.
 
 **The plan comparator** tells whether a native run executed the bridge's
 recorded plan (the FP16 Tier E gate).
@@ -1758,8 +1638,10 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
   capacity, and validate that coverage with a host-allocation control. Charge
   opaque driver/library overhead conservatively and reconcile remaining
   physical-memory differences in BP-A5; a CUDA-only trace is not a complete
-  Spark memory census (invariant 5, D-006/D-050). M2's census, without
-  CUPTI, follows the census rule under "Memory and workspace".
+  Spark memory census (invariant 5, D-006/D-050). In M2, D-085 replaces
+  this reconciliation with the memory check under "Memory and workspace":
+  the catalog's in-process coverage check stands, and peak memory is
+  compared with the reference's.
 - **BP-A2:** Kernel scratch comes only from declared workspace. That
   covers GGML launchers' pool requests, cuBLAS workspace, EXL3 locks and
   workspace, and tuning allocations. Handles and unavoidable driver/library

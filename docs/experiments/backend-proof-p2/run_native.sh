@@ -6,7 +6,7 @@
 # for the FP16 Tier E gate, in the gate's order (backend-proof.md):
 #   run_native.sh plan   BUILD ARTIFACT HARNESS WORK ARM
 #   run_native.sh logits BUILD ARTIFACT HARNESS WORK ARM
-#   run_native.sh census BUILD ARTIFACT HARNESS WORK ARM
+#   run_native.sh peak   BUILD ARTIFACT HARNESS WORK ARM
 # BUILD is a deployed cross build, ARTIFACT the installed FP16 fixture,
 # HARNESS a copy of docs/experiments (backend-proof-p0 and -p2), WORK the
 # working directory holding control-tokens.txt (the bridge's tokens.txt)
@@ -18,9 +18,10 @@
 #         plan_compare.py convert and compare against fp16-plan.json. Exits
 #         with plan_compare's status; only 0 lets the logits be compared.
 # logits: the same run's logits SHA-256 against the arm's recorded one.
-# census: a separate run with the census readings (no nsys, no logs, no
-#         recording), attributed and judged by census.py; void (exit 4) if
-#         another process of this user held an NVIDIA device meanwhile.
+# peak:   the coarse memory check (D-085): a separate run of the census
+#         harness (no nsys, no logs, no recording) under peak_memory.sh,
+#         which prints its peak memory for comparison with the bridge's.
+#         (The census rules this stage ran before D-085 are in Git history.)
 set -u
 STAGE=$1 BUILD=$2 ARTIFACT=$3 HARNESS=$4 WORK=$5 ARM=$6
 TRAJECTORY=${ARM%-*}
@@ -69,46 +70,13 @@ print(f"{arm}: native {got}, bridge {want}: {'BIT-IDENTICAL' if got == want else
 sys.exit(0 if got == want and s["repeat_bit_differences"] == 0 else 1)
 EOF
     ;;
-  census)
-    # No other GPU work may run (the census rule). A monitor, started first
-    # so its own memory has settled before the harness's first reading,
-    # looks every second for any other process of this user holding an
-    # NVIDIA device (from /proc, without touching the driver or starting
-    # processes); anything found voids the run.
-    rm -rf "$OUT-census" && mkdir -p "$OUT-census"
-    python3 -B - "$BIN" "$OUT-census/foreign-gpu.txt" "$OUT-census/done" <<'PY' &
-import os, sys, time
-binary, found, done = os.path.realpath(sys.argv[1]), sys.argv[2], sys.argv[3]
-me = os.getpid()
-while not os.path.exists(done):
-    for pid in [p for p in os.listdir("/proc") if p.isdigit() and int(p) != me]:
-        try:
-            if os.path.realpath(f"/proc/{pid}/exe") == binary:
-                continue
-            fds = os.listdir(f"/proc/{pid}/fd")
-            if any(os.readlink(f"/proc/{pid}/fd/{fd}").startswith("/dev/nvidia") for fd in fds):
-                cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
-                with open(found, "a") as out:
-                    out.write(f"{time.strftime('%T')} {pid} {cmd[:160]}\n")
-        except OSError:
-            continue
-    time.sleep(1)
-PY
-    MONITOR=$!
-    sleep 3
-    "$BIN" --artifact "$ARTIFACT" --trajectory "$TRAJECTORY" --tokens "$TOKENS" --fusion $FUSION \
-           --out "$OUT-census" --census > "$OUT-census.log" 2>&1
-    STATUS=$?
-    touch "$OUT-census/done"
-    wait $MONITOR
-    [ $STATUS = 0 ] || { echo "the run failed:" >&2; tail -5 "$OUT-census.log" >&2; exit 1; }
-    if [ -s "$OUT-census/foreign-gpu.txt" ]; then
-      echo "VOID: other GPU work ran during the census:" >&2
-      sort -u -k2,2 "$OUT-census/foreign-gpu.txt" | head -5 >&2
-      exit 4
-    fi
-    python3 -B "$P2/census.py" native "$OUT-census/census.json" --caps "$P2/fp16-f-caps.json" \
-      --arm "$ARM" --out "$OUT-census/judged.json"
+  peak)
+    # The coarse memory check (D-085): the census harness (its readings
+    # settle 50 ms) under peak_memory.sh. Run the bridge's fp16_census for
+    # the same arm next to it, and compare the two peaks (backend-proof.md).
+    rm -rf "$OUT-peak" && mkdir -p "$OUT-peak"
+    CENSUS_SETTLE_MS=50 sh "$P2/peak_memory.sh" "native $ARM" -- "$BIN" --artifact "$ARTIFACT" \
+      --trajectory "$TRAJECTORY" --tokens "$TOKENS" --fusion $FUSION --out "$OUT-peak" --census
     ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;
 esac

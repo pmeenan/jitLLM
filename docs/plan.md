@@ -334,7 +334,9 @@ reservation policy) were recorded in M0.
       port existed: BP-F2's reference arm (EXL3-O with GEMV on since
       D-080, fused gate/up cases, ExLlamaV3's bias add, one tuning cache,
       and the port's SASS match), and the EXL3 phase memory limits,
-      tightened against native's buffer plan.
+      tightened against native's buffer plan (since D-085, the plan's
+      declared budget; a native EXL3 run is judged by the coarse memory
+      check against EXL3-O, and BP-F2 does not run).
 
       The rest (the FP16 memory limits, BP-F1's calibration, the
       declared-departure contingency, the P3-entry items, the
@@ -538,8 +540,9 @@ reservation policy) were recorded in M0.
         - Each CUDA profile compiles the four units in 75 to 113
           CPU-seconds (19 to 28 s each; the workstation idle, then loaded).
 
-      Remaining in P1: the allocation census, under the pre-registered
-      rule. The first native EXL3 linear landed with P3 (below). Its
+      Remaining in P1: nothing of the allocation census, which D-085
+      replaced with a coarse memory check (P2, below). The first native
+      EXL3 linear landed with P3 (below). Its
       launchers keep `src/kernels/exl3/launch_contract.h`: every
       cooperative kernel (`cooperative_groups`' grid sync traps when the
       launch was not, and the split-K locks and the multi-GEMM's group
@@ -653,6 +656,21 @@ reservation policy) were recorded in M0.
         intervals. In a batch set aside for the final binary, FP16-F
         `control` passed. For the owner: the rule as written resolves
         neither, nor says how many runs a verdict takes.
+      - **D-085 replaced the census with a coarse memory check, and it
+        passes** ([check](backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd),
+        [report](experiments/backend-proof-p2/README.md#memory-check-d-085)).
+        Memory is judged loosely: native's peak, read from `MemAvailable`,
+        may be at most about 10% above the bridge's. Native's rung-3 peaks
+        on `spark` were 0.81 to 0.96 times the bridge's on all four arms.
+        EXL3 takes the same check against EXL3-O once it runs end to end.
+        - Two later census rules stopped under D-085 (in Git history). v2
+          (counters plus an exact nsys tier) failed its bridge holdout on
+          opaque counter jumps. v3 (the nsys tier alone) passed its holdout
+          and was dropped before registration.
+        - Their finding stays: cuBLAS's handle keeps a 64.1 MiB default
+          workspace pool that `cublasSetWorkspace` does not free (RE-028).
+          The owner kept it outside the 32 MiB workspace figure
+          (2026-09-27).
 
       *The D-081 page-in path, and rungs 4 and 5*
       ([report](experiments/backend-proof-p2/README.md#rungs-4-and-5-paged-into-device-vmm-through-the-landing-zone)):
@@ -735,8 +753,8 @@ reservation policy) were recorded in M0.
         BP-P6 (restore times reported), BP-L1 (a job's lease holds until
         its fence, on the fake) and BP-V2 (VMM create and map failures
         unwind, on the fake).
-      Left in P2: the census on the paged harness (BP-A1's
-      reconciliation, BP-A2, BP-A5; being redone as v2) and BP-A4's stale
+      Left in P2: the memory check on the paged harness (rungs 4 and 5)
+      and BP-A4's stale
       binding and negative controls. Next for the pager: write-back and
       state spill through the zone (BP-P4), coalesced vectored reads, and
       the D-033 handoff of a victim's backing.

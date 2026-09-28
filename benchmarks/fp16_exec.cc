@@ -29,9 +29,11 @@
 // - --record: tests/support's launch recorder runs from the first line of
 //   main on this, the only launching thread, and every chunk is marked, so
 //   an nsys trace of the whole process lines up with it (plan_compare.py).
-// - --census: the census rule's readings and controls, as fp16_census.cc
-//   takes them on the bridge, with this harness's own buffers declared.
-//   A census run records nothing, and a recorded run takes no readings.
+// - --census: the census readings and controls, as fp16_census.cc takes
+//   them on the bridge, with this harness's own buffers declared, and six
+//   tail readings after the last evaluation. A census run records nothing,
+//   and a recorded run takes no readings. Since D-085 the census rules are
+//   gone; run_native.sh peak runs this mode for the coarse memory check.
 //
 // Every evaluation clears the cache and runs the trajectory from the start;
 // the first one's logits are written, and each later one must equal them
@@ -55,6 +57,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -123,12 +126,14 @@ std::uint64_t Round(std::uint64_t bytes, std::uint64_t to) { return (bytes + to 
 
 // ------------------------------------------------------------------ census
 
-// fp16_census.cc's readings: /proc/meminfo's MemAvailable and SUnreclaim,
-// the per-CPU page lists' pages (/proc/zoneinfo), RssAnon and RssFile, and
-// mallinfo2, after a settle (CENSUS_SETTLE_MS). The default, 1.5 s, is
-// longer than the kernel's vm.stat_interval (1 s): this harness faults
-// pages in between readings (its logits), and until every CPU's counter
-// deltas are folded in, MemAvailable swung by up to 150 MiB at 250 ms.
+constexpr int kTailReadings = 6;
+
+// fp16_census.cc's readings: after a fixed settle (CENSUS_SETTLE_MS,
+// 2,500 ms by default), /proc/meminfo's MemAvailable and SUnreclaim with the
+// per-CPU page lists' pages (/proc/zoneinfo), three times back to back;
+// RssAnon and RssFile; mallinfo2; every other process's RssAnon, summed; and
+// CLOCK_REALTIME and CLOCK_MONOTONIC_RAW, which place the reading (and the
+// start of its settle) on an nsys trace's timeline.
 std::string Slurp(const char* path) {
   std::ifstream file(path);
   std::stringstream text;
@@ -144,6 +149,34 @@ std::uint64_t FieldKib(const std::string& text, std::string_view key) {
     return 0;
   }
   return std::strtoull(padded.c_str() + at + needle.size(), nullptr, 10) * 1024;
+}
+
+// Every other process's RssAnon, summed, and how many there are.
+std::pair<std::uint64_t, std::uint64_t> OtherProcesses() {
+  std::uint64_t rss_anon = 0;
+  std::uint64_t processes = 0;
+  const std::string self = std::to_string(getpid());
+  std::error_code error;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc", error)) {
+    const std::string name = entry.path().filename().string();
+    if (name.empty() || !std::ranges::all_of(name, [](char c) { return c >= '0' && c <= '9'; }) ||
+        name == self) {
+      continue;
+    }
+    const std::string status = Slurp((entry.path() / "status").c_str());
+    if (status.empty()) {
+      continue;  // exited meanwhile
+    }
+    ++processes;
+    rss_anon += FieldKib(status, "RssAnon");
+  }
+  return {rss_anon, processes};
+}
+
+std::int64_t ClockNs(clockid_t clock) {
+  timespec now{};
+  clock_gettime(clock, &now);
+  return (static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000) + now.tv_nsec;
 }
 
 std::uint64_t PerCpuListBytes() {
@@ -176,19 +209,37 @@ class Census {
 
   void Declare(const std::string& name, std::uint64_t bytes) { declared_[name] = bytes; }
 
+  int settle_ms() const { return settle_ms_; }
+
   // A reading as a JSON object.
   std::string Take(std::string_view step, int evaluation = 0, int chunk = -1) const {
+    const std::int64_t settle_from = ClockNs(CLOCK_MONOTONIC_RAW);
     std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms_));
-    const std::string meminfo = Slurp("/proc/meminfo");
+    const std::int64_t realtime = ClockNs(CLOCK_REALTIME);
+    const std::int64_t raw = ClockNs(CLOCK_MONOTONIC_RAW);
+    std::array<std::uint64_t, 3> available{};
+    std::array<std::uint64_t, 3> lists{};
+    std::array<std::uint64_t, 3> slab{};
+    for (std::size_t i = 0; i < available.size(); ++i) {
+      const std::string meminfo = Slurp("/proc/meminfo");
+      available.at(i) = FieldKib(meminfo, "MemAvailable");
+      lists.at(i) = PerCpuListBytes();
+      slab.at(i) = FieldKib(meminfo, "SUnreclaim");
+    }
     const std::string status = Slurp("/proc/self/status");
     const struct mallinfo2 m = mallinfo2();
+    const auto [others_rss_anon, others_processes] = OtherProcesses();
+    const auto triple = [](const std::array<std::uint64_t, 3>& v) {
+      return std::format("[{},{},{}]", v[0], v[1], v[2]);
+    };
     std::string out = std::format(
-        R"({{"step":"{}","evaluation":{},"chunk":{},"mem_available":{},"pcp":{},"sunreclaim":{},)"
+        R"({{"step":"{}","evaluation":{},"chunk":{},"settle_from_raw_ns":{},"realtime_ns":{},)"
+        R"("raw_ns":{},"mem_available":{},"pcp":{},"sunreclaim":{},)"
         R"("rss_anon":{},"rss_file":{},"malloc_arena":{},"malloc_hblkhd":{},"malloc_uordblks":{},)"
-        R"("declared":{{)",
-        step, evaluation, chunk, FieldKib(meminfo, "MemAvailable"), PerCpuListBytes(),
-        FieldKib(meminfo, "SUnreclaim"), FieldKib(status, "RssAnon"), FieldKib(status, "RssFile"),
-        m.arena, m.hblkhd, m.uordblks);
+        R"("others_rss_anon":{},"others_processes":{},"declared":{{)",
+        step, evaluation, chunk, settle_from, realtime, raw, triple(available), triple(lists),
+        triple(slab), FieldKib(status, "RssAnon"), FieldKib(status, "RssFile"), m.arena, m.hblkhd,
+        m.uordblks, others_rss_anon, others_processes);
     bool first = true;
     for (const auto& [name, bytes] : declared_) {
       out += std::format(R"({}"{}":{})", first ? "" : ",", name, bytes);
@@ -209,7 +260,7 @@ class Census {
 
  private:
   bool on_;
-  int settle_ms_ = 1500;
+  int settle_ms_ = 2500;
   std::map<std::string, std::uint64_t> declared_;
   std::vector<std::string> readings_;
   std::vector<std::string> controls_;
@@ -862,12 +913,16 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
   if (!registry) {
     return Error(registry.error().detail);
   }
+  // Every evaluation's logits, kept for the comparison: allocated and
+  // touched before the first phase, as the bridge's census harness does, so
+  // no reading interval faults them in.
+  std::vector<std::vector<float>> results(static_cast<std::size_t>(o.evaluations),
+                                          std::vector<float>(t.tokens.size() * profile.vocab));
   census.Read("setup");
 
   std::unique_ptr<kg::CublasHandle> cublas;
   void* cublas_workspace = nullptr;
   std::uint64_t cublas_bytes = 0;
-  std::vector<std::vector<float>> results(static_cast<std::size_t>(o.evaluations));
   for (int e = 1; e <= o.evaluations; ++e) {
     // A fresh cache for every evaluation, as the bridge's new context has.
     {
@@ -883,7 +938,6 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
       }
     }
     std::vector<float>& result = results[static_cast<std::size_t>(e - 1)];
-    result.reserve(t.tokens.size() * profile.vocab);
     std::uint32_t n_past = 0;
     for (std::size_t k = 0; k < t.chunks.size(); ++k) {
       const std::uint32_t rows = t.chunks[k];
@@ -1009,8 +1063,7 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
         }
         record += jitllm::test_support::EndChunkLine();
       }
-      const auto* values = static_cast<const float*>(logits);
-      result.insert(result.end(), values, values + (chunk_logits / sizeof(float)));
+      std::memcpy(result.data() + (std::size_t{n_past} * profile.vocab), logits, chunk_logits);
       census.Read("chunk", e, chunk);
       census.phases().push_back(std::format(
           R"({{"evaluation":{},"chunk":{},"rows":{},"n_past":{},"n_kv":{},"A":{},"S":{},"I":{},"L":{},"steps":{}}})",
@@ -1020,6 +1073,10 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
     }
   }
   if (census.on()) {
+    // Readings with no work between them, as the bridge's harness takes.
+    for (int i = 0; i < kTailReadings; ++i) {
+      census.Read("tail", 0, i);
+    }
     if (auto r = Controls(census, d, "after the evaluations", true); !r) {
       return r;
     }
@@ -1068,8 +1125,9 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
   if (census.on()) {
     std::ofstream file(o.out / "census.json");
     file << std::format(
-        R"j({{"format":"jitllm-census/1","source":"jitllm_fp16_exec (native, rung 3)","trajectory":"{}","fusion":{},"logits_sha256":"{}","chunks":[{}],"readings":[)j",
-        t.name, o.fusion ? "true" : "false", digest, chunks);
+        R"j({{"format":"jitllm-census/2","source":"jitllm_fp16_exec (native, rung 3)","trajectory":"{}","fusion":{},"settle_ms":{},"evaluations":{},"repeat_bit_differences":{},"logits_sha256":"{}","chunks":[{}],"readings":[)j",
+        t.name, o.fusion ? "true" : "false", census.settle_ms(), o.evaluations, differing, digest,
+        chunks);
     for (std::size_t i = 0; i < census.readings().size(); ++i) {
       file << (i == 0 ? "\n" : ",\n") << census.readings()[i];
     }

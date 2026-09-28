@@ -30,6 +30,44 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-028: cuBLAS's handle keeps a 64 MiB default workspace pool that `cublasSetWorkspace` does not free, and nsys's memory trace hides who allocated it  (2026-09-27, status: worked-around)
+
+Environment: `spark` and `spark-b` (GB10, kernel 7.0.0-1019-nvidia, driver
+580.178.04), cuBLAS 13.8.0.4, Nsight Systems 2025.3.2
+(`--trace=cuda --cuda-memory-usage=true`, SQLite export).
+
+Observed:
+- `cublasCreate` makes three `cudaMalloc`s: 1,024, 131,072 and 67,108,864
+  bytes. They stay allocated until `cublasDestroy`, even after
+  `cublasSetWorkspace` supplies a workspace (GGML's and jitLLM's 32 MiB)
+  that later calls use. With `CUBLAS_WORKSPACE_CONFIG=:4096:2` the two
+  large ones become one 8 MiB allocation, and with `:16:8` one 131,072-byte
+  one, so they are cuBLAS's default workspace pool. The documentation says
+  that pool is "allocated during the cuBLAS context creation" (cuBLAS docs,
+  section 2.4.8). On the FP16 bridge these 64.1 MiB were the only
+  API-visible memory beyond its declared buffers, identical in all 32 nsys
+  passes on both Sparks.
+- nsys's memory trace reports each allocation's size exactly, but not its
+  caller. `--cudabacktrace` needs CPU sampling, which is unsupported here
+  (`perf_event_paranoid` 4), so the pool was named only by resizing it.
+- The trace's timestamps count CLOCK_MONOTONIC_RAW from the session's
+  start. A program's CLOCK_REALTIME drifted from it by about 3 µs/s
+  (0.24 ms after a minute).
+- `nsys profile` starts `nsys --start-agent`, which leaves the launcher's
+  process tree and holds `/dev/nvidia*` open.
+
+Expected: `cublasSetWorkspace` to release the default pool, or the
+documentation to say it does not. Trace time in a documented clock.
+
+Impact: every cuBLAS handle costs 64.1 MiB beyond the workspace jitLLM
+gives it, and jitLLM cannot free it (`CUBLAS_WORKSPACE_CONFIG` is refused as
+a numerics switch). The owner decided on 2026-09-27 that it does not count
+against the 32 MiB persistent-workspace figure, and that native may hold
+what the bridge holds (backend-proof.md, "Memory and workspace"). To place
+readings on an nsys trace, use CLOCK_MONOTONIC_RAW, anchored once by
+CLOCK_REALTIME. A GPU-idleness monitor must count the nsys agent as the
+run's own.
+
 ## RE-027: The Spark's SSD reads recently written data ~11% faster than data at rest  (2026-09-27, status: open)
 
 On `spark-b` (Samsung `MZALC4T0HBL1-00B07`, ext4 root, kernel

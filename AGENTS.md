@@ -256,8 +256,10 @@ scheduler now pages through that zone into device VMM and releases
 backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
 relocated) are bit-identical. The x86-64 build's CUDA code and kernels
 also target the workstation's discrete GPU (D-082), where the providers,
-the page-in path and a kernel smoke pass. Open: the loose memory check
-against each reference (D-085), write-back and state spill, and P4–P6.
-D-033 is retained; per D-085, BP-F2 does not run and each engine is held
-to its reference's speed end to end once operational. Keep this
+the page-in path and a kernel smoke pass. D-085 replaced the allocation
+census with a coarse peak check: native FP16's peak is within 1.1× of the
+bridge's on every arm. Open: the same check for native EXL3 against
+ExLlamaV3, write-back and state spill, and P4–P6. D-033 is retained; per
+D-085, BP-F2 does not run and each engine is held to its reference's
+speed end to end once operational. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).
