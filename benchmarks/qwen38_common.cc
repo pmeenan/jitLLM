@@ -114,12 +114,157 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
     state(l.conv_state, K::kConv);
     state(l.recurrent, K::kRecurrent);
     state(l.ple_state, K::kPleConv);
+    // A verify's saves, at the commit layout's offsets.
+    if (m.commit != nullptr) {
+      const auto at = std::ranges::find(m.commit->layers, il);
+      if (at != m.commit->layers.end()) {
+        const auto i = static_cast<std::size_t>(at - m.commit->layers.begin());
+        for (const auto& [t, offset] : {std::pair{l.commit_conv, m.commit->conv_out(i)},
+                                        std::pair{l.commit_qkv, m.commit->qkv(i)},
+                                        std::pair{l.commit_gate, m.commit->gate(i)},
+                                        std::pair{l.commit_beta, m.commit->beta(i)}}) {
+          if (t != nullptr) {
+            kg::TensorArena::Bind(t, m.places.commit + offset);
+          }
+        }
+      }
+      if (l.commit_ple != nullptr) {
+        kg::TensorArena::Bind(l.commit_ple, m.places.commit + m.commit->ple());
+      }
+    }
+  }
+  if (g.streams != nullptr && m.mtp_state != nullptr) {
+    kg::TensorArena::Bind(g.streams, m.places.mtp_state + m.mtp_state->hidden);
   }
 }
 
+namespace {
+
+// The drafter's weights at its places, its caches and streams in its state,
+// and the target's table and head at theirs.
+void BindQwen38MtpWeights(const Qwen38Model& m, kg::Qwen38MtpGraph& g) {
+  const md::Qwen38MtpBinding& d = *m.drafter;
+  const auto bind = [&](ggml_tensor* t, const md::Qwen38Tensor& r) {
+    if (t != nullptr) {
+      kg::TensorArena::Bind(t, m.places.mtp_resource(r.index));
+    }
+  };
+  const auto mx = [&](const kg::Qwen38Mxfp8Tensors& t, const md::Qwen38Mxfp8& r) {
+    bind(t.bf16, r.bf16);
+  };
+  kg::TensorArena::Bind(g.token_embd, m.places.resource(m.binding->token_embd.index));
+  kg::TensorArena::Bind(g.output, m.places.resource(m.binding->output.index));
+  bind(g.fc_embd, d.fc_embd);
+  bind(g.fc_hidden, d.fc_hidden);
+  bind(g.norm_embd, d.norm_embd);
+  bind(g.norm_hidden, d.norm_hidden);
+  bind(g.output_hc_norm, d.output_hc_norm);
+  bind(g.output_hc_down, d.output_hc_down);
+  bind(g.output_hc_up, d.output_hc_up);
+  const md::Qwen38Layer& r = d.layer;
+  kg::Qwen38LayerTensors& l = g.layer;
+  bind(l.hc_attn_norm, r.hc_attn_norm);
+  bind(l.hc_attn_down, r.hc_attn_down);
+  bind(l.hc_attn_up, r.hc_attn_up);
+  bind(l.hc_attn_inject, r.hc_attn_inject);
+  bind(l.hc_ffn_norm, r.hc_ffn_norm);
+  bind(l.hc_ffn_down, r.hc_ffn_down);
+  bind(l.hc_ffn_up, r.hc_ffn_up);
+  bind(l.hc_ffn_inject, r.hc_ffn_inject);
+  mx(l.q, r.q);
+  mx(l.k, r.k);
+  mx(l.v, r.v);
+  mx(l.o, r.o);
+  mx(l.idx_qk, r.idx_qk);
+  bind(l.q_norm, r.q_norm);
+  bind(l.k_norm, r.k_norm);
+  bind(l.idx_q_norm, r.idx_q_norm);
+  bind(l.idx_k_norm, r.idx_k_norm);
+  bind(l.router, r.router);
+  bind(l.shared_gate, r.shared_gate);
+  mx(l.gate_shexp, r.gate_shexp);
+  mx(l.up_shexp, r.up_shexp);
+  mx(l.down_shexp, r.down_shexp);
+  bind(l.gate_exps_scale, r.gate_exps_scale);
+  bind(l.up_exps_scale, r.up_exps_scale);
+  bind(l.down_exps_scale, r.down_exps_scale);
+  kg::TensorArena::Bind(l.experts,
+                        m.places.mtp_array(r.gate_up_codes.index) - r.gate_up_codes.group_offset);
+  const md::Qwen38MtpState& s = *m.mtp_state;
+  kg::TensorArena::Bind(l.cache_k, m.places.mtp_state + s.k);
+  kg::TensorArena::Bind(l.cache_v, m.places.mtp_state + s.v);
+  kg::TensorArena::Bind(l.cache_idx, m.places.mtp_state + s.indexer);
+  kg::TensorArena::Bind(g.streams, m.places.mtp_state + s.hidden);
+}
+
+// Binds `inputs` at distinct placeless addresses, the computed nodes at
+// their own, plans, places the activations (in `activations` unless 0,
+// then plans again, which must give the same plan).
+template <typename Planned>
+std::expected<void, std::string> PlanPlaced(Planned& out, std::vector<ggml_tensor*>& nodes,
+                                            const std::vector<ggml_tensor*>& inputs,
+                                            const kg::DeviceChoices& choices,
+                                            std::uint64_t activations,
+                                            std::uint64_t activation_bytes,
+                                            std::span<ggml_tensor* const> kept) {
+  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
+  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
+  for (ggml_tensor* input : inputs) {
+    kg::TensorArena::Bind(input, leaf);
+    leaf += Round(ggml_nbytes(input), 256) + 256;
+  }
+  kg::BindDistinct(nodes, kDistinct);
+  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices);
+  if (!first) {
+    return Error(first.error().detail);
+  }
+  auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, kept);
+  if (!placement) {
+    return Error(placement.error().detail);
+  }
+  out.placement = std::move(*placement);
+  for (ggml_tensor* input : inputs) {
+    out.inputs_bytes += Round(ggml_nbytes(input), 256);
+  }
+  if (activations == 0) {
+    out.plan = std::move(*first);
+    return {};
+  }
+  if (out.placement.extent > activation_bytes) {
+    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
+                             out.placement.extent, activation_bytes));
+  }
+  for (const auto& [tensor, offset] : out.placement.offsets) {
+    kg::TensorArena::Bind(tensor, activations + offset);
+  }
+  kg::BindViews(nodes);
+  auto second = kg::PlanGraph(nodes, false, choices);
+  if (!second) {
+    return Error(second.error().detail);
+  }
+  if (!kg::SamePlan(*first, *second)) {
+    return Error("the plan changed once the activations were placed");
+  }
+  out.plan = std::move(*second);
+  return {};
+}
+
+}  // namespace
+
 std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     const Qwen38Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
-    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep) {
+    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
+    Qwen38ChunkKind kind) {
+  if ((kind.verify && m.commit == nullptr) || (kind.export_streams && m.mtp_state == nullptr)) {
+    return Error("a verify or the drafter's streams without the drafter");
+  }
+  // The saves are bound at the commit layout's parts, sized for its rows;
+  // the streams go to rows 1 .. rows of the drafter's state.
+  if ((kind.verify && shape.rows > std::int64_t{m.commit->rows}) ||
+      (kind.export_streams && shape.rows + 1 > std::int64_t{m.mtp_state->hidden_rows})) {
+    return Error(std::format("a chunk of {} rows past the verify's saves or the drafter's streams",
+                             shape.rows));
+  }
   auto out = std::make_unique<Qwen38Planned>();
   auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(*m.profile));
   if (!arena) {
@@ -132,7 +277,10 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
                             .fused = m.fused,
                             .exact = m.exact,
                             .experts = m.cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
-                                                 : kg::Qwen38GraphOptions::Experts::kGgml});
+                                                 : kg::Qwen38GraphOptions::Experts::kGgml,
+                            .verify = kind.verify,
+                            .export_streams = kind.export_streams,
+                            .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0});
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -147,51 +295,78 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     }
     kept.push_back(t);
   }
-  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
-  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
-  const auto inputs = g.inputs();
-  for (ggml_tensor* input : inputs) {
-    kg::TensorArena::Bind(input, leaf);
-    leaf += Round(ggml_nbytes(input), 256) + 256;
+  if (g.argmax != nullptr) {
+    kept.push_back(g.logits);  // copied out after the argmaxes are computed
   }
-  kg::BindDistinct(g.nodes, kDistinct);
-  auto first = kg::PlanGraph(g.nodes, /*fusion=*/false, choices);
-  if (!first) {
-    return Error(first.error().detail);
+  if (auto r = PlanPlaced(*out, g.nodes, g.inputs(), choices, activations, activation_bytes, kept);
+      !r) {
+    return std::unexpected(r.error());
   }
-  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 256, kept);
-  if (!placement) {
-    return Error(placement.error().detail);
-  }
-  out->placement = std::move(*placement);
-  for (ggml_tensor* input : inputs) {
-    out->inputs_bytes += Round(ggml_nbytes(input), 256);
-  }
-  if (activations == 0) {
-    out->plan = std::move(*first);
-    return out;
-  }
-  if (out->placement.extent > activation_bytes) {
-    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
-                             out->placement.extent, activation_bytes));
-  }
-  for (const auto& [tensor, offset] : out->placement.offsets) {
-    kg::TensorArena::Bind(tensor, activations + offset);
-  }
-  kg::BindViews(g.nodes);
-  auto second = kg::PlanGraph(g.nodes, false, choices);
-  if (!second) {
-    return Error(second.error().detail);
-  }
-  if (!kg::SamePlan(*first, *second)) {
-    return Error("the plan changed once the activations were placed");
-  }
-  out->plan = std::move(*second);
   return out;
 }
 
+std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
+    const Qwen38Model& m, const kg::Qwen38MtpShape& shape, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes) {
+  if (m.drafter == nullptr || m.mtp_state == nullptr) {
+    return Error("no MTP drafter");
+  }
+  auto out = std::make_unique<Qwen38MtpPlanned>();
+  auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(*m.profile, shape.passes));
+  if (!arena) {
+    return Error(arena.error().detail);
+  }
+  out->arena.emplace(std::move(*arena));
+  auto graph =
+      kg::BuildQwen38MtpGraph(*out->arena, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride);
+  if (!graph) {
+    return Error(graph.error().detail);
+  }
+  out->graph = std::move(*graph);
+  BindQwen38MtpWeights(m, out->graph);
+  // Every pass's draft stays live to the end: the host copies them all out
+  // after the last pass.
+  const std::vector<ggml_tensor*> kept = out->graph.drafts;
+  if (auto r = PlanPlaced(*out, out->graph.nodes, out->graph.inputs(), choices, activations,
+                          activation_bytes, kept);
+      !r) {
+    return std::unexpected(r.error());
+  }
+  return out;
+}
+
+void Qwen38MtpSources(const kg::Qwen38MtpGraph& g, std::span<const md::Qwen38ChunkInputs> passes,
+                      std::span<const std::int32_t> tokens, Qwen38MtpHostInputs& out) {
+  out.zero_row = 0;
+  out.zero_index = 0;
+  out.sources = {{g.state_row, &out.zero_row}, {g.row_zero, &out.zero_index}};
+  for (std::size_t p = 0; p < g.passes.size() && p < passes.size(); ++p) {
+    const kg::Qwen38MtpPass& t = g.passes[p];
+    const md::Qwen38ChunkInputs& in = passes[p];
+    if (t.tokens != nullptr) {
+      out.sources.emplace_back(t.tokens, tokens.data());
+    }
+    out.sources.emplace_back(t.positions, in.positions.data());
+    out.sources.emplace_back(t.cells, in.cells.data());
+    if (t.mask != nullptr) {
+      out.sources.emplace_back(t.mask, in.mask.data());
+    }
+    if (t.cell_block != nullptr) {
+      out.sources.emplace_back(t.cell_block, in.qsa.cell_block.data());
+      out.sources.emplace_back(t.block_cells, in.qsa.block_cells.data());
+      out.sources.emplace_back(t.block_pos, in.qsa.block_pos.data());
+      out.sources.emplace_back(t.block_bias, in.qsa.bias.data());
+    }
+  }
+}
+
 void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, std::uint32_t outputs,
-                   std::span<const std::int32_t> ple_rows, Qwen38HostInputs& out) {
+                   std::span<const std::int32_t> ple_rows, Qwen38HostInputs& out,
+                   std::int64_t stream_row0) {
+  out.row_ids.resize(in.rows);
+  std::ranges::iota(out.row_ids, std::int64_t{0});
+  out.stream_rows.resize(in.rows);
+  std::ranges::iota(out.stream_rows, stream_row0);
   out.out_ids.resize(outputs);
   std::ranges::iota(out.out_ids, static_cast<std::int32_t>(in.rows - outputs));
   out.zero_row = 0;
@@ -214,6 +389,12 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
     out.sources.emplace_back(g.block_cells, in.qsa.block_cells.data());
     out.sources.emplace_back(g.block_pos, in.qsa.block_pos.data());
     out.sources.emplace_back(g.block_bias, in.qsa.bias.data());
+  }
+  if (g.row_ids != nullptr) {
+    out.sources.emplace_back(g.row_ids, out.row_ids.data());
+  }
+  if (g.stream_rows != nullptr) {
+    out.sources.emplace_back(g.stream_rows, out.stream_rows.data());
   }
 }
 

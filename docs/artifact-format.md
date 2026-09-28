@@ -696,8 +696,12 @@ one and removes it. The source must remain available (D-018).
   at load it binds the target artifact's `token_embd.weight` and
   `output.weight` by name (`model/dspark.h`); the composition document for
   such a pair waits for a version without model_index.json (D-089).
-  Stored MTP layers are
-  ordinary tensors in their checkpoints and group like any layer.
+  Stored MTP layers are ordinary tensors in their checkpoints. Qwen3.8's is
+  imported the same way as DSpark: as its own drafter artifact
+  (architecture `qwen4exp-mtp`, `modelopt_qwen38.py` `plan_mtp`), binding
+  the target's `token_embd.weight` and `output.weight`, so the target's
+  artifact is neither re-imported nor changed
+  ([qwen38-mtp](experiments/qwen38-mtp/README.md#import)).
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M4 entry, where each node
   holds its own shard on disk. It depends on M4's sharding design, and v0

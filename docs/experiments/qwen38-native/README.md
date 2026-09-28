@@ -79,7 +79,10 @@ most about 1.1× its), and the results below say where they stand.
   code bytes, 10 scales); linear attention's value heads into tiled order,
   as llama.cpp's converter; norms with (1 + w) folded in, A as −exp(A_log).
   Vision tower, MTP block and the experts' static activation scales are not
-  imported. **Since the prefill work's review** the importer writes the
+  imported into the target. The MTP block is its own drafter artifact
+  ([qwen38-mtp](../qwen38-mtp/README.md#import)). The module in the tree
+  now also holds that drafter's planner, and its target path is unchanged,
+  so the target is not re-imported. **Since the prefill work's review** the importer writes the
   routed experts in the CUTLASS layout instead ([below](#prefill-d-085)):
   converter `m3-1+layout-a0d1980a9eddd1ad+modelopt_qwen38-031ed8750c9da55d`,
   on `spark-b` in 12 min 49 s wall with its deep verification (peak RSS

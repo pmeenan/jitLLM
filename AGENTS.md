@@ -283,7 +283,13 @@ plan as the default (speed before bit exactness: one vector kernel that
 reads each routed expert once per verify, fused routing and
 hyper-connections; greedy within near-ties of llama.cpp, the exact plan
 kept as `--exact on`): plain decode 1.07–1.09× llama.cpp's, DSpark
-1.03× / 1.07–1.08× on prose / code, short of a decisive ~1.1×.
+1.03× / 1.07–1.08× on prose / code, short of a decisive ~1.1×; and
+Qwen3.8's speculative decoding with its MTP layer, a drafter artifact of
+its own: a batched verify with the kept rows' recurrent state committed,
+greedy within near-ties, forced rejections exact against a control and
+across a swap, and 1.12× / 1.03× Mia's MTP-3 decode; Qwen3.8's decode
+graphs (which survive a swap) make its plain decode 1.01–1.03× Mia's
+without speculation.
 D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

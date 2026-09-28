@@ -93,8 +93,9 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
 constexpr std::uint64_t PleLandingBound(std::uint64_t lookups) { return lookups * 2 * kPleBlock; }
 
 // Runs a plan's reads into `landing` on `storage` (the caller's own ring,
-// never the storage lane's), waiting for every one, an unknown submission
-// included (it is in flight, storage.h); refused on a short or failed read,
+// never the storage lane's), polling (never sleeping) until every one has
+// completed, an unknown submission included (it is in flight, storage.h);
+// refused on a short or failed read,
 // after draining the rest. Refused without draining if reads make no
 // progress for 30 s: they may still land, so the caller must neither reuse
 // the landing nor destroy the ring.
@@ -102,11 +103,15 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
                                              const PleRowPlan& plan, std::byte* landing);
 
 // The job's gather (CUDA builds, ple_rows.cu): row slot i's `row_bytes`
-// bytes from landing + sources[i], for i < count, on `stream`. `sources`
-// and `landing` are pinned host memory the device reads in place;
-// `slots` is device memory. Returns false if the launch failed.
-bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources, std::uint32_t count,
-                   std::uint32_t row_bytes, std::byte* slots, void* stream);
+// bytes from landing + sources[i], for i < *count, on `stream`, over a grid
+// of `max_count` slots (at least *count). `count`, `sources` and `landing`
+// are pinned host memory the device reads in place, so a captured graph
+// replays the gather with whatever the host wrote there for the next chunk
+// (D-090: data, not launch parameters); `slots` is device memory. Returns
+// false if the launch failed.
+bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
+                   const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
+                   std::byte* slots, void* stream);
 
 }  // namespace jitllm::benchmarks
 

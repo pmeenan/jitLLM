@@ -140,8 +140,8 @@ if(JITLLM_CUDA)
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
-                   ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_graph.cc qwen38_graph.h
-                   tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
+                   ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
+                   qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")

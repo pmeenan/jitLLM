@@ -74,6 +74,244 @@ struct Want {
   Qwen38Tensor* into = nullptr;
 };
 
+// The wants' builders.
+class Wants {
+ public:
+  explicit Wants(std::vector<Want>& want) : want_(want) {}
+  void Ggml(std::string role, std::string_view type, std::vector<std::uint64_t> ne,
+            Qwen38Tensor* into) {
+    want_.push_back(
+        {.role = std::move(role), .plain = false, .type = type, .ne = std::move(ne), .into = into});
+  }
+  void Plain(std::string role, std::string_view type, std::vector<std::uint64_t> ne,
+             Qwen38Tensor* into) {
+    want_.push_back(
+        {.role = std::move(role), .plain = true, .type = type, .ne = std::move(ne), .into = into});
+  }
+  // A linear y[n] = W x[k]: MXFP8 codes and scales, or with `bf16` the
+  // drafter's GGML BF16 matrix.
+  void Linear(const std::string& name, std::uint64_t k, std::uint64_t n, Qwen38Mxfp8* into,
+              bool bf16) {
+    if (bf16) {
+      Ggml(name + ".weight", "BF16", {k, n}, &into->bf16);
+      return;
+    }
+    Plain(name + ".weight", "F8_E4M3", {k, n}, &into->codes);
+    Plain(name + ".weight_scale", "U8", {k / 32, n}, &into->scales);
+  }
+  void Array(std::string role, std::string_view type, std::vector<std::uint64_t> ne,
+             Qwen38Tensor* into) {
+    want_.push_back({.role = std::move(role),
+                     .plain = false,
+                     .type = type,
+                     .ne = std::move(ne),
+                     .expert_array = true,
+                     .into = into});
+  }
+
+ private:
+  std::vector<Want>& want_;
+};
+
+std::uint64_t Atoms(std::uint64_t rows, std::uint64_t k) { return Pad(rows, 128) / 128 * (k / 64); }
+
+// One layer's wants under `n` ("blk.<i>."): the target's layer `il` (MXFP8
+// linears, its kind by the profile, the n-gram layer's extras), or with
+// `mtp` the drafter's full-attention layer (BF16 linears). The routed
+// experts in GGML's layout, or the CUTLASS layout's four arrays.
+void AddLayer(Wants& w, const Qwen38Profile& p, const std::string& n, std::uint32_t il,
+              Qwen38Layer& l, bool cutlass, bool mtp) {
+  const std::uint64_t width = p.width;
+  const std::uint64_t hd = p.head_dim;
+  l.linear = !mtp && p.linear(il);
+  for (const auto& [kind, norm, down, up, inject] :
+       {std::tuple{"attn", &l.hc_attn_norm, &l.hc_attn_down, &l.hc_attn_up, &l.hc_attn_inject},
+        std::tuple{"ffn", &l.hc_ffn_norm, &l.hc_ffn_down, &l.hc_ffn_up, &l.hc_ffn_inject}}) {
+    w.Ggml(std::format("{}hc_{}_norm.weight", n, kind), "F32", {p.hc_width()}, norm);
+    w.Ggml(std::format("{}hc_{}_down.weight", n, kind), "BF16", {p.hc_width(), p.hc_rank}, down);
+    w.Ggml(std::format("{}hc_{}_up.weight", n, kind), "BF16", {p.hc_rank, p.hc_width()}, up);
+    w.Ggml(std::format("{}hc_{}_inject.weight", n, kind), "BF16", {p.hc_width(), p.hc}, inject);
+  }
+  if (l.linear) {
+    w.Linear(n + "attn_qkv", width, p.conv_channels(), &l.qkv, false);
+    w.Linear(n + "attn_gate", width, p.lin_v_width(), &l.z, false);
+    w.Linear(n + "ssm_beta", width, p.lin_v_heads, &l.beta, false);
+    w.Linear(n + "ssm_alpha", width, p.lin_v_heads, &l.alpha, false);
+    w.Ggml(n + "ssm_dt.bias", "F32", {p.lin_v_heads}, &l.dt_bias);
+    w.Ggml(n + "ssm_a", "F32", {p.lin_v_heads}, &l.ssm_a);
+    w.Ggml(n + "ssm_conv1d.weight", "F32", {p.conv, p.conv_channels()}, &l.conv1d);
+    w.Ggml(n + "ssm_norm.weight", "F32", {p.lin_head_dim}, &l.ssm_norm);
+    w.Linear(n + "ssm_out", p.lin_v_width(), width, &l.ssm_out, false);
+  } else {
+    w.Linear(n + "attn_q", width, 2 * hd * p.heads, &l.q, mtp);
+    w.Linear(n + "attn_k", width, hd * p.kv_heads, &l.k, mtp);
+    w.Linear(n + "attn_v", width, hd * p.kv_heads, &l.v, mtp);
+    w.Linear(n + "attn_output", hd * p.heads, width, &l.o, mtp);
+    w.Ggml(n + "attn_q_norm.weight", "F32", {hd}, &l.q_norm);
+    w.Ggml(n + "attn_k_norm.weight", "F32", {hd}, &l.k_norm);
+    w.Linear(n + "indexer.qk_proj", width, std::uint64_t{p.indexer_heads + 1} * p.indexer_head_dim,
+             &l.idx_qk, mtp);
+    w.Ggml(n + "indexer.q_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_q_norm);
+    w.Ggml(n + "indexer.k_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_k_norm);
+  }
+  if (!mtp && il == p.ple_layer) {
+    w.Ggml(n + "ple_key.weight", "BF16", {p.ple_width(), p.hc_width()}, &l.ple_key);
+    w.Ggml(n + "ple_value.weight", "BF16", {p.ple_width(), width}, &l.ple_value);
+    w.Ggml(n + "ple_norm_key.weight", "F32", {p.hc_width()}, &l.ple_norm_key);
+    w.Ggml(n + "ple_norm_query.weight", "F32", {p.hc_width()}, &l.ple_norm_query);
+    w.Ggml(n + "ple_norm_conv.weight", "F32", {p.hc_width()}, &l.ple_norm_conv);
+    w.Ggml(n + "ple_conv1d.weight", "F32", {p.ple_conv, p.hc_width()}, &l.ple_conv1d);
+    w.Plain(n + "ple_multipliers", "I64", {p.ngram}, &l.ple_multipliers);
+    w.Plain(n + "ple_head_offsets", "I64", {p.ple_heads()}, &l.ple_head_offsets);
+    w.Plain(n + "ple_head_vocab", "I64", {p.ple_heads()}, &l.ple_head_vocab);
+  }
+  w.Ggml(n + "ffn_gate_inp.weight", "BF16", {width, p.experts}, &l.router);
+  w.Ggml(n + "ffn_gate_inp_shexp.weight", "BF16", {width}, &l.shared_gate);
+  w.Linear(n + "ffn_gate_shexp", width, p.shared_ffn, &l.gate_shexp, mtp);
+  w.Linear(n + "ffn_up_shexp", width, p.shared_ffn, &l.up_shexp, mtp);
+  w.Linear(n + "ffn_down_shexp", p.shared_ffn, width, &l.down_shexp, mtp);
+  const std::uint64_t f = p.expert_ffn;
+  for (const auto& [proj, into, scale, k, out] :
+       {std::tuple{"gate", &l.gate_exps, &l.gate_exps_scale, width, f},
+        std::tuple{"up", &l.up_exps, &l.up_exps_scale, width, f},
+        std::tuple{"down", &l.down_exps, &l.down_exps_scale, f, width}}) {
+    if (!cutlass) {
+      w.Array(std::format("{}ffn_{}_exps.weight", n, proj), "NVFP4", {k, out}, into);
+    }
+    w.Ggml(std::format("{}ffn_{}_exps.weight_scale_2", n, proj), "F32", {p.experts}, scale);
+  }
+  if (cutlass) {
+    // A matrix's swizzled scales: 512-byte atoms of 128 rows by 4 scales
+    // (64 of k), the rows padded to 128.
+    w.Array(n + "ffn_gate_up_exps.codes", "I8", {width / 2, 2 * f}, &l.gate_up_codes);
+    w.Array(n + "ffn_gate_up_exps.scales", "I8", {512, Atoms(2 * f, width)}, &l.gate_up_scales);
+    w.Array(n + "ffn_down_exps.codes", "I8", {f / 2, width}, &l.down_codes);
+    w.Array(n + "ffn_down_exps.scales", "I8", {512, Atoms(width, f)}, &l.down_scales);
+  }
+}
+
+// Binds every want to the resource of its role, which must have its
+// representation, type and shape exactly; refused, naming the tensor, if
+// one is missing or differs, or if the artifact binds a role no want reads.
+std::expected<void, std::string> Match(const Qwen38Profile& p, std::span<const Want> want,
+                                       std::span<const Qwen38Resource> resources,
+                                       std::string_view model) {
+  std::unordered_map<std::string, std::uint32_t> by_role;
+  for (std::uint32_t i = 0; i < resources.size(); ++i) {
+    for (const std::string& role : resources[i].roles) {
+      if (!by_role.emplace(role, i).second) {
+        return Refused(std::format("the artifact binds {} twice", role));
+      }
+    }
+  }
+  std::unordered_map<std::string_view, const Want*> wanted;
+  for (const Want& x : want) {
+    wanted.emplace(x.role, &x);
+  }
+  for (const auto& [role, index] : by_role) {
+    if (!wanted.contains(role)) {
+      return Refused(std::format("the artifact binds {}, which {} does not read", role, model));
+    }
+  }
+  for (const Want& x : want) {
+    const auto found = by_role.find(x.role);
+    if (found == by_role.end()) {
+      return Refused(std::format("the artifact has no {}", x.role));
+    }
+    const Qwen38Resource& r = resources[found->second];
+    if (r.expert_array != x.expert_array) {
+      return Refused(std::format("{} is {}an expert array", x.role, r.expert_array ? "" : "not "));
+    }
+    if (x.expert_array && r.count != p.experts) {
+      return Refused(std::format("{} has {} experts, not {}", x.role, r.count, p.experts));
+    }
+    // A zero in the wanted shape leaves that extent to a later check.
+    const bool shape_fits =
+        r.ne.size() == x.ne.size() &&
+        std::ranges::equal(r.ne, x.ne, [](std::uint64_t got, std::uint64_t want_ne) {
+          return want_ne == 0 ? got > 0 : got == want_ne;
+        });
+    if (r.plain != x.plain || r.type != x.type || !shape_fits) {
+      return Refused(std::format("{} is {} {} {}, not {} {} {}", x.role, r.plain ? "plain" : "GGML",
+                                 r.type, Shape(r.ne), x.plain ? "plain" : "GGML", x.type,
+                                 Shape(x.ne)));
+    }
+    *x.into = {.index = found->second,
+               .plain = r.plain,
+               .type = r.type,
+               .ne = r.ne,
+               .group_offset = r.group_offset,
+               .readable = r.readable};
+  }
+  return {};
+}
+
+// The CUTLASS layout's four arrays back to back from each group's start, as
+// the kernels read a slot (the artifact reader already put every layer's
+// arrays in the same expert groups).
+bool PackedFromTheStart(const Qwen38Layer& l) {
+  std::uint64_t at = 0;
+  for (const Qwen38Tensor* t : l.expert_arrays(true)) {
+    if (t->group_offset != at) {
+      return false;
+    }
+    at += t->ne[0] * t->ne[1];
+  }
+  return true;
+}
+
+// The resources of an artifact as the adapter sees them; `first_array` the
+// index of its first expert array.
+std::expected<std::vector<Qwen38Resource>, std::string> ResourcesOf(
+    const artifact::Artifact& artifact, std::size_t& first_array) {
+  std::vector<Qwen38Resource> all;
+  all.reserve(artifact.resources().size() + artifact.expert_arrays().size());
+  for (const artifact::Resource& resource : artifact.resources()) {
+    if (resource.repr.family == artifact::Family::kExl3) {
+      return Refused(std::format("{} is an EXL3 representation", resource.name));
+    }
+    const bool plain = resource.repr.family == artifact::Family::kPlain;
+    std::vector<std::uint64_t> ne = resource.repr.dims;
+    if (plain) {
+      std::ranges::reverse(ne);  // GGML order
+    }
+    all.push_back({.roles = resource.roles,
+                   .plain = plain,
+                   .type = std::string(resource.repr.type),
+                   .ne = std::move(ne)});
+  }
+  first_array = all.size();
+  for (const artifact::ExpertArray& array : artifact.expert_arrays()) {
+    if (array.repr.family != artifact::Family::kGgml) {
+      return Refused(std::format("{} is not a GGML representation", array.name));
+    }
+    all.push_back({.roles = {array.name},
+                   .plain = false,
+                   .type = std::string(array.repr.type),
+                   .ne = array.repr.dims,
+                   .expert_array = true,
+                   .count = array.count,
+                   .group_offset = array.group_offset.value(),
+                   .readable = array.readable.value()});
+  }
+  return all;
+}
+
+// Expert arrays are indexed among the artifact's expert arrays.
+void Rebase(Qwen38Layer& l, bool cutlass, std::size_t first_array) {
+  const auto rebase = [&](Qwen38Tensor& t) { t.index -= static_cast<std::uint32_t>(first_array); };
+  if (cutlass) {
+    rebase(l.gate_up_codes);
+    rebase(l.gate_up_scales);
+    rebase(l.down_codes);
+    rebase(l.down_scales);
+  } else {
+    rebase(l.gate_exps);
+    rebase(l.up_exps);
+    rebase(l.down_exps);
+  }
+}
+
 }  // namespace
 
 const Qwen38Profile& Qwen38Flash() {
@@ -137,178 +375,27 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
   b.experts = cutlass ? Qwen38Experts::kCutlass : Qwen38Experts::kGgml;
   const std::uint64_t w = p.width;
   std::vector<Want> want;
-  const auto ggml = [&](std::string role, std::string_view type, std::vector<std::uint64_t> ne,
-                        Qwen38Tensor* into) {
-    want.push_back(
-        {.role = std::move(role), .plain = false, .type = type, .ne = std::move(ne), .into = into});
-  };
-  const auto plain = [&](std::string role, std::string_view type, std::vector<std::uint64_t> ne,
-                         Qwen38Tensor* into) {
-    want.push_back(
-        {.role = std::move(role), .plain = true, .type = type, .ne = std::move(ne), .into = into});
-  };
-  const auto mxfp8 = [&](const std::string& name, std::uint64_t k, std::uint64_t n,
-                         Qwen38Mxfp8* into) {
-    plain(name + ".weight", "F8_E4M3", {k, n}, &into->codes);
-    plain(name + ".weight_scale", "U8", {k / 32, n}, &into->scales);
-  };
-  ggml("token_embd.weight", "BF16", {w, p.vocab}, &b.token_embd);
-  ggml("output.weight", "BF16", {w, p.vocab}, &b.output);
-  ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
-  ggml("output_hc_down.weight", "BF16", {p.hc_width(), p.hc_rank}, &b.output_hc_down);
-  ggml("output_hc_up.weight", "BF16", {p.hc_rank, p.hc_width()}, &b.output_hc_up);
+  Wants wants(want);
+  wants.Ggml("token_embd.weight", "BF16", {w, p.vocab}, &b.token_embd);
+  wants.Ggml("output.weight", "BF16", {w, p.vocab}, &b.output);
+  wants.Ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
+  wants.Ggml("output_hc_down.weight", "BF16", {p.hc_width(), p.hc_rank}, &b.output_hc_down);
+  wants.Ggml("output_hc_up.weight", "BF16", {p.hc_rank, p.hc_width()}, &b.output_hc_up);
   // The table's rows are checked against the hash's ranges, not the profile.
-  plain("per_layer_token_embd.weight", "U8", {(p.ple_row / 2) + (p.ple_row / 16), 0}, &b.ple_table);
-  plain("per_layer_token_embd.weight_scale_2", "F32", {1}, &b.ple_table_scale);
-  const std::uint64_t hd = p.head_dim;
+  wants.Plain("per_layer_token_embd.weight", "U8", {(p.ple_row / 2) + (p.ple_row / 16), 0},
+              &b.ple_table);
+  wants.Plain("per_layer_token_embd.weight_scale_2", "F32", {1}, &b.ple_table_scale);
   for (std::uint32_t il = 0; il < p.layers; ++il) {
-    Qwen38Layer& l = b.layers[il];
-    l.linear = p.linear(il);
-    const std::string n = std::format("blk.{}.", il);
-    for (const auto& [kind, norm, down, up, inject] :
-         {std::tuple{"attn", &l.hc_attn_norm, &l.hc_attn_down, &l.hc_attn_up, &l.hc_attn_inject},
-          std::tuple{"ffn", &l.hc_ffn_norm, &l.hc_ffn_down, &l.hc_ffn_up, &l.hc_ffn_inject}}) {
-      ggml(std::format("{}hc_{}_norm.weight", n, kind), "F32", {p.hc_width()}, norm);
-      ggml(std::format("{}hc_{}_down.weight", n, kind), "BF16", {p.hc_width(), p.hc_rank}, down);
-      ggml(std::format("{}hc_{}_up.weight", n, kind), "BF16", {p.hc_rank, p.hc_width()}, up);
-      ggml(std::format("{}hc_{}_inject.weight", n, kind), "BF16", {p.hc_width(), p.hc}, inject);
-    }
-    if (l.linear) {
-      mxfp8(n + "attn_qkv", w, p.conv_channels(), &l.qkv);
-      mxfp8(n + "attn_gate", w, p.lin_v_width(), &l.z);
-      mxfp8(n + "ssm_beta", w, p.lin_v_heads, &l.beta);
-      mxfp8(n + "ssm_alpha", w, p.lin_v_heads, &l.alpha);
-      ggml(n + "ssm_dt.bias", "F32", {p.lin_v_heads}, &l.dt_bias);
-      ggml(n + "ssm_a", "F32", {p.lin_v_heads}, &l.ssm_a);
-      ggml(n + "ssm_conv1d.weight", "F32", {p.conv, p.conv_channels()}, &l.conv1d);
-      ggml(n + "ssm_norm.weight", "F32", {p.lin_head_dim}, &l.ssm_norm);
-      mxfp8(n + "ssm_out", p.lin_v_width(), w, &l.ssm_out);
-    } else {
-      mxfp8(n + "attn_q", w, 2 * hd * p.heads, &l.q);
-      mxfp8(n + "attn_k", w, hd * p.kv_heads, &l.k);
-      mxfp8(n + "attn_v", w, hd * p.kv_heads, &l.v);
-      mxfp8(n + "attn_output", hd * p.heads, w, &l.o);
-      ggml(n + "attn_q_norm.weight", "F32", {hd}, &l.q_norm);
-      ggml(n + "attn_k_norm.weight", "F32", {hd}, &l.k_norm);
-      mxfp8(n + "indexer.qk_proj", w, std::uint64_t{p.indexer_heads + 1} * p.indexer_head_dim,
-            &l.idx_qk);
-      ggml(n + "indexer.q_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_q_norm);
-      ggml(n + "indexer.k_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_k_norm);
-    }
-    if (il == p.ple_layer) {
-      ggml(n + "ple_key.weight", "BF16", {p.ple_width(), p.hc_width()}, &l.ple_key);
-      ggml(n + "ple_value.weight", "BF16", {p.ple_width(), w}, &l.ple_value);
-      ggml(n + "ple_norm_key.weight", "F32", {p.hc_width()}, &l.ple_norm_key);
-      ggml(n + "ple_norm_query.weight", "F32", {p.hc_width()}, &l.ple_norm_query);
-      ggml(n + "ple_norm_conv.weight", "F32", {p.hc_width()}, &l.ple_norm_conv);
-      ggml(n + "ple_conv1d.weight", "F32", {p.ple_conv, p.hc_width()}, &l.ple_conv1d);
-      plain(n + "ple_multipliers", "I64", {p.ngram}, &l.ple_multipliers);
-      plain(n + "ple_head_offsets", "I64", {p.ple_heads()}, &l.ple_head_offsets);
-      plain(n + "ple_head_vocab", "I64", {p.ple_heads()}, &l.ple_head_vocab);
-    }
-    ggml(n + "ffn_gate_inp.weight", "BF16", {w, p.experts}, &l.router);
-    ggml(n + "ffn_gate_inp_shexp.weight", "BF16", {w}, &l.shared_gate);
-    mxfp8(n + "ffn_gate_shexp", w, p.shared_ffn, &l.gate_shexp);
-    mxfp8(n + "ffn_up_shexp", w, p.shared_ffn, &l.up_shexp);
-    mxfp8(n + "ffn_down_shexp", p.shared_ffn, w, &l.down_shexp);
-    const std::uint64_t f = p.expert_ffn;
-    for (const auto& [proj, into, scale, k, out] :
-         {std::tuple{"gate", &l.gate_exps, &l.gate_exps_scale, w, f},
-          std::tuple{"up", &l.up_exps, &l.up_exps_scale, w, f},
-          std::tuple{"down", &l.down_exps, &l.down_exps_scale, f, w}}) {
-      if (!cutlass) {
-        want.push_back({.role = std::format("{}ffn_{}_exps.weight", n, proj),
-                        .plain = false,
-                        .type = "NVFP4",
-                        .ne = {k, out},
-                        .expert_array = true,
-                        .into = into});
-      }
-      ggml(std::format("{}ffn_{}_exps.weight_scale_2", n, proj), "F32", {p.experts}, scale);
-    }
-    if (cutlass) {
-      // A matrix's swizzled scales: 512-byte atoms of 128 rows by 4 scales
-      // (64 of k), the rows padded to 128.
-      const auto atoms = [](std::uint64_t rows, std::uint64_t k) {
-        return Pad(rows, 128) / 128 * (k / 64);
-      };
-      for (const auto& [name, ne, into] :
-           {std::tuple{"gate_up_exps.codes", std::vector<std::uint64_t>{w / 2, 2 * f},
-                       &l.gate_up_codes},
-            std::tuple{"gate_up_exps.scales", std::vector<std::uint64_t>{512, atoms(2 * f, w)},
-                       &l.gate_up_scales},
-            std::tuple{"down_exps.codes", std::vector<std::uint64_t>{f / 2, w}, &l.down_codes},
-            std::tuple{"down_exps.scales", std::vector<std::uint64_t>{512, atoms(w, f)},
-                       &l.down_scales}}) {
-        want.push_back({.role = std::format("{}ffn_{}", n, name),
-                        .plain = false,
-                        .type = "I8",
-                        .ne = ne,
-                        .expert_array = true,
-                        .into = into});
-      }
-    }
+    AddLayer(wants, p, std::format("blk.{}.", il), il, b.layers[il], cutlass, false);
   }
-
-  std::unordered_map<std::string, std::uint32_t> by_role;
-  for (std::uint32_t i = 0; i < resources.size(); ++i) {
-    for (const std::string& role : resources[i].roles) {
-      if (!by_role.emplace(role, i).second) {
-        return Refused(std::format("the artifact binds {} twice", role));
-      }
-    }
-  }
-  std::unordered_map<std::string_view, const Want*> wanted;
-  for (const Want& x : want) {
-    wanted.emplace(x.role, &x);
-  }
-  for (const auto& [role, index] : by_role) {
-    if (!wanted.contains(role)) {
-      return Refused(std::format("the artifact binds {}, which Qwen3.8 does not read", role));
-    }
-  }
-  for (const Want& x : want) {
-    const auto found = by_role.find(x.role);
-    if (found == by_role.end()) {
-      return Refused(std::format("the artifact has no {}", x.role));
-    }
-    const Qwen38Resource& r = resources[found->second];
-    if (r.expert_array != x.expert_array) {
-      return Refused(std::format("{} is {}an expert array", x.role, r.expert_array ? "" : "not "));
-    }
-    if (x.expert_array && r.count != p.experts) {
-      return Refused(std::format("{} has {} experts, not {}", x.role, r.count, p.experts));
-    }
-    // A zero in the wanted shape leaves that extent to a later check.
-    const bool shape_fits =
-        r.ne.size() == x.ne.size() &&
-        std::ranges::equal(r.ne, x.ne, [](std::uint64_t got, std::uint64_t want_ne) {
-          return want_ne == 0 ? got > 0 : got == want_ne;
-        });
-    if (r.plain != x.plain || r.type != x.type || !shape_fits) {
-      return Refused(std::format("{} is {} {} {}, not {} {} {}", x.role, r.plain ? "plain" : "GGML",
-                                 r.type, Shape(r.ne), x.plain ? "plain" : "GGML", x.type,
-                                 Shape(x.ne)));
-    }
-    *x.into = {.index = found->second,
-               .plain = r.plain,
-               .type = r.type,
-               .ne = r.ne,
-               .group_offset = r.group_offset,
-               .readable = r.readable};
+  if (auto matched = Match(p, want, resources, "Qwen3.8"); !matched) {
+    return std::unexpected(matched.error());
   }
   if (cutlass) {
-    // The four arrays back to back from each group's start, as the kernels
-    // read a slot (the artifact reader already put every layer's arrays in
-    // the same expert groups).
     for (std::uint32_t il = 0; il < p.layers; ++il) {
-      std::uint64_t at = 0;
-      for (const Qwen38Tensor* t : b.layers[il].expert_arrays(true)) {
-        if (t->group_offset != at) {
-          return Refused(std::format(
-              "layer {}'s CUTLASS expert arrays are not packed from each group's start", il));
-        }
-        at += t->ne[0] * t->ne[1];
+      if (!PackedFromTheStart(b.layers[il])) {
+        return Refused(std::format(
+            "layer {}'s CUTLASS expert arrays are not packed from each group's start", il));
       }
     }
   }
@@ -317,54 +404,64 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
 
 std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& profile,
                                                      const artifact::Artifact& artifact) {
-  std::vector<Qwen38Resource> all;
-  all.reserve(artifact.resources().size() + artifact.expert_arrays().size());
-  for (const artifact::Resource& resource : artifact.resources()) {
-    if (resource.repr.family == artifact::Family::kExl3) {
-      return Refused(std::format("{} is an EXL3 representation", resource.name));
-    }
-    const bool plain = resource.repr.family == artifact::Family::kPlain;
-    std::vector<std::uint64_t> ne = resource.repr.dims;
-    if (plain) {
-      std::ranges::reverse(ne);  // GGML order
-    }
-    all.push_back({.roles = resource.roles,
-                   .plain = plain,
-                   .type = std::string(resource.repr.type),
-                   .ne = std::move(ne)});
+  std::size_t first_array = 0;
+  auto all = ResourcesOf(artifact, first_array);
+  if (!all) {
+    return std::unexpected(all.error());
   }
-  const std::size_t first_array = all.size();
-  for (const artifact::ExpertArray& array : artifact.expert_arrays()) {
-    if (array.repr.family != artifact::Family::kGgml) {
-      return Refused(std::format("{} is not a GGML representation", array.name));
-    }
-    all.push_back({.roles = {array.name},
-                   .plain = false,
-                   .type = std::string(array.repr.type),
-                   .ne = array.repr.dims,
-                   .expert_array = true,
-                   .count = array.count,
-                   .group_offset = array.group_offset.value(),
-                   .readable = array.readable.value()});
-  }
-  auto bound = BindQwen38(profile, artifact.model().architecture, all);
+  auto bound = BindQwen38(profile, artifact.model().architecture, *all);
   if (!bound) {
     return bound;
   }
-  // Expert arrays are indexed among the artifact's expert arrays.
-  const auto rebase = [&](Qwen38Tensor& t) { t.index -= static_cast<std::uint32_t>(first_array); };
   for (Qwen38Layer& l : bound->layers) {
-    if (bound->cutlass()) {
-      rebase(l.gate_up_codes);
-      rebase(l.gate_up_scales);
-      rebase(l.down_codes);
-      rebase(l.down_scales);
-    } else {
-      rebase(l.gate_exps);
-      rebase(l.up_exps);
-      rebase(l.down_exps);
-    }
+    Rebase(l, bound->cutlass(), first_array);
   }
+  return bound;
+}
+
+std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
+    const Qwen38Profile& p, std::string_view architecture,
+    std::span<const Qwen38Resource> resources) {
+  if (architecture != "qwen4exp-mtp") {
+    return Refused(std::format("the drafter's architecture is {}, not qwen4exp-mtp", architecture));
+  }
+  if (!ProfileIsSane(p)) {
+    return Refused("the profile is not a Qwen3.8 model's");
+  }
+  Qwen38MtpBinding b;
+  const std::uint64_t w = p.width;
+  std::vector<Want> want;
+  Wants wants(want);
+  wants.Ggml("fc_embd.weight", "BF16", {w, w}, &b.fc_embd);
+  wants.Ggml("fc_hidden.weight", "BF16", {w, w}, &b.fc_hidden);
+  wants.Ggml("norm_embd.weight", "F32", {w}, &b.norm_embd);
+  wants.Ggml("norm_hidden.weight", "F32", {p.hc_width()}, &b.norm_hidden);
+  wants.Ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
+  wants.Ggml("output_hc_down.weight", "BF16", {p.hc_width(), p.hc_rank}, &b.output_hc_down);
+  wants.Ggml("output_hc_up.weight", "BF16", {p.hc_rank, p.hc_width()}, &b.output_hc_up);
+  // One full-attention layer, its routed experts in the CUTLASS layout.
+  AddLayer(wants, p, "blk.0.", 0, b.layer, true, true);
+  if (auto matched = Match(p, want, resources, "Qwen3.8's MTP drafter"); !matched) {
+    return std::unexpected(matched.error());
+  }
+  if (!PackedFromTheStart(b.layer)) {
+    return Refused("the drafter's CUTLASS expert arrays are not packed from each group's start");
+  }
+  return b;
+}
+
+std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(const Qwen38Profile& profile,
+                                                           const artifact::Artifact& artifact) {
+  std::size_t first_array = 0;
+  auto all = ResourcesOf(artifact, first_array);
+  if (!all) {
+    return std::unexpected(all.error());
+  }
+  auto bound = BindQwen38Mtp(profile, artifact.model().architecture, *all);
+  if (!bound) {
+    return bound;
+  }
+  Rebase(bound->layer, true, first_array);
   return bound;
 }
 
@@ -547,11 +644,37 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p
       return Refused(std::format("token {} is outside the vocabulary", t));
     }
   }
+  auto placed =
+      Qwen38Rows(p, state.cells, n_past, rows,
+                 static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, 256), state.cells)),
+                 selection_masks);
+  if (!placed) {
+    return placed;
+  }
+  Qwen38ChunkInputs in = std::move(*placed);
+  in.tokens.assign(history.begin() + n_past, history.end());
+  in.ple_rows.resize(std::size_t{p.ple_heads()} * rows);
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    const auto r = Qwen38PleRows(p, hash, history, n_past + i);
+    std::ranges::copy(r, in.ple_rows.begin() + (std::ptrdiff_t{i} * p.ple_heads()));
+  }
+  return in;
+}
+
+std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
+                                                         std::uint32_t cells, std::uint32_t n_past,
+                                                         std::uint32_t rows, std::uint32_t read,
+                                                         bool selection_masks) {
+  const std::uint64_t end = std::uint64_t{n_past} + rows;
+  if (rows == 0 || end > cells || read < Pad(end, 256) || read > cells || read % 256 != 0 ||
+      p.indexer_ratio == 0) {
+    return Refused(std::format("{} rows at {} reading {} cells do not fit a cache of {}", rows,
+                               n_past, read, cells));
+  }
   Qwen38ChunkInputs in;
   in.n_past = n_past;
   in.rows = rows;
-  in.n_kv = static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, 256), state.cells));
-  in.tokens.assign(history.begin() + n_past, history.end());
+  in.n_kv = read;
   in.positions.resize(4 * std::size_t{rows});
   in.cells.resize(rows);
   for (std::uint32_t i = 0; i < rows; ++i) {
@@ -581,11 +704,6 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p
       std::fill_n(in.mask_f32.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
                   static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), 0.0f);
     }
-  }
-  in.ple_rows.resize(std::size_t{p.ple_heads()} * rows);
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    const auto r = Qwen38PleRows(p, hash, history, n_past + i);
-    std::ranges::copy(r, in.ple_rows.begin() + (std::ptrdiff_t{i} * p.ple_heads()));
   }
   if (in.qsa_select) {
     Qwen38QsaInputs& q = in.qsa;
@@ -629,6 +747,62 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p
     }
   }
   return in;
+}
+
+// ---------------------------------------------------------------- the MTP drafter
+
+std::vector<StateRepresentation> Qwen38MtpState::Representations() const {
+  return {StateRepresentation{.name = "qwen38.mtp.kv",
+                              .block_positions = 0,
+                              .block_bytes = Bytes(hidden - k),
+                              .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
+                              .max_snapshots = 0,
+                              .snapshot_bytes = Bytes(0)},
+          StateRepresentation{.name = "qwen38.mtp.streams",
+                              .block_positions = 0,
+                              .block_bytes = Bytes(bytes - hidden),
+                              .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
+                              .max_snapshots = 0,
+                              .snapshot_bytes = Bytes(0)}};
+}
+
+std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& p,
+                                                            const Qwen38StateLayout& state) {
+  if (!ProfileIsSane(p) || state.cells == 0 || state.max_rows == 0 ||
+      state.max_rows > kQwen38MaxRows) {
+    return Refused("no MTP state for that target state");
+  }
+  Qwen38MtpState s;
+  s.context = state.context;
+  s.cells = state.cells;
+  s.hidden_rows = state.max_rows + 1;
+  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * s.cells * 2;
+  s.k = 0;
+  s.v = Pad(kv, 256);
+  s.indexer = s.v + Pad(kv, 256);
+  s.hidden = s.indexer + Pad(std::uint64_t{p.indexer_head_dim} * s.cells * 4, 256);
+  s.bytes = s.hidden + Pad(std::uint64_t{p.hc_width()} * s.hidden_rows * 4, 256);
+  return s;
+}
+
+std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& p,
+                                                            std::uint32_t rows) {
+  if (!ProfileIsSane(p) || rows == 0 || rows > 8) {
+    return Refused(std::format("no commit layout for verifies of {} rows", rows));
+  }
+  Qwen38CommitLayout c;
+  c.rows = rows;
+  c.channels = p.conv_channels();
+  c.v_heads = p.lin_v_heads;
+  c.hc_width = p.hc_width();
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    if (p.linear(il)) {
+      c.layers.push_back(il);
+    }
+  }
+  c.layer_bytes = (2 * c.Part(c.channels)) + (2 * c.Part(c.v_heads));
+  c.bytes = c.ple() + c.Part(c.hc_width);
+  return c;
 }
 
 }  // namespace jitllm::model

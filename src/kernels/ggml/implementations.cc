@@ -419,7 +419,8 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
     // jitLLM's own (jitllm_ops.h), for Qwen3.8's MXFP8 and NVFP4 tensors.
     {.name = "jitllm.mxfp8.mul_mat_vec",
      .operation = execution::Operation::kMatMul,
-     .variant = "Mxfp8Gemv<columns 1-8>: one warp a row, 16-code vectors, F32 block sums",
+     .variant = "Mxfp8Gemv<columns 1-8, rows 1/4/2 a warp>: each row's sums as one warp a row's, "
+                "16-code vectors, F32 block sums",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8MulMatVec(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8MulMatVec(launch, n[0]); }},

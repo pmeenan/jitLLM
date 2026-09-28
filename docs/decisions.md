@@ -271,6 +271,20 @@ against one-row decoding, recorded before the comparison); rollback stays exact 
 state byte outside the accepted rows' writes as before the verify), and
 the engine repeats itself bit for bit.
 
+*Qwen3.8 (M3 MTP slice, 2026-09-28):* Qwen3.8's verify is batched from
+the start, under the same note: every row's logits are the fast graph's
+at k + 1 columns, and no row-invariant (exact) mode is built for it
+([qwen38-mtp](experiments/qwen38-mtp/README.md)). It is held to:
+
+- every token equals the plain engine's argmax on its prefix, or is within
+  a 1.0-logit near-tie. That bound is qwen38-native's (its plain decode's
+  noise), not this note's rule, which was not applied before the
+  comparison; measured afterwards, the verify's own noise has a p99 of
+  0.23–2.39 per prompt, so 1.0 is the stricter test, and it stays;
+- forced rejections leave exactly the control's state, and so does a swap
+  between a rejected step and the next;
+- sampled speculation passes the total-variation bound.
+
 ## D-091: Any permissive license may enter the core without a decision of its own; CUB is approved  (2026-09-28, status: accepted by the owner on 2026-09-28; amends D-017's core allowlist and D-002 where they require a license to be named before use; subsumes D-088's admission of Unicode-3.0)
 
 **Decision.** The owner, on 2026-09-28: "All permissive licenses are
@@ -417,8 +431,14 @@ capture and caching stay, with the pins. DeepSeek then decodes at
 1.016–1.022× llama.cpp's fusion-off, graphs-on arm measured in the same
 session (20.02 tok/s; two runs of three passes, 0.990–0.996× the
 fusion-on default's 20.54) ([graphs](experiments/fast-swap/graphs.md#re-measured-with-a-lease-per-request-spark-b-2026-09-28)).
-Qwen3.8's decode graphs are still to do: its row gather takes each
-step's row count as a launch parameter.
+*Qwen3.8 (M3 MTP slice, 2026-09-28):* its decode graphs landed. The
+n-gram row gather reads its row count from pinned memory the host writes
+before each job, over a grid of the shape's lookups, so the count is data,
+not a launch parameter; verify and draft shapes are captured too. Across
+a full swap (Qwen3.8 out for the image pipeline and back, `spark`), a
+prepared return replayed the one decode graph captured before it for all
+16 continued steps, bit-identical to the unswapped continuation
+([qwen38-mtp](experiments/qwen38-mtp/README.md#correctness)).
 
 **Reopen if.** A model must move between swaps (then per-node parameter
 updates or re-capture after a relocation), a kernel's parameters come to
@@ -479,6 +499,12 @@ nothing is copied. No composition document is written for the pair yet:
 version 0 requires model_index.json, a diffusers file a drafter pair does
 not have; a drafter composition form comes with the installer's
 dependency tracking (M5).
+*Qwen3.8's MTP block (M3 MTP slice, 2026-09-28):* imported the same way,
+as its own drafter artifact (`qwen4exp-mtp`, 1.6 GB, from the checkpoint's
+last shard alone), binding the target's token table and head. A stored MTP
+layer may therefore be a separate artifact, not only groups in its target's
+artifact: the target's 104 GB artifact and the records that name it stay
+unchanged ([qwen38-mtp](experiments/qwen38-mtp/README.md#import)).
 
 **Reopen if.** A component needs another artifact's resources at finer
 than artifact granularity in a way roles cannot express; the installer's

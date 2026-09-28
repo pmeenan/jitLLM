@@ -684,6 +684,75 @@ TEST_F(Qwen38MoeTest, TheVectorProductsMatchTheReference) {
   }
 }
 
+// Several tokens' vector products in one launch (a speculative verify's
+// rows, docs/experiments/qwen38-mtp/): each slot's outputs are the
+// one-token launch's bit for bit (NaN where its id is outside the experts).
+TEST_F(Qwen38MoeTest, SeveralTokensGetEachTokensOwnProducts) {
+  ToCutlass();
+  ggml_tensor* experts =
+      ggml_new_tensor_2d(c(), GGML_TYPE_I8, static_cast<std::int64_t>(stride_), kExperts);
+  TensorArena::Bind(experts, slab_);
+  const moe::ExpertLayout l{.ffn = kFfn, .width = kWidth};
+  std::vector<float> gs_h(kExperts);
+  std::vector<float> us_h(kExperts);
+  for (std::int64_t e = 0; e < kExperts; ++e) {
+    gs_h[static_cast<std::size_t>(e)] = 0.9f + (0.01f * static_cast<float>(e));
+    us_h[static_cast<std::size_t>(e)] = 1.1f - (0.01f * static_cast<float>(e));
+  }
+  ggml_tensor* gs = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), gs_h);
+  ggml_tensor* us = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), us_h);
+  const auto same = [](float a, float b) {
+    return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b) ||
+           (std::isnan(a) && std::isnan(b));
+  };
+  for (const std::int64_t t : {2, 4, 8}) {
+    const std::string what = "gemv t " + std::to_string(t);
+    const auto x_h = Normal(41 + t, static_cast<std::size_t>(kWidth * t), 1.0f);
+    const auto act_h = Normal(42 + t, static_cast<std::size_t>(kFfn * kUsed * t), 1.0f);
+    auto routes = Routes(t, 43 + t);
+    routes[static_cast<std::size_t>(kUsed + 2)] = kExperts;  // outside, in the second token
+    ggml_tensor* x = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, 1, t), x_h);
+    ggml_tensor* act = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kFfn, kUsed, t), act_h);
+    ggml_tensor* ids = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, t), routes);
+    std::vector<ggml_tensor*> outputs = {
+        kg::MoeGemvSwiglu(c(), experts, x, ids, kFfn, gs, us, moe::ExpertLayout::gate_up_codes(),
+                          l.gate_up_scales()),
+        kg::MoeGemv(c(), experts, act, ids, kWidth, 0, kWidth, l.down_codes(), l.down_scales())};
+    for (std::int64_t r = 0; r < t; ++r) {
+      const auto at = [&](const std::vector<float>& v, std::int64_t per) {
+        return std::vector<float>(v.begin() + (r * per), v.begin() + ((r + 1) * per));
+      };
+      ggml_tensor* x1 = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, 1, 1), at(x_h, kWidth));
+      ggml_tensor* act1 =
+          Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kFfn, kUsed, 1), at(act_h, kFfn * kUsed));
+      const std::vector<std::int32_t> ids1_h(routes.begin() + (r * kUsed),
+                                             routes.begin() + ((r + 1) * kUsed));
+      ggml_tensor* ids1 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, 1), ids1_h);
+      outputs.push_back(kg::MoeGemvSwiglu(c(), experts, x1, ids1, kFfn, gs, us,
+                                          moe::ExpertLayout::gate_up_codes(), l.gate_up_scales()));
+      outputs.push_back(kg::MoeGemv(c(), experts, act1, ids1, kWidth, 0, kWidth, l.down_codes(),
+                                    l.down_scales()));
+    }
+    Run(outputs);
+    const auto whole_glu = Download(outputs[0]);
+    const auto whole_down = Download(outputs[1]);
+    for (std::int64_t r = 0; r < t; ++r) {
+      const auto glu = Download(outputs[static_cast<std::size_t>(2 + (2 * r))]);
+      const auto down = Download(outputs[static_cast<std::size_t>(3 + (2 * r))]);
+      const auto glu_at = static_cast<std::size_t>(r * kUsed * kFfn);
+      const auto down_at = static_cast<std::size_t>(r * kUsed * kWidth);
+      for (std::size_t i = 0; i < glu.size(); ++i) {
+        ASSERT_TRUE(same(whole_glu[glu_at + i], glu[i])) << what << ", token " << r << " at " << i;
+      }
+      for (std::size_t i = 0; i < down.size(); ++i) {
+        ASSERT_TRUE(same(whole_down[down_at + i], down[i]))
+            << what << ", token " << r << " at " << i;
+      }
+    }
+    EXPECT_TRUE(std::isnan(whole_glu[static_cast<std::size_t>((kUsed + 2) * kFfn)])) << what;
+  }
+}
+
 // The checks refuse a slab stride short of the layout, rows that are not
 // whole scale atoms, too many tokens for the vector product, and a route of
 // other extents.

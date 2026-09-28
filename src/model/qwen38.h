@@ -109,9 +109,13 @@ struct Qwen38Tensor {
   std::uint64_t readable = 0;
 };
 
-// An MXFP8 matrix: E4M3 codes ne [k, n] and E8M0 scales ne [k / 32, n].
+// An MXFP8 matrix: E4M3 codes ne [k, n] and E8M0 scales ne [k / 32, n]; or,
+// in the MTP drafter, whose linears the checkpoint keeps in BF16, `bf16`
+// alone (GGML BF16 ne [k, n]; codes and scales unbound).
 struct Qwen38Mxfp8 {
   Qwen38Tensor codes, scales;
+  Qwen38Tensor bf16;
+  bool is_bf16() const { return !bf16.type.empty(); }
 };
 
 struct Qwen38Layer {
@@ -304,8 +308,99 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& profile, const Qwen
                                         std::span<const std::int32_t> history,
                                         std::uint32_t position);
 
+// The positions, cells, masks and QSA tables of `rows` rows at n_past over
+// a cache of `cells` cells (position p in cell p), attention reading `read`
+// cells (the chunk's n_kv: at least pad(n_past + rows, 256), at most
+// `cells`, a multiple of 256): Qwen38Chunk's, without tokens or n-gram rows
+// (the MTP drafter's passes, which share one n_kv). Refused if the rows do
+// not fit.
+std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& profile,
+                                                         std::uint32_t cells, std::uint32_t n_past,
+                                                         std::uint32_t rows, std::uint32_t read,
+                                                         bool selection_masks);
+
 inline constexpr std::uint16_t kQwen38HalfZero = 0x0000;
 inline constexpr std::uint16_t kQwen38HalfNegInf = 0xFC00;
+
+// ---------------------------------------------------------------- the MTP drafter
+
+// Qwen3.8's MTP block (D-068's stored MTP layer), its own drafter artifact
+// (architecture qwen4exp-mtp; docs/experiments/artifact-layout/
+// modelopt_qwen38.py plan_mtp), as vLLM's Qwen3_8FlashNextMTP reads it
+// (vllm/models/qwen3_8_flash_next/nvidia/mtp.py at 8e685d198, the oracle's
+// engine): one full-attention layer (hyper-connections, QSA with its
+// indexer, the routed experts in the CUTLASS layout and the gated shared
+// expert) whose linears, indexer projection, router and shared expert are
+// BF16; fc_embedding and fc_hidden with their norms, which fuse the next
+// token's embedding and the target's streams before the head's mix; and its
+// own final mixer. It holds no token table or head: the target's are bound
+// (Qwen38Binding::token_embd and ::output), as vLLM loads the same two.
+struct Qwen38MtpBinding {
+  Qwen38Layer layer;
+  Qwen38Tensor fc_embd, fc_hidden, norm_embd, norm_hidden;
+  Qwen38Tensor output_hc_norm, output_hc_down, output_hc_up;
+};
+
+// Refused, naming the tensor, as BindQwen38 is, and if `architecture` is
+// not "qwen4exp-mtp".
+std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
+    const Qwen38Profile& profile, std::string_view architecture,
+    std::span<const Qwen38Resource> resources);
+std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(const Qwen38Profile& profile,
+                                                           const artifact::Artifact& artifact);
+
+// The drafter's state, one region: its layer's F16 K and V caches and F32
+// indexer keys (a cell per position, as the target's QSA layers'), and the
+// streams it reads: `hidden_rows` rows of the target's streams before the
+// head's mix (F32 [hc_width]), row 0 the pending one a prefill chunk leaves
+// (docs/experiments/qwen38-mtp/). A D-068 representation: the caches append,
+// and cells past the committed positions (a draft's) are rewritten before
+// any row reads them.
+struct Qwen38MtpState {
+  std::uint32_t context = 0;
+  std::uint32_t cells = 0;
+  std::uint32_t hidden_rows = 0;
+  std::uint64_t k = 0;  // offsets
+  std::uint64_t v = 0;
+  std::uint64_t indexer = 0;
+  std::uint64_t hidden = 0;
+  std::uint64_t bytes = 0;
+  std::vector<StateRepresentation> Representations() const;
+};
+// For the target's `state` (its context and chunk bound): hidden_rows =
+// max_rows + 1.
+std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& profile,
+                                                            const Qwen38StateLayout& state);
+
+// What a speculative verify saves so that its accepted rows' writes, and
+// nothing else, reach the target's recurrent, convolution and n-gram
+// state (Qwen38Commit replays them; the verify writes none of that state):
+// per linear-attention layer, each row's convolution output (the
+// recurrence's q, k and v, F32 [channels]), its input (the QKV rows, F32
+// [channels], for the convolution history), its gate and beta (F32
+// [v_heads] each); and the n-gram layer's convolution input rows (F32
+// [hc_width]). Each part a [width, rows] block at a 256-byte aligned offset.
+struct Qwen38CommitLayout {
+  std::uint32_t rows = 0;
+  std::uint32_t channels = 0;
+  std::uint32_t v_heads = 0;
+  std::uint32_t hc_width = 0;
+  std::vector<std::uint32_t> layers;  // the linear-attention layers, in order
+  std::uint64_t layer_bytes = 0;      // one layer's block
+  std::uint64_t bytes = 0;
+  // Layer `layers[i]`'s parts.
+  std::uint64_t conv_out(std::size_t i) const { return i * layer_bytes; }
+  std::uint64_t qkv(std::size_t i) const { return conv_out(i) + Part(channels); }
+  std::uint64_t gate(std::size_t i) const { return qkv(i) + Part(channels); }
+  std::uint64_t beta(std::size_t i) const { return gate(i) + Part(v_heads); }
+  std::uint64_t ple() const { return layers.size() * layer_bytes; }
+  std::uint64_t Part(std::uint32_t width) const {
+    return ((std::uint64_t{width} * rows * 4) + 255) / 256 * 256;
+  }
+};
+// For verifies of at most `rows` rows (1 to 8).
+std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& profile,
+                                                            std::uint32_t rows);
 
 }  // namespace jitllm::model
 

@@ -451,7 +451,35 @@ it appears.
       memory equal (104.7 GiB). Since then, with each generation a
       request (D-093) and the runtime wake (D-094): 29.7 / 30.8 tok/s,
       0.96× / 0.97× ([dspark](experiments/dspark/README.md#performance-and-memory)).
-      Open: Qwen3.8's MTP layer, and the verify's device time.
+      Open: the verify's device time.
+      *Qwen3.8's MTP layer landed* ([qwen38-mtp](experiments/qwen38-mtp/README.md);
+      D-089's and D-092's notes). The MTP block is a drafter artifact of its
+      own (1.6 GB, imported in 6.7 s; the target is unchanged) that binds
+      the target's token table and head. Its caches and the target's
+      streams are a D-068 state.
+      The verify is batched (the owner's speed before bit exactness). It
+      never writes the recurrent, convolution or n-gram state: a commit
+      kernel replays the kept rows into them, and the rejected rows' KV
+      and indexer cells are restored from a snapshot.
+      On `spark`, at depth 2 with a 65,536-row draft head, it decodes at
+      42.46 / 39.09 tok/s (`prose` / `code`, medians of three) against Mia's
+      MTP 3 at 37.85 / 37.85: 1.12× / 1.03×. Acceptance is 0.631 / 0.539
+      against Mia's 0.42, and the peak `MemAvailable` drop 75.8 GiB against
+      103.4, not like for like: the 28.8 GB n-gram table stays on the SSD
+      here (read by rows, D-035), and vLLM's 16.2 GiB KV pool is sized for
+      its concurrency.
+      The checks:
+      - greedy on 8 prompts: every token is the plain argmax, or a near-tie
+        within 1.0 logit (9 near-ties, 0 violations);
+      - forced rejections at depths 2 and 3: every state equal to the
+        control's;
+      - sampled speculation: total variation 0.009–0.040 (bound 0.1);
+      - rollback across a swap (Qwen3.8 out for the FP16 fixture and back,
+        a commit owed across it): all 97 steps' states, 160 tokens and
+        their logits equal the unswapped control's.
+      The 1.0 bound is qwen38-native's, not dsv4-decode's later rule (the
+      verify's own noise, p99 0.23–2.39 per prompt, measured afterwards);
+      it is kept as the stricter test.
 - [ ] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
       page-in through the landing zone overlapping the rest. Creating and
@@ -529,8 +557,18 @@ it appears.
       rows and inputs), not the lease. Everything stays bit for bit, and
       the DeepSeek ↔ Qwen3.8 swaps (first artifact) did not move. A holder
       of a request's lease is refused a wait for another's (no hold and
-      wait). Open: Qwen3.8's graphs (its row gather takes each step's row
-      count as a launch parameter).
+      wait).
+      *Qwen3.8's decode graphs* ([qwen38-mtp](experiments/qwen38-mtp/README.md#performance-and-memory)):
+      the n-gram row gather now reads its row count from pinned memory, so
+      one graph serves every step. Verify and draft shapes are captured the
+      same way. Plain decode on `spark-b` (a request lease, the runtime
+      wake) runs at 25.65–25.88 tok/s against 23.84–24.05 launch by launch,
+      and every step's logits are identical between the two. That is
+      1.01–1.03× Mia's vLLM with speculation off (25.12 / 25.33). A step is
+      37.4 ms on the device, and its host time is 0.07 ms. Across a swap
+      (`jitllm_swap_pairs --a qwen38 --b image`), a prepared return
+      replays the graph captured before it for every continued step,
+      bit-identical to the unswapped continuation.
 - [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
       on the GB10, one `cuDeviceGetAttribute` call. Mia's
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`

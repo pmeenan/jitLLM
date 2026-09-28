@@ -643,5 +643,177 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(manifest["converter"]["version"].startswith(import_m3.converter()["version"] + "+modelopt"))
 
 
+# The MTP block of the tiny model: one full-attention layer, BF16 but for
+# its NVFP4 experts, and its final mixer.
+MTP_CONFIG = json.loads(json.dumps(CONFIG))
+MTP_CONFIG["text_config"].update({
+    "mtp_num_hidden_layers": 1, "mtp_use_dedicated_embeddings": False,
+    "rope_parameters": {"rope_theta": 10000000},
+    "mtp": {"hybrid": True, "layer_types": ["full_attention"], "mtp_use_hidden_state_from_layer": None,
+            "num_hidden_layers": 1, "rope_theta": 10000000}})
+
+
+def mtp_checkpoint(cfg):
+    """{name: (dtype, shape, bytes)} of a synthetic MTP block."""
+    t = cfg["text_config"]
+    h, e, hc, hd = t["hidden_size"], t["num_experts"], t["hc_count"] * t["hidden_size"], t["head_dim"]
+    out, seed = {}, [100]
+
+    def put(name, dtype, shape, data=None):
+        seed[0] += 1
+        n = 1
+        for s in shape:
+            n *= s
+        size = n * {"BF16": 2, "F32": 4, "U8": 1, "F8_E4M3": 1}[dtype]
+        if data is None:
+            data = small_bf16(n, seed[0]) if dtype == "BF16" else (
+                e4m3_scales(size, seed[0]) if dtype == "F8_E4M3" else rnd(size, seed[0]))
+        out[name] = (dtype, shape, data)
+
+    put("mtp.fc_embedding.weight", "BF16", [h, h])
+    put("mtp.fc_hidden.weight", "BF16", [h, h])
+    put("mtp.pre_fc_norm_embedding.weight", "BF16", [h])
+    put("mtp.pre_fc_norm_hidden.weight", "BF16", [hc])
+    for part in ("hc_norm.weight",):
+        put("mtp.hyper_connection_mixer." + part, "BF16", [hc])
+    put("mtp.hyper_connection_mixer.input_mix_weight_down.weight", "BF16", [t["hc_lowrank"], hc])
+    put("mtp.hyper_connection_mixer.input_mix_weight_up.weight", "BF16", [hc, t["hc_lowrank"]])
+    lp = "mtp.layers.0."
+    for hf in ("attn_hyper_connection", "mlp_hyper_connection"):
+        put(f"{lp}{hf}.hc_norm.weight", "BF16", [hc])
+        put(f"{lp}{hf}.input_mix_weight_down.weight", "BF16", [t["hc_lowrank"], hc])
+        put(f"{lp}{hf}.input_mix_weight_up.weight", "BF16", [hc, t["hc_lowrank"]])
+        put(f"{lp}{hf}.block_inject_weight.weight", "BF16", [t["hc_count"], hc])
+    sa = lp + "self_attn."
+    put(sa + "q_proj.weight", "BF16", [2 * t["num_attention_heads"] * hd, h])
+    put(sa + "k_proj.weight", "BF16", [t["num_key_value_heads"] * hd, h])
+    put(sa + "v_proj.weight", "BF16", [t["num_key_value_heads"] * hd, h])
+    put(sa + "o_proj.weight", "BF16", [h, t["num_attention_heads"] * hd])
+    put(sa + "q_norm.weight", "BF16", [hd])
+    put(sa + "k_norm.weight", "BF16", [hd])
+    put(sa + "indexer.index_qk_proj.weight", "BF16", [(t["indexer_n_heads"] + 1) * t["indexer_head_dim"], h])
+    put(sa + "indexer.q_layernorm.weight", "BF16", [t["indexer_head_dim"]])
+    put(sa + "indexer.k_layernorm.weight", "BF16", [t["indexer_head_dim"]])
+    mp = lp + "mlp."
+    put(mp + "gate.weight", "BF16", [e, h])
+    put(mp + "shared_expert_gate.weight", "BF16", [1, h])
+    sff = t["shared_expert_intermediate_size"]
+    for proj, (n_out, k_in) in {"gate": (sff, h), "up": (sff, h), "down": (h, sff)}.items():
+        put(f"{mp}shared_expert.{proj}_proj.weight", "BF16", [n_out, k_in])
+    ff = t["moe_intermediate_size"]
+    for x in range(e):
+        for proj, (n_out, k_in) in {"gate": (ff, h), "up": (ff, h), "down": (h, ff)}.items():
+            base = f"{mp}experts.{x}.{proj}_proj."
+            put(base + "weight", "U8", [n_out, k_in // 2])
+            put(base + "weight_scale", "F8_E4M3", [n_out, k_in // 16])
+            put(base + "weight_scale_2", "F32", [], struct.pack("<f", 0.5 * (x + 1)))
+    return out
+
+
+class MtpTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.tensors = mtp_checkpoint(MTP_CONFIG)
+        self.paths = write_checkpoint(self.dir, self.tensors, config=MTP_CONFIG, split=1)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build(self, **kw):
+        return MO.build(LAYOUT, self.dir / "store", self.paths, shard_target=1 << 16, workers=1, mtp=True,
+                        **kw)
+
+    def test_the_drafter_verifies_and_holds_the_mtp_block(self):
+        final, _ = self.build()
+        manifest, index = LAYOUT.verify(final)
+        self.assertEqual(manifest["model"], {"architecture": "qwen4exp-mtp", "expert_count": 4,
+                                             "representation": ["ggml"]})
+        res = {r["name"]: r for r in index["resources"]}
+        # No token table or head of its own: the target's are bound at load.
+        self.assertNotIn("token_embd.weight", res)
+        self.assertNotIn("output.weight", res)
+        groups = index["groups"]
+
+        def resource(name):
+            r = res[name]
+            g = groups[r["group"]]
+            shard = index["shards"][g["shard"]]
+            with open(final / shard["path"], "rb") as f:
+                f.seek(shard["data_offset"] + g["offset"] + r["offset"])
+                return f.read(r["bytes"])
+
+        # BF16 linears verbatim, in GGML's order; norms fold (1 + w).
+        self.assertEqual(res["blk.0.attn_q.weight"]["repr"], {"family": "ggml", "type": "BF16", "ne": [64, 128]})
+        self.assertEqual(resource("blk.0.attn_q.weight"), self.tensors["mtp.layers.0.self_attn.q_proj.weight"][2])
+        self.assertEqual(resource("fc_hidden.weight"), self.tensors["mtp.fc_hidden.weight"][2])
+        self.assertEqual(resource("blk.0.ffn_down_shexp.weight"),
+                         self.tensors["mtp.layers.0.mlp.shared_expert.down_proj.weight"][2])
+        norm = array.array("f", resource("norm_hidden.weight"))
+        src = array.array("f", MO.bf16_to_f32(self.tensors["mtp.pre_fc_norm_hidden.weight"][2]))
+        self.assertEqual(norm.tolist(), [x + 1 for x in src])
+        self.assertEqual(res["output_hc_norm.weight"]["repr"], {"family": "ggml", "type": "F32", "ne": [128]})
+        # The experts in the target's CUTLASS layout, their global scales gathered.
+        arrays = index["expert_arrays"]
+        self.assertEqual([a["name"] for a in arrays], ["blk.0.ffn_gate_up_exps.codes", "blk.0.ffn_gate_up_exps.scales",
+                                                       "blk.0.ffn_down_exps.codes", "blk.0.ffn_down_exps.scales"])
+        self.assertEqual(array.array("f", resource("blk.0.ffn_up_exps.weight_scale_2")).tolist(),
+                         [0.5, 1.0, 1.5, 2.0])
+        g = next(i for i, g in enumerate(groups) if g["kind"] == "expert" and g["expert"] == 2)
+        shard = index["shards"][groups[g]["shard"]]
+        pairs = [(self.tensors[f"mtp.layers.0.mlp.experts.2.{p}_proj.weight"][2],
+                  self.tensors[f"mtp.layers.0.mlp.experts.2.{p}_proj.weight_scale"][2]) for p in ("gate", "up", "down")]
+        with open(final / shard["path"], "rb") as f:
+            got = []
+            for a in arrays:
+                f.seek(shard["data_offset"] + groups[g]["offset"] + a["group_offset"])
+                got.append(f.read(a["slice_bytes"]))
+        self.assertEqual(got, MO.expert_to_sf1xx(*pairs, 64, 64))
+
+    def test_missing_and_unplaced_mtp_tensors_are_refused(self):
+        for mutate, pattern in ((lambda t: t.pop("mtp.fc_embedding.weight"), "no mtp.fc_embedding"),
+                                (lambda t: t.__setitem__("mtp.surprise", ("BF16", [2], bf16([1.0, 2.0]))),
+                                 "no place in the plan"),
+                                (lambda t: t.__setitem__("mtp.layers.0.self_attn.k_norm.weight",
+                                                         ("BF16", [16], bf16([0.0] * 16))), "k_norm")):
+            tensors = dict(self.tensors)
+            mutate(tensors)
+            for p in self.paths:
+                p.unlink()
+            self.paths = write_checkpoint(self.dir, tensors, config=MTP_CONFIG, split=1)
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
+                self.build()
+
+    def test_the_mtp_config_is_validated(self):
+        for key, value in (("mtp_num_hidden_layers", 2), ("mtp_use_dedicated_embeddings", True),
+                           ("mtp", {"hybrid": True, "layer_types": ["linear_attention"],
+                                    "mtp_use_hidden_state_from_layer": None, "num_hidden_layers": 1,
+                                    "rope_theta": 10000000}),
+                           ("mtp", {"hybrid": True, "layer_types": ["full_attention"],
+                                    "mtp_use_hidden_state_from_layer": None, "num_hidden_layers": 1,
+                                    "rope_theta": 5}),
+                           ("mtp", None)):
+            cfg = json.loads(json.dumps(MTP_CONFIG))
+            cfg["text_config"][key] = value
+            (self.dir / "config.json").write_text(json.dumps(cfg))
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, "MTP"):
+                self.build()
+
+    def test_import_m3_imports_the_drafter_from_its_pins(self):
+        files = [{"path": f"Q/{p.name}", "bytes": p.stat().st_size,
+                  "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in self.paths]
+        cfg = self.dir / "config.json"
+        files.append({"path": "Q/config.json", "bytes": cfg.stat().st_size,
+                      "sha256": hashlib.sha256(cfg.read_bytes()).hexdigest()})
+        pins = self.dir / "pins.json"
+        pins.write_text(json.dumps({"models": [{"id": "q", "files": files}]}))
+        out = self.dir / "store3"
+        import_m3.main(["import_m3.py", "drafter", str(out), str(pins), "q", *map(str, self.paths)])
+        (artifact,) = [p for p in out.iterdir() if p.name != ".staging"]
+        manifest, _ = LAYOUT.verify(artifact)
+        self.assertEqual(manifest["model"]["architecture"], "qwen4exp-mtp")
+        self.assertTrue(manifest["converter"]["version"].endswith("+mtp"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -439,6 +439,15 @@ if(JITLLM_CUDA)
   target_link_libraries(qwen38_moe_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(qwen38_moe_test)
 
+  # A Qwen3.8 speculative verify's commit (kernels/ggml/qwen38_commit.h):
+  # the kept rows' recurrence bit for bit the verify's own, the histories
+  # exact, and the launcher's refusals.
+  add_executable(qwen38_commit_test qwen38_commit_test.cc)
+  target_include_directories(qwen38_commit_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_commit_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(qwen38_commit_test)
+
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")

@@ -806,4 +806,317 @@ TEST(Qwen38Test, ShortExpertRowsAreReadableOnlyInsideTheStride) {
   }
 }
 
+// ---------------------------------------------------------------- the MTP drafter
+
+// The drafter's resources (docs/experiments/artifact-layout/modelopt_qwen38.py
+// plan_mtp): BF16 but for its F32 norms and its CUTLASS-layout experts.
+std::vector<md::Qwen38Resource> MtpLike() {
+  std::vector<md::Qwen38Resource> r;
+  const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
+    r.push_back(
+        {.roles = {std::move(name)}, .plain = false, .type = std::move(type), .ne = std::move(ne)});
+  };
+  ggml("fc_embd.weight", "BF16", {2560, 2560});
+  ggml("fc_hidden.weight", "BF16", {2560, 2560});
+  ggml("norm_embd.weight", "F32", {2560});
+  ggml("norm_hidden.weight", "F32", {10240});
+  ggml("output_hc_norm.weight", "F32", {10240});
+  ggml("output_hc_down.weight", "BF16", {10240, 320});
+  ggml("output_hc_up.weight", "BF16", {320, 10240});
+  for (const char* kind : {"attn", "ffn"}) {
+    ggml(std::format("blk.0.hc_{}_norm.weight", kind), "F32", {10240});
+    ggml(std::format("blk.0.hc_{}_down.weight", kind), "BF16", {10240, 320});
+    ggml(std::format("blk.0.hc_{}_up.weight", kind), "BF16", {320, 10240});
+    ggml(std::format("blk.0.hc_{}_inject.weight", kind), "BF16", {10240, 4});
+  }
+  ggml("blk.0.attn_q.weight", "BF16", {2560, 12288});
+  ggml("blk.0.attn_k.weight", "BF16", {2560, 512});
+  ggml("blk.0.attn_v.weight", "BF16", {2560, 512});
+  ggml("blk.0.attn_output.weight", "BF16", {6144, 2560});
+  ggml("blk.0.attn_q_norm.weight", "F32", {256});
+  ggml("blk.0.attn_k_norm.weight", "F32", {256});
+  ggml("blk.0.indexer.qk_proj.weight", "BF16", {2560, 640});
+  ggml("blk.0.indexer.q_norm.weight", "F32", {128});
+  ggml("blk.0.indexer.k_norm.weight", "F32", {128});
+  ggml("blk.0.ffn_gate_inp.weight", "BF16", {2560, 512});
+  ggml("blk.0.ffn_gate_inp_shexp.weight", "BF16", {2560});
+  ggml("blk.0.ffn_gate_shexp.weight", "BF16", {2560, 640});
+  ggml("blk.0.ffn_up_shexp.weight", "BF16", {2560, 640});
+  ggml("blk.0.ffn_down_shexp.weight", "BF16", {640, 2560});
+  for (const char* proj : {"gate", "up", "down"}) {
+    ggml(std::format("blk.0.ffn_{}_exps.weight_scale_2", proj), "F32", {512});
+  }
+  std::uint64_t group_offset = 0;
+  for (const auto& [name, ne] :
+       {std::pair{"gate_up_exps.codes", std::vector<std::uint64_t>{1280, 1280}},
+        std::pair{"gate_up_exps.scales", std::vector<std::uint64_t>{512, 400}},
+        std::pair{"down_exps.codes", std::vector<std::uint64_t>{320, 2560}},
+        std::pair{"down_exps.scales", std::vector<std::uint64_t>{512, 200}}}) {
+    r.push_back({.roles = {std::format("blk.0.ffn_{}", name)},
+                 .plain = false,
+                 .type = "I8",
+                 .ne = ne,
+                 .expert_array = true,
+                 .count = 512,
+                 .group_offset = group_offset,
+                 .readable = ne[0] * ne[1]});
+    group_offset += ne[0] * ne[1];
+  }
+  return r;
+}
+
+TEST(Qwen38Test, BindsTheMtpDrafterAndRefusesWhatDiffers) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  const std::vector<md::Qwen38Resource> resources = MtpLike();
+  auto bound = md::BindQwen38Mtp(p, "qwen4exp-mtp", resources);
+  ASSERT_TRUE(bound.has_value()) << Why(bound);
+  const md::Qwen38Layer& l = bound->layer;
+  EXPECT_FALSE(l.linear);
+  EXPECT_TRUE(l.q.is_bf16());
+  EXPECT_EQ(l.q.bf16.ne, (std::vector<std::uint64_t>{2560, 12288}));
+  EXPECT_TRUE(l.q.codes.type.empty());
+  EXPECT_TRUE(l.down_shexp.is_bf16());
+  EXPECT_EQ(l.down_scales.group_offset, 2662400U);
+  EXPECT_EQ(bound->norm_hidden.ne, (std::vector<std::uint64_t>{10240}));
+  // No token table or head of its own (the target's are bound), and the
+  // target's architecture, a missing, an extra and a reshaped tensor are
+  // refused, as is a drafter whose attention is MXFP8.
+  EXPECT_NE(Why(md::BindQwen38Mtp(p, "qwen4exp", resources)).find("qwen4exp-mtp"),
+            std::string::npos);
+  auto missing = resources;
+  missing.erase(missing.begin() + 1);
+  EXPECT_NE(Why(md::BindQwen38Mtp(p, "qwen4exp-mtp", missing)).find("fc_hidden"),
+            std::string::npos);
+  auto extra = resources;
+  extra.push_back(
+      {.roles = {"token_embd.weight"}, .plain = false, .type = "BF16", .ne = {2560, 248320}});
+  EXPECT_NE(Why(md::BindQwen38Mtp(p, "qwen4exp-mtp", extra)).find("does not read"),
+            std::string::npos);
+  auto mxfp8 = resources;
+  for (md::Qwen38Resource& r : mxfp8) {
+    if (r.roles[0] == "blk.0.attn_k.weight") {
+      r = {.roles = {"blk.0.attn_k.weight"}, .plain = true, .type = "F8_E4M3", .ne = {2560, 512}};
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38Mtp(p, "qwen4exp-mtp", mxfp8)).find("blk.0.attn_k.weight"),
+            std::string::npos);
+  auto gap = resources;
+  for (md::Qwen38Resource& r : gap) {
+    if (r.roles[0] == "blk.0.ffn_down_exps.codes") {
+      r.group_offset += 256;
+    }
+  }
+  EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", gap).has_value());
+}
+
+TEST(Qwen38Test, TheMtpStateAndACommitAreSized) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  auto target = md::Qwen38State(p, 4000, 512);
+  ASSERT_TRUE(target.has_value());
+  auto s = md::Qwen38MtpStateOf(p, *target);
+  ASSERT_TRUE(s.has_value()) << Why(s);
+  EXPECT_EQ(s->cells, 4096U);
+  EXPECT_EQ(s->hidden_rows, 513U);
+  EXPECT_EQ(s->v - s->k, 512ULL * 4096 * 2);
+  EXPECT_EQ(s->indexer - s->v, 512ULL * 4096 * 2);
+  EXPECT_EQ(s->hidden - s->indexer, 128ULL * 4096 * 4);
+  EXPECT_EQ(s->bytes - s->hidden, 10240ULL * 513 * 4);
+  EXPECT_EQ(s->Representations().size(), 2U);
+  auto c = md::Qwen38Commit(p, 4);
+  ASSERT_TRUE(c.has_value()) << Why(c);
+  EXPECT_EQ(c->layers.size(), 36U);
+  EXPECT_EQ(c->layers[3], 4U);
+  EXPECT_EQ(c->qkv(0) - c->conv_out(0), 10240ULL * 4 * 4);
+  EXPECT_EQ(c->beta(0) - c->gate(0), 48ULL * 4 * 4);
+  EXPECT_EQ(c->conv_out(1), c->layer_bytes);
+  EXPECT_EQ(c->ple(), 36 * c->layer_bytes);
+  EXPECT_EQ(c->bytes, c->ple() + (10240ULL * 4 * 4));
+  EXPECT_EQ(c->layer_bytes % 256, 0U);
+  EXPECT_FALSE(md::Qwen38Commit(p, 0).has_value());
+  EXPECT_FALSE(md::Qwen38Commit(p, 9).has_value());
+}
+
+TEST(Qwen38Test, RowsReadingMoreCellsAreTheChunksRowsOverThem) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  auto s = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(s.has_value());
+  std::vector<std::int32_t> history(40, 7);
+  auto chunk = md::Qwen38Chunk(p, *s, Hash(), history, 37, 3);
+  auto rows = md::Qwen38Rows(p, s->cells, 37, 3, 256, true);
+  ASSERT_TRUE(chunk.has_value() && rows.has_value()) << Why(rows);
+  EXPECT_EQ(rows->positions, chunk->positions);
+  EXPECT_EQ(rows->cells, chunk->cells);
+  EXPECT_EQ(rows->mask, chunk->mask);
+  EXPECT_TRUE(rows->tokens.empty());
+  EXPECT_TRUE(rows->ple_rows.empty());
+  // A wider read (a draft's passes share one): the extra cells masked.
+  auto wider = md::Qwen38Rows(p, s->cells, 37, 3, 512, false);
+  ASSERT_TRUE(wider.has_value());
+  EXPECT_EQ(wider->n_kv, 512U);
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    for (std::uint32_t j = 0; j < 512; ++j) {
+      EXPECT_EQ(wider->mask[(i * 512) + j] == md::kQwen38HalfZero, j <= 37 + i);
+    }
+  }
+  EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 250, 10, 256, false).has_value());   // reads too few
+  EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 0, 1, 300, false).has_value());      // not whole 256s
+  EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 4095, 2, 4096, false).has_value());  // past the cache
+}
+
+// The drafter's graph and a verify's, planned by this module's
+// implementations: the drafter's BF16 products GGML's float product or
+// jitllm.gemm.bf16, no MXFP8 product, its heads' drafts by jitllm.argmax;
+// a verify saving its rows' inputs and writing no recurrent state.
+TEST(Qwen38Test, TheDrafterAndAVerifyArePlannedByThisModulesImplementations) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  auto target = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
+  auto drafter = md::BindQwen38Mtp(p, "qwen4exp-mtp", MtpLike());
+  ASSERT_TRUE(target.has_value() && drafter.has_value());
+  constexpr std::uint64_t kStride = 2764800;
+  const auto plan_of = [&](std::vector<ggml_tensor*>& nodes,
+                           const std::vector<ggml_tensor*>& ins) -> std::set<std::string_view> {
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : ins) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
+    auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+    EXPECT_TRUE(plan.has_value()) << Why(plan);
+    std::set<std::string_view> used;
+    if (plan) {
+      for (const auto& step : plan->steps) {
+        used.insert(step.implementation);
+      }
+      EXPECT_TRUE(kg::PlaceActivations(nodes, *plan, ins, 256).has_value());
+    }
+    return used;
+  };
+  // (rows, passes, head, n_kv): a draft after a verify of 4 rows, one after
+  // a prefill, a prefill pass, and a draft past the indexer's budget.
+  for (const auto& [rows, passes, head, n_kv] :
+       {std::tuple{4, 3, true, 256}, std::tuple{1, 3, true, 512}, std::tuple{37, 1, false, 256},
+        std::tuple{4, 3, true, 2304}}) {
+    const std::int64_t ratio = p.indexer_ratio;
+    const bool select = n_kv > std::int64_t{p.indexer_budget} + ratio - 1;
+    const kg::Qwen38MtpShape shape{.rows = rows,
+                                   .passes = passes,
+                                   .n_kv = n_kv,
+                                   .cells = 4096,
+                                   .qsa_select = select,
+                                   .qsa_blocks = select ? n_kv / ratio : 0,
+                                   .head = head,
+                                   .head_rows = head ? 32768 : 0,
+                                   .hidden_row = 1,
+                                   .hidden_rows = 513};
+    auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, passes));
+    ASSERT_TRUE(arena.has_value());
+    auto graph = kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter, shape, kStride);
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    EXPECT_EQ(graph->passes.size(), static_cast<std::size_t>(passes));
+    EXPECT_EQ(graph->drafts.size(), head ? static_cast<std::size_t>(passes) : 0U);
+    const std::set<std::string_view> used = plan_of(graph->nodes, graph->inputs());
+    EXPECT_FALSE(used.contains(kg::kMxfp8MulMatVecName)) << rows;
+    EXPECT_EQ(used.contains(kg::kArgmaxName), head) << rows;
+    EXPECT_TRUE(used.contains(kg::kSetRowsExtName)) << rows;  // its caches' writes
+    EXPECT_EQ(used.contains(kg::kQsaSelectName), select) << n_kv;
+    EXPECT_EQ(used.contains(kg::kMoeGemvName), head) << rows;  // a prefill pass has no MoE
+    // The fast mixes' products are jitllm.gemm.bf16 at every width; past
+    // 16 rows the drafter's BF16 linears read their input rounded once.
+    EXPECT_TRUE(used.contains(kg::kGemmBf16Name)) << rows;
+    EXPECT_EQ(used.contains(kg::kBf16Name), rows > kg::kQwen38Bf16Rows) << rows;
+  }
+  // Refused: rows past the streams', later passes without heads.
+  auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, 3));
+  ASSERT_TRUE(arena.has_value());
+  EXPECT_FALSE(kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter,
+                                       {.rows = 4,
+                                        .passes = 1,
+                                        .n_kv = 256,
+                                        .cells = 4096,
+                                        .hidden_row = 510,
+                                        .hidden_rows = 513},
+                                       kStride)
+                   .has_value());
+  EXPECT_FALSE(kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter,
+                                       {.rows = 4,
+                                        .passes = 3,
+                                        .n_kv = 256,
+                                        .cells = 4096,
+                                        .head = false,
+                                        .hidden_row = 1,
+                                        .hidden_rows = 513},
+                                       kStride)
+                   .has_value());
+
+  // A verify of 4 rows: every row's logits and argmax, its rows' inputs
+  // saved, its streams exported, no recurrent or history state written.
+  auto state = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(state.has_value());
+  std::vector<std::int32_t> history(40, 1000);
+  auto chunk = md::Qwen38Chunk(p, *state, Hash(), history, 36, 4);
+  ASSERT_TRUE(chunk.has_value());
+  const std::vector<std::uint64_t> strides(p.layers, kStride);
+  auto varena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+  ASSERT_TRUE(varena.has_value());
+  auto verify = kg::BuildQwen38Graph(*varena, p, *target, kg::Qwen38ShapeOf(*state, *chunk, 4),
+                                     {.expert_stride = strides,
+                                      .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
+                                      .verify = true,
+                                      .export_streams = true,
+                                      .stream_rows = 513});
+  ASSERT_TRUE(verify.has_value()) << Why(verify);
+  ASSERT_NE(verify->argmax, nullptr);
+  EXPECT_EQ(verify->argmax->ne[0], 4);
+  ASSERT_NE(verify->streams, nullptr);
+  std::size_t saves = 0;
+  for (const kg::Qwen38LayerTensors& l : verify->layers) {
+    saves += (l.commit_conv != nullptr ? 1 : 0) + (l.commit_ple != nullptr ? 1 : 0);
+  }
+  EXPECT_EQ(saves, 37U);  // 36 linear-attention layers and the n-gram layer
+  for (const ggml_tensor* node : verify->nodes) {
+    if (node->op != GGML_OP_SET_ROWS) {
+      continue;
+    }
+    const ggml_tensor* into =
+        node->src[0]->view_src != nullptr ? node->src[0]->view_src : node->src[0];
+    for (const kg::Qwen38LayerTensors& l : verify->layers) {
+      EXPECT_NE(into, l.recurrent);
+      EXPECT_NE(into, l.conv_state);
+      EXPECT_NE(into, l.ple_state);
+    }
+  }
+  const std::set<std::string_view> used = plan_of(verify->nodes, verify->inputs());
+  EXPECT_TRUE(used.contains(kg::kArgmaxName));
+  EXPECT_TRUE(used.contains(kg::kGdnConvName));
+  EXPECT_FALSE(used.contains(kg::kGdnHistoryName));
+  // A verify of more than the vector products' rows, or in the reference
+  // form, is refused.
+  auto wide = md::Qwen38Chunk(p, *state, Hash(), std::vector<std::int32_t>(45, 1000), 36, 9);
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_FALSE(kg::BuildQwen38Graph(*varena, p, *target, kg::Qwen38ShapeOf(*state, *wide, 9),
+                                    {.expert_stride = strides,
+                                     .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
+                                     .verify = true})
+                   .has_value());
+  EXPECT_FALSE(kg::BuildQwen38Graph(*varena, p, *target, kg::Qwen38ShapeOf(*state, *chunk, 4),
+                                    {.expert_stride = strides,
+                                     .exact = true,
+                                     .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
+                                     .verify = true})
+                   .has_value());
+}
+
 }  // namespace

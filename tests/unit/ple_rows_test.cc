@@ -215,6 +215,7 @@ TEST(PleRowsTest, UnknownSubmissionsAreWaitedForAndShortOrFailedReadsRefuseAfter
   const auto file = Pattern(table.file_bytes);
   // Rows far enough apart that each is a read of its own.
   std::vector<std::int32_t> lookups;
+  lookups.reserve(6);
   for (std::int32_t r = 0; r < 6; ++r) {
     lookups.push_back(r * 1000);
   }
@@ -285,20 +286,26 @@ TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
   void* landing = nullptr;
   void* sources = nullptr;
   void* slots = nullptr;
+  // The gather's grid past the rows: the count it reads (pinned, after the
+  // sources) bounds what it writes, as a replayed graph's does.
+  const std::size_t count = plan->sources.size();
+  const std::size_t grid = count + 16;
   ASSERT_EQ(cudaMallocHost(&landing, capacity), cudaSuccess);
-  ASSERT_EQ(cudaMallocHost(&sources, plan->sources.size() * 4), cudaSuccess);
-  ASSERT_EQ(cudaMalloc(&slots, plan->sources.size() * 90), cudaSuccess);
+  ASSERT_EQ(cudaMallocHost(&sources, (count + 1) * 4), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&slots, grid * 90), cudaSuccess);
+  ASSERT_EQ(cudaMemset(slots, 0xAB, grid * 90), cudaSuccess);
   const auto read = ReadPleRows(**ring, fd, *plan, static_cast<std::byte*>(landing));
   ASSERT_TRUE(read.has_value()) << read.error();
-  std::memcpy(sources, plan->sources.data(), plan->sources.size() * 4);
+  std::memcpy(sources, plan->sources.data(), count * 4);
+  auto* const rows_count = static_cast<std::uint32_t*>(sources) + count;
+  *rows_count = static_cast<std::uint32_t>(count);
   cudaStream_t stream = nullptr;
   ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
-  ASSERT_TRUE(GatherPleRows(static_cast<const std::byte*>(landing),
-                            static_cast<const std::uint32_t*>(sources),
-                            static_cast<std::uint32_t>(plan->sources.size()), 90,
-                            static_cast<std::byte*>(slots), stream));
+  ASSERT_TRUE(GatherPleRows(
+      static_cast<const std::byte*>(landing), static_cast<const std::uint32_t*>(sources),
+      rows_count, static_cast<std::uint32_t>(grid), 90, static_cast<std::byte*>(slots), stream));
   ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
-  std::vector<std::byte> gathered(plan->sources.size() * 90);
+  std::vector<std::byte> gathered(grid * 90);
   ASSERT_EQ(cudaMemcpy(gathered.data(), slots, gathered.size(), cudaMemcpyDeviceToHost),
             cudaSuccess);
   for (std::size_t i = 0; i < lookups.size(); ++i) {
@@ -306,6 +313,9 @@ TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
     const std::uint64_t at = table.file_offset + (static_cast<std::uint64_t>(lookups[i]) * 90);
     EXPECT_EQ(std::memcmp(gathered.data() + (slot * 90), file.data() + at, 90), 0)
         << "lookup " << i;
+  }
+  for (std::size_t i = count * 90; i < grid * 90; ++i) {
+    ASSERT_EQ(gathered[i], std::byte{0xAB}) << "a slot past the count at byte " << i;
   }
   (void)cudaStreamDestroy(stream);
   (void)cudaFree(slots);

@@ -99,6 +99,9 @@ Qwen38ChunkShape Qwen38ShapeOf(const model::Qwen38StateLayout& state,
 struct Qwen38Mxfp8Tensors {
   ggml_tensor* codes = nullptr;   // I8 [k, n]
   ggml_tensor* scales = nullptr;  // I8 [k / 32, n]
+  // Or, the MTP drafter's (model/qwen38.h Qwen38Mxfp8::bf16), BF16 [k, n]:
+  // GGML's float product up to kQwen38Bf16Rows rows, else jitllm.gemm.bf16.
+  ggml_tensor* bf16 = nullptr;
 };
 
 struct Qwen38LayerTensors {
@@ -145,6 +148,13 @@ struct Qwen38LayerTensors {
   ggml_tensor* conv_state = nullptr;  // F32 [(conv - 1) · channels, 1]
   ggml_tensor* recurrent = nullptr;   // F32 [head² · v_heads, 1]
   ggml_tensor* ple_state = nullptr;   // F32 [ple_history · hc_width, 1]
+  // A verify's saves (Qwen38GraphOptions::verify; bind at the commit
+  // layout's offsets, model/qwen38.h Qwen38CommitLayout): F32 [width, rows].
+  ggml_tensor* commit_conv = nullptr;  // the convolution's output [channels]
+  ggml_tensor* commit_qkv = nullptr;   // its input [channels]
+  ggml_tensor* commit_gate = nullptr;  // [v_heads]
+  ggml_tensor* commit_beta = nullptr;  // [v_heads]
+  ggml_tensor* commit_ple = nullptr;   // the n-gram layer's convolution input [hc_width]
 };
 
 struct Qwen38GraphOptions {
@@ -175,6 +185,19 @@ struct Qwen38GraphOptions {
   // expert stride per layer.
   enum class Experts : std::uint8_t { kGgml, kCutlass };
   Experts experts = Experts::kGgml;
+  // A speculative verify (the fast form; docs/experiments/qwen38-mtp/): the
+  // recurrent, convolution and n-gram state are read but not written; each
+  // linear-attention layer's recurrence inputs and convolution input, and
+  // the n-gram layer's convolution input, are saved row by row (the layers'
+  // commit_* tensors, rows `row_ids`) for the runner's commit of the
+  // accepted rows (qwen38_commit.h). Its convolutions run jitllm.gdn.conv
+  // at every width. Its KV and indexer cells are written as any chunk's.
+  bool verify = false;
+  // Each row's streams after the last layer (before the head's mix) set
+  // into `streams` at rows `stream_rows`: what the MTP drafter reads.
+  bool export_streams = false;
+  // The rows `streams` holds (model/qwen38.h Qwen38MtpState::hidden_rows).
+  std::int64_t stream_rows = 0;
 };
 
 // The rows above which GGML's float products run on cuBLAS (MMVF and MMF
@@ -197,6 +220,11 @@ struct Qwen38Graph {
   ggml_tensor* block_cells = nullptr;  // I32 [ratio · blocks]
   ggml_tensor* block_pos = nullptr;    // I32 [4 · blocks]
   ggml_tensor* block_bias = nullptr;   // F32 [blocks, rows]
+  ggml_tensor* row_ids = nullptr;      // I64 [rows]: 0 .. rows - 1 (a verify's saves)
+  ggml_tensor* stream_rows = nullptr;  // I64 [rows]: where each row's streams go
+  // The MTP drafter's streams (export_streams), F32 [hc_width, rows]: bind
+  // at its state's (model/qwen38.h Qwen38MtpState::hidden).
+  ggml_tensor* streams = nullptr;
   // Weights.
   ggml_tensor* token_embd = nullptr;
   ggml_tensor* ple_table = nullptr;        // I8 [row bytes, rows]
@@ -206,7 +234,10 @@ struct Qwen38Graph {
   ggml_tensor* output_hc_down = nullptr;
   ggml_tensor* output_hc_up = nullptr;
   std::vector<Qwen38LayerTensors> layers;
-  ggml_tensor* logits = nullptr;  // F32 [vocab, outputs]: the last node
+  ggml_tensor* logits = nullptr;  // F32 [vocab, outputs]
+  // A verify's: each row's argmax (I32 [outputs], the lowest index among
+  // equals, jitllm.argmax), the last node; the logits stay live beside it.
+  ggml_tensor* argmax = nullptr;
   std::vector<ggml_tensor*> nodes;
   // Intermediates under llama.cpp's callback names ("l_last-7", ...).
   std::vector<std::pair<std::string, ggml_tensor*>> named;
@@ -228,6 +259,90 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
                                                            const model::Qwen38Binding& binding,
                                                            const Qwen38ChunkShape& shape,
                                                            const Qwen38GraphOptions& options);
+
+// ---------------------------------------------------------------- the MTP drafter
+
+// The MTP drafter's graph (model/qwen38.h Qwen38MtpBinding), as vLLM's
+// Qwen3_8FlashNextMultiTokenPredictor.forward computes it (the oracle's
+// engine, vllm/models/qwen3_8_flash_next/nvidia/mtp.py at 8e685d198), on
+// the target's fast-form kernels: for each row, the next token's embedding
+// row (the target's table) under norm_embd and fc_embd, added to each of
+// the target's streams under norm_hidden (over all four together) and
+// fc_hidden (each stream); the full-attention layer (its mixes, QSA with
+// its indexer over the drafter's own caches, the MoE), its output combined
+// into the streams; then its final mixer and the target's head.
+//
+// Pass 0 takes `rows` rows at positions from the inputs, reading the
+// streams from `streams` rows hidden_row..; each later pass takes one row at
+// the next position, its token the previous pass's draft and its streams
+// the previous pass's last row's combined streams (vLLM's scheme A). A
+// pass's draft is the argmax of its last row's logits over the head's
+// first `head_rows` rows (a draft vocabulary: the lowest token IDs, which
+// the checkpoint's BPE numbers in merge order, so the most frequent first;
+// 0: the whole vocabulary), the lowest ID among equals. Without `head` (a
+// prefill pass) nothing past the caches' writes is computed.
+struct Qwen38MtpShape {
+  std::int64_t rows = 0;  // pass 0's
+  std::int64_t passes = 1;
+  std::int64_t n_kv = 0;  // every pass's
+  std::int64_t cells = 0;
+  bool qsa_select = false;
+  std::int64_t qsa_blocks = 0;
+  bool head = false;
+  std::int64_t head_rows = 0;
+  std::int64_t hidden_row = 0;   // pass 0's first streams row
+  std::int64_t hidden_rows = 0;  // the streams' rows
+
+  bool operator==(const Qwen38MtpShape&) const = default;
+};
+
+// One pass's host-built inputs (as Qwen38Graph's; model/qwen38.h
+// Qwen38Rows builds them).
+struct Qwen38MtpPass {
+  ggml_tensor* tokens = nullptr;  // I32 [rows]: pass 0 only
+  ggml_tensor* positions = nullptr;
+  ggml_tensor* cells = nullptr;
+  ggml_tensor* mask = nullptr;  // (none where the device selection makes it)
+  ggml_tensor* cell_block = nullptr;
+  ggml_tensor* block_cells = nullptr;
+  ggml_tensor* block_pos = nullptr;
+  ggml_tensor* block_bias = nullptr;
+  ggml_tensor* out_ids = nullptr;  // unused by the drafter, kept for the shared builder
+};
+
+struct Qwen38MtpGraph {
+  std::vector<Qwen38MtpPass> passes;
+  ggml_tensor* state_row = nullptr;  // I64 [1]: 0
+  ggml_tensor* row_zero = nullptr;   // I32 [1]: 0
+  // The drafter's weights (its layer's caches: bind at its state's offsets).
+  Qwen38LayerTensors layer;
+  ggml_tensor* fc_embd = nullptr;
+  ggml_tensor* fc_hidden = nullptr;
+  ggml_tensor* norm_embd = nullptr;
+  ggml_tensor* norm_hidden = nullptr;
+  ggml_tensor* output_hc_norm = nullptr;
+  ggml_tensor* output_hc_down = nullptr;
+  ggml_tensor* output_hc_up = nullptr;
+  // The target's token table and head.
+  ggml_tensor* token_embd = nullptr;
+  ggml_tensor* output = nullptr;
+  ggml_tensor* streams = nullptr;    // F32 [hc_width, hidden_rows]: the drafter's state
+  std::vector<ggml_tensor*> drafts;  // I32 [1] a pass (with its head)
+  std::vector<ggml_tensor*> nodes;
+
+  // The host-built inputs, in the order they are copied.
+  std::vector<ggml_tensor*> inputs() const;
+};
+
+std::size_t Qwen38MtpGraphTensors(const model::Qwen38Profile& profile, std::int64_t passes);
+
+// Builds the drafter's graph on `arena`, its experts at `expert_stride`.
+// Refused if the shape is not one its state holds, a pass's rows past the
+// first are not one, or the arena lacks room.
+std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
+    TensorArena& arena, const model::Qwen38Profile& profile, const model::Qwen38Binding& target,
+    const model::Qwen38MtpBinding& drafter, const Qwen38MtpShape& shape,
+    std::uint64_t expert_stride);
 
 }  // namespace jitllm::kernels::ggml
 

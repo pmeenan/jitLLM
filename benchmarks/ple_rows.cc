@@ -8,6 +8,7 @@
 #include <chrono>
 #include <format>
 #include <limits>
+#include <thread>
 #include <utility>
 
 #include "providers/storage.h"
@@ -146,8 +147,12 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
       failure = "no n-gram row read could be submitted";
       break;
     }
-    const std::size_t got = storage.Harvest(done, true);
+    // Polled, not waited: the rows are on a decode step's critical path, and
+    // a sleeping thread's wakeup on the Spark costs more than the reads
+    // (RE-017; D-094's reason for polling the step path).
+    const std::size_t got = storage.Harvest(done, false);
     if (got == 0) {
+      std::this_thread::yield();
       if (std::chrono::steady_clock::now() - progressed > kStall) {
         // Reads still in flight may yet land: the caller must not reuse
         // the landing or destroy the ring (Qwen38Runner stops its rows).

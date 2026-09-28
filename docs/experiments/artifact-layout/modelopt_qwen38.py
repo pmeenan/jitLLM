@@ -41,6 +41,18 @@ What is repacked, all losslessly (docs/experiments/qwen38-native/README.md):
 
 Names follow llama.cpp's qwen4exp tensors (src/llama-arch.cpp), the graph the
 native one ports. The vision tower and the MTP block are not imported.
+
+The MTP block is its own drafter artifact (plan_mtp, build_mtp;
+architecture qwen4exp-mtp), as DeepSeek's DSpark drafter is (D-089's note):
+one full-attention layer with hyper-connections and the routed experts, the
+fc_embedding and fc_hidden projections with their norms, and its own final
+mixer, from the checkpoint's last shard alone. It holds no token table or
+head: the runtime binds the target artifact's (vLLM's Qwen3_8FlashNextMTP
+loads the same two). Its attention, indexer, router and shared expert are
+BF16 in the checkpoint and stay so; its experts take the target's CUTLASS
+layout; norms fold (1 + w) as the target's. Importing the drafter reads and
+hashes only that shard and config.json, so the target artifact is neither
+re-imported nor changed.
 """
 import array
 import concurrent.futures
@@ -691,6 +703,159 @@ def plan(layout, cfg, src, shard_target=None):
     return _place(layout, groups, arrays, shard_target or layout.SHARD_TARGET)
 
 
+MTP_ARCH = "qwen4exp-mtp"
+
+
+def check_mtp_config(cfg, doc):
+    """The MTP block config.json describes: one hybrid full-attention layer
+    that reads the target's hidden streams and shares its embeddings."""
+    t = doc.get("text_config", doc)
+    mtp = t.get("mtp")
+    if (t.get("mtp_num_hidden_layers") != 1 or t.get("mtp_use_dedicated_embeddings") is not False
+            or type(mtp) is not dict or mtp.get("num_hidden_layers") != 1
+            or mtp.get("layer_types") != ["full_attention"] or mtp.get("hybrid") is not True
+            or mtp.get("mtp_use_hidden_state_from_layer") is not None):
+        raise ValueError("config.json: not one hybrid full-attention MTP layer over the last hidden "
+                         "streams with shared embeddings")
+    rope = t.get("rope_parameters", {})
+    if type(rope) is not dict or mtp.get("rope_theta") != rope.get("rope_theta"):
+        raise ValueError("config.json: the MTP layer's rope_theta differs from the model's")
+
+
+def plan_mtp(layout, cfg, src, shard_target=None):
+    """The MTP drafter artifact's groups, members and expert arrays: its
+    layer (group `layer`, layer 0), its 512 expert groups and its head (the
+    final mixer), every source tensor's shape and type checked and every
+    mtp.* tensor placed."""
+    groups, arrays = [], []
+    h, e, hd = cfg.hidden, cfg.experts, cfg.head_dim
+    used = set()
+
+    def get(name, dtype, shape):
+        used.add(name)
+        return src.get(name, dtype, shape)
+
+    def member(name, rep, produce):
+        m = dict(name=name, repr=rep, produce=produce, roles=[name])
+        m["nbytes"] = layout.repr_bytes(rep, name)
+        m["readable"] = layout.readable_for(rep, m["nbytes"])
+        return m
+
+    def bf16_matrix(name, hf, rows, cols):
+        t = get(hf, "BF16", [rows, cols])
+        return member(name, _ggml("BF16", [cols, rows]), lambda s, t=t: s.read(t))
+
+    def f32_vector(name, hf, n, fn=bf16_to_f32):
+        t = get(hf, "BF16", [n])
+        return member(name, _ggml("F32", [n]), lambda s, t=t: fn(s.read(t)))
+
+    def group(kind, layer=None, expert=None):
+        g = dict(kind=kind, layer=layer, expert=expert, members=[])
+        groups.append(g)
+        return g
+
+    mem = group("layer", 0)["members"]
+    mem.append(bf16_matrix("fc_embd.weight", "mtp.fc_embedding.weight", h, h))
+    mem.append(bf16_matrix("fc_hidden.weight", "mtp.fc_hidden.weight", h, h))
+    mem.append(f32_vector("norm_embd.weight", "mtp.pre_fc_norm_embedding.weight", h, norm_plus_one))
+    mem.append(f32_vector("norm_hidden.weight", "mtp.pre_fc_norm_hidden.weight", cfg.hc_dim,
+                          norm_plus_one))
+    lp = "mtp.layers.0."
+    for kind, hf in (("attn", "attn_hyper_connection"), ("ffn", "mlp_hyper_connection")):
+        mem.append(f32_vector(f"blk.0.hc_{kind}_norm.weight", f"{lp}{hf}.hc_norm.weight", cfg.hc_dim,
+                              norm_plus_one))
+        mem.append(bf16_matrix(f"blk.0.hc_{kind}_down.weight", f"{lp}{hf}.input_mix_weight_down.weight",
+                               cfg.hc_rank, cfg.hc_dim))
+        mem.append(bf16_matrix(f"blk.0.hc_{kind}_up.weight", f"{lp}{hf}.input_mix_weight_up.weight",
+                               cfg.hc_dim, cfg.hc_rank))
+        mem.append(bf16_matrix(f"blk.0.hc_{kind}_inject.weight", f"{lp}{hf}.block_inject_weight.weight",
+                               cfg.hc, cfg.hc_dim))
+    sa = lp + "self_attn."
+    mem.append(bf16_matrix("blk.0.attn_q.weight", sa + "q_proj.weight", 2 * cfg.heads * hd, h))
+    mem.append(bf16_matrix("blk.0.attn_k.weight", sa + "k_proj.weight", cfg.kv_heads * hd, h))
+    mem.append(bf16_matrix("blk.0.attn_v.weight", sa + "v_proj.weight", cfg.kv_heads * hd, h))
+    mem.append(bf16_matrix("blk.0.attn_output.weight", sa + "o_proj.weight", h, cfg.heads * hd))
+    mem.append(f32_vector("blk.0.attn_q_norm.weight", sa + "q_norm.weight", hd, norm_plus_one))
+    mem.append(f32_vector("blk.0.attn_k_norm.weight", sa + "k_norm.weight", hd, norm_plus_one))
+    mem.append(bf16_matrix("blk.0.indexer.qk_proj.weight", sa + "indexer.index_qk_proj.weight",
+                           (cfg.idx_heads + 1) * cfg.idx_dim, h))
+    mem.append(f32_vector("blk.0.indexer.q_norm.weight", sa + "indexer.q_layernorm.weight", cfg.idx_dim,
+                          norm_plus_one))
+    mem.append(f32_vector("blk.0.indexer.k_norm.weight", sa + "indexer.k_layernorm.weight", cfg.idx_dim,
+                          norm_plus_one))
+    mp = lp + "mlp."
+    mem.append(bf16_matrix("blk.0.ffn_gate_inp.weight", mp + "gate.weight", e, h))
+    gate_shexp = get(mp + "shared_expert_gate.weight", "BF16", [1, h])
+    mem.append(member("blk.0.ffn_gate_inp_shexp.weight", _ggml("BF16", [h]),
+                      lambda s, t=gate_shexp: s.read(t)))
+    mem.append(bf16_matrix("blk.0.ffn_gate_shexp.weight", mp + "shared_expert.gate_proj.weight",
+                           cfg.shared_ff, h))
+    mem.append(bf16_matrix("blk.0.ffn_up_shexp.weight", mp + "shared_expert.up_proj.weight",
+                           cfg.shared_ff, h))
+    mem.append(bf16_matrix("blk.0.ffn_down_shexp.weight", mp + "shared_expert.down_proj.weight", h,
+                           cfg.shared_ff))
+    shapes = {"gate": (cfg.moe_ff, h), "up": (cfg.moe_ff, h), "down": (h, cfg.moe_ff)}
+    experts = {}
+    for proj, (n_out, k_in) in shapes.items():
+        ex = []
+        for x in range(e):
+            base = f"{mp}experts.{x}.{proj}_proj."
+            ex.append((get(base + "weight", "U8", [n_out, k_in // 2]),
+                       get(base + "weight_scale", "F8_E4M3", [n_out, k_in // 16]),
+                       get(base + "weight_scale_2", "F32", [])))
+        experts[proj] = ex
+        mem.append(member(f"blk.0.ffn_{proj}_exps.weight_scale_2", _ggml("F32", [e]),
+                          lambda s, ex=ex: b"".join(check_global_scales(s.read(t2), t2["name"])
+                                                    for _, _, t2 in ex)))
+    # The routed experts in the target's CUTLASS layout (plan's, the same
+    # repack in worker processes).
+    first = len(groups)
+    egroups = [group("expert", 0, x) for x in range(e)]
+    ff = cfg.moe_ff
+    parts = (("blk.0.ffn_gate_up_exps.codes", [h // 2, 2 * ff]),
+             ("blk.0.ffn_gate_up_exps.scales", [SF_ATOM_BYTES, sf1xx_atoms(2 * ff, h)]),
+             ("blk.0.ffn_down_exps.codes", [ff // 2, h]),
+             ("blk.0.ffn_down_exps.scales", [SF_ATOM_BYTES, sf1xx_atoms(h, ff)]))
+    for x in range(e):
+        reads = tuple(((w["path"], w["offset"], w["nbytes"]), (sc["path"], sc["offset"], sc["nbytes"]))
+                      for w, sc, _ in (experts[p][x] for p in ("gate", "up", "down")))
+        egroups[x]["job"] = (reads, ff, h)
+    for i, (name, ne) in enumerate(parts):
+        rep = _ggml("I8", ne)
+        arr = dict(name=name, layer=0, count=e, repr=rep, slice_bytes=layout.repr_bytes(rep, name),
+                   members=[])
+        arr["readable"] = layout.readable_for(rep, arr["slice_bytes"])
+        for x in range(e):
+            pairs = [experts[p][x][:2] for p in ("gate", "up", "down")]
+            m = member(f"{name}#{x}", rep,
+                       lambda s, pairs=pairs, i=i: expert_to_sf1xx(
+                           *[(s.read(w), s.read(sc)) for w, sc in pairs], ff, h)[i])
+            m["roles"] = []
+            m["array"] = len(arrays)
+            egroups[x]["members"].append(m)
+            arr["members"].append(m)
+        arr["first_group"] = first
+        arrays.append(arr)
+
+    head = group("head")
+    head["members"].append(f32_vector("output_hc_norm.weight", "mtp.hyper_connection_mixer.hc_norm.weight",
+                                      cfg.hc_dim, norm_plus_one))
+    head["members"].append(bf16_matrix("output_hc_down.weight",
+                                       "mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+                                       cfg.hc_rank, cfg.hc_dim))
+    head["members"].append(bf16_matrix("output_hc_up.weight",
+                                       "mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+                                       cfg.hc_dim, cfg.hc_rank))
+    # Every MTP tensor has a place; the given sources hold nothing else the
+    # drafter should have read.
+    skipped = [n for n in src.tensors if n.startswith("mtp.") and n not in used]
+    if skipped:
+        raise ValueError(f"{len(skipped)} MTP tensors have no place in the plan, e.g. {skipped[:3]}")
+    p = _place(layout, groups, arrays, shard_target or layout.SHARD_TARGET)
+    p["arch"] = MTP_ARCH
+    return p
+
+
 def _place(layout, groups, arrays, shard_target):
     """layout.plan's placement: members at 256-byte offsets (readable bytes
     reserved), groups 4 KiB-stored, shards filled to the target, chunks
@@ -863,8 +1028,8 @@ def write(layout, p, src, work, converter, sources, metas, workers=8):
     manifest = {
         "format": layout.FORMAT, "format_version": layout.FORMAT_VERSION, "experimental": True,
         "layout": layout.LAYOUT,
-        "model": {"architecture": ARCH, "expert_count": len(p["expert_arrays"][0]["members"]) if p["expert_arrays"]
-                  else 0, "representation": families},
+        "model": {"architecture": p["arch"], "expert_count": len(p["expert_arrays"][0]["members"])
+                  if p["expert_arrays"] else 0, "representation": families},
         "source": sorted(({"name": n, "bytes": b, "sha256": d} for n, (b, d) in sources.items()),
                          key=lambda x: x["name"]),
         "transformations": sorted(transformations, key=layout._canon_key),
@@ -907,8 +1072,11 @@ def _hash_files(paths, extra=()):
     return sources, ranges
 
 
-def build(layout, out_root, shard_paths, expected=None, converter=None, shard_target=None, workers=8):
+def build(layout, out_root, shard_paths, expected=None, converter=None, shard_target=None, workers=8,
+          mtp=False):
     """Plans, writes, verifies and publishes the artifact; returns its path.
+    With `mtp`, the MTP drafter's artifact (plan_mtp) from the shards given,
+    which must hold every mtp.* tensor.
 
     `expected` maps each identity file's name (the shards and config.json) to
     its pinned SHA-256; the files are hashed before planning is trusted and
@@ -922,10 +1090,13 @@ def build(layout, out_root, shard_paths, expected=None, converter=None, shard_ta
     if any(Path(p).parent != config_path.parent for p in paths):
         raise ValueError("the shards must share one directory, with its config.json")
     config_bytes = config_path.read_bytes()
-    cfg = Config(json.loads(config_bytes, object_pairs_hook=_unique_keys))
+    doc = json.loads(config_bytes, object_pairs_hook=_unique_keys)
+    cfg = Config(doc)
+    if mtp:
+        check_mtp_config(cfg, doc)
     src = Sources(layout, paths)
     try:
-        p = plan(layout, cfg, src, shard_target)
+        p = plan_mtp(layout, cfg, src, shard_target) if mtp else plan(layout, cfg, src, shard_target)
         identity = paths + [str(config_path)]
         headers = [(part["path"], 0, part["header_len"]) for part in src.parts]
         sources, ranges = _hash_files(identity, headers)

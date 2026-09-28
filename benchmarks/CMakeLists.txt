@@ -187,6 +187,15 @@ if(JITLLM_CUDA)
                                                    jitllm_warnings)
   target_link_options(jitllm_spec_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # M3's speculation harness for Qwen3.8 Flash Next with its MTP drafter on
+  # the paged node (docs/experiments/qwen38-mtp/). A harness for now; it
+  # links the native tokenizer and chat renderer.
+  add_executable(jitllm_qwen38_spec qwen38_spec.cc)
+  target_link_libraries(jitllm_qwen38_spec PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                                   jitllm_tokenizer jitllm_chat jitllm_sampling
+                                                   jitllm_warnings)
+  target_link_options(jitllm_qwen38_spec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through jitLLM's launchers at upstream's forced plans,
   # hashed for comparison with upstream's outputs

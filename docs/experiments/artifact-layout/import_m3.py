@@ -21,6 +21,7 @@ M3's imports need around it without copying or changing it:
   (model_index.json, the scheduler and processor files) kept verbatim.
 
   python3 import_m3.py build OUT PINS MODEL_ID SOURCE...
+  python3 import_m3.py drafter OUT PINS MODEL_ID SOURCE...
   python3 import_m3.py component OUT PINS MODEL_ID CHECKPOINT ROLE [--meta REL]...
   python3 import_m3.py compose OUT PINS MODEL_ID CHECKPOINT ROLE=ID... [--meta REL]...
   python3 import_m3.py verify ARTIFACT
@@ -32,6 +33,11 @@ Qwen3.8 Flash Next's ModelOpt checkpoint, whose bytes are repacked on the
 way (modelopt_qwen38.py): its shards and the config.json beside them are
 checked against the pins, and layout.py's container, index and verifier
 write and check the artifact.
+
+`drafter` imports Qwen3.8's MTP block as its own drafter artifact
+(modelopt_qwen38.py plan_mtp; architecture qwen4exp-mtp) from the shards
+that hold it (the checkpoint's last) and the config.json beside them, both
+checked against the pins; the target artifact is not touched.
 
 `component` imports CHECKPOINT/ROLE/*.safetensors, whose config.json
 (CHECKPOINT/ROLE/config.json) decides the architecture:
@@ -424,6 +430,16 @@ def main(argv):
         p = layout.plan(src, tie_check=True)
         print(json.dumps(layout.stats(p)), flush=True)
         print(layout.build(p, src, out, paths, (), converter=converter(), expected_sources=expected))
+    elif cmd == "drafter" and len(args) >= 4:
+        out, pins, model_id, paths = args[0], args[1], args[2], args[3:]
+        if any(Path(p).suffix != ".safetensors" for p in paths):
+            raise SystemExit("drafter takes Qwen3.8's safetensors shards that hold the MTP block")
+        modelopt, digest = load_modelopt()
+        expected = pinned_sources(pins, model_id, [*paths, str(Path(paths[0]).parent / "config.json")])
+        conv = {"name": CONVERTER_NAME,
+                "version": f"{converter()['version']}+modelopt_qwen38-{digest[:16]}+mtp"}
+        final, _ = modelopt.build(layout, out, paths, expected=expected, converter=conv, mtp=True)
+        print(final)
     elif cmd == "component" and len(args) >= 5:
         rest, metas = _split_meta(args)
         if len(rest) != 5:

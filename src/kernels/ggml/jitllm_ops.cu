@@ -52,56 +52,81 @@ __device__ __forceinline__ void Decode16(const uint4 q, float out[16]) {
   }
 }
 
-constexpr int kWarps = 8;  // rows per block
+constexpr int kWarps = 8;  // warps per block
 
-// One warp per output row. Lane l takes the row's 16-code vectors l, l + 32,
-// ...; each vector is half of one 32-code block, so its dot product is
-// scaled by its block's scale before it joins the lane's sum.
-template <int kColumns>
+// kRows output rows a warp, each row's arithmetic the one-row-a-warp
+// product's: lane l takes the row's 16-code vectors l, l + 32, ...; each
+// vector is half of one 32-code block, so its dot product is scaled by its
+// block's scale before it joins the lane's sum; then the warp sums. A lane
+// loads its vectors of x once for the warp's rows, so several columns cost
+// less L1 traffic (a speculative verify's rows); the outputs do not depend
+// on kRows.
+template <int kColumns, int kRows>
 __global__ void __launch_bounds__(kWarps * 32)
     Mxfp8Gemv(const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
               const float* __restrict__ x, float* __restrict__ y, int n, int k, int x_stride) {
   const int lane = static_cast<int>(threadIdx.x) % 32;
-  const int row = static_cast<int>(blockIdx.x) * kWarps + static_cast<int>(threadIdx.x) / 32;
-  if (row >= n) {
+  const int row0 =
+      ((static_cast<int>(blockIdx.x) * kWarps) + (static_cast<int>(threadIdx.x) / 32)) * kRows;
+  if (row0 >= n) {
     return;
   }
-  const std::uint8_t* w = codes + static_cast<std::int64_t>(row) * k;
-  const std::uint8_t* s = scales + static_cast<std::int64_t>(row) * (k / 32);
-  float sum[kColumns];
+  const int rows = min(kRows, n - row0);
+  float sum[kRows][kColumns];
 #pragma unroll
-  for (int c = 0; c < kColumns; ++c) {
-    sum[c] = 0.0f;
+  for (int r = 0; r < kRows; ++r) {
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+      sum[r][c] = 0.0f;
+    }
   }
   const int vectors = k / 16;
   for (int v = lane; v < vectors; v += 32) {
-    float wf[16];
-    Decode16(*reinterpret_cast<const uint4*>(w + static_cast<std::int64_t>(v) * 16), wf);
-    const float scale = E8m0(s[v / 2]);
+    float xs[kColumns][16];
 #pragma unroll
     for (int c = 0; c < kColumns; ++c) {
       const float4* xv =
           reinterpret_cast<const float4*>(x + static_cast<std::int64_t>(c) * x_stride + v * 16);
-      float dot = 0.0f;
 #pragma unroll
       for (int i = 0; i < 4; ++i) {
         const float4 a = xv[i];
-        dot = fmaf(wf[4 * i + 0], a.x, dot);
-        dot = fmaf(wf[4 * i + 1], a.y, dot);
-        dot = fmaf(wf[4 * i + 2], a.z, dot);
-        dot = fmaf(wf[4 * i + 3], a.w, dot);
+        xs[c][4 * i + 0] = a.x;
+        xs[c][4 * i + 1] = a.y;
+        xs[c][4 * i + 2] = a.z;
+        xs[c][4 * i + 3] = a.w;
       }
-      sum[c] = fmaf(dot, scale, sum[c]);
+    }
+#pragma unroll
+    for (int r = 0; r < kRows; ++r) {
+      // A short last group rereads its last row (not written).
+      const int row = row0 + min(r, rows - 1);
+      const std::uint8_t* w = codes + static_cast<std::int64_t>(row) * k;
+      const std::uint8_t* s = scales + static_cast<std::int64_t>(row) * (k / 32);
+      float wf[16];
+      Decode16(*reinterpret_cast<const uint4*>(w + static_cast<std::int64_t>(v) * 16), wf);
+      const float scale = E8m0(s[v / 2]);
+#pragma unroll
+      for (int c = 0; c < kColumns; ++c) {
+        float dot = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+          dot = fmaf(wf[i], xs[c][i], dot);
+        }
+        sum[r][c] = fmaf(dot, scale, sum[r][c]);
+      }
     }
   }
 #pragma unroll
-  for (int c = 0; c < kColumns; ++c) {
+  for (int r = 0; r < kRows; ++r) {
 #pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-      sum[c] += __shfl_xor_sync(0xffffffffu, sum[c], offset);
-    }
-    if (lane == 0) {
-      y[static_cast<std::int64_t>(c) * n + row] = sum[c];
+    for (int c = 0; c < kColumns; ++c) {
+#pragma unroll
+      for (int offset = 16; offset > 0; offset /= 2) {
+        sum[r][c] += __shfl_xor_sync(0xffffffffu, sum[r][c], offset);
+      }
+      if (lane == 0 && r < rows) {
+        y[static_cast<std::int64_t>(c) * n + row0 + r] = sum[r][c];
+      }
     }
   }
 }
@@ -308,8 +333,12 @@ void LaunchGemv(const ggml_tensor* node, cudaStream_t stream) {
   const ggml_tensor* x = node->src[2];
   const int n = static_cast<int>(codes->ne[1]);
   const int k = static_cast<int>(codes->ne[0]);
-  const dim3 grid(static_cast<unsigned>((n + kWarps - 1) / kWarps));
-  Mxfp8Gemv<kColumns><<<grid, kWarps * 32, 0, stream>>>(
+  // Rows a warp: one for a lone column (decode's, where the weights'
+  // stream bounds it), more as the columns' loads of x grow.
+  constexpr int kRows = kColumns == 1 ? 1 : (kColumns <= 4 ? 4 : 2);
+  const int per_block = kWarps * kRows;
+  const dim3 grid(static_cast<unsigned>((n + per_block - 1) / per_block));
+  Mxfp8Gemv<kColumns, kRows><<<grid, kWarps * 32, 0, stream>>>(
       static_cast<const std::uint8_t*>(codes->data),
       static_cast<const std::uint8_t*>(node->src[1]->data), static_cast<const float*>(x->data),
       static_cast<float*>(node->data), n, k, static_cast<int>(x->nb[1] / sizeof(float)));

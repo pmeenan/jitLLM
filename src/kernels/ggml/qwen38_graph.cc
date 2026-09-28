@@ -45,7 +45,8 @@ std::size_t U(std::int64_t n) { return static_cast<std::size_t>(n); }
 class Builder {
  public:
   Builder(ggml_context* c, const model::Qwen38Profile& p, const model::Qwen38Binding& b,
-          const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool exact, bool cutlass)
+          const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool exact, bool cutlass,
+          bool verify = false, bool export_streams = false)
       : c_(c),
         p_(p),
         b_(b),
@@ -53,10 +54,27 @@ class Builder {
         g_(g),
         fused_(fused),
         fast_(fused && !exact),
-        cutlass_(cutlass) {}
+        cutlass_(cutlass),
+        verify_(verify),
+        export_(export_streams) {}
 
   std::expected<void, KernelFailure> Leaves(const Qwen38GraphOptions& options);
   void Build();
+  // One MTP drafter pass over this builder's shape and inputs (g_'s, its
+  // layers[0] the drafter's layer): `tokens` I32 [rows] (the next tokens,
+  // or the previous pass's draft), `hidden` F32 [hc_width, rows] the
+  // streams it reads. With `head`, the combined streams and the last row's
+  // draft over the head's first `head_rows` rows (0: all); without, only
+  // its caches' writes (a prefill pass), both null.
+  struct MtpOut {
+    ggml_tensor* streams = nullptr;  // F32 [width, hc, rows]
+    ggml_tensor* draft = nullptr;    // I32 [1]
+  };
+  MtpOut MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden, bool head,
+                 std::int64_t head_rows);
+  const std::vector<ggml_tensor*>& expanded() const { return expanded_; }
+  // Whether this shape's QSA selection runs on the device (no host masks).
+  bool SelectsOnDevice() const { return DeviceSelect(); }
 
  private:
   void Name(ggml_tensor* t, std::string_view name, int il) {
@@ -119,6 +137,9 @@ class Builder {
   // BF16 product (the fused graph) or GGML's (the unfused one). F32 unless
   // `out` is BF16 and the tensor-core product runs.
   ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, Input& in, ggml_type out = GGML_TYPE_F32) {
+    if (w.bf16 != nullptr) {
+      return LinearBf16(w.bf16, in, out);
+    }
     if (in.x->ne[1] <= kMxfp8VecColumns) {
       return Mxfp8MulMatVec(c_, w.codes, w.scales, in.x);
     }
@@ -136,6 +157,18 @@ class Builder {
   ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, ggml_tensor* x) {
     Input in = In(x);
     return Linear(w, in);
+  }
+  // A BF16 linear (the MTP drafter's): GGML's float product (MMVF or MMF)
+  // up to kQwen38Bf16Rows rows, F32 out; past them jitllm.gemm.bf16 over x
+  // in BF16 (made once for every product that reads it), `out` out.
+  ggml_tensor* LinearBf16(ggml_tensor* w, Input& in, ggml_type out = GGML_TYPE_F32) {
+    if (in.x->ne[1] <= kQwen38Bf16Rows) {
+      return ggml_mul_mat(c_, w, in.x);
+    }
+    if (in.bf16 == nullptr) {
+      in.bf16 = ToBf16(c_, in.x);
+    }
+    return GemmBf16(c_, w, in.bf16, out);
   }
   // The tensor-core product over `rows` activations already quantized to
   // MXFP8 (a fusion's output).
@@ -216,8 +249,13 @@ class Builder {
                bool bf16, int il);
   void BuildFast(ggml_tensor* res, ggml_tensor* ple);
   ggml_tensor* HcCombine(ggml_tensor* residual, ggml_tensor* block_out, ggml_tensor* inject);
+  // With `store` false (a verify's) the new history is not stored.
   ggml_tensor* ConvStateAt(ggml_tensor* state, ggml_tensor* x, std::int64_t cols,
-                           std::int64_t channels);
+                           std::int64_t channels, bool store = true);
+  // A verify's save of `src` [width, rows] into `into` at its rows.
+  void Save(ggml_tensor* into, ggml_tensor* src, std::int64_t width) {
+    Expand(ggml_set_rows(c_, into, ggml_reshape_2d(c_, Packed(src), width, s_.rows), g_.row_ids));
+  }
   ggml_tensor* Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_tensor* hidden, int il);
   // The blocks read `cur`, or with `pre` its conversions made already.
   ggml_tensor* LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
@@ -236,6 +274,8 @@ class Builder {
   bool fused_;
   bool fast_;
   bool cutlass_;
+  bool verify_;
+  bool export_;
   std::vector<ggml_tensor*> expanded_;
 };
 
@@ -273,6 +313,189 @@ std::expected<ggml_tensor*, KernelFailure> Leaf(ggml_context* c, const model::Qw
   return ggml_new_tensor(c, type, static_cast<int>(t.ne.size()), ne.data());
 }
 
+std::expected<ggml_tensor*, KernelFailure> LinearLeaf(ggml_context* c, const model::Qwen38Mxfp8& t,
+                                                      Qwen38Mxfp8Tensors& into,
+                                                      std::string_view role) {
+  if (t.is_bf16()) {
+    auto made = Leaf(c, t.bf16, role);
+    if (made) {
+      into.bf16 = *made;
+    }
+    return made;
+  }
+  auto codes = Leaf(c, t.codes, role);
+  if (!codes) {
+    return codes;
+  }
+  into.codes = *codes;
+  auto scales = Leaf(c, t.scales, role);
+  if (scales) {
+    into.scales = *scales;
+  }
+  return scales;
+}
+
+// One layer's weights (and, for a QSA layer, its caches over `cells`): the
+// target's layer `il`, or the MTP drafter's (`ple` false), its experts at
+// `stride`.
+std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwen38Profile& p,
+                                               const model::Qwen38Layer& w, Qwen38LayerTensors& l,
+                                               bool ple, bool cutlass, bool cutlass_artifact,
+                                               std::uint64_t stride, std::int64_t cells,
+                                               std::uint32_t il) {
+  const auto leaf = [&](ggml_tensor*& into, const model::Qwen38Tensor& t,
+                        std::string_view role) -> std::expected<void, KernelFailure> {
+    auto made = Leaf(c, t, role);
+    if (!made) {
+      return std::unexpected(made.error());
+    }
+    into = *made;
+    return {};
+  };
+  const auto mx = [&](Qwen38Mxfp8Tensors& into, const model::Qwen38Mxfp8& t,
+                      std::string_view role) -> std::expected<void, KernelFailure> {
+    auto made = LinearLeaf(c, t, into, role);
+    if (!made) {
+      return std::unexpected(made.error());
+    }
+    return {};
+  };
+#define JITLLM_LEAF(into, tensor)                       \
+  if (auto made = leaf(into, tensor, #tensor); !made) { \
+    return made;                                        \
+  }
+#define JITLLM_MX(into, tensor)                       \
+  if (auto made = mx(into, tensor, #tensor); !made) { \
+    return made;                                      \
+  }
+  JITLLM_LEAF(l.hc_attn_norm, w.hc_attn_norm)
+  JITLLM_LEAF(l.hc_attn_down, w.hc_attn_down)
+  JITLLM_LEAF(l.hc_attn_up, w.hc_attn_up)
+  JITLLM_LEAF(l.hc_attn_inject, w.hc_attn_inject)
+  JITLLM_LEAF(l.hc_ffn_norm, w.hc_ffn_norm)
+  JITLLM_LEAF(l.hc_ffn_down, w.hc_ffn_down)
+  JITLLM_LEAF(l.hc_ffn_up, w.hc_ffn_up)
+  JITLLM_LEAF(l.hc_ffn_inject, w.hc_ffn_inject)
+  if (w.linear) {
+    JITLLM_MX(l.qkv, w.qkv)
+    JITLLM_MX(l.z, w.z)
+    JITLLM_MX(l.beta, w.beta)
+    JITLLM_MX(l.alpha, w.alpha)
+    JITLLM_MX(l.ssm_out, w.ssm_out)
+    JITLLM_LEAF(l.dt_bias, w.dt_bias)
+    JITLLM_LEAF(l.ssm_a, w.ssm_a)
+    JITLLM_LEAF(l.conv1d, w.conv1d)
+    JITLLM_LEAF(l.ssm_norm, w.ssm_norm)
+    const std::int64_t d = p.lin_head_dim;
+    l.conv_state =
+        ggml_new_tensor_2d(c, GGML_TYPE_F32, std::int64_t{p.conv - 1} * p.conv_channels(), 1);
+    l.recurrent = ggml_new_tensor_2d(c, GGML_TYPE_F32, d * d * p.lin_v_heads, 1);
+  } else {
+    JITLLM_MX(l.q, w.q)
+    JITLLM_MX(l.k, w.k)
+    JITLLM_MX(l.v, w.v)
+    JITLLM_MX(l.o, w.o)
+    JITLLM_MX(l.idx_qk, w.idx_qk)
+    JITLLM_LEAF(l.q_norm, w.q_norm)
+    JITLLM_LEAF(l.k_norm, w.k_norm)
+    JITLLM_LEAF(l.idx_q_norm, w.idx_q_norm)
+    JITLLM_LEAF(l.idx_k_norm, w.idx_k_norm)
+    const std::int64_t kv = std::int64_t{p.head_dim} * p.kv_heads;
+    l.cache_k = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
+    l.cache_v = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
+    l.cache_idx = ggml_new_tensor_2d(c, GGML_TYPE_F32, p.indexer_head_dim, cells);
+  }
+  if (ple) {
+    JITLLM_LEAF(l.ple_key, w.ple_key)
+    JITLLM_LEAF(l.ple_value, w.ple_value)
+    JITLLM_LEAF(l.ple_norm_key, w.ple_norm_key)
+    JITLLM_LEAF(l.ple_norm_query, w.ple_norm_query)
+    JITLLM_LEAF(l.ple_norm_conv, w.ple_norm_conv)
+    JITLLM_LEAF(l.ple_conv1d, w.ple_conv1d)
+    l.ple_state =
+        ggml_new_tensor_2d(c, GGML_TYPE_F32, std::int64_t{p.ple_history()} * p.hc_width(), 1);
+  }
+  JITLLM_LEAF(l.router, w.router)
+  JITLLM_LEAF(l.shared_gate, w.shared_gate)
+  JITLLM_MX(l.gate_shexp, w.gate_shexp)
+  JITLLM_MX(l.up_shexp, w.up_shexp)
+  JITLLM_MX(l.down_shexp, w.down_shexp)
+  JITLLM_LEAF(l.gate_exps_scale, w.gate_exps_scale)
+  JITLLM_LEAF(l.up_exps_scale, w.up_exps_scale)
+  JITLLM_LEAF(l.down_exps_scale, w.down_exps_scale)
+#undef JITLLM_LEAF
+#undef JITLLM_MX
+  const auto experts = [&](ggml_tensor*& into,
+                           const model::Qwen38Tensor& t) -> std::expected<void, KernelFailure> {
+    auto type = GgmlTypeOf(t.type);
+    if (!type) {
+      return std::unexpected(type.error());
+    }
+    into = ggml_new_tensor_3d(c, *type, static_cast<std::int64_t>(t.ne[0]),
+                              static_cast<std::int64_t>(t.ne[1]), p.experts);
+    const std::size_t slice = into->nb[2];
+    if (stride != 0) {
+      if (stride < slice || stride % ggml_type_size(*type) != 0 || stride % 16 != 0) {
+        return Rejected(std::format(
+            "layer {}: an expert stride of {} bytes does not hold whole, 16-byte aligned {} "
+            "slices",
+            il, stride, t.type));
+      }
+      into->nb[2] = stride;
+      into->nb[3] = stride * static_cast<std::size_t>(p.experts);
+    }
+    // Rows short of a 512-element step read past the slice: into the
+    // next slice of the group or, after the last row, into the readable
+    // bytes the artifact reserves (and zeroes) for it. Marked only where
+    // the stride provably holds them for every expert, the last one's
+    // included; otherwise the quantized products refuse the short rows.
+    const std::int64_t k = into->ne[0];
+    if (k % 512 != 0) {
+      const std::uint64_t over = ggml_row_size(*type, 512 - (k % 512));
+      if (stride != 0 && t.readable >= slice + over && t.group_offset <= stride &&
+          t.readable <= stride - t.group_offset) {
+        MarkRowPaddingReadable(into);
+      }
+    }
+    return {};
+  };
+  if (cutlass) {
+    // The slab as bytes: every slot must hold the CUTLASS layout.
+    const moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
+    if (stride == 0 || stride < layout.bytes() || stride % 16 != 0) {
+      return Rejected(std::format(
+          "layer {}: an expert stride of {} bytes does not hold the CUTLASS layout's {}", il,
+          stride, layout.bytes()));
+    }
+    // An artifact in the CUTLASS layout: its arrays at the layout's
+    // offsets, byte for byte (else the slots were converted at load).
+    if (cutlass_artifact &&
+        (w.gate_up_codes.group_offset != moe::ExpertLayout::gate_up_codes() ||
+         w.gate_up_scales.group_offset != layout.gate_up_scales() ||
+         w.down_codes.group_offset != layout.down_codes() ||
+         w.down_scales.group_offset != layout.down_scales() ||
+         w.down_scales.group_offset + (w.down_scales.ne[0] * w.down_scales.ne[1]) !=
+             layout.bytes())) {
+      return Rejected(std::format(
+          "layer {}: the artifact's CUTLASS expert arrays are not at the layout's offsets", il));
+    }
+    l.experts = ggml_new_tensor_2d(c, GGML_TYPE_I8, static_cast<std::int64_t>(stride), p.experts);
+    return {};
+  }
+  if (cutlass_artifact) {
+    return Rejected(
+        "the artifact's experts are in the CUTLASS layout, which GGML's products "
+        "do not read");
+  }
+  if (auto e = experts(l.gate_exps, w.gate_exps); !e) {
+    return e;
+  }
+  if (auto e = experts(l.up_exps, w.up_exps); !e) {
+    return e;
+  }
+  return experts(l.down_exps, w.down_exps);
+}
+
 std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& options) {
   const std::int64_t n = s_.rows;
   g_.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
@@ -297,6 +520,16 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
     g_.block_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * blocks);
     g_.block_bias = ggml_new_tensor_2d(c_, GGML_TYPE_F32, blocks, n);
   }
+  if (verify_) {
+    g_.row_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
+  }
+  if (export_) {
+    if (options.stream_rows < n) {
+      return Rejected("the streams' rows cannot hold the chunk's");
+    }
+    g_.stream_rows = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
+    g_.streams = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.hc_width(), options.stream_rows);
+  }
 
   const auto leaf = [&](ggml_tensor*& into, const model::Qwen38Tensor& t,
                         std::string_view role) -> std::expected<void, KernelFailure> {
@@ -307,20 +540,9 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
     into = *made;
     return {};
   };
-  const auto mx = [&](Qwen38Mxfp8Tensors& into, const model::Qwen38Mxfp8& t,
-                      std::string_view role) -> std::expected<void, KernelFailure> {
-    if (auto a = leaf(into.codes, t.codes, role); !a) {
-      return a;
-    }
-    return leaf(into.scales, t.scales, role);
-  };
 #define JITLLM_LEAF(into, tensor)                       \
   if (auto made = leaf(into, tensor, #tensor); !made) { \
     return made;                                        \
-  }
-#define JITLLM_MX(into, tensor)                       \
-  if (auto made = mx(into, tensor, #tensor); !made) { \
-    return made;                                      \
   }
   JITLLM_LEAF(g_.token_embd, b_.token_embd)
   JITLLM_LEAF(g_.ple_table, b_.ple_table)
@@ -332,141 +554,29 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
   if (!options.expert_stride.empty() && options.expert_stride.size() != p_.layers) {
     return Rejected("an expert stride per layer, or none");
   }
+#undef JITLLM_LEAF
   g_.layers.resize(p_.layers);
+  const bool cutlass = options.experts == Qwen38GraphOptions::Experts::kCutlass;
   for (std::uint32_t il = 0; il < p_.layers; ++il) {
     const model::Qwen38Layer& w = b_.layers[il];
     Qwen38LayerTensors& l = g_.layers[il];
-    JITLLM_LEAF(l.hc_attn_norm, w.hc_attn_norm)
-    JITLLM_LEAF(l.hc_attn_down, w.hc_attn_down)
-    JITLLM_LEAF(l.hc_attn_up, w.hc_attn_up)
-    JITLLM_LEAF(l.hc_attn_inject, w.hc_attn_inject)
-    JITLLM_LEAF(l.hc_ffn_norm, w.hc_ffn_norm)
-    JITLLM_LEAF(l.hc_ffn_down, w.hc_ffn_down)
-    JITLLM_LEAF(l.hc_ffn_up, w.hc_ffn_up)
-    JITLLM_LEAF(l.hc_ffn_inject, w.hc_ffn_inject)
-    if (w.linear) {
-      JITLLM_MX(l.qkv, w.qkv)
-      JITLLM_MX(l.z, w.z)
-      JITLLM_MX(l.beta, w.beta)
-      JITLLM_MX(l.alpha, w.alpha)
-      JITLLM_MX(l.ssm_out, w.ssm_out)
-      JITLLM_LEAF(l.dt_bias, w.dt_bias)
-      JITLLM_LEAF(l.ssm_a, w.ssm_a)
-      JITLLM_LEAF(l.conv1d, w.conv1d)
-      JITLLM_LEAF(l.ssm_norm, w.ssm_norm)
-      const std::int64_t d = p_.lin_head_dim;
-      l.conv_state =
-          ggml_new_tensor_2d(c_, GGML_TYPE_F32, std::int64_t{p_.conv - 1} * p_.conv_channels(), 1);
-      l.recurrent = ggml_new_tensor_2d(c_, GGML_TYPE_F32, d * d * p_.lin_v_heads, 1);
-    } else {
-      JITLLM_MX(l.q, w.q)
-      JITLLM_MX(l.k, w.k)
-      JITLLM_MX(l.v, w.v)
-      JITLLM_MX(l.o, w.o)
-      JITLLM_MX(l.idx_qk, w.idx_qk)
-      JITLLM_LEAF(l.q_norm, w.q_norm)
-      JITLLM_LEAF(l.k_norm, w.k_norm)
-      JITLLM_LEAF(l.idx_q_norm, w.idx_q_norm)
-      JITLLM_LEAF(l.idx_k_norm, w.idx_k_norm)
-      const std::int64_t kv = std::int64_t{p_.head_dim} * p_.kv_heads;
-      l.cache_k = ggml_new_tensor_2d(c_, GGML_TYPE_F16, kv, s_.cells);
-      l.cache_v = ggml_new_tensor_2d(c_, GGML_TYPE_F16, kv, s_.cells);
-      l.cache_idx = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.indexer_head_dim, s_.cells);
-    }
-    if (il == p_.ple_layer) {
-      JITLLM_LEAF(l.ple_key, w.ple_key)
-      JITLLM_LEAF(l.ple_value, w.ple_value)
-      JITLLM_LEAF(l.ple_norm_key, w.ple_norm_key)
-      JITLLM_LEAF(l.ple_norm_query, w.ple_norm_query)
-      JITLLM_LEAF(l.ple_norm_conv, w.ple_norm_conv)
-      JITLLM_LEAF(l.ple_conv1d, w.ple_conv1d)
-      l.ple_state =
-          ggml_new_tensor_2d(c_, GGML_TYPE_F32, std::int64_t{p_.ple_history()} * p_.hc_width(), 1);
-    }
-    JITLLM_LEAF(l.router, w.router)
-    JITLLM_LEAF(l.shared_gate, w.shared_gate)
-    JITLLM_MX(l.gate_shexp, w.gate_shexp)
-    JITLLM_MX(l.up_shexp, w.up_shexp)
-    JITLLM_MX(l.down_shexp, w.down_shexp)
-    JITLLM_LEAF(l.gate_exps_scale, w.gate_exps_scale)
-    JITLLM_LEAF(l.up_exps_scale, w.up_exps_scale)
-    JITLLM_LEAF(l.down_exps_scale, w.down_exps_scale)
     const std::uint64_t stride = options.expert_stride.empty() ? 0 : options.expert_stride[il];
-    const auto experts = [&](ggml_tensor*& into,
-                             const model::Qwen38Tensor& t) -> std::expected<void, KernelFailure> {
-      auto type = GgmlTypeOf(t.type);
-      if (!type) {
-        return std::unexpected(type.error());
-      }
-      into = ggml_new_tensor_3d(c_, *type, static_cast<std::int64_t>(t.ne[0]),
-                                static_cast<std::int64_t>(t.ne[1]), p_.experts);
-      const std::size_t slice = into->nb[2];
-      if (stride != 0) {
-        if (stride < slice || stride % ggml_type_size(*type) != 0 || stride % 16 != 0) {
-          return Rejected(std::format(
-              "layer {}: an expert stride of {} bytes does not hold whole, 16-byte aligned {} "
-              "slices",
-              il, stride, t.type));
-        }
-        into->nb[2] = stride;
-        into->nb[3] = stride * static_cast<std::size_t>(p_.experts);
-      }
-      // Rows short of a 512-element step read past the slice: into the
-      // next slice of the group or, after the last row, into the readable
-      // bytes the artifact reserves (and zeroes) for it. Marked only where
-      // the stride provably holds them for every expert, the last one's
-      // included; otherwise the quantized products refuse the short rows.
-      const std::int64_t k = into->ne[0];
-      if (k % 512 != 0) {
-        const std::uint64_t over = ggml_row_size(*type, 512 - (k % 512));
-        if (stride != 0 && t.readable >= slice + over && t.group_offset <= stride &&
-            t.readable <= stride - t.group_offset) {
-          MarkRowPaddingReadable(into);
-        }
-      }
-      return {};
-    };
-    if (options.experts == Qwen38GraphOptions::Experts::kCutlass) {
-      // The slab as bytes: every slot must hold the CUTLASS layout.
-      const moe::ExpertLayout layout{.ffn = p_.expert_ffn, .width = p_.width};
-      if (stride == 0 || stride < layout.bytes() || stride % 16 != 0) {
-        return Rejected(std::format(
-            "layer {}: an expert stride of {} bytes does not hold the CUTLASS layout's {}", il,
-            stride, layout.bytes()));
-      }
-      // An artifact in the CUTLASS layout: its arrays at the layout's
-      // offsets, byte for byte (else the slots were converted at load).
-      if (b_.cutlass() &&
-          (w.gate_up_codes.group_offset != moe::ExpertLayout::gate_up_codes() ||
-           w.gate_up_scales.group_offset != layout.gate_up_scales() ||
-           w.down_codes.group_offset != layout.down_codes() ||
-           w.down_scales.group_offset != layout.down_scales() ||
-           w.down_scales.group_offset + (w.down_scales.ne[0] * w.down_scales.ne[1]) !=
-               layout.bytes())) {
-        return Rejected(std::format(
-            "layer {}: the artifact's CUTLASS expert arrays are not at the layout's offsets", il));
-      }
-      l.experts =
-          ggml_new_tensor_2d(c_, GGML_TYPE_I8, static_cast<std::int64_t>(stride), p_.experts);
-      continue;
+    if (auto made = LayerLeaves(c_, p_, w, l, il == p_.ple_layer, cutlass, b_.cutlass(), stride,
+                                s_.cells, il);
+        !made) {
+      return made;
     }
-    if (b_.cutlass()) {
-      return Rejected(
-          "the artifact's experts are in the CUTLASS layout, which GGML's products "
-          "do not read");
+    if (verify_ && w.linear) {
+      const std::int64_t channels = p_.conv_channels();
+      l.commit_conv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, channels, n);
+      l.commit_qkv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, channels, n);
+      l.commit_gate = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.lin_v_heads, n);
+      l.commit_beta = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.lin_v_heads, n);
     }
-    if (auto e = experts(l.gate_exps, w.gate_exps); !e) {
-      return e;
-    }
-    if (auto e = experts(l.up_exps, w.up_exps); !e) {
-      return e;
-    }
-    if (auto e = experts(l.down_exps, w.down_exps); !e) {
-      return e;
+    if (verify_ && il == p_.ple_layer) {
+      l.commit_ple = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.hc_width(), n);
     }
   }
-#undef JITLLM_LEAF
-#undef JITLLM_MX
   return {};
 }
 
@@ -609,6 +719,11 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
   combine(static_cast<int>(p_.layers) - 1);
   // The rows the head computes.
   ggml_tensor* flat = ggml_reshape_2d(c_, res, p_.hc_width(), nt);
+  if (export_) {
+    // Every row's streams for the MTP drafter (vLLM's scheme A: the
+    // pre-final-mixer multi stream).
+    Expand(ggml_set_rows(c_, g_.streams, flat, g_.stream_rows));
+  }
   flat = ggml_get_rows(c_, flat, g_.out_ids);
   res = ggml_reshape_3d(c_, flat, p_.width, hc, s_.outputs);
   ggml_tensor* cur = HcFast(res, nullptr, nullptr, g_.output_hc_norm, g_.output_hc_down,
@@ -618,6 +733,12 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
   g_.logits = ggml_mul_mat(c_, g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
+  if (verify_) {
+    // The greedy verdict's argmaxes on the device: the host reads a row's
+    // logits only when it samples.
+    g_.argmax = Argmax(c_, g_.logits);
+    Expand(g_.argmax);
+  }
   g_.nodes = GraphOrder(expanded_);
 }
 
@@ -625,15 +746,17 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
 // slots: the history [cols, channels] then the chunk's rows, time fastest;
 // the last `cols` columns become the new history.
 ggml_tensor* Builder::ConvStateAt(ggml_tensor* state, ggml_tensor* x, std::int64_t cols,
-                                  std::int64_t channels) {
+                                  std::int64_t channels, bool store) {
   ggml_tensor* history = ggml_reshape_3d(c_, state, cols, channels, 1);
   // The chunk's rows transposed into packed rows first: the concatenation
   // takes contiguous rows only.
   ggml_tensor* input = ggml_concat(c_, history, ggml_cont(c_, ggml_transpose(c_, x)), 0);
-  const std::int64_t start = input->ne[0] - cols;
-  ggml_tensor* tail = ggml_view_3d(c_, input, cols, channels, 1, input->nb[1], input->nb[2],
-                                   ggml_row_size(input->type, start));
-  Expand(StoreState(state, ggml_cont(c_, tail)));
+  if (store) {
+    const std::int64_t start = input->ne[0] - cols;
+    ggml_tensor* tail = ggml_view_3d(c_, input, cols, channels, 1, input->nb[1], input->nb[2],
+                                     ggml_row_size(input->type, start));
+    Expand(StoreState(state, ggml_cont(c_, tail)));
+  }
   return input;
 }
 
@@ -668,8 +791,12 @@ ggml_tensor* Builder::Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_te
   const std::int64_t kern = p_.ple_conv;
   const std::int64_t dil = p_.ngram;
   const std::int64_t hist = (kern - 1) * dil;
-  ggml_tensor* padded =
-      ConvStateAt(l.ple_state, ggml_reshape_3d(c_, normalized, hc_dim, nt, 1), hist, hc_dim);
+  // A verify saves its rows for the commit instead of storing the history.
+  if (verify_) {
+    Save(l.commit_ple, normalized, hc_dim);
+  }
+  ggml_tensor* padded = ConvStateAt(l.ple_state, ggml_reshape_3d(c_, normalized, hc_dim, nt, 1),
+                                    hist, hc_dim, !verify_);
   ggml_tensor* conv_out = nullptr;
   for (std::int64_t k = 0; k < kern; ++k) {
     const std::int64_t start = hist - ((kern - 1 - k) * dil);
@@ -714,18 +841,24 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   const std::int64_t history = p_.conv - 1;
   // jitLLM's convolution (jitllm.gdn.conv) reads the history and the rows
   // in place and normalizes the query and key heads itself; it takes whole
-  // histories' worth of rows, so that the new history is the last rows.
-  const bool fused_conv = fused_ && d == 128 && p_.conv == 4 && nt >= history;
+  // histories' worth of rows, so that the new history is the last rows (a
+  // verify, which stores no history, takes it at every width).
+  const bool fused_conv = fused_ && d == 128 && p_.conv == 4 && (nt >= history || verify_);
   ggml_tensor* conv = nullptr;
   if (fused_conv) {
     const auto n = static_cast<float>(d);
-    conv = GdnConv(c_, ggml_reshape_2d(c_, qkv, channels, nt), l.conv_state, l.conv1d, 2 * d * hk,
-                   d, p_.rms_eps / n, 1.0f / std::sqrt(n));
+    ggml_tensor* rows = ggml_reshape_2d(c_, qkv, channels, nt);
+    conv = GdnConv(c_, rows, l.conv_state, l.conv1d, 2 * d * hk, d, p_.rms_eps / n,
+                   1.0f / std::sqrt(n));
     // The convolution reads the old history before the new one is stored.
     Expand(conv);
-    if (fast_) {
-      Expand(StoreState(l.conv_state,
-                        GdnHistory(c_, ggml_reshape_2d(c_, qkv, channels, nt), history)));
+    if (verify_) {
+      // The commit replays the accepted rows' recurrence from the
+      // convolution's output and their history from its input.
+      Save(l.commit_conv, conv, channels);
+      Save(l.commit_qkv, rows, channels);
+    } else if (fast_) {
+      Expand(StoreState(l.conv_state, GdnHistory(c_, rows, history)));
     } else {
       ggml_tensor* tail = ggml_view_2d(c_, qkv, channels, history, qkv->nb[1],
                                        static_cast<std::size_t>(nt - history) * qkv->nb[1]);
@@ -771,7 +904,12 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   ggml_tensor* new_state = ggml_view_4d(
       c_, result, d, d, hv, 1, ggml_row_size(result->type, d), ggml_row_size(result->type, d * d),
       ggml_row_size(result->type, d * d * hv), ggml_row_size(result->type, d * hv * nt));
-  Expand(StoreState(l.recurrent, new_state));
+  if (verify_) {
+    Save(l.commit_gate, gate, hv);
+    Save(l.commit_beta, beta, hv);
+  } else {
+    Expand(StoreState(l.recurrent, new_state));
+  }
   ggml_tensor* out = nullptr;
   if (fast_ && d == 128) {
     // build_norm_gated as jitllm.gdn.norm_gate, quantized to MXFP8 for the
@@ -941,7 +1079,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   attn = ggml_reshape_2d(c_, attn, attn->ne[0] * attn->ne[1], attn->ne[2] * attn->ne[3]);
   Name(attn, "attn_pregate", il);
   ggml_tensor* out = nullptr;
-  if (fast_ && nt > kMxfp8VecColumns) {
+  if (fast_ && nt > kMxfp8VecColumns && l.o.bf16 == nullptr) {
     // The gate and the output projection's quantization in one pass.
     out = LinearMxfp8(l.o, QsaGateQuantize(c_, attn, q_full, d), nt);
   } else {
@@ -1123,7 +1261,173 @@ void Builder::Build() {
   g_.nodes = GraphOrder(expanded_);
 }
 
+// Qwen3_8FlashNextMultiTokenPredictor.forward (mtp.py:262-329) for one
+// pass, the decoder layer's delayed combine done before the final mixer
+// (GatedResidual.combine_and_mix).
+Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden,
+                                 bool head, std::int64_t head_rows) {
+  const std::int64_t nt = s_.rows;
+  const std::int64_t width = p_.width;
+  const std::int64_t hc = p_.hc;
+  const Qwen38LayerTensors& l = g_.layers[0];
+  // The embedding branch: pre_fc_norm_embedding, then fc_embedding.
+  ggml_tensor* e = ggml_get_rows(c_, m.token_embd, tokens);
+  e = Norm(e, m.norm_embd);
+  Input embedded = In(e);
+  e = LinearBf16(m.fc_embd, embedded);
+  // The streams: pre_fc_norm_hidden over all of them, then fc_hidden on each.
+  ggml_tensor* h = Norm(hidden, m.norm_hidden);
+  Input streams = In(ggml_reshape_2d(c_, h, width, hc * nt));
+  h = LinearBf16(m.fc_hidden, streams);
+  // The embedding added to every stream.
+  ggml_tensor* res =
+      ggml_add(c_, ggml_reshape_3d(c_, h, width, hc, nt), ggml_reshape_3d(c_, e, width, 1, nt));
+  ggml_tensor* inject = nullptr;
+  Input cur = HcFast(res, nullptr, nullptr, l.hc_attn_norm, l.hc_attn_down, l.hc_attn_up,
+                     l.hc_attn_inject, &inject, false, 0);
+  ggml_tensor* attn = Attention(l, cur.x, 0, &cur);
+  if (!head) {
+    return {};  // a prefill pass: its caches' writes only
+  }
+  ggml_tensor* logits = inject;
+  cur = HcFast(res, attn, logits, l.hc_ffn_norm, l.hc_ffn_down, l.hc_ffn_up, l.hc_ffn_inject,
+               &inject, true, 0);
+  ggml_tensor* out = Moe(l, cur.x, 0, &cur);
+  res = ggml::HcCombine(c_, res, ggml_reshape_2d(c_, out, width, nt), inject);
+  Name(res, "mtp_streams", 0);
+  // The last row's final mix and the head over the draft vocabulary.
+  ggml_tensor* last =
+      nt == 1 ? res
+              : ggml_view_3d(c_, res, width, hc, 1, res->nb[1], res->nb[2], U(nt - 1) * res->nb[2]);
+  ggml_tensor* mixed = HcFast(last, nullptr, nullptr, m.output_hc_norm, m.output_hc_down,
+                              m.output_hc_up, nullptr, nullptr, false, -1)
+                           .x;
+  ggml_tensor* w =
+      head_rows > 0 ? ggml_view_2d(c_, m.output, width, head_rows, m.output->nb[1], 0) : m.output;
+  ggml_tensor* draft = Argmax(c_, ggml_mul_mat(c_, w, mixed));
+  Name(draft, "mtp_draft", 0);
+  Expand(res);
+  Expand(draft);
+  return {.streams = last, .draft = draft};
+}
+
 }  // namespace
+
+std::vector<ggml_tensor*> Qwen38MtpGraph::inputs() const {
+  std::vector<ggml_tensor*> all = {state_row, row_zero};
+  for (const Qwen38MtpPass& p : passes) {
+    for (ggml_tensor* t : {p.tokens, p.positions, p.cells, p.mask, p.cell_block, p.block_cells,
+                           p.block_pos, p.block_bias, p.out_ids}) {
+      if (t != nullptr) {
+        all.push_back(t);
+      }
+    }
+  }
+  return all;
+}
+
+std::size_t Qwen38MtpGraphTensors(const model::Qwen38Profile& profile, std::int64_t passes) {
+  (void)profile;
+  // Leaves about 60; a pass at most about 400 nodes (a QSA layer with its
+  // selection, the MoE, the mixes and the head).
+  return 256 + (static_cast<std::size_t>(std::max<std::int64_t>(passes, 1)) * 512);
+}
+
+std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
+    TensorArena& arena, const model::Qwen38Profile& profile, const model::Qwen38Binding& target,
+    const model::Qwen38MtpBinding& drafter, const Qwen38MtpShape& shape,
+    std::uint64_t expert_stride) {
+  const Qwen38MtpShape& s = shape;
+  const std::int64_t ratio = profile.indexer_ratio;
+  if (s.rows <= 0 || s.passes <= 0 || s.passes > 8 || s.cells <= 0 || s.n_kv < 256 ||
+      s.n_kv > s.cells || s.n_kv % 256 != 0 || s.hidden_row < 0 || s.hidden_rows <= 0 ||
+      s.hidden_row + s.rows > s.hidden_rows || (s.passes > 1 && !s.head) || s.head_rows < 0 ||
+      s.head_rows > std::int64_t{profile.vocab} || ratio <= 0) {
+    return Rejected("not an MTP drafter shape its state holds");
+  }
+  const bool past_budget = s.n_kv > std::int64_t{profile.indexer_budget} + ratio - 1;
+  if (s.qsa_select != past_budget ||
+      s.qsa_blocks != (s.qsa_select ? (s.n_kv + ratio - 1) / ratio : s.qsa_blocks)) {
+    return Rejected("a QSA selection that is not the indexer budget's");
+  }
+  if (auto room = arena.Reserve(Qwen38MtpGraphTensors(profile, s.passes)); !room) {
+    return std::unexpected(room.error());
+  }
+  ggml_context* c = arena.context();
+  Qwen38MtpGraph m;
+  m.state_row = ggml_new_tensor_1d(c, GGML_TYPE_I64, 1);
+  m.row_zero = ggml_new_tensor_1d(c, GGML_TYPE_I32, 1);
+  if (auto made = LayerLeaves(c, profile, drafter.layer, m.layer, false, true, true, expert_stride,
+                              s.cells, 0);
+      !made) {
+    return std::unexpected(made.error());
+  }
+  for (const auto& [into, t, role] :
+       {std::tuple{&m.fc_embd, &drafter.fc_embd, "fc_embd"},
+        std::tuple{&m.fc_hidden, &drafter.fc_hidden, "fc_hidden"},
+        std::tuple{&m.norm_embd, &drafter.norm_embd, "norm_embd"},
+        std::tuple{&m.norm_hidden, &drafter.norm_hidden, "norm_hidden"},
+        std::tuple{&m.output_hc_norm, &drafter.output_hc_norm, "output_hc_norm"},
+        std::tuple{&m.output_hc_down, &drafter.output_hc_down, "output_hc_down"},
+        std::tuple{&m.output_hc_up, &drafter.output_hc_up, "output_hc_up"},
+        std::tuple{&m.token_embd, &target.token_embd, "token_embd"},
+        std::tuple{&m.output, &target.output, "output"}}) {
+    auto made = Leaf(c, *t, role);
+    if (!made) {
+      return std::unexpected(made.error());
+    }
+    *into = *made;
+  }
+  m.streams = ggml_new_tensor_2d(c, GGML_TYPE_F32, profile.hc_width(), s.hidden_rows);
+  const std::size_t row = m.streams->nb[1];
+  ggml_tensor* hidden =
+      ggml_view_2d(c, m.streams, profile.hc_width(), s.rows, row, U(s.hidden_row) * row);
+  ggml_tensor* tokens = nullptr;
+  std::vector<ggml_tensor*> expanded;
+  m.passes.resize(static_cast<std::size_t>(s.passes));
+  for (std::int64_t p = 0; p < s.passes; ++p) {
+    const std::int64_t n = p == 0 ? s.rows : 1;
+    const Qwen38ChunkShape ps{.rows = n,
+                              .n_kv = s.n_kv,
+                              .cells = s.cells,
+                              .outputs = 1,
+                              .qsa_select = s.qsa_select,
+                              .qsa_blocks = s.qsa_blocks};
+    Qwen38Graph pg;
+    pg.layers = {m.layer};
+    pg.state_row = m.state_row;
+    pg.row_zero = m.row_zero;
+    Builder b(c, profile, target, ps, pg, true, false, true);
+    Qwen38MtpPass& in = m.passes[static_cast<std::size_t>(p)];
+    if (p == 0) {
+      in.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, n);
+      tokens = in.tokens;
+    }
+    in.positions = pg.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4 * n);
+    in.cells = pg.cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, n);
+    if (!b.SelectsOnDevice()) {
+      in.mask = pg.mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, s.n_kv, n, 1, 1);
+    }
+    if (s.qsa_select) {
+      if (!b.SelectsOnDevice()) {
+        return Rejected("the drafter selects on the device only (its shapes' blocks)");
+      }
+      in.cell_block = pg.cell_block = ggml_new_tensor_1d(c, GGML_TYPE_I32, s.n_kv);
+      in.block_cells = pg.block_cells = ggml_new_tensor_1d(c, GGML_TYPE_I32, ratio * s.qsa_blocks);
+      in.block_pos = pg.block_pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4 * s.qsa_blocks);
+      in.block_bias = pg.block_bias = ggml_new_tensor_2d(c, GGML_TYPE_F32, s.qsa_blocks, n);
+    }
+    const Builder::MtpOut out = b.MtpPass(m, tokens, hidden, s.head, s.head_rows);
+    expanded.insert(expanded.end(), b.expanded().begin(), b.expanded().end());
+    if (s.head) {
+      m.drafts.push_back(out.draft);
+      hidden = ggml_reshape_2d(c, out.streams, profile.hc_width(), 1);
+      tokens = out.draft;
+    }
+  }
+  m.nodes = GraphOrder(expanded);
+  return m;
+}
 
 Qwen38ChunkShape Qwen38ShapeOf(const model::Qwen38StateLayout& state,
                                const model::Qwen38ChunkInputs& chunk, std::int64_t outputs) {
@@ -1143,7 +1447,8 @@ std::vector<ggml_tensor*> Qwen38Graph::inputs() const {
   for (ggml_tensor* t : {ple_rows, state_row, row_zero, out_ids}) {
     all.push_back(t);
   }
-  for (ggml_tensor* t : {mask_f32, cell_block, block_cells, block_pos, block_bias}) {
+  for (ggml_tensor* t :
+       {mask_f32, cell_block, block_cells, block_pos, block_bias, row_ids, stream_rows}) {
     if (t != nullptr) {
       all.push_back(t);
     }
@@ -1195,8 +1500,16 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
   if (cutlass && (!options.fused || options.expert_stride.empty())) {
     return Rejected("the CUTLASS expert layout takes the fused graph and an expert stride");
   }
+  // A verify's rows are the vector products' (their F32 rows are saved).
+  if (options.verify && (!options.fused || options.exact || s.rows > kMxfp8VecColumns ||
+                         s.outputs != s.rows || profile.lin_head_dim != 128 || profile.conv != 4)) {
+    return Rejected("a verify takes the fast form, at most 8 rows, every row's logits");
+  }
+  if (options.export_streams && (!options.fused || options.exact)) {
+    return Rejected("the streams are exported by the fast form");
+  }
   Builder builder(arena.context(), profile, binding, shape, g, options.fused, options.exact,
-                  cutlass);
+                  cutlass, options.verify, options.export_streams);
   if (auto leaves = builder.Leaves(options); !leaves) {
     return std::unexpected(leaves.error());
   }

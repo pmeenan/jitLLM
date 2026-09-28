@@ -61,8 +61,10 @@
 //   it registers them; after each swap the incoming model's are checked
 //   still pinned (DeepSeek's also against their registered sources, as
 //   its decode graphs name them). --graphs (on by default) runs DeepSeek's
-//   decode steps as captured graphs (dsv4_runner.h); the other models run
-//   launch by launch.
+//   and Qwen3.8's decode steps as captured graphs (dsv4_runner.h,
+//   qwen38_runner.h); the image runs launch by launch. In a prepared
+//   cycle an LLM A's return must replay graphs it captured before the
+//   swap (its continuation's logits still equal the reference's).
 // - Requests (a lease per request, paged_node.h): each turn is one request
 //   that leases its model's whole closure once, and every chunk of it runs
 //   as a step under that lease: the controls (an LLM A's prefill and
@@ -75,8 +77,8 @@
 // - --bench N (an LLM A; needs --text): decode speed as llama-bench's tg-N
 //   measures it, N one-token greedy steps from an empty context (the
 //   context's first token), each step's lease taken per step (a job of its
-//   own, as before requests) or held by the request; for DeepSeek each
-//   launch by launch and replayed from decode graphs. A warm-up pass per
+//   own, as before requests) or held by the request; for DeepSeek and
+//   Qwen3.8 each launch by launch and replayed from decode graphs. A warm-up pass per
 //   arm, then three passes of each arm in turn; every pass's logits must
 //   equal the first warm-up's bit for bit. Per step: the wall, the job's
 //   host time, and the device's span of the step's work (CUDA events), so
@@ -291,6 +293,7 @@ class Model {
   virtual bool graphs() const { return false; }
   virtual void set_graphs(bool /*on*/) {}
   virtual jb::Dsv4GraphStats graph_stats() const { return {}; }
+  virtual std::size_t graphs_kept() const { return 0; }  // captured and not yet destroyed
 
   // LLMs.
   virtual Status Clear() { return Error("not an LLM"); }
@@ -340,6 +343,7 @@ class Dsv4 final : public Model {
   bool graphs() const override { return true; }
   void set_graphs(bool on) override { r_.set_graphs(on); }
   jb::Dsv4GraphStats graph_stats() const override { return r_.graph_stats(); }
+  std::size_t graphs_kept() const override { return r_.graphs(); }
   std::string violations() const override {
     return r_.coverage_violations() == 0
                ? ""
@@ -387,6 +391,10 @@ class Qwen38 final : public Model {
   std::uint64_t weight_read_bytes() const override { return r_.weight_read_bytes(); }
   std::vector<std::filesystem::path> data() const override { return {o_.artifact / "data"}; }
   Status AfterLoad() override { return r_.ReadPleHash(); }
+  bool graphs() const override { return true; }
+  void set_graphs(bool on) override { r_.set_graphs(on); }
+  jb::Dsv4GraphStats graph_stats() const override { return r_.graph_stats(); }
+  std::size_t graphs_kept() const override { return r_.graphs(); }
   std::string violations() const override {
     return r_.coverage_violations() == 0
                ? ""
@@ -395,12 +403,15 @@ class Qwen38 final : public Model {
   }
   std::string extra() const override {
     const jb::PleStats& p = r_.ple();
+    const jb::Dsv4GraphStats& g = r_.graph_stats();
     return std::format(
         R"({{"coverage_tensors":{},"slab_padding":{},"state_bytes":{},"ple_table_bytes":{},)"
         R"("ple":{{"chunks":{},"lookups":{},"rows":{},"reads":{},"read_bytes":{},)"
-        R"("useful_bytes":{},"whole_chunk_bytes":{},"seconds":{:.6f}}}}})",
+        R"("useful_bytes":{},"whole_chunk_bytes":{},"seconds":{:.6f}}},)"
+        R"("graphs":{{"on":{},"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}}}})",
         r_.coverage_tensors(), r_.slab_padding(), r_.state_bytes(), r_.table_bytes(), p.chunks,
-        p.lookups, p.rows, p.reads, p.read_bytes, p.useful_bytes, p.extent_bytes, p.seconds);
+        p.lookups, p.rows, p.reads, p.read_bytes, p.useful_bytes, p.extent_bytes, p.seconds,
+        o_.graphs ? "true" : "false", g.eager, g.captured, g.replayed, g.refused, r_.graphs());
   }
   Status Clear() override { return r_.Clear(); }
   Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
@@ -604,6 +615,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   o.dsv4.context = o.context;
   o.qwen38.context = o.context;
+  o.qwen38.graphs = o.dsv4.graphs;
   o.dsv4.out = o.out / "dsv4";
   o.qwen38.out = o.out / "qwen38";
   o.image.out = o.out / "image";
@@ -685,6 +697,14 @@ struct SwapTimes {
   // took to be released before the first output (on the critical path).
   double release_wait = 0;
   std::string output;  // B's first output's hash
+  // Decode graphs (D-090) over an LLM A's return: the graphs A kept through
+  // the swap, and its steps after it replayed from them, newly captured,
+  // or launched step by step. In a prepared cycle every return must replay
+  // graphs captured before the swap, with the continuation still exact.
+  std::uint64_t graphs_kept = 0;
+  std::uint64_t graph_replayed = 0;
+  std::uint64_t graph_captured = 0;
+  std::uint64_t graph_eager = 0;
 };
 
 class Swapper {
@@ -1105,6 +1125,9 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
           std::format("{}: A's restored state differs from the state it left with", t.name));
     }
   }
+  // The graphs A brought through the swap, and how its steps run after it.
+  const jb::Dsv4GraphStats graphs_before = a_->graph_stats();
+  t.graphs_kept = a_->graphs_kept();
   const auto first = Clock::now();
   t.digest = Seconds(first - set_up);
   // A's request: leased within its first output, ended after the rest of
@@ -1181,6 +1204,10 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
                                    from_control, steps.size()));
     }
   }
+  const jb::Dsv4GraphStats graphs_after = a_->graph_stats();
+  t.graph_replayed = graphs_after.replayed - graphs_before.replayed;
+  t.graph_captured = graphs_after.captured - graphs_before.captured;
+  t.graph_eager = graphs_after.eager - graphs_before.eager;
   if (auto r = End(*a_); !r) {
     return r;
   }
@@ -1499,7 +1526,7 @@ Status Swapper::Bench() {
       }
     }
   }
-  a_->set_graphs(o_.dsv4.graphs);
+  a_->set_graphs(o_.dsv4.graphs);  // the same flag for both LLMs
   std::string summary;
   for (std::size_t i = 0; i < arms.size(); ++i) {
     const Sum& s = sums[i];
@@ -1724,6 +1751,14 @@ Status Swapper::Run() {
     if (auto r = SwapToA(ba, a_->llm(), true); !r) {
       return r;
     }
+    // Prepared: A kept its plans and graphs through the swap (D-090's pins),
+    // so its continuation replays graphs captured before it.
+    if (cycle > 0 && a_->llm() && a_->graphs() && o_.dsv4.graphs &&
+        (ba.graphs_kept == 0 || ba.graph_replayed == 0)) {
+      problems_.push_back(std::format(
+          "{}: A replayed no decode graph captured before the swap ({} kept, {} replayed)", ba.name,
+          ba.graphs_kept, ba.graph_replayed));
+    }
     swaps_.push_back(ba);
   }
   if (a_->llm() && o_.cycles > 0 && o_.zero_context) {
@@ -1759,12 +1794,13 @@ std::string SwapJson(const SwapTimes& t) {
       R"("plan_seconds":{:.6f},"evicted":{},"loaded":{},"read_bytes":{},"demand_bytes":{},)"
       R"("spilled_bytes":{},"handed_off":{},"parked":{},"released_unused":{},"peak_bytes":{},)"
       R"("exact":{},"state_exact":{},"control_exact":{},"digest_seconds":{:.6f},)"
-      R"("release_wait":{:.6f},"output":"{}"}})",
+      R"("release_wait":{:.6f},"output":"{}","graphs":{{"kept":{},"replayed":{},)"
+      R"("captured":{},"eager":{}}}}})",
       t.name, t.evict, t.restore, t.page_in, t.setup, t.first, t.total, t.release, t.demand,
       t.plan_seconds, t.evicted, t.loaded, t.read_bytes, t.demand_bytes, t.spilled_bytes,
       t.handed_off, t.parked, t.released_unused, t.peak_bytes, t.exact ? "true" : "false",
       t.state_exact ? "true" : "false", t.control_exact ? "true" : "false", t.digest,
-      t.release_wait, t.output);
+      t.release_wait, t.output, t.graphs_kept, t.graph_replayed, t.graph_captured, t.graph_eager);
 }
 
 void Print(const SwapTimes& t) {
@@ -1783,6 +1819,12 @@ void Print(const SwapTimes& t) {
       t.page_in + t.restore > 0 ? gb / (t.page_in + t.restore) : 0.0, t.release_wait, t.setup,
       t.first, t.demand, t.plan_seconds, static_cast<double>(t.peak_bytes) / (1ULL << 30U),
       t.handed_off, t.release, verdict);
+  if (t.graphs_kept + t.graph_replayed + t.graph_captured != 0) {
+    std::println(
+        "  decode graphs after it: {} kept through the swap; steps {} replayed, {} "
+        "captured, {} launch by launch",
+        t.graphs_kept, t.graph_replayed, t.graph_captured, t.graph_eager);
+  }
 }
 
 Status Swapper::Write() {
