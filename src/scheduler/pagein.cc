@@ -315,6 +315,14 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
         const std::uint64_t slot = settings_.landing.slots.at(load.slot.value_or(0));
         spec.memory = reinterpret_cast<std::byte*>(slot);  // NOLINT(performance-no-int-to-ptr)
       }
+      // One read per load, published in the order loads get slots: a
+      // closure's extent order, which is file order when the extents were
+      // registered in file order, as an artifact's chunks are. With
+      // coalescing on (off by default), the storage lane's reader joins
+      // those waiting behind a full provider that continue one another in
+      // the file into one vectored request, a segment per slot (D-056,
+      // BP-P1); each still completes as this operation alone, only once
+      // its whole span has, so the slot is untouched after it.
       operation.route = Route::kStorage;
       operation.read = ReadCommand{.operation = operation.id, .spec = spec};
       if (settings_.observer != nullptr) {

@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -315,8 +317,14 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
 
     storage_lane_ = std::make_unique<StorageService>(
         lane_storage_ != nullptr ? *lane_storage_ : *storage_,
-        jitllm::providers::ReaderSettings{
-            .alignment = 4096, .request_bytes = 2U << 20U, .retries = 3, .reads = 64, .waiters = 8},
+        // The reader's default (no coalescing) unless a test turns it on.
+        jitllm::providers::ReaderSettings{.alignment = 4096,
+                                          .request_bytes = 2U << 20U,
+                                          .retries = 3,
+                                          .reads = 64,
+                                          .waiters = 8,
+                                          .span_bytes = span_bytes_,
+                                          .span_segments = jitllm::providers::kMaxSegments},
         board_, QueueSettings{.capacity = 64, .reserved = 8, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         lane_execution_ != nullptr ? *lane_execution_ : *execution_,
@@ -466,6 +474,8 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
   std::unique_ptr<jitllm::providers::UringStorage> storage_;
   jitllm::providers::Storage* lane_storage_ = nullptr;            // WrapProviders
   jitllm::providers::DeviceExecution* lane_execution_ = nullptr;  // WrapProviders
+  // The storage lane reader's span_bytes: the default, or set by WrapProviders.
+  std::uint32_t span_bytes_ = jitllm::providers::kNoCoalescing;
   jitllm::catalog::Catalog catalog_;
   jitllm::base::WakeFlag wake_;
   CompletionBoard board_{128, wake_};
@@ -927,6 +937,125 @@ TEST_P(CudaPermutations, AFenceOfUnknownOutcomeQuarantinesAndStopsAdmission) {
 }
 
 INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPermutations, ::testing::Bool(), [](const auto& info) {
+  return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
+});
+
+// BP-P1 over the real providers: every extent evicted and restored with
+// coalesced reads. A decorator records what the reader hands io_uring and
+// holds a lone read back briefly, so reads wait for room whatever the
+// host's timing: those that continue one another go as one READV into
+// their own landing slots. Every extent comes back
+// identical, the requests start in file order (RE-026), each chunk is in
+// exactly one of them, and none spans more than the zone's slots.
+class RecordingStorage final : public jitllm::providers::Storage {
+ public:
+  struct Seen {
+    std::uint64_t offset = 0;
+    std::uint64_t length = 0;
+    std::vector<jitllm::providers::IoSegment> segments;
+  };
+  // A lone read is refused as if the ring were full, for up to `grace`, so
+  // later reads reliably join it however fast this host maps backing (a
+  // VMM lane can publish reads no faster than the disk takes them); past
+  // that, it starts alone (the load's last read, say).
+  RecordingStorage(jitllm::providers::Storage& inner, std::chrono::microseconds grace)
+      : inner_(inner), grace_(grace) {}
+
+  std::size_t depth() const override { return inner_.depth(); }
+  std::size_t in_flight() const override { return inner_.in_flight(); }
+  jitllm::providers::Submission Submit(const jitllm::providers::IoRequest& request) override {
+    const auto now = std::chrono::steady_clock::now();
+    if (request.segments.empty()) {
+      if (!lone_ || lone_->first != request.offset) {
+        lone_.emplace(request.offset, now);
+      }
+      if (now - lone_->second < grace_) {
+        return jitllm::providers::Submission::kNotStarted;
+      }
+    }
+    lone_.reset();
+    const auto submitted = inner_.Submit(request);
+    if (submitted != jitllm::providers::Submission::kNotStarted) {
+      const std::scoped_lock lock(mutex_);
+      seen_.push_back(Seen{.offset = request.offset,
+                           .length = request.length,
+                           .segments = std::vector<jitllm::providers::IoSegment>(
+                               request.segments.begin(), request.segments.end())});
+    }
+    return submitted;
+  }
+  jitllm::providers::Submission Cancel(std::uint64_t token) override {
+    return inner_.Cancel(token);
+  }
+  std::size_t Harvest(std::span<jitllm::providers::IoCompletion> out, bool wait) override {
+    return inner_.Harvest(out, wait);
+  }
+  void Wake() override { inner_.Wake(); }
+
+  std::vector<Seen> Take() {
+    const std::scoped_lock lock(mutex_);
+    return std::exchange(seen_, {});
+  }
+
+ private:
+  jitllm::providers::Storage& inner_;
+  std::chrono::microseconds grace_;
+  // The lone read being held back: its offset, and since when.
+  std::optional<std::pair<std::uint64_t, std::chrono::steady_clock::time_point>> lone_;
+  std::mutex mutex_;
+  std::vector<Seen> seen_;
+};
+
+// The parameter: whether VMM work runs on a VMM lane (as CudaPageIn's).
+// Coalescing is off by default: this turns it on (64 MiB spans). The
+// hold-back is this decorator's, never the reader's.
+class CudaCoalescing : public CudaPageIn {
+ protected:
+  void WrapProviders() override {
+    span_bytes_ = jitllm::providers::kSpanBytes;
+    recording_ = std::make_unique<RecordingStorage>(*storage_, std::chrono::milliseconds(5));
+    lane_storage_ = recording_.get();
+  }
+  std::unique_ptr<RecordingStorage> recording_;
+};
+
+TEST_P(CudaCoalescing, EveryExtentRestoresIdenticallyFromCoalescedReads) {
+  Signals first;
+  ASSERT_EQ(Load(1, true, first), static_cast<int>(TaskOutcome::kSucceeded));
+  EXPECT_EQ(first.mismatches.load(), 0);
+  (void)recording_->Take();
+  for (std::uint64_t round = 0; round < 3; ++round) {
+    ASSERT_EQ(Evict(10 + (2 * round)), static_cast<int>(TaskOutcome::kSucceeded));
+    Signals restored;
+    ASSERT_EQ(Load(11 + (2 * round), true, restored), static_cast<int>(TaskOutcome::kSucceeded));
+    EXPECT_EQ(restored.mismatches.load(), 0) << round;
+    const std::vector<RecordingStorage::Seen> seen = recording_->Take();
+    std::size_t pieces = 0;
+    std::size_t spans = 0;
+    std::uint64_t bytes = 0;
+    for (std::size_t r = 0; r < seen.size(); ++r) {
+      const RecordingStorage::Seen& request = seen[r];
+      if (r > 0) {
+        EXPECT_GT(request.offset, seen[r - 1].offset) << round;  // file order (RE-026)
+      }
+      bytes += request.length;
+      EXPECT_LE(request.length, kSlots * kExtent) << round;
+      pieces += std::max<std::size_t>(request.segments.size(), 1);
+      spans += request.segments.size() > 1 ? 1 : 0;
+      for (const auto& segment : request.segments) {
+        const auto address = reinterpret_cast<std::uint64_t>(segment.memory);
+        EXPECT_GE(address, host_base_) << round;
+        EXPECT_LE(address + segment.length, host_base_ + (kSlots * kExtent)) << round;
+      }
+    }
+    EXPECT_EQ(pieces, kExtents) << round;
+    EXPECT_EQ(bytes, ((kExtents - 1) * kExtent) + kTail) << round;
+    EXPECT_GT(spans, 0U) << round;  // coalesced
+    EXPECT_LT(seen.size(), kExtents) << round;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, CudaCoalescing, ::testing::Bool(), [](const auto& info) {
   return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
 });
 

@@ -40,6 +40,7 @@
 #ifndef JITLLM_TESTS_SUPPORT_PAGED_NODE_H_
 #define JITLLM_TESTS_SUPPORT_PAGED_NODE_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -98,12 +99,39 @@ struct LoadStats {
   std::string what;
   std::uint64_t extents = 0;  // nonresident when it was posted
   double seconds = 0;
+  std::uint64_t requests = 0;  // direct-I/O requests the load's reads took
+  std::uint64_t pieces = 0;    // the chunks (segments) they carried
 };
 
 struct NodeSettings {
   std::size_t compute_streams = 1;  // one per model: streams 0..n-1; the copy stream is n
   std::size_t slots = kPagedSlots;
   bool inline_lanes = false;
+  // BP-P1's coalesced reads (64 MiB spans): the reader's option, off by
+  // default as the reader's own default is.
+  bool coalesce = false;
+};
+
+// What the storage lane hands io_uring (BP-P1): requests, and the pieces
+// they carry (a segment each; a plain request is one). Counted on the
+// lane's thread, read between loads.
+class CountingStorage final : public providers::Storage {
+ public:
+  explicit CountingStorage(providers::Storage& inner) : inner_(inner) {}
+  std::size_t depth() const override { return inner_.depth(); }
+  std::size_t in_flight() const override { return inner_.in_flight(); }
+  providers::Submission Submit(const providers::IoRequest& request) override;
+  providers::Submission Cancel(std::uint64_t token) override { return inner_.Cancel(token); }
+  std::size_t Harvest(std::span<providers::IoCompletion> out, bool wait) override {
+    return inner_.Harvest(out, wait);
+  }
+  void Wake() override { inner_.Wake(); }
+
+  std::atomic<std::uint64_t> requests{0};
+  std::atomic<std::uint64_t> pieces{0};
+
+ private:
+  providers::Storage& inner_;
 };
 
 // What a model gives the node's teardown.
@@ -158,6 +186,7 @@ class PagedNode {
   base::Bytes budget() const { return budget_; }
   bool threaded() const { return !threads_.empty(); }
   bool inline_lanes() const { return settings_.inline_lanes; }
+  bool coalesce() const { return settings_.coalesce; }
   const Mapped& zone() const { return zone_; }
   const Mapped& activations() const { return activations_; }
   const Mapped& pool() const { return pool_; }
@@ -210,7 +239,8 @@ class PagedNode {
   std::unique_ptr<providers::VmmProvider> memory_;
   std::unique_ptr<providers::DeviceExecution> execution_;
   std::unique_ptr<providers::UringStorage> storage_;
-  std::vector<providers::StreamId> streams_;  // compute streams, then the copy stream
+  std::unique_ptr<CountingStorage> counting_;  // over storage_: what the storage lane calls
+  std::vector<providers::StreamId> streams_;   // compute streams, then the copy stream
   std::size_t device_class_ = 0;
   std::size_t host_class_ = 0;
 

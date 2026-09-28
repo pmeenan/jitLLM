@@ -51,7 +51,10 @@ struct QueueSettings {
 // reader takes it, and ends only when every request it started has
 // completed, so its terminal result always proves no further access. A
 // cancelled read withdraws the operation's interest: the reader asks the
-// provider to cancel what is in flight and still drains.
+// provider to cancel what is in flight (a span shared with reads still
+// wanted is left to complete) and still drains. With coalescing on
+// (ReaderSettings::span_bytes, D-056; off by default), reads waiting for
+// room that continue one another in a file go as vectored requests.
 //
 // The reader must take as many reads as the scheduler can have operations
 // (ReaderSettings::reads), or an operation may be refused as not started.

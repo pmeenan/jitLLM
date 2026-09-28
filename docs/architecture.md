@@ -951,8 +951,14 @@ copy to or from device VMM is device-execution work (D-081).
   lower class overtakes demand for admitted phases. Requests already in
   flight are not preempted.
 - **Depths and sizes:** start from D-034's two 2 MiB requests in flight for
-  latency-sensitive loads and four for bulk reads. Adjacent misses coalesce
-  into vectored runs (D-056). Tuning is M2/M4 measurement.
+  latency-sensitive loads and four for bulk reads. Adjacent misses may
+  coalesce into vectored runs (D-056), an option of the reader that is off
+  by default: BP-P1's A/B measured it slower than one read per chunk
+  (D-085). When on, reads already waiting for room that continue one
+  another in a file start as one request, so coalescing never delays a
+  read; a span's failure is retried read by read, and a span is cancelled
+  only once no read in it is wanted (`providers/direct_reader.h`). Tuning
+  is M2/M4 measurement.
 - **Completion:** every submission resolves as not started, accepted or
   unknown, and the original request's terminal completion is harvested even
   after cancellation (D-048). A short read or an error publishes nothing.

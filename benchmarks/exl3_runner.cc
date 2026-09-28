@@ -1079,8 +1079,10 @@ Status Exl3Runner::Write(const std::vector<std::map<int, std::vector<float>>>& r
   }
   std::string loads;
   for (const ts::LoadStats& load : loads_) {
-    loads += std::format(R"({}{{"what": "{}", "extents": {}, "seconds": {:.6f}}})",
-                         loads.empty() ? "" : ", ", load.what, load.extents, load.seconds);
+    loads += std::format(
+        R"({}{{"what": "{}", "extents": {}, "seconds": {:.6f}, "requests": {}, "pieces": {}}})",
+        loads.empty() ? "" : ", ", load.what, load.extents, load.seconds, load.requests,
+        load.pieces);
   }
   std::string by_class;
   for (std::size_t c = 0; c < coverage_.by_class.size(); ++c) {
@@ -1094,16 +1096,18 @@ Status Exl3Runner::Write(const std::vector<std::map<int, std::vector<float>>>& r
   summary << std::format(
       "{{\"harness\": \"jitllm_exl3_paged\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
       "\"{}\", \"plan_file_sha256\": \"{}\", \"memory\": \"device VMM through the landing zone\", "
-      "\"lanes\": \"{}\", \"evaluations\": {}, \"restores\": {}, \"relocate\": {},\n "
+      "\"lanes\": \"{}\", \"evaluations\": {}, \"restores\": {}, \"relocate\": {}, "
+      "\"coalesce\": {},\n "
       "\"bit_differences_from_first\": [{}],\n \"logits\": {{{}}},\n \"weight_extents\": {}, "
       "\"stored_bytes\": {}, \"zone_bytes\": {}, \"kv_bytes\": {}, \"region_bytes\": {}, "
       "\"pool_bytes\": {}, \"loads\": [{}],\n \"coverage\": {{\"ranges\": {}, \"violations\": {}, "
       "\"first\": \"{}\", \"by_class\": [{}]}},\n \"plan_identities\": {{{}}}}}\n",
       o_.fixture, o_.arm == model::Exl3Arm::kG ? "G" : "O", artifact_->id(), HexFile(o_.plan),
       node_.inline_lanes() ? "inline" : "threads", results.size(), o_.restores,
-      o_.relocate ? "true" : "false", differences, logits, device_weights_.size(), stored_bytes_,
-      node_.zone().bytes, kv_.bytes, node_.activations().bytes, node_.pool().bytes, loads,
-      coverage_.ranges, coverage_.violations, coverage_.first, by_class, identities);
+      o_.relocate ? "true" : "false", node_.coalesce() ? "true" : "false", differences, logits,
+      device_weights_.size(), stored_bytes_, node_.zone().bytes, kv_.bytes,
+      node_.activations().bytes, node_.pool().bytes, loads, coverage_.ranges, coverage_.violations,
+      coverage_.first, by_class, identities);
   if (!record_.empty()) {
     std::ofstream file(o_.out / "record.jsonl");
     file << test_support::HeaderLine(

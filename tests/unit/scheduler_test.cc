@@ -323,8 +323,14 @@ class SchedulerTest : public ::testing::Test {
              std::chrono::milliseconds tick = std::chrono::milliseconds(100)) {
     storage_lane_ = std::make_unique<StorageService>(
         storage_,
-        ReaderSettings{
-            .alignment = 4096, .request_bytes = 16 * 1024, .retries = 2, .reads = 16, .waiters = 8},
+        // One request per 16 KiB piece, as these tests count them.
+        ReaderSettings{.alignment = 4096,
+                       .request_bytes = 16 * 1024,
+                       .retries = 2,
+                       .reads = 16,
+                       .waiters = 8,
+                       .span_bytes = jitllm::providers::kNoCoalescing,
+                       .span_segments = jitllm::providers::kMaxSegments},
         board_, storage);
     device_lane_ = std::make_unique<DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), board_,
@@ -1195,11 +1201,15 @@ TEST(StorageLaneTest, ACancellationReachesAReadThatNeverCompletes) {
       std::aligned_alloc(4096, 4096));  // NOLINT(cppcoreguidelines-no-malloc)
   jitllm::base::WakeFlag wake;
   CompletionBoard board(4, wake);
-  StorageService lane(
-      **storage,
-      ReaderSettings{
-          .alignment = 4096, .request_bytes = 4096, .retries = 0, .reads = 4, .waiters = 2},
-      board, QueueSettings{.capacity = 4, .reserved = 1, .batch = 4});
+  StorageService lane(**storage,
+                      ReaderSettings{.alignment = 4096,
+                                     .request_bytes = 4096,
+                                     .retries = 0,
+                                     .reads = 4,
+                                     .waiters = 2,
+                                     .span_bytes = jitllm::providers::kNoCoalescing,
+                                     .span_segments = jitllm::providers::kMaxSegments},
+                      board, QueueSettings{.capacity = 4, .reserved = 1, .batch = 4});
   // The test is the board's owner here.
   const OperationId read = board.Open();
   const auto observe = [&](const auto& done) {

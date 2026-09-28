@@ -20,6 +20,8 @@
 #include <initializer_list>
 #include <optional>
 #include <print>
+#include <span>
+#include <string>
 #include <utility>
 
 #include "artifact/layout.h"
@@ -67,6 +69,19 @@ std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintpt
 
 double Seconds(std::chrono::steady_clock::duration d) {
   return std::chrono::duration<double>(d).count();
+}
+
+// Each load, with the requests its reads took and the chunks they carried
+// (BP-P1).
+std::string LoadsJson(std::span<const ts::LoadStats> stats) {
+  std::string loads;
+  for (const ts::LoadStats& load : stats) {
+    loads +=
+        std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f},"requests":{},"pieces":{}}})",
+                    loads.empty() ? "" : ",", load.what, load.extents, load.seconds, load.requests,
+                    load.pieces);
+  }
+  return loads;
 }
 
 }  // namespace
@@ -945,11 +960,7 @@ Status Fp16Runner::RunAlone() {
 }
 
 Status Fp16Runner::WriteLoads() {
-  std::string loads;
-  for (const ts::LoadStats& load : loads_) {
-    loads += std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f}}})",
-                         loads.empty() ? "" : ",", load.what, load.extents, load.seconds);
-  }
+  const std::string loads = LoadsJson(loads_);
   std::uint64_t bytes = 0;
   for (const auto& group : artifact_->groups()) {
     bytes += group.stored.value();
@@ -958,10 +969,10 @@ Status Fp16Runner::WriteLoads() {
   std::ofstream file(o_.out / "loads.json");
   file << std::format(
               R"({{"weights":"{}","backing":"{}","lanes":"{}","extents":{},"read_bytes":{},)"
-              R"("zone_slots":{},"depth":{},"loads":[{}]}})",
+              R"("zone_slots":{},"depth":{},"coalesce":{},"loads":[{}]}})",
               o_.weights_host ? "host" : "device", o_.premapped ? "premapped" : "managed",
               node_.inline_lanes() ? "inline" : "threads", device_weights_.size(), bytes,
-              node_.slots(), test_support::kPagedDepth, loads)
+              node_.slots(), test_support::kPagedDepth, node_.coalesce() ? "true" : "false", loads)
        << "\n";
   std::println("wrote {}", o_.out.string());
   return {};
@@ -992,11 +1003,7 @@ Status Fp16Runner::Write(const std::vector<std::vector<float>>& results) {
       return Error("the logits could not be written");
     }
   }
-  std::string loads;
-  for (const ts::LoadStats& load : loads_) {
-    loads += std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f}}})",
-                         loads.empty() ? "" : ",", load.what, load.extents, load.seconds);
-  }
+  const std::string loads = LoadsJson(loads_);
   std::string by_class;
   for (std::size_t c = 0; c < coverage_.by_class.size(); ++c) {
     by_class += std::format("{}{}", c == 0 ? "" : ",", coverage_.by_class.at(c));

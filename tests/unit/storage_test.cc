@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -88,12 +89,25 @@ struct Buffer {
   std::size_t size;
 };
 
+// One request per piece of four blocks (the reader's default, no
+// coalescing), as the tests of a read's own behaviour count them;
+// Coalescing() lets adjacent pieces share one.
 ReaderSettings Settings() {
   return ReaderSettings{.alignment = static_cast<std::uint32_t>(kAlignment),
                         .request_bytes = static_cast<std::uint32_t>(4 * kAlignment),
                         .retries = 2,
                         .reads = 4,
-                        .waiters = 2};
+                        .waiters = 2,
+                        .span_bytes = ReaderSettings{}.span_bytes,
+                        .span_segments = jitllm::providers::kMaxSegments};
+}
+
+ReaderSettings Coalescing(std::uint32_t span_blocks = 64, std::size_t segments = 64) {
+  ReaderSettings settings = Settings();
+  settings.reads = 16;
+  settings.span_bytes = static_cast<std::uint32_t>(span_blocks * kAlignment);
+  settings.span_segments = segments;
+  return settings;
 }
 
 std::vector<FinishedRead> PollUntilDone(DirectReader& reader) {
@@ -336,6 +350,372 @@ TEST(ReaderOrderTest, AWithdrawnReadThatNeverStartedEndsWithoutHoldingUpTheOther
   EXPECT_EQ(reader.reads(), 0U);
 }
 
+// Coalescing (D-056, BP-P1): reads waiting for room that continue one
+// another in a file start as one vectored request, a segment per piece
+// into that piece's own memory. A provider of depth 0 holds every read
+// back until the test gives it room, so the reads are all waiting.
+class CoalesceTest : public ::testing::Test {
+ protected:
+  // Block b of the file lands at block `where(b)` of the buffer: spread
+  // out of file order, as landing slots are.
+  static std::uint64_t Where(std::uint64_t block) { return 63 - block; }
+  ReadSpec Spec(std::uint64_t block, std::uint64_t blocks) const {
+    return ReadSpec{.fd = fd_,
+                    .offset = block * kAlignment,
+                    .memory = buffer_.data + (Where(block + blocks - 1) * kAlignment),
+                    .length = blocks * kAlignment};
+  }
+  // The read's memory holds its file range.
+  bool Holds(const ReadSpec& spec) const {
+    return std::memcmp(spec.memory, contents_.data() + spec.offset, spec.length) == 0;
+  }
+  // Each submitted request as (first block, segments; 0 for a plain one).
+  std::vector<std::pair<std::uint64_t, std::size_t>> Requests() const {
+    std::vector<std::pair<std::uint64_t, std::size_t>> requests;
+    for (const IoRequest& request : storage_.submitted()) {
+      requests.emplace_back(request.offset / kAlignment, request.segments.size());
+    }
+    return requests;
+  }
+  std::map<std::uint64_t, FinishedRead> Drain(DirectReader& reader) {
+    std::map<std::uint64_t, FinishedRead> by_key;
+    for (FinishedRead& read : PollUntilDone(reader)) {
+      by_key.emplace(read.key, std::move(read));
+    }
+    return by_key;
+  }
+
+  FakeStorage storage_{0, static_cast<std::uint32_t>(kAlignment)};
+  std::vector<std::byte> contents_ = Pattern(64 * kAlignment);
+  int fd_ = storage_.AddFile(contents_);
+  Buffer buffer_{64 * kAlignment};
+};
+
+TEST_F(CoalesceTest, WaitingReadsThatContinueOneAnotherShareOneRequestInFileOrder) {
+  DirectReader reader{storage_, Coalescing()};
+  // Keys unlike arrival order; a gap between blocks 6 and 8 (a resident
+  // chunk between two misses), and a read of another file.
+  const int other = storage_.AddFile(Pattern(8 * kAlignment));
+  Buffer elsewhere{2 * kAlignment};
+  const ReadSpec other_file{
+      .fd = other, .offset = 6 * kAlignment, .memory = elsewhere.data, .length = 2 * kAlignment};
+  const std::vector<std::pair<std::uint64_t, ReadSpec>> reads = {
+      {9, Spec(0, 2)},  {2, Spec(2, 2)}, {7, Spec(4, 2)}, {4, Spec(8, 2)},
+      {3, Spec(10, 2)}, {8, other_file}, {6, Spec(12, 2)}};
+  for (const auto& [key, spec] : reads) {
+    ASSERT_TRUE(reader.Read(key, spec, 100).has_value());
+  }
+  EXPECT_TRUE(storage_.submitted().empty());
+  storage_.SetDepth(1);  // one request at a time, so each run is visible
+  const auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), reads.size());
+  for (const auto& [key, spec] : reads) {
+    EXPECT_EQ(finished.at(key).outcome, ReadOutcome::kComplete) << key;
+    EXPECT_EQ(finished.at(key).bytes, spec.length) << key;
+    EXPECT_TRUE(spec.fd == other || Holds(spec)) << key;
+  }
+  EXPECT_EQ(std::memcmp(elsewhere.data, storage_.Contents(other).data() + (6 * kAlignment),
+                        2 * kAlignment),
+            0);
+  // Blocks 0-6 as one, 8-12 as one (the gap breaks it), the other file's
+  // read alone, then 12 alone (it does not continue the other file).
+  using Run = std::pair<std::uint64_t, std::size_t>;
+  EXPECT_THAT(Requests(), ElementsAre(Run{0, 3}, Run{8, 2}, Run{6, 0}, Run{12, 0}));
+  // Every segment is its own read's memory.
+  const IoRequest& first = storage_.submitted().front();
+  ASSERT_EQ(first.segments.size(), 3U);
+  EXPECT_EQ(first.length, 6 * kAlignment);
+  EXPECT_EQ(first.segments[0].memory, Spec(0, 2).memory);
+  EXPECT_EQ(first.segments[1].memory, Spec(2, 2).memory);
+  EXPECT_EQ(first.segments[2].memory, Spec(4, 2).memory);
+}
+
+TEST_F(CoalesceTest, NothingWaitsToCoalesce) {
+  // With room, each read starts as it arrives: only reads already waiting
+  // for room join a span.
+  storage_.SetDepth(8);
+  DirectReader reader{storage_, Coalescing()};
+  for (std::uint64_t block = 0; block < 8; block += 2) {
+    ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+  }
+  using Run = std::pair<std::uint64_t, std::size_t>;
+  EXPECT_THAT(Requests(), ElementsAre(Run{0, 0}, Run{2, 0}, Run{4, 0}, Run{6, 0}));
+  EXPECT_EQ(Drain(reader).size(), 4U);
+}
+
+TEST_F(CoalesceTest, TheDefaultIsOneRequestPerPiece) {
+  // Coalescing is an option, off by default (BP-P1's A/B measured it
+  // slower): reads that wait and continue one another still go one by one.
+  DirectReader reader{storage_, Settings()};
+  for (std::uint64_t block = 0; block < 8; block += 2) {
+    ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+  }
+  EXPECT_TRUE(storage_.submitted().empty());
+  storage_.SetDepth(8);
+  const auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 4U);
+  for (const auto& [key, read] : finished) {
+    EXPECT_EQ(read.outcome, ReadOutcome::kComplete) << key;
+    EXPECT_TRUE(Holds(Spec(key, 2))) << key;
+  }
+  using Run = std::pair<std::uint64_t, std::size_t>;
+  EXPECT_THAT(Requests(), ElementsAre(Run{0, 0}, Run{2, 0}, Run{4, 0}, Run{6, 0}));
+}
+
+TEST_F(CoalesceTest, ASpanOfUnknownStartIsWaitedForAndRefusedOnesStartLater) {
+  DirectReader reader{storage_, Coalescing()};
+  for (std::uint64_t block = 0; block < 6; block += 2) {
+    ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+  }
+  // Refused once with room (no request made), then started with its
+  // outcome unknown: the span is owed a completion like any other.
+  storage_.ScriptNext(
+      {.submission = Submission::kNotStarted, .result = std::nullopt, .hold = false});
+  storage_.ScriptNext({.submission = Submission::kUnknown, .result = std::nullopt, .hold = true});
+  storage_.SetDepth(4);
+  // A poll starts what it can before and after harvesting: the refusal,
+  // then the span.
+  EXPECT_THAT(reader.Poll(false), IsEmpty());
+  ASSERT_EQ(storage_.submitted().size(), 1U);
+  EXPECT_EQ(storage_.submitted().front().segments.size(), 3U);
+  EXPECT_EQ(reader.reads(), 3U);
+  ASSERT_TRUE(storage_.Release(storage_.submitted().front().token));
+  const auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 3U);
+  for (const auto& [key, read] : finished) {
+    EXPECT_EQ(read.outcome, ReadOutcome::kComplete) << key;
+    EXPECT_TRUE(Holds(Spec(key, 2))) << key;
+  }
+  EXPECT_EQ(storage_.submitted().size(), 1U);
+}
+
+TEST_F(CoalesceTest, ASpanBreaksAtItsBytesItsSegmentsAndAtWrites) {
+  {
+    // At most five blocks a span: two reads of two blocks each. (A span
+    // no larger than a piece, four blocks here, would not coalesce.)
+    DirectReader reader{storage_, Coalescing(5)};
+    for (std::uint64_t block = 0; block < 10; block += 2) {
+      ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+    }
+    storage_.SetDepth(8);
+    const auto finished = Drain(reader);
+    ASSERT_EQ(finished.size(), 5U);
+    using Run = std::pair<std::uint64_t, std::size_t>;
+    EXPECT_THAT(Requests(), ElementsAre(Run{0, 2}, Run{4, 2}, Run{8, 0}));
+  }
+  storage_.SetDepth(0);
+  const std::size_t before = storage_.submitted().size();
+  {
+    // At most three segments a span; a write between reads breaks the run
+    // and is never coalesced itself.
+    DirectReader reader{storage_, Coalescing(64, 3)};
+    for (std::uint64_t block = 16; block < 24; ++block) {
+      ReadSpec spec = Spec(block, 1);
+      if (block == 20 || block == 21) {
+        spec.kind = IoKind::kWrite;
+      }
+      ASSERT_TRUE(reader.Read(block, spec, 100).has_value());
+    }
+    storage_.SetDepth(8);
+    const auto finished = Drain(reader);
+    ASSERT_EQ(finished.size(), 8U);
+    for (const auto& [key, read] : finished) {
+      EXPECT_EQ(read.outcome, ReadOutcome::kComplete) << key;
+    }
+    std::vector<std::pair<std::uint64_t, std::size_t>> runs = Requests();
+    runs.erase(runs.begin(), runs.begin() + static_cast<std::ptrdiff_t>(before));
+    using Run = std::pair<std::uint64_t, std::size_t>;
+    EXPECT_THAT(runs, ElementsAre(Run{16, 3}, Run{19, 0}, Run{20, 0}, Run{21, 0}, Run{22, 2}));
+    EXPECT_EQ(storage_.submitted()[before + 2].kind, IoKind::kWrite);
+  }
+}
+
+TEST_F(CoalesceTest, FourKibOffsetsLongReadsAndAShortLastChunkCoalesce) {
+  // Groups start at 4 KiB-aligned offsets, not 2 MiB ones: a read of
+  // three blocks from block 1, one of six (two pieces of four and two),
+  // and a group's short last chunk of one block.
+  DirectReader reader{storage_, Coalescing()};
+  const std::vector<std::pair<std::uint64_t, ReadSpec>> reads = {
+      {1, Spec(1, 3)}, {2, Spec(4, 6)}, {3, Spec(10, 1)}};
+  for (const auto& [key, spec] : reads) {
+    ASSERT_TRUE(reader.Read(key, spec, 100).has_value());
+  }
+  storage_.SetDepth(4);
+  const auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 3U);
+  for (const auto& [key, spec] : reads) {
+    EXPECT_EQ(finished.at(key).outcome, ReadOutcome::kComplete) << key;
+    EXPECT_TRUE(Holds(spec)) << key;
+  }
+  ASSERT_EQ(storage_.submitted().size(), 1U);
+  const IoRequest& span = storage_.submitted().front();
+  EXPECT_EQ(span.offset, kAlignment);
+  EXPECT_EQ(span.length, 10 * kAlignment);
+  std::vector<std::uint64_t> lengths;
+  for (const auto& segment : span.segments) {
+    lengths.push_back(segment.length / kAlignment);
+  }
+  EXPECT_THAT(lengths, ElementsAre(3, 4, 2, 1));
+}
+
+// A span's count fills its pieces in order: those it filled are done, the
+// first it left short continues or ends as a lone request would, and the
+// rest start again, still in file order.
+TEST_F(CoalesceTest, AShortSpanFinishesWhatItFilledAndStartsTheRestAgain) {
+  struct Case {
+    std::int64_t result;
+    // (read, outcome, bytes) for the reads at blocks 0, 2 and 4.
+    std::array<ReadOutcome, 3> outcomes;
+    std::array<std::uint64_t, 3> bytes;
+    std::vector<std::pair<std::uint64_t, std::size_t>> requests;
+  };
+  const std::uint64_t whole = 2 * kAlignment;
+  const std::vector<Case> cases = {
+      // Mid-piece at an aligned point: the second read continues, and its
+      // remainder coalesces with the third.
+      {.result = static_cast<std::int64_t>(3 * kAlignment),
+       .outcomes = {ReadOutcome::kComplete, ReadOutcome::kComplete, ReadOutcome::kComplete},
+       .bytes = {whole, whole, whole},
+       .requests = {{0, 3}, {3, 2}}},
+      // At a piece's boundary: not the end of the file; both go again.
+      {.result = static_cast<std::int64_t>(2 * kAlignment),
+       .outcomes = {ReadOutcome::kComplete, ReadOutcome::kComplete, ReadOutcome::kComplete},
+       .bytes = {whole, whole, whole},
+       .requests = {{0, 3}, {2, 2}}},
+      // At an unaligned point: the file ended in the second read; the third
+      // starts again on its own and finds its bytes.
+      {.result = static_cast<std::int64_t>((2 * kAlignment) + 100),
+       .outcomes = {ReadOutcome::kComplete, ReadOutcome::kEndOfFile, ReadOutcome::kComplete},
+       .bytes = {whole, 100, whole},
+       .requests = {{0, 3}, {4, 0}}},
+      // Nothing: the first read is at the end of the file, and the others
+      // start again.
+      {.result = 0,
+       .outcomes = {ReadOutcome::kEndOfFile, ReadOutcome::kComplete, ReadOutcome::kComplete},
+       .bytes = {0, whole, whole},
+       .requests = {{0, 3}, {2, 2}}},
+  };
+  for (const Case& c : cases) {
+    FakeStorage storage{0, static_cast<std::uint32_t>(kAlignment)};
+    const int fd = storage.AddFile(contents_);
+    DirectReader reader{storage, Coalescing()};
+    std::array<ReadSpec, 3> specs{};
+    for (std::uint64_t i = 0; i < 3; ++i) {
+      specs.at(i) = Spec(2 * i, 2);
+      specs.at(i).fd = fd;
+      std::memset(specs.at(i).memory, 0xee, whole);
+      ASSERT_TRUE(reader.Read(i, specs.at(i), 100).has_value());
+    }
+    storage.ScriptNext({.submission = Submission::kAccepted, .result = c.result, .hold = false});
+    storage.SetDepth(4);
+    std::map<std::uint64_t, FinishedRead> finished;
+    for (FinishedRead& read : PollUntilDone(reader)) {
+      finished.emplace(read.key, std::move(read));
+    }
+    ASSERT_EQ(finished.size(), 3U) << c.result;
+    for (std::uint64_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(finished.at(i).outcome, c.outcomes.at(i)) << c.result << " read " << i;
+      EXPECT_EQ(finished.at(i).bytes, c.bytes.at(i)) << c.result << " read " << i;
+      if (c.outcomes.at(i) == ReadOutcome::kComplete) {
+        EXPECT_TRUE(Holds(specs.at(i))) << c.result << " read " << i;
+      }
+    }
+    std::vector<std::pair<std::uint64_t, std::size_t>> requests;
+    for (const IoRequest& request : storage.submitted()) {
+      requests.emplace_back(request.offset / kAlignment, request.segments.size());
+    }
+    EXPECT_EQ(requests, c.requests) << c.result;
+  }
+}
+
+TEST_F(CoalesceTest, AnErrorInASpanLandsOnTheReadItBelongsTo) {
+  DirectReader reader{storage_, Coalescing()};
+  for (std::uint64_t block = 0; block < 6; block += 2) {
+    ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+  }
+  // The span fails; alone, the first and last reads succeed and the
+  // middle one fails again.
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = -EIO, .hold = false});
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = std::nullopt, .hold = false});
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = -EIO, .hold = false});
+  storage_.SetDepth(4);
+  auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 3U);
+  EXPECT_EQ(finished.at(0).outcome, ReadOutcome::kComplete);
+  EXPECT_EQ(finished.at(2).outcome, ReadOutcome::kFailed);
+  EXPECT_EQ(finished.at(2).error, EIO);
+  EXPECT_EQ(finished.at(4).outcome, ReadOutcome::kComplete);
+  EXPECT_TRUE(Holds(Spec(0, 2)));
+  EXPECT_TRUE(Holds(Spec(4, 2)));
+  using Run = std::pair<std::uint64_t, std::size_t>;
+  EXPECT_THAT(Requests(), ElementsAre(Run{0, 3}, Run{0, 0}, Run{2, 0}, Run{4, 0}));
+
+  // A transient error retries the span as a span.
+  storage_.SetDepth(0);
+  for (std::uint64_t block = 8; block < 14; block += 2) {
+    ASSERT_TRUE(reader.Read(block, Spec(block, 2), 100).has_value());
+  }
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = -EINTR, .hold = false});
+  storage_.SetDepth(4);
+  finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 3U);
+  for (const auto& [key, read] : finished) {
+    EXPECT_EQ(read.outcome, ReadOutcome::kComplete) << key;
+    EXPECT_TRUE(Holds(Spec(key, 2))) << key;
+  }
+  const auto runs = Requests();
+  EXPECT_THAT(std::vector(runs.end() - 2, runs.end()), ElementsAre(Run{8, 3}, Run{8, 3}));
+}
+
+TEST_F(CoalesceTest, WithdrawingOneReadOfASpanNeverCancelsItsNeighbours) {
+  DirectReader reader{storage_, Coalescing()};
+  ASSERT_TRUE(reader.Read(1, Spec(0, 2), 100).has_value());
+  ASSERT_TRUE(reader.Read(2, Spec(2, 2), 100).has_value());
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = std::nullopt, .hold = true});
+  storage_.SetDepth(1);
+  EXPECT_THAT(reader.Poll(false), IsEmpty());
+  ASSERT_EQ(storage_.submitted().size(), 1U);
+  // The first read's last waiter leaves while the span is in flight: the
+  // span is not cancelled (the fake would fail it), and the withdrawn
+  // read ends only once the span has completed, since its memory is still
+  // being written until then.
+  ASSERT_TRUE(reader.Withdraw(1, 100).has_value());
+  EXPECT_THAT(reader.Poll(false), IsEmpty());
+  ASSERT_TRUE(storage_.Release(storage_.submitted().back().token));
+  auto finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 2U);
+  EXPECT_EQ(finished.at(1).outcome, ReadOutcome::kCancelled);
+  EXPECT_EQ(finished.at(2).outcome, ReadOutcome::kComplete);
+  EXPECT_TRUE(Holds(Spec(2, 2)));
+
+  // Once every read in a span has left, the span is cancelled.
+  storage_.SetDepth(0);
+  ASSERT_TRUE(reader.Read(3, Spec(4, 2), 100).has_value());
+  ASSERT_TRUE(reader.Read(4, Spec(6, 2), 100).has_value());
+  storage_.ScriptNext({.submission = Submission::kAccepted, .result = std::nullopt, .hold = true});
+  storage_.SetDepth(1);
+  EXPECT_THAT(reader.Poll(false), IsEmpty());
+  ASSERT_TRUE(reader.Withdraw(3, 100).has_value());
+  ASSERT_TRUE(reader.Withdraw(4, 100).has_value());
+  finished = Drain(reader);
+  ASSERT_EQ(finished.size(), 2U);
+  EXPECT_EQ(finished.at(3).outcome, ReadOutcome::kCancelled);
+  EXPECT_EQ(finished.at(3).bytes, 0U);  // the fake cancelled it before it moved anything
+  EXPECT_EQ(finished.at(4).outcome, ReadOutcome::kCancelled);
+  EXPECT_EQ(storage_.in_flight(), 0U);
+}
+
+TEST(ReaderDeathTest, CoalescingSettingsAreBounded) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  FakeStorage storage(1, static_cast<std::uint32_t>(kAlignment));
+  ReaderSettings too_many = Settings();
+  too_many.span_segments = jitllm::providers::kMaxSegments + 1;
+  EXPECT_DEATH({ const DirectReader reader(storage, too_many); }, "coalesced reads need");
+  ReaderSettings too_long = Settings();
+  too_long.span_bytes = (1U << 30U) + 4096;
+  EXPECT_DEATH({ const DirectReader reader(storage, too_long); }, "coalesced reads need");
+}
+
 TEST_F(ReaderTest, OverflowingRangesAreRefusedBeforeAnyIo) {
   const ReadSpec wrapped_file{
       .fd = fd_,
@@ -444,6 +824,90 @@ TEST_F(UringTest, DirectReadsLandInPlace) {
   EXPECT_EQ(finished[0].bytes, 4 * kAlignment);
 }
 
+// Vectored requests through the kernel (READV and WRITEV): each segment
+// takes its own part of the file range, in order, wherever it is; a span
+// past the file's end fills a prefix. Through the reader, adjacent pieces
+// coalesce into one request and land exactly.
+TEST_F(UringTest, VectoredRequestsFillEachSegmentInOrder) {
+  Buffer buffer(16 * kAlignment);
+  // Three segments of 2, 1 and 3 blocks, out of memory order.
+  const std::array<jitllm::providers::IoSegment, 3> segments = {{
+      {.memory = buffer.data + (8 * kAlignment),
+       .length = static_cast<std::uint32_t>(2 * kAlignment)},
+      {.memory = buffer.data, .length = static_cast<std::uint32_t>(kAlignment)},
+      {.memory = buffer.data + (12 * kAlignment),
+       .length = static_cast<std::uint32_t>(3 * kAlignment)},
+  }};
+  const auto run = [&](IoKind kind, std::uint64_t offset) {
+    const IoRequest request{.token = 5,
+                            .kind = kind,
+                            .fd = fd_,
+                            .offset = offset,
+                            .memory = nullptr,
+                            .length = static_cast<std::uint32_t>(6 * kAlignment),
+                            .segments = segments};
+    EXPECT_NE(storage_->Submit(request), Submission::kNotStarted);
+    std::array<IoCompletion, 4> completions{};
+    std::size_t got = 0;
+    for (int i = 0; i < 100 && got == 0; ++i) {
+      got = storage_->Harvest(completions, true);
+    }
+    EXPECT_EQ(got, 1U);
+    EXPECT_EQ(completions[0].token, 5U);
+    return completions[0].result;
+  };
+  EXPECT_EQ(run(IoKind::kRead, 2 * kAlignment), static_cast<std::int64_t>(6 * kAlignment));
+  EXPECT_EQ(std::memcmp(buffer.data + (8 * kAlignment), contents_.data() + (2 * kAlignment),
+                        2 * kAlignment),
+            0);
+  EXPECT_EQ(std::memcmp(buffer.data, contents_.data() + (4 * kAlignment), kAlignment), 0);
+  EXPECT_EQ(std::memcmp(buffer.data + (12 * kAlignment), contents_.data() + (5 * kAlignment),
+                        3 * kAlignment),
+            0);
+  // From block 12 of 16: four blocks, the first two segments and one block
+  // of the third.
+  EXPECT_EQ(run(IoKind::kRead, 12 * kAlignment), static_cast<std::int64_t>(4 * kAlignment));
+  EXPECT_EQ(std::memcmp(buffer.data + (12 * kAlignment), contents_.data() + (15 * kAlignment),
+                        kAlignment),
+            0);
+  // Written out past the end, then read back.
+  const std::vector<std::byte> before(buffer.data, buffer.data + buffer.size);
+  EXPECT_EQ(run(IoKind::kWrite, 32 * kAlignment), static_cast<std::int64_t>(6 * kAlignment));
+  std::memset(buffer.data, 0, buffer.size);
+  EXPECT_EQ(run(IoKind::kRead, 32 * kAlignment), static_cast<std::int64_t>(6 * kAlignment));
+  for (const auto& segment : segments) {
+    const auto at = static_cast<std::size_t>(segment.memory - buffer.data);
+    EXPECT_EQ(std::memcmp(segment.memory, before.data() + at, segment.length), 0);
+  }
+  EXPECT_EQ(storage_->in_flight(), 0U);
+  // A length other than the segments' sum is refused before the kernel.
+  EXPECT_EQ(storage_->Submit(IoRequest{.token = 6,
+                                       .kind = IoKind::kRead,
+                                       .fd = fd_,
+                                       .offset = 0,
+                                       .memory = nullptr,
+                                       .length = static_cast<std::uint32_t>(4 * kAlignment),
+                                       .segments = segments}),
+            Submission::kNotStarted);
+  EXPECT_EQ(storage_->in_flight(), 0U);
+
+  // The reader: a read of 16 blocks is four pieces of four, one request.
+  ReaderSettings settings = Coalescing();
+  DirectReader reader(*storage_, settings);
+  std::memset(buffer.data, 0, buffer.size);
+  ASSERT_TRUE(
+      reader.Read(7, {.fd = fd_, .offset = 0, .memory = buffer.data, .length = 16 * kAlignment}, 1)
+          .has_value());
+  std::vector<FinishedRead> finished;
+  for (int i = 0; i < 100 && finished.empty(); ++i) {
+    finished = reader.Poll(true);
+  }
+  ASSERT_EQ(finished.size(), 1U);
+  EXPECT_EQ(finished[0].outcome, ReadOutcome::kComplete);
+  EXPECT_EQ(finished[0].bytes, 16 * kAlignment);
+  EXPECT_EQ(std::memcmp(buffer.data, contents_.data(), contents_.size()), 0);
+}
+
 TEST_F(UringTest, UnalignedDirectIoFailsAndCancellationStillCompletes) {
   Buffer buffer(8 * kAlignment);
   // The kernel refuses a misaligned direct-I/O offset; the request still
@@ -453,7 +917,8 @@ TEST_F(UringTest, UnalignedDirectIoFailsAndCancellationStillCompletes) {
                                        .fd = fd_,
                                        .offset = 1,
                                        .memory = buffer.data,
-                                       .length = static_cast<std::uint32_t>(kAlignment)}),
+                                       .length = static_cast<std::uint32_t>(kAlignment),
+                                       .segments = {}}),
             Submission::kAccepted);
   // A cancellation of an unknown token is refused; of a live one, accepted.
   EXPECT_EQ(storage_->Cancel(99), Submission::kNotStarted);
@@ -462,7 +927,8 @@ TEST_F(UringTest, UnalignedDirectIoFailsAndCancellationStillCompletes) {
                                        .fd = fd_,
                                        .offset = 0,
                                        .memory = buffer.data,
-                                       .length = 4 * kAlignment}),
+                                       .length = 4 * kAlignment,
+                                       .segments = {}}),
             Submission::kNotStarted);
   (void)storage_->Cancel(2);
   std::array<IoCompletion, 8> completions{};
@@ -496,7 +962,8 @@ TEST_F(UringTest, DrainingIncludesCancellations) {
                                        .fd = fd_,
                                        .offset = 0,
                                        .memory = buffer.data,
-                                       .length = static_cast<std::uint32_t>(4 * kAlignment)}),
+                                       .length = static_cast<std::uint32_t>(4 * kAlignment),
+                                       .segments = {}}),
             Submission::kNotStarted);
   if (storage_->Cancel(5) != Submission::kNotStarted) {
     EXPECT_EQ(storage_->in_flight(), 2U);
@@ -523,7 +990,8 @@ TEST_F(UringTest, WakeEndsAHarvestWaitingForAReadThatNeverCompletes) {
                                        .fd = pipe_fds[0],
                                        .offset = 0,
                                        .memory = buffer.data,
-                                       .length = static_cast<std::uint32_t>(kAlignment)}),
+                                       .length = static_cast<std::uint32_t>(kAlignment),
+                                       .segments = {}}),
             Submission::kNotStarted);
   std::atomic<bool> returned{false};
   std::size_t harvested = 0;
@@ -587,7 +1055,8 @@ TEST_F(UringTest, NoWakeIsLostAmongManyProducers) {
                                        .fd = pipe_fds[0],
                                        .offset = 0,
                                        .memory = buffer.data,
-                                       .length = static_cast<std::uint32_t>(kAlignment)}),
+                                       .length = static_cast<std::uint32_t>(kAlignment),
+                                       .segments = {}}),
             Submission::kNotStarted);
   std::atomic<std::uint64_t> published{0};
   std::atomic<std::uint64_t> answered{0};

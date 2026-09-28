@@ -45,10 +45,17 @@ DirectReader::DirectReader(Storage& storage, ReaderSettings settings)
                   settings.request_bytes % settings.alignment == 0 && settings.reads > 0 &&
                   settings.waiters > 0,
               "direct reads need aligned non-zero requests and non-zero read and waiter limits");
+  // A span's count comes back as a 32-bit result (io_uring): 1 GiB bounds
+  // it well inside that.
+  base::Check(settings.span_segments > 0 && settings.span_segments <= kMaxSegments &&
+                  settings.span_bytes <= (1U << 30U),
+              "coalesced reads need 1 to kMaxSegments segments and at most 1 GiB");
+  run_.reserve(settings.span_segments);
+  segments_.reserve(settings.span_segments);
 }
 
 DirectReader::~DirectReader() {
-  base::Check(tokens_.empty(), "a direct reader destroyed with requests in flight");
+  base::Check(requests_.empty(), "a direct reader destroyed with requests in flight");
 }
 
 std::expected<bool, ReadError> DirectReader::Read(std::uint64_t key, const ReadSpec& spec,
@@ -115,12 +122,28 @@ std::expected<void, ReadError> DirectReader::Withdraw(std::uint64_t key, std::ui
     Stop(reading, ReadOutcome::kCancelled, 0);
     for (const Piece& piece : reading.pieces) {
       if (piece.in_flight) {
-        (void)storage_.Cancel(piece.token);  // best effort: it still completes
+        CancelIfAbandoned(piece.token);
       }
     }
     settled_.push_back(key);  // with nothing in flight, it has ended
   }
   return {};
+}
+
+void DirectReader::CancelIfAbandoned(std::uint64_t token) {
+  const auto found = requests_.find(token);
+  if (found == requests_.end() || found->second.cancelled) {
+    return;
+  }
+  // A span also carries other reads' bytes: cancelled only once none of
+  // them wants it.
+  const bool abandoned = std::ranges::all_of(found->second.members, [this](const Member& member) {
+    return reads_.at(member.key).stopping;
+  });
+  if (abandoned) {
+    found->second.cancelled = true;
+    (void)storage_.Cancel(token);  // best effort: it still completes
+  }
 }
 
 void DirectReader::Stop(Reading& reading, ReadOutcome outcome, int error) {
@@ -138,46 +161,182 @@ void DirectReader::Queue(std::uint64_t key, Reading& reading) {
   }
 }
 
+bool DirectReader::HasStart(const Reading& reading) {
+  return !reading.stopping && std::ranges::any_of(reading.pieces, [](const Piece& piece) {
+    return !piece.in_flight && piece.done < piece.length;
+  });
+}
+
 void DirectReader::StartQueued() {
+  // Pieces in start order (reads by arrival, a read's pieces in turn),
+  // gathered into runs that continue one another in the file.
+  run_.clear();
+  std::uint64_t run_end = 0;  // the file offset the run reaches
+  std::uint64_t run_bytes = 0;
+  bool full = false;
+  const bool coalescing = settings_.span_bytes > settings_.request_bytes;
+  for (const auto& [arrival, key] : queue_) {
+    Reading& reading = reads_.at(key);
+    if (reading.stopping) {
+      continue;
+    }
+    for (std::size_t i = 0; i < reading.pieces.size() && !full; ++i) {
+      const Piece& piece = reading.pieces[i];
+      if (piece.in_flight || piece.done == piece.length) {
+        continue;
+      }
+      const std::uint64_t offset = reading.spec.offset + piece.start + piece.done;
+      const std::uint64_t length = piece.length - piece.done;
+      if (!run_.empty()) {
+        const Reading& last = reads_.at(run_.back().key);
+        const bool joins = coalescing && !last.alone && !reading.alone &&
+                           last.spec.fd == reading.spec.fd && last.spec.kind == IoKind::kRead &&
+                           reading.spec.kind == IoKind::kRead && run_end == offset &&
+                           run_bytes + length <= settings_.span_bytes &&
+                           run_.size() < settings_.span_segments;
+        if (!joins) {
+          if (!Submit(run_)) {
+            full = true;  // the provider is full: the rest wait, in order
+            break;
+          }
+          run_.clear();
+          run_bytes = 0;
+        }
+      }
+      run_.push_back(Member{.key = key, .piece = i});
+      run_end = offset + length;
+      run_bytes += length;
+    }
+    if (full) {
+      break;
+    }
+  }
+  if (!full && !run_.empty()) {
+    (void)Submit(run_);
+  }
+  run_.clear();
+  // Reads with nothing left to start leave the queue. They are a prefix:
+  // runs start in order, and the first the provider refused ends the pass.
   while (!queue_.empty()) {
     const auto oldest = queue_.begin();
     Reading& reading = reads_.at(oldest->second);
-    if (!Start(oldest->second, reading)) {
-      return;  // the provider is full: the rest wait, in order
+    if (HasStart(reading)) {
+      return;
     }
     reading.queued = false;
     queue_.erase(oldest);
   }
 }
 
-bool DirectReader::Start(std::uint64_t key, Reading& reading) {
-  if (reading.stopping) {
-    return true;
-  }
-  for (std::size_t i = 0; i < reading.pieces.size(); ++i) {
-    Piece& piece = reading.pieces[i];
-    if (piece.in_flight || piece.done == piece.length) {
-      continue;
-    }
-    const std::uint64_t token = next_token_++;
-    const IoRequest request{
-        .token = token,
-        .kind = reading.spec.kind,
-        .fd = reading.spec.fd,
-        .offset = reading.spec.offset + piece.start + piece.done,
+bool DirectReader::Submit(std::span<const Member> run) {
+  const std::uint64_t token = next_token_++;
+  const Reading& first = reads_.at(run.front().key);
+  const Piece& head = first.pieces[run.front().piece];
+  IoRequest request{
+      .token = token,
+      .kind = first.spec.kind,
+      .fd = first.spec.fd,
+      .offset = first.spec.offset + head.start + head.done,
+      .memory = nullptr,
+      .length = 0,
+      .segments = {},
+  };
+  segments_.clear();
+  std::uint64_t total = 0;
+  for (const Member& member : run) {
+    const Reading& reading = reads_.at(member.key);
+    const Piece& piece = reading.pieces[member.piece];
+    const IoSegment segment{
         .memory = reading.spec.memory + piece.start +
                   piece.done,  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        .length = static_cast<std::uint32_t>(piece.length - piece.done),
-    };
-    if (storage_.Submit(request) == Submission::kNotStarted) {
-      return false;  // the provider is full: the next Poll tries again
-    }
-    // Accepted or unknown: either way a completion is owed.
+        .length = static_cast<std::uint32_t>(piece.length - piece.done)};
+    segments_.push_back(segment);
+    total += segment.length;
+  }
+  request.length = static_cast<std::uint32_t>(total);
+  if (run.size() == 1) {
+    request.memory = segments_.front().memory;  // a lone piece: a plain request
+  } else {
+    request.segments = segments_;
+  }
+  if (storage_.Submit(request) == Submission::kNotStarted) {
+    return false;  // the next Poll tries again
+  }
+  // Accepted or unknown: either way a completion is owed.
+  Request& started = requests_[token];
+  started.members.assign(run.begin(), run.end());
+  for (const Member& member : run) {
+    Piece& piece = reads_.at(member.key).pieces[member.piece];
     piece.in_flight = true;
     piece.token = token;
-    tokens_.emplace(token, std::pair(key, i));
   }
   return true;
+}
+
+void DirectReader::Settle(const Request& request, std::int64_t result) {
+  // Each read once, where a request carries several of its pieces.
+  const auto each_read = [&request](auto&& action) {
+    for (std::size_t m = 0; m < request.members.size(); ++m) {
+      if (m == 0 || request.members[m].key != request.members[m - 1].key) {
+        action(request.members[m].key);
+      }
+    }
+  };
+  if (result < 0) {
+    const int error = static_cast<int>(-result);
+    if (error == ECANCELED) {
+      each_read([this](std::uint64_t key) { Stop(reads_.at(key), ReadOutcome::kCancelled, 0); });
+    } else if (error == EINTR || error == EAGAIN) {
+      each_read([this, error](std::uint64_t key) {
+        Reading& reading = reads_.at(key);
+        if (reading.retries < settings_.retries) {
+          ++reading.retries;  // transient: started again, ahead of later reads
+          Queue(key, reading);
+        } else {
+          Stop(reading, ReadOutcome::kFailed, error);
+        }
+      });
+    } else if (request.members.size() > 1) {
+      // Which piece failed is unknown: each read starts again on its own,
+      // so the error lands on the one it belongs to.
+      each_read([this](std::uint64_t key) {
+        Reading& reading = reads_.at(key);
+        reading.alone = true;
+        Queue(key, reading);
+      });
+    } else {
+      Stop(reads_.at(request.members.front().key), ReadOutcome::kFailed, error);
+    }
+    return;
+  }
+  // The count fills the pieces in order.
+  auto remaining = static_cast<std::uint64_t>(result);
+  bool reached = true;  // the transfer reached this piece's end
+  for (const Member& member : request.members) {
+    Reading& reading = reads_.at(member.key);
+    if (!reached) {
+      Queue(member.key, reading);  // not reached: starts again, ahead of later reads
+      continue;
+    }
+    Piece& piece = reading.pieces[member.piece];
+    const std::uint64_t moved = std::min(remaining, piece.length - piece.done);
+    piece.done += moved;
+    remaining -= moved;
+    if (piece.done == piece.length) {
+      continue;
+    }
+    reached = false;
+    // The first piece left short: a lone request that stopped here.
+    if (result == 0 || piece.done % settings_.alignment != 0) {
+      if (reading.spec.kind == IoKind::kWrite) {
+        Stop(reading, ReadOutcome::kFailed, EIO);  // a write that stops short failed
+      } else {
+        Stop(reading, ReadOutcome::kEndOfFile, 0);  // the file ended here
+      }
+    } else {
+      Queue(member.key, reading);  // continues, ahead of later reads
+    }
+  }
 }
 
 bool DirectReader::Finished(const Reading& reading) {
@@ -193,41 +352,17 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
   while (harvested > 0) {
     for (std::size_t c = 0; c < harvested; ++c) {
       const IoCompletion& completion = completions[c];
-      const auto token = tokens_.find(completion.token);
-      if (token == tokens_.end()) {
-        continue;  // not ours; the provider reports only what it accepted
+      const auto found = requests_.find(completion.token);
+      if (found == requests_.end()) {
+        continue;  // not ours, or seen already; the provider reports only what it accepted
       }
-      const auto [key, index] = token->second;
-      tokens_.erase(token);
-      Reading& reading = reads_.at(key);
-      Piece& piece = reading.pieces[index];
-      piece.in_flight = false;
-      settled_.push_back(key);
-      const std::int64_t result = completion.result;
-      if (result < 0) {
-        const int error = static_cast<int>(-result);
-        if (error == ECANCELED) {
-          Stop(reading, ReadOutcome::kCancelled, 0);
-        } else if ((error == EINTR || error == EAGAIN) && reading.retries < settings_.retries) {
-          ++reading.retries;  // transient: started again below, ahead of later reads
-          Queue(key, reading);
-        } else {
-          Stop(reading, ReadOutcome::kFailed, error);
-        }
-        continue;
+      const Request request = std::move(found->second);
+      requests_.erase(found);
+      for (const Member& member : request.members) {
+        reads_.at(member.key).pieces[member.piece].in_flight = false;
+        settled_.push_back(member.key);
       }
-      const auto transferred = static_cast<std::uint64_t>(result);
-      piece.done += std::min(transferred, piece.length - piece.done);
-      const bool aligned = (piece.done % settings_.alignment) == 0;
-      if (piece.done < piece.length && (transferred == 0 || !aligned)) {
-        if (reading.spec.kind == IoKind::kWrite) {
-          Stop(reading, ReadOutcome::kFailed, EIO);  // a write that stops short failed
-        } else {
-          Stop(reading, ReadOutcome::kEndOfFile, 0);  // the file ended here
-        }
-      } else if (piece.done < piece.length) {
-        Queue(key, reading);  // a short transfer continues, ahead of later reads
-      }
+      Settle(request, completion.result);  // restarted pieces start below, ahead of later reads
     }
     harvested = storage_.Harvest(completions, false);
   }

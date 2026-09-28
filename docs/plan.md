@@ -737,8 +737,9 @@ reservation policy) were recorded in M0.
         exact. That file was freshly
         written: this SSD reads files at rest, the FP16 artifact's
         among them, at ~13.3 GB/s by any path (RE-027). Coalesced
-        chunk-closure reads (BP-P1) remain open: they would cut
-        operations, not raise bandwidth.
+        chunk-closure reads (BP-P1) came later (below, with P4–P6): they
+        cut operations but did not raise bandwidth, and are off by
+        default.
       - **Rows this closes or advances:** BP-N3 (FP16), BP-A1's in-process
         pointer coverage (FP16), BP-A3 for FP16 (no F32 conversion and no
         CPU extra buffer type; every weight once in device VMM, and the
@@ -749,7 +750,7 @@ reservation policy) were recorded in M0.
         reconstruction, is EXL3's reconstructed weights, for P3), and in part BP-P1
         (every weight evicted and restored bit-identically, but with one
         read per chunk, not the coalesced chunk-closure reads the row
-        names), BP-L2 (cancellation in every stage drains before a slot or
+        names; those landed later, below), BP-L2 (cancellation in every stage drains before a slot or
         backing is reused, on the fakes; on `spark-b` a request cancelled
         while a slot is busy, and one cancelled while a copy is in flight
         (it completes, publishes whole bytes, then frees its slot), drain,
@@ -761,8 +762,8 @@ reservation policy) were recorded in M0.
       reconciliation, BP-A2, BP-A5; replaced by D-085's coarse peak check)
       and BP-A4's stale binding and negative controls (landed with P5,
       below). Next for the pager: write-back and state spill through the
-      zone (BP-P4, landed with P4 below), coalesced vectored reads, and
-      the D-033 handoff of a victim's backing.
+      zone (BP-P4, landed with P4 below), coalesced vectored reads (BP-P1,
+      landed below), and the D-033 handoff of a victim's backing.
 
       *P3 started: native EXL3 linears exact against upstream*
       ([report](experiments/backend-proof-p3/README.md)):
@@ -898,9 +899,36 @@ reservation policy) were recorded in M0.
         logits bit for bit, with no coverage violation, on two pairings.
         Tests: `unit.AcquireTest.*` (fake backend) and
         `unit.CudaPagedNodeTest.*` (`gpu`).
-      - Open: BP-P1's coalesced reads, which the owner chose to build in
-        M2. D-050 rows whose features arrive later move to those
-        features' milestones (owner, 2026-09-27).
+      - **BP-P1, coalesced chunk-closure reads** (built in M2 at the
+        owner's choice; off by default): with coalescing on, the direct
+        reader starts the reads waiting for room that continue one
+        another in a file as one vectored request (io_uring `READV`), one
+        segment per chunk into that chunk's own landing slot, up to
+        64 MiB and 1,024 segments; nothing waits in order to coalesce,
+        starts stay in file order (RE-026), a span's count fills its
+        chunks in order, a failed span is retried chunk by chunk, and a
+        span is cancelled only once no read in it is wanted
+        (`providers/direct_reader.h`). With it on, all four FP16 arms,
+        every weight evicted and restored twice (relocated once; the 490
+        device chunks in 328–352 requests), gave the recorded hashes bit
+        for bit, and both EXL3 fixtures (4.0 bpw G, 4.5 bpw O,
+        `--restores 2 --relocate`) rung 3's logits (`spark-b`, before
+        BP-S3's runners). Tests: `unit.CoalesceTest.*`,
+        `unit.UringTest.VectoredRequestsFillEachSegmentInOrder`,
+        `unit.VmmWork/PageInTest.AdjacentLoadsCoalesce…`,
+        `…CancellingOneLoadOfASpanLeavesItsNeighbourWhole` and
+        `unit.VmmWork/CudaCoalescing.*` (`gpu`), with it on; every other
+        test runs the default. A quick A/B (D-085) on an idle `spark`,
+        the FP16 artifact at rest (RE-027), depth 4, measured it slower:
+        12.91 GB/s against 13.17 with backing made per load (−2%) and
+        12.34 against 13.32 with backing mapped once (−7%), in ~30% fewer
+        requests. Under D-085 the A/B selects the implementation, so the
+        reader defaults to one request per chunk; coalescing stays a tested
+        option (`ReaderSettings::span_bytes`, the harnesses'
+        `--coalesce on`)
+        ([aggregate report](experiments/backend-proof/README.md#bp-p1-coalesced-reads)).
+      - D-050 rows whose features arrive later moved to those features'
+        milestones (owner, 2026-09-27; see the exit criteria).
 - [x] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
@@ -1032,6 +1060,12 @@ reservation policy) were recorded in M0.
   [adversarial matrix](reservation-policy.md#worked-cases-and-implementation-gates),
   with D-069's pause cases, passes on the fake backend with no vendor SDK
   present (`check`); rows that need real allocation pass as their BP cases.
+  M2 covers only what exists in M2: the parts of rows that name fork and
+  copy-on-write, suballocation, cached-state promotion, prefetch,
+  stalled-client termination, runtime closure-excess checks,
+  capacity-loss injection or every queue full at once are gated in the
+  milestones that build those features, as the matrix marks them (owner,
+  2026-09-27).
 - The BP [case matrix](backend-proof.md#case-matrix) passes, its
   fake-backend and CPU-only cases on the workstation and the rest on
   `spark` (`check:spark`), including repeated map/load/evict/restore.
@@ -1127,7 +1161,9 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
   delivers D-041's close, and the Ollama-native checks move to M8 with the
   Ollama profile.
 - Finite default context and output bounds bound every admitted request,
-  and the M3 rows of D-050's matrix pass. Memory use is bounded and
+  and the M3 rows of D-050's matrix pass, with the parts moved to M3
+  (suballocation holes, stalled-client termination, every queue full at
+  once). Memory use is bounded and
   explained by the memory breakdown.
 - The importer, verifier and front-door parsers pass their adversarial
   challenge; an interrupted import never appears valid.
@@ -1205,7 +1241,9 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
   provenance-matched controls, and catalog state and events show that only
   selected extents were displaced.
 - The [functional and adversarial cases](retention-policy.md#functional-and-adversarial-cases)
-  and the M4 rows of D-050's matrix pass with an EXL3 context in the
+  and the M4 rows of D-050's matrix, with the parts moved to M4 (fork and
+  copy-on-write, cached-state promotion, capacity-loss injection), pass
+  with an EXL3 context in the
   matrix; cache expiry never destroys admitted suspended work.
 - Through at least one unmodified named client: a long conversation on A,
   B under pressure, then A resumed, over both resident reuse and forced
@@ -1334,7 +1372,8 @@ sustained-use schedule and duration.
   catalog state and events.
 - Numerics stay correct against the pinned references after eviction and
   restoration and across within-step misses, and the M5 rows of D-050's
-  matrix pass with real routes.
+  matrix, with the runtime closure-excess check moved to M5, pass with
+  real routes.
 - D-036's generation limits hold on the pair: at most 10% added generation
   time, continuation time to first token included, and at most 20 ms p95 /
   100 ms p99 added token gaps against a resident control with matched state
@@ -1471,6 +1510,10 @@ before acceptance runs (D-036).
   commits nothing until it resumes and finishes.
 - Matched and normal reference comparisons are reported, with no numerical
   or lifetime regression in any supported configuration.
+- If prefetch is built, the part of D-050's
+  [matrix](reservation-policy.md#worked-cases-and-implementation-gates)
+  moved to M7 passes: repeated speculation keeps its full peak in `J` or
+  the owning phase.
 
 ## M8 — Product and first release  `pending`
 

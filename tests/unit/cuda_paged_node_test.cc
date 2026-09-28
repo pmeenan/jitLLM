@@ -185,7 +185,7 @@ TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
                                               : std::filesystem::path(::testing::TempDir());
   std::filesystem::create_directories(directory);
 
-  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false});
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
   Model first(node, 0);
   Model second(node, 1);
   const std::array<Model*, 2> models = {&first, &second};

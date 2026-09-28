@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -100,6 +101,7 @@ using jitllm::test_support::Failed;
 constexpr std::uint64_t kSize = 64ULL * 1024;  // one extent, one slot
 constexpr std::size_t kExtents = 6;
 constexpr std::size_t kSlots = 2;
+constexpr std::size_t kMostSlots = 4;  // the zone's backing: Build takes at most this many
 // The last extent's range is shorter than its backing, as a group's last
 // chunk is.
 constexpr std::uint64_t kTail = kSize - 8192;
@@ -201,12 +203,13 @@ class EvictProgram final : public TaskProgram {
 class PageInTest : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
-    // The zone: host backing the CPU and the device reach.
-    zone_ = memory_.Reserve(Bytes(kSize * kSlots)).value();
-    zone_backing_ = memory_.Create(kHostClass, Bytes(kSize * kSlots)).value();
+    // The zone: host backing the CPU and the device reach, room for the
+    // largest zone a test builds.
+    zone_ = memory_.Reserve(Bytes(kSize * kMostSlots)).value();
+    zone_backing_ = memory_.Create(kHostClass, Bytes(kSize * kMostSlots)).value();
     ASSERT_TRUE(memory_.Map(zone_, Bytes(0), zone_backing_).has_value());
-    ASSERT_TRUE(
-        memory_.SetAccess(zone_, Bytes(0), Bytes(kSize * kSlots), Access::kReadWrite).has_value());
+    ASSERT_TRUE(memory_.SetAccess(zone_, Bytes(0), Bytes(kSize * kMostSlots), Access::kReadWrite)
+                    .has_value());
     // Two places for the weights, the second for relocation: address
     // space only, until a load maps backing.
     weights_ = memory_.Reserve(Bytes(kSize * kExtents)).value();
@@ -236,13 +239,21 @@ class PageInTest : public ::testing::TestWithParam<bool> {
     baseline_ = memory_.backings();
   }
 
-  void Build(std::size_t slots = kSlots, std::size_t board = 32,
-             std::uint64_t budget = kSize * 64) {
+  // `span`: the reader's span_bytes. By default the reader's own (one
+  // request per 16 KiB piece), as most tests here count them; the
+  // coalescing tests raise it.
+  void Build(std::size_t slots = kSlots, std::size_t board = 32, std::uint64_t budget = kSize * 64,
+             std::uint32_t span = jitllm::providers::kNoCoalescing) {
     board_ = std::make_unique<CompletionBoard>(board, wake_);
     storage_lane_ = std::make_unique<StorageService>(
         storage_,
-        ReaderSettings{
-            .alignment = 4096, .request_bytes = 16 * 1024, .retries = 2, .reads = 32, .waiters = 8},
+        ReaderSettings{.alignment = 4096,
+                       .request_bytes = 16 * 1024,
+                       .retries = 2,
+                       .reads = 32,
+                       .waiters = 8,
+                       .span_bytes = span,
+                       .span_segments = jitllm::providers::kMaxSegments},
         *board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
@@ -254,6 +265,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
       backing_lane_ = std::make_unique<BackingService>(
           &memory_, *board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     }
+    ASSERT_LE(slots, kMostSlots);
     LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     for (std::size_t i = 0; i < slots; ++i) {
       landing.slots.push_back(Slot(i));
@@ -564,6 +576,105 @@ TEST_P(PageInTest, AFullZoneHoldsLoadsBackInOrder) {
   }
   EXPECT_EQ(scheduler_->slots_busy(), 0U);
   EXPECT_EQ(memory_.backings(), baseline_ + kExtents);
+}
+
+// BP-P1: loads whose reads wait behind a full provider and continue one
+// another in the file share one vectored request, a segment per piece
+// into each load's own slot. The zone bounds a span: never more than its
+// slots. A span left short at an aligned point publishes the loads it
+// filled and continues the rest, in file order, and every load publishes
+// only whole bytes, only after its copy's fence.
+TEST_P(PageInTest, AdjacentLoadsCoalesceWithinTheZoneAndSurviveAShortSpan) {
+  constexpr std::size_t kZone = 4;
+  Build(kZone, 32, kSize * 64, 1U << 20U);
+  storage_.SetDepth(1);  // later reads wait for room behind the first
+  HoldNext(1);
+  // The second request (extents 1-3) moves extent 1 and 8 KiB of extent 2.
+  storage_.ScriptNext({.submission = Submission::kAccepted,
+                       .result = static_cast<std::int64_t>(kSize + 8192),
+                       .hold = false});
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(1, Load(report, All())).has_value());
+  Settle();
+  ASSERT_EQ(storage_.submitted().size(), 1U);  // extent 0's four pieces, held
+  EXPECT_EQ(storage_.submitted()[0].segments.size(), 4U);
+  EXPECT_EQ(scheduler_->slots_busy(), kZone);
+  for (int round = 0; round < 40 && !report.outcome; ++round) {
+    ReleaseReads();
+    Settle();
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  for (std::size_t i = 0; i < kExtents; ++i) {
+    EXPECT_EQ(View(extents_[i]).state, ExtentState::kResident) << i;
+    EXPECT_TRUE(Loaded(i, weights_)) << i;
+  }
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  const auto& requests = storage_.submitted();
+  ASSERT_GE(requests.size(), 3U);
+  // Extents 1-3 waited together: one request for their twelve pieces.
+  EXPECT_EQ(requests[1].offset, kSize);
+  EXPECT_EQ(requests[1].segments.size(), 12U);
+  // What the short span left: extent 2 from 8 KiB on, with extent 3.
+  EXPECT_EQ(requests[2].offset, (2 * kSize) + 8192);
+  std::size_t pieces = 0;
+  std::uint64_t reached = 0;
+  for (const auto& request : requests) {
+    // Reads start in file order (RE-026), each into slots of the zone,
+    // never more than the zone holds.
+    EXPECT_GE(request.offset, reached);
+    reached = request.offset;
+    EXPECT_LE(request.length, kZone * kSize);
+    const std::size_t segments = std::max<std::size_t>(request.segments.size(), 1);
+    pieces += segments;
+    for (const auto& segment : request.segments) {
+      const auto address = reinterpret_cast<std::uint64_t>(segment.memory);
+      EXPECT_GE(address, Slot(0));
+      EXPECT_LE(address + segment.length, Slot(kZone));
+    }
+  }
+  EXPECT_LT(requests.size(), pieces);  // fewer requests than pieces
+}
+
+// Withdrawing one load whose read shares a span with another's never
+// cancels the span: the neighbour publishes whole bytes, and the withdrawn
+// load keeps its slot until the span completes, then unwinds.
+TEST_P(PageInTest, CancellingOneLoadOfASpanLeavesItsNeighbourWhole) {
+  Build(4, 32, kSize * 64, 1U << 20U);
+  storage_.SetDepth(1);
+  HoldNext(2);  // extent 0's read, then the span of extents 1 and 2
+  LoadProgram::Report first;
+  LoadProgram::Report cancelled;
+  LoadProgram::Report neighbour;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0}))).has_value());
+  Settle();
+  ASSERT_TRUE(scheduler_->Start(2, Load(cancelled, Of({1}))).has_value());
+  ASSERT_TRUE(scheduler_->Start(3, Load(neighbour, Of({2}))).has_value());
+  Settle();
+  ASSERT_EQ(storage_.submitted().size(), 1U);
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  ASSERT_EQ(storage_.submitted().size(), 2U);
+  EXPECT_EQ(storage_.submitted()[1].offset, kSize);
+  EXPECT_EQ(storage_.submitted()[1].segments.size(), 8U);
+  EXPECT_EQ(scheduler_->slots_busy(), 2U);
+
+  ASSERT_TRUE(scheduler_->Cancel(2));
+  Settle();
+  // The span is still in flight and not cancelled: both slots stay busy.
+  EXPECT_EQ(storage_.in_flight(), 1U);
+  EXPECT_EQ(scheduler_->slots_busy(), 2U);
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kLoading);
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(cancelled.outcome, TaskOutcome::kCancelled);
+  EXPECT_EQ(neighbour.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(View(extents_[2]).state, ExtentState::kResident);
+  EXPECT_TRUE(Loaded(2, weights_));
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_EQ(memory_.backings(), baseline_ + 2);  // extents 0 and 2
+  EXPECT_EQ(storage_.in_flight(), 0U);
 }
 
 // A slot is not read into again until the copy out of it has completed.
@@ -1726,11 +1837,16 @@ TEST(StorageLanePollTest, APollingStorageLaneTakesEveryReadAndStopsOnClose) {
   const int fd = storage.AddFile(contents);
   jitllm::base::WakeFlag wake;
   CompletionBoard board{8, wake};
-  StorageService lane(
-      storage,
-      ReaderSettings{
-          .alignment = 4096, .request_bytes = 16 * 1024, .retries = 0, .reads = 8, .waiters = 2},
-      board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 4}, SchedulerSettings::kLongest);
+  StorageService lane(storage,
+                      ReaderSettings{.alignment = 4096,
+                                     .request_bytes = 16 * 1024,
+                                     .retries = 0,
+                                     .reads = 8,
+                                     .waiters = 2,
+                                     .span_bytes = jitllm::providers::kNoCoalescing,
+                                     .span_segments = jitllm::providers::kMaxSegments},
+                      board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 4},
+                      SchedulerSettings::kLongest);
   auto* memory = static_cast<std::byte*>(
       std::aligned_alloc(4096, contents.size()));  // NOLINT(cppcoreguidelines-no-malloc)
   {

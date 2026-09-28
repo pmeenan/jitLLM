@@ -6,7 +6,8 @@
 // are submitted; a failure to hand them over leaves their outcome unknown,
 // since the kernel may have consumed some. Cancellation completions are
 // consumed here and never reported: only the original's completion retires
-// its memory.
+// its memory. A vectored request is one READV or WRITEV entry, whose
+// iovecs this provider keeps until its completion.
 //
 // Wake writes to an eventfd that a read in the same ring waits on, armed
 // only while Harvest waits: that read completing ends the wait. A flag
@@ -16,6 +17,8 @@
 
 #ifndef JITLLM_PROVIDERS_URING_STORAGE_H_
 #define JITLLM_PROVIDERS_URING_STORAGE_H_
+
+#include <sys/uio.h>
 
 #include <atomic>
 #include <cstddef>
@@ -81,6 +84,8 @@ class UringStorage final : public Storage {
   platform::IoUring ring_;
   std::size_t depth_;
   std::set<std::uint64_t> in_flight_;
+  // A vectored request's iovecs, by token, until its completion.
+  std::map<std::uint64_t, std::vector<iovec>> vectors_;
   std::size_t cancels_in_flight_ = 0;
   // Cancellations not yet completed, by the token they target: a token is
   // not reused until its cancellation is done, or it could hit the new

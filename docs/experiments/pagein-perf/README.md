@@ -56,7 +56,9 @@ Not a cause: the zone's size, the copy engine, and reading per chunk. With
 the fixes, 2 × depth slots suffice, and the storage-queue study found
 equal bandwidth for 2, 4 and 8 MiB requests at equal bytes in flight
 ([storage-queue](../storage-queue/README.md)), so coalescing reads (BP-P1)
-would reduce operations, not raise bandwidth.
+would reduce operations, not raise bandwidth. (Built later, it did not,
+and is off by default:
+[BP-P1](../backend-proof/README.md#bp-p1-coalesced-reads).)
 
 **What disk speed is (RE-027).** The ~14.9 GB/s above, like every earlier
 measurement of this SSD (io-path, storage-queue, dmabuf-direct), reads a

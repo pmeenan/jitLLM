@@ -1701,7 +1701,12 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 **Paging (weights and state)**
 
 - **BP-P1:** Evict all weights and restore them with coalesced chunk-closure
-  direct reads. Logits are bit-identical to resident.
+  direct reads. Logits are bit-identical to resident. *Passes
+  (2026-09-27): with coalescing on, all four FP16 arms and both EXL3
+  fixtures restore every weight through coalesced, vectored reads
+  bit-identically. A quick A/B measured coalescing slower than one read
+  per chunk, so it is an option, off by default (D-085)
+  ([aggregate report](experiments/backend-proof/README.md#bp-p1-coalesced-reads)).*
 - **BP-P2:** Partial eviction of one layer, of the trellis only, of side
   vectors or biases only, of a shared small-tensor chunk, of a padded tail
   and of a tensor crossing a chunk boundary. An incomplete closure refuses

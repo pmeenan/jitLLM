@@ -111,8 +111,13 @@ class AcquireTest : public ::testing::Test {
     board_ = std::make_unique<sc::CompletionBoard>(32, wake_);
     storage_lane_ = std::make_unique<sc::StorageService>(
         storage_,
-        jitllm::providers::ReaderSettings{
-            .alignment = 4096, .request_bytes = 16 * 1024, .retries = 2, .reads = 32, .waiters = 8},
+        jitllm::providers::ReaderSettings{.alignment = 4096,
+                                          .request_bytes = 16 * 1024,
+                                          .retries = 2,
+                                          .reads = 32,
+                                          .waiters = 8,
+                                          .span_bytes = jitllm::providers::kNoCoalescing,
+                                          .span_segments = jitllm::providers::kMaxSegments},
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,

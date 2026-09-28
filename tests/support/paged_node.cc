@@ -67,6 +67,15 @@ bool Fence(providers::DeviceExecution& execution, providers::StreamId stream) {
 
 }  // namespace
 
+providers::Submission CountingStorage::Submit(const providers::IoRequest& request) {
+  const auto submitted = inner_.Submit(request);
+  if (submitted != providers::Submission::kNotStarted) {
+    requests.fetch_add(1, std::memory_order_relaxed);
+    pieces.fetch_add(std::max<std::size_t>(request.segments.size(), 1), std::memory_order_relaxed);
+  }
+  return submitted;
+}
+
 PagedNode::~PagedNode() {
   if (torn_down_ || scheduler_ == nullptr) {
     return;
@@ -126,6 +135,7 @@ Status PagedNode::Open() {
     return Error(std::format("io_uring: {}", storage.error().message()));
   }
   storage_ = std::move(*storage);
+  counting_ = std::make_unique<CountingStorage>(*storage_);
   domain_ = catalog_.AddDomain("gb10");
   // The zone first: a persistent pool, mapped before anything pages.
   return MapResident(zone_, "the landing zone", settings_.slots * kPagedExtent,
@@ -253,10 +263,18 @@ std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64
 Status PagedNode::Start(Bytes budget) {
   budget_ = budget;
   board_ = std::make_unique<sc::CompletionBoard>(1024, wake_);
+  // One request per 2 MiB chunk (the reader's default), or with coalesce
+  // coalesced chunk reads (BP-P1) in spans up to kSpanBytes.
   storage_lane_ = std::make_unique<sc::StorageService>(
-      *storage_,
+      *counting_,
       providers::ReaderSettings{
-          .alignment = 4096, .request_bytes = 2U << 20U, .retries = 3, .reads = 1024, .waiters = 8},
+          .alignment = 4096,
+          .request_bytes = 2U << 20U,
+          .retries = 3,
+          .reads = 1024,
+          .waiters = 8,
+          .span_bytes = settings_.coalesce ? providers::kSpanBytes : providers::kNoCoalescing,
+          .span_segments = providers::kMaxSegments},
       *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32});
   device_lane_ = std::make_unique<sc::DeviceService>(
       *execution_, streams_, *board_,
@@ -383,7 +401,7 @@ Status PagedNode::Post(std::unique_ptr<sc::TaskProgram> program, Done& done,
 
 Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
                        std::vector<LoadStats>& log) {
-  LoadStats stats{.what = std::move(what), .extents = 0, .seconds = 0};
+  LoadStats stats{.what = std::move(what), .extents = 0, .seconds = 0, .requests = 0, .pieces = 0};
   for (const ExtentId extent : extents) {
     if (catalog_.Describe(extent).value().state != catalog::ExtentState::kResident) {
       ++stats.extents;
@@ -394,6 +412,8 @@ Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
     return Error("a load's closure");
   }
   Done done;
+  const std::uint64_t requests = counting_->requests.load(std::memory_order_relaxed);
+  const std::uint64_t pieces = counting_->pieces.load(std::memory_order_relaxed);
   const auto start = std::chrono::steady_clock::now();
   if (auto posted =
           Post(std::make_unique<RunProgram>(done, *closure, sc::DeviceJob{}), done, stats.what);
@@ -401,6 +421,9 @@ Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
     return posted;
   }
   stats.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  // The load's reads have all completed, so their counts were made before.
+  stats.requests = counting_->requests.load(std::memory_order_relaxed) - requests;
+  stats.pieces = counting_->pieces.load(std::memory_order_relaxed) - pieces;
   log.push_back(std::move(stats));
   return {};
 }

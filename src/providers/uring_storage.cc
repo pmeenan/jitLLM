@@ -4,6 +4,7 @@
 #include "providers/uring_storage.h"
 
 #include <sys/eventfd.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <span>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "platform/io_uring.h"
@@ -112,7 +114,49 @@ void UringStorage::Enter(unsigned wait_for) {
 Submission UringStorage::Submit(const IoRequest& request) {
   if (in_flight_.size() >= depth_ || (request.token & kCancelBit) != 0 ||
       (request.token | kCancelBit) == kWakeToken || in_flight_.contains(request.token) ||
-      cancelling_.contains(request.token) || request.memory == nullptr || request.length == 0) {
+      cancelling_.contains(request.token)) {
+    return Submission::kNotStarted;
+  }
+  if (!request.segments.empty()) {
+    // Vectored: the iovecs stay here until the completion, since the
+    // kernel may read them only when it consumes the entry.
+    if (request.segments.size() > kMaxSegments) {
+      return Submission::kNotStarted;
+    }
+    std::vector<iovec> vectors;
+    vectors.reserve(request.segments.size());
+    std::uint64_t total = 0;
+    for (const IoSegment& segment : request.segments) {
+      if (segment.memory == nullptr || segment.length == 0) {
+        return Submission::kNotStarted;
+      }
+      vectors.push_back(iovec{.iov_base = segment.memory, .iov_len = segment.length});
+      total += segment.length;
+    }
+    if (total != request.length) {
+      return Submission::kNotStarted;  // `length` is the segments' sum (storage.h)
+    }
+    // Kept before the entry is prepared: once prepared, it will reach the
+    // kernel. (A token's iovecs go with its completion, and the token is
+    // not in flight, so none are kept for it.)
+    const auto [kept, inserted] = vectors_.emplace(request.token, std::move(vectors));
+    if (!inserted) {
+      return Submission::kNotStarted;
+    }
+    const auto count = static_cast<unsigned>(kept->second.size());
+    const bool prepared = request.kind == IoKind::kRead
+                              ? ring_.PrepareReadVectored(request.fd, kept->second.data(), count,
+                                                          request.offset, request.token)
+                              : ring_.PrepareWriteVectored(request.fd, kept->second.data(), count,
+                                                           request.offset, request.token);
+    if (!prepared) {
+      vectors_.erase(kept);  // the ring had no room: nothing reaches the kernel
+      return Submission::kNotStarted;
+    }
+    in_flight_.insert(request.token);
+    return Hand();
+  }
+  if (request.memory == nullptr || request.length == 0) {
     return Submission::kNotStarted;
   }
   const bool prepared = request.kind == IoKind::kRead
@@ -170,6 +214,7 @@ std::size_t UringStorage::Harvest(std::span<IoCompletion> out, bool wait) {
         continue;
       }
       in_flight_.erase(completion.user_data);
+      vectors_.erase(completion.user_data);  // the kernel is done with them
       out[produced++] = IoCompletion{.token = completion.user_data, .result = completion.result};
     }
   }

@@ -6,8 +6,9 @@
 // test scripts. It checks direct-I/O alignment the way the kernel does
 // (memory, offset and length multiples of the alignment, else -EINVAL),
 // and moves data only when a request completes, so a reader that uses
-// memory before its completion sees what was there before. It never
-// blocks.
+// memory before its completion sees what was there before. A vectored
+// request's count fills its segments in order, as the kernel's does. It
+// never blocks.
 
 #ifndef JITLLM_PROVIDERS_FAKE_FAKE_STORAGE_H_
 #define JITLLM_PROVIDERS_FAKE_FAKE_STORAGE_H_
@@ -32,7 +33,7 @@ class FakeStorage final : public Storage {
   int AddFile(std::vector<std::byte> contents);
   std::span<const std::byte> Contents(int fd) const;
 
-  // How the next submission goes.
+  // How the next submission it has room for goes.
   struct Script {
     Submission submission = Submission::kAccepted;
     // Overrides the result: a short count, or -errno.
@@ -43,6 +44,10 @@ class FakeStorage final : public Storage {
   void ScriptNext(const Script& script) { scripts_.push_back(script); }
   // Lets a held request complete at the next harvest.
   bool Release(std::uint64_t token);
+
+  // Changes how many requests it takes at once: fewer than are in flight
+  // refuses new ones until enough complete.
+  void SetDepth(std::size_t depth) { depth_ = depth; }
 
   std::size_t depth() const override { return depth_; }
   std::size_t in_flight() const override { return requests_.size(); }
@@ -74,6 +79,7 @@ class FakeStorage final : public Storage {
   std::map<std::uint64_t, Pending> requests_;  // by token
   std::uint64_t next_sequence_ = 0;
   std::vector<IoRequest> submitted_;
+  std::deque<std::vector<IoSegment>> segments_;  // vectored requests', for their lifetime
 };
 
 }  // namespace jitllm::providers::fake

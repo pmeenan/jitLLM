@@ -2960,7 +2960,7 @@ or a measured need for shared binary packages makes maintaining this explicit
 closure more work than a package manager. Preserve pinned inputs, cross-build
 separation and D-017's profile exclusion under any replacement.
 
-## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054)
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085)
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
 experimental under D-018:
@@ -2993,7 +2993,11 @@ experimental under D-018:
   one iovec per separately admitted and protected destination, bounded by
   bytes and `IOV_MAX`. **This amends D-035's rule** that disk adjacency
   alone never permits one read into scattered destinations. Runs still
-  never bridge resident chunks.
+  never bridge resident chunks. *Measured 2026-09-27 (BP-P1): natively,
+  coalescing loaded the FP16 fixture 2–7% slower than one read per chunk,
+  so under D-085 the reader reads one chunk per request by default and
+  coalescing is an option this rule permits
+  ([backend proof](experiments/backend-proof/README.md#bp-p1-coalesced-reads)).*
 - **Integrity and validation.** Hashes are computed at import and checked
   at install, replication and explicit verification (D-054). Verification
   treats the artifact as untrusted input:

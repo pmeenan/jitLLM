@@ -106,7 +106,8 @@ bool Measure(UringStorage& storage, std::byte* buffer, int fd, std::uint64_t fil
           .offset = next_offset,
           .memory =
               buffer + (slot * request),  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-          .length = static_cast<std::uint32_t>(request)};
+          .length = static_cast<std::uint32_t>(request),
+          .segments = {}};
       started[slot] = Clock::now();
       if (storage.Submit(io) == Submission::kNotStarted) {
         break;

@@ -185,6 +185,31 @@ bool IoUring::PrepareWrite(int fd, const void* memory, std::uint32_t length, std
   return true;
 }
 
+bool IoUring::PrepareVectored(std::uint8_t opcode, int fd, const struct iovec* vectors,
+                              unsigned count, std::uint64_t offset, std::uint64_t user_data) {
+  auto* entry = static_cast<io_uring_sqe*>(NextEntry());
+  if (entry == nullptr) {
+    return false;
+  }
+  entry->opcode = opcode;
+  entry->fd = fd;
+  entry->off = offset;
+  entry->addr = reinterpret_cast<std::uint64_t>(vectors);
+  entry->len = count;  // iovecs, not bytes
+  entry->user_data = user_data;
+  return true;
+}
+
+bool IoUring::PrepareReadVectored(int fd, const struct iovec* vectors, unsigned count,
+                                  std::uint64_t offset, std::uint64_t user_data) {
+  return PrepareVectored(IORING_OP_READV, fd, vectors, count, offset, user_data);
+}
+
+bool IoUring::PrepareWriteVectored(int fd, const struct iovec* vectors, unsigned count,
+                                   std::uint64_t offset, std::uint64_t user_data) {
+  return PrepareVectored(IORING_OP_WRITEV, fd, vectors, count, offset, user_data);
+}
+
 bool IoUring::PrepareCancel(std::uint64_t target, std::uint64_t user_data) {
   auto* entry = static_cast<io_uring_sqe*>(NextEntry());
   if (entry == nullptr) {

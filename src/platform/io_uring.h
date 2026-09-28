@@ -19,6 +19,8 @@
 #include <span>
 #include <system_error>
 
+struct iovec;
+
 namespace jitllm::platform {
 
 struct Completion {
@@ -48,6 +50,13 @@ class IoUring {
                    std::uint64_t user_data);
   bool PrepareWrite(int fd, const void* memory, std::uint32_t length, std::uint64_t offset,
                     std::uint64_t user_data);
+  // Vectored (IORING_OP_READV, IORING_OP_WRITEV): `count` iovecs at
+  // `vectors`, which must stay valid until the request completes (the
+  // kernel may read them when it consumes the entry, on a later Submit()).
+  bool PrepareReadVectored(int fd, const struct iovec* vectors, unsigned count,
+                           std::uint64_t offset, std::uint64_t user_data);
+  bool PrepareWriteVectored(int fd, const struct iovec* vectors, unsigned count,
+                            std::uint64_t offset, std::uint64_t user_data);
   // Asks the kernel to cancel the request with `target`; the cancellation
   // completes with its own `user_data`, and the target still completes.
   bool PrepareCancel(std::uint64_t target, std::uint64_t user_data);
@@ -69,6 +78,8 @@ class IoUring {
   void Release();
   // The next free submission entry, or nullptr.
   void* NextEntry();
+  bool PrepareVectored(std::uint8_t opcode, int fd, const struct iovec* vectors, unsigned count,
+                       std::uint64_t offset, std::uint64_t user_data);
 
   int fd_ = -1;
   void* sq_ring_ = nullptr;

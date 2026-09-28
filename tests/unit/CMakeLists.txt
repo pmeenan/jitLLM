@@ -122,6 +122,8 @@ if(JITLLM_CUDA)
   # The D-081 page-in path over io_uring, a host-VMM landing zone and
   # device VMM, the same on both classes (D-082). Each test runs both
   # instantiations (the VMM work on the device lane or its own).
+  # Coalesced restores (CudaCoalescing, BP-P1) are verified on the GB10
+  # only so far.
   # Write-back (CudaWriteBack) is verified on the GB10 only so far.
   add_executable(cuda_pagein_test cuda_pagein_test.cc)
   target_include_directories(cuda_pagein_test SYSTEM PRIVATE

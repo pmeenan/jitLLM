@@ -1003,7 +1003,8 @@ int RunRestore(Memory& memory, const Restore& r) {
             .fd = fd,
             .offset = next * kExtent,
             .memory = reinterpret_cast<std::byte*>(target),  // NOLINT(performance-no-int-to-ptr)
-            .length = static_cast<std::uint32_t>(kExtent)};
+            .length = static_cast<std::uint32_t>(kExtent),
+            .segments = {}};
         started[next] = Clock::now();
         if ((*storage)->Submit(io) != Submission::kAccepted) {
           break;

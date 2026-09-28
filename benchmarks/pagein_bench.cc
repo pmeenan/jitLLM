@@ -621,7 +621,9 @@ Status Bench::Setup() {
                                         .request_bytes = 2U << 20U,
                                         .retries = 3,
                                         .reads = operations,
-                                        .waiters = 8},
+                                        .waiters = 8,
+                                        .span_bytes = jitllm::providers::kNoCoalescing,
+                                        .span_segments = jitllm::providers::kMaxSegments},
       *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32}, o_.storage_poll);
   const std::array<jitllm::providers::StreamId, 1> streams = {stream_};
   device_lane_ = std::make_unique<sc::DeviceService>(

@@ -236,7 +236,10 @@ class Alternation {
  public:
   explicit Alternation(const Options& options)
       : o_(options),
-        node_({.compute_streams = 2, .slots = ts::kPagedSlots, .inline_lanes = false}),
+        node_({.compute_streams = 2,
+               .slots = ts::kPagedSlots,
+               .inline_lanes = false,
+               .coalesce = false}),
         fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_),
         exl3_(node_, o_.exl3, kExl3, kExl3) {}
 

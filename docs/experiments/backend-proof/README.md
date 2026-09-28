@@ -342,6 +342,90 @@ gave the same results, and the timings and memory below are its):
   workspace. Each acquisition evicts only the other's weights, and the
   bytes read back are the file's. Teardown leaves no backing.
 
+## BP-P1: coalesced reads
+
+Built and correct, but off by default: the A/B below measured it slower
+than one read per chunk, so under D-085 the reader keeps one request per
+chunk and coalescing is an option.
+
+**What changed** (`direct_reader.h`, `storage.h`, `uring_storage.h`,
+`io_uring.h`). D-056's page-in contract, which the owner chose to build
+in M2:
+- **Coalescing** (`ReaderSettings::span_bytes`; off unless set, and the
+  harnesses' `--coalesce on`). When the provider has room, the direct
+  reader starts the queued reads that continue one another in a file as
+  one vectored request (io_uring `READV`). Each chunk is one segment into
+  its own landing slot (or its own host backing, in place).
+- **Why vectored, not consecutive slots.** Slots are granted one per load
+  and freed one per copy, in any order, so consecutive free slots are
+  rare; segments need no change to the scheduler's slot or operation
+  model. Every load keeps its own read operation, which completes only
+  when its whole span has.
+- **Bounds.** A span stops where the file range does not continue (a
+  resident chunk, another shard), at a write (write-back never
+  coalesces), at 64 MiB (the prototype's run size) and at 1,024 segments
+  (`IOV_MAX`). The zone bounds it further: only reads that hold slots
+  exist.
+- **Nothing waits in order to coalesce.** A read starts as soon as the
+  provider takes it; only reads already waiting for room join. Starts
+  stay in file order (RE-026).
+- **Short or failed spans.** A span's count fills its chunks in order.
+  Those it filled are done; the first it left short continues, or ends
+  as end of file at an unaligned point or a count of zero; the rest start
+  again, ahead of later reads. A retryable error retries each read; any
+  other error starts each read again on its own, so it lands on the read
+  it belongs to.
+- **Cancellation.** A span is cancelled only once every read in it is
+  withdrawn. A withdrawn read still ends only when its span completes, so
+  its slot is freed only after that.
+
+**Results**, all with coalescing on (the harnesses' default when these
+runs were made, before BP-S3's runners; now `--coalesce on`):
+- **Rungs 4 and 5** (`spark-b`, 2026-09-27, `jitllm_fp16_paged`
+  `7b8d4f3d…`): `run_paged.sh threads` on all four FP16 arms gave the
+  recorded hashes (`bb8ae5e7…`, `3560d337…`, `bfb36f19…`, `69ff0821…`),
+  zero bit differences over four evaluations (two with every weight
+  evicted and restored, one relocated) and no coverage violation. In the
+  two arms whose counts were read (`control` fused, `heldout` unfused),
+  the 490 device chunks took 343–452 requests on the first load and
+  328–352 on each restore; the 130 host-table chunks, read in place as
+  each one's backing is made, did not coalesce.
+- **EXL3** (same host and build): `jitllm_exl3_paged --restores 2
+  --relocate` on 4.0 bpw G and 4.5 bpw O wrote every logits file equal to
+  the P4 run's (rung 3's), with zero bit differences and no violation.
+- **A/B** (D-085's quick check): `jitllm_fp16_paged --load-only 6`, the
+  490 device chunks (988 MB) through the zone at depth 4 with 8 slots,
+  coalescing on (64 MiB spans) and off (one request per chunk), on
+  `spark`, 2026-09-28 01:52–01:54 UTC. Three interleaved rounds, one
+  process per variant per round, each starting after 10 s with no other
+  GPU process, no jitLLM or benchmark process and a 1-minute load under
+  1.5 (0.06–0.31 at the starts). The artifact's shard was written on
+  2026-09-23, so at rest (RE-027). GB/s over loads 2–6 (n = 15; the
+  first includes warm-up, 9.6–11.7):
+
+| Backing | Coalescing on | Off | On against off | Requests per load, on |
+| --- | ---: | ---: | ---: | ---: |
+| Made per load (the runtime's path) | 12.91 (12.28–13.13) | 13.17 (13.02–13.23) | −2.0% | 331–353 |
+| Mapped once | 12.34 (11.80–13.26) | 13.32 (13.21–13.35) | −7.4% | 331–354 |
+
+Neither is more than ~10% slower, which is the question D-085 asks; but
+coalescing is not faster here either, and with backing mapped once, where
+reads back up most, it is slower and more variable. Plausibly a span
+hands its chunks to the copy only once all of them have landed, so the
+zone turns over in bursts; not investigated.
+
+**Selection (D-085).** A quick A/B selects the implementation, so the
+reader's default is the faster one here: one request per chunk
+(`ReaderSettings::span_bytes` defaults to `kNoCoalescing`). Coalescing
+stays built and tested as an option: the fake-provider tests
+(`unit.CoalesceTest.*`, `unit.VmmWork/PageInTest.AdjacentLoadsCoalesce…`,
+`…CancellingOneLoadOfASpanLeavesItsNeighbourWhole`), the kernel's
+vectored requests (`unit.UringTest.VectoredRequestsFillEachSegmentInOrder`)
+and `unit.VmmWork/CudaCoalescing.*` on the GB10 run with it on; every
+other test, and the harnesses unless given `--coalesce on`, run the
+default. When on, the span is 64 MiB, a tuning value
+(docs/artifact-format.md).
+
 ## The case matrix
 
 | Case | Status | Where |
@@ -353,7 +437,7 @@ gave the same results, and the timings and memory below are its):
 | BP-A5 | Counters reconciled with the catalog on the Spark ([vmm-counters](../vmm-counters/README.md)); the per-run census is replaced by D-085's peak check, which passes | plan.md |
 | BP-N1–N6 | Pass | P0, P1, P3 |
 | BP-N7 | Reported diagnostic: the CPU path is not bit-exact across CPU variants | P0 |
-| BP-P1 | Every weight evicted and restored bit-identically, one direct read per chunk in file order at disk speed; coalesced chunk-closure reads are not built | P2, pagein-perf; open, for the owner |
+| BP-P1 | Passes with coalescing on: every weight evicted and restored through coalesced, vectored chunk reads, bit-identical on all four FP16 arms and both EXL3 fixtures. Slower than one read per chunk in a quick A/B, so off by default (D-085) | above |
 | BP-P2 | Passes on both representations | above |
 | BP-P3 | Passes: FP16 duplicated and shared give the same logits; the EXL3 head is its own resource | above |
 | BP-P4 | Passes on both representations, poisoned and managed | above |
@@ -366,7 +450,7 @@ gave the same results, and the timings and memory below are its):
 | BP-F3 | Deferred to serving: D-085 judges each engine end to end against its reference | — |
 | BP-F4 | Per-launch host cost reported; per-token against upstream's decode deferred with BP-F3 | [launch-overhead](../launch-overhead/README.md) |
 | BP-S1, S2, S4 | Pass | P1, P2 |
-| BP-S3 | Passes: FP16 and EXL3 alternate in one process, each evicting the other's weights, every evaluation equal to rung 3 | below |
+| BP-S3 | Passes: FP16 and EXL3 alternate in one process, each evicting the other's weights, every evaluation equal to rung 3 | above |
 
 ## D-050's adversarial matrix (M2 rows)
 
@@ -391,25 +475,23 @@ Each M2 row, with the tests that carry it
     new; expiry itself is M4's retention);
   - unknown provider completion and budget reduction
     (`unit.SchedulerTest.*`, `unit.CommitmentLedger.*`).
-- **Only in part, because the feature the row names does not exist
-  yet.** These are for the owner: each is either built now or its gate
-  moves to the milestone that introduces the feature.
+- **Moved to the milestones that build the feature** (owner, 2026-09-27;
+  the matrix marks each part *moved*, and M2's exit criterion covers only
+  the rest):
   - state growth through branch or copy-on-write, and a fork's divergent
-    growth (nothing forks state yet);
-  - many suballocation holes (no suballocation until state blocks share
-    extents);
-  - envelope upgrade racing cached-state promotion (no promotion before
-    M4's retention);
-  - repeated speculation with prefetch (no prefetch);
-  - a slow or disconnected client's termination (M3's front door; output
-    limits exist in `OutputBuffer`);
+    growth: M4 (retention's branches and sharing);
+  - many suballocation holes: M3 (state blocks, which bring suballocation
+    within extents);
+  - envelope upgrade racing cached-state promotion: M4 (retention);
+  - repeated speculation with prefetch: M7 (prefetch is a deferred
+    optimization);
+  - a slow or disconnected client's termination: M3 (the front door;
+    output limits exist in `OutputBuffer`);
   - a closure or rounded allocation over its bound detected at runtime
-    before submission (admission does not drive task starts yet;
-    planning refuses it);
-  - faulting on real capacity loss (the fake has no capacity-drop
-    injection);
-  - every queue full at once during cancellation (each queue is covered
-    alone).
+    before submission: M5 (the routing boundary; planning refuses it now);
+  - faulting on injected capacity loss: M4 (multi-model pressure);
+  - every queue full at once during cancellation: M3 (the front door's
+    output queues; each queue is covered alone now).
 
 ## Reproduction
 
@@ -420,6 +502,10 @@ artifacts (`artifact-layout-20260922/installed`):
   FILE --fusion on|off --out DIR` with the options in the table;
 - `jitllm_exl3_paged --artifact ART --fixture 4.0bpw|4.5bpw --arm G|O
   --plan PLAN --ids IDS --out DIR` with the options in the table;
+- BP-P1's A/B: `jitllm_fp16_paged ... --load-only 6 --weights device
+  --backing managed|premapped --coalesce on|off`, each load's GB/s being
+  `read_bytes / seconds` in `loads.json`, which also counts its requests
+  (BP-P1's rung runs: add `--coalesce on` to either harness);
 - then compare `summary.json` (logits, bit differences and coverage) and
   `paging.json` (partial evictions, refusals, cache comparison, cancel
   result, bounds against peaks);

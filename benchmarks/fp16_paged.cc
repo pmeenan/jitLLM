@@ -13,11 +13,16 @@
 //                     --fusion on|off --out DIR [--restores N] [--relocate]
 //                     [--partial] [--spill premapped|managed]
 //                     [--embeddings duplicated|shared]
-//                     [--lanes threads|inline] [--record]
+//                     [--lanes threads|inline] [--record] [--coalesce on|off]
 //   jitllm_fp16_paged --artifact DIR ... --out DIR --load-only N
 //                     [--weights device|host] [--backing managed|premapped]
-//                     [--slots N]
+//                     [--slots N] [--coalesce on|off]
 //
+// - --coalesce on reads chunks that wait behind the four in flight and
+//   continue one another in a shard as one vectored request (BP-P1,
+//   D-056); off, the reader's default, one request per 2 MiB chunk. Each
+//   load reports the requests its reads took and the chunks (pieces) they
+//   carried.
 // - --lanes inline drives the scheduler and every lane from this thread,
 //   in turns; --record needs it, since the launch recorder sees only its
 //   own thread's calls (plan_compare.py). --lanes threads (the default) runs
@@ -70,6 +75,7 @@ struct Options {
   bool inline_lanes = false;
   bool record = false;
   std::size_t slots = ts::kPagedSlots;
+  bool coalesce = false;  // BP-P1's coalesced reads: the reader's option, off by default
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -145,6 +151,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         return std::unexpected("--lanes is inline or threads");
       }
       options.inline_lanes = v == "inline";
+    } else if (a == "--coalesce") {
+      if (v != "on" && v != "off") {
+        return std::unexpected("--coalesce is on or off");
+      }
+      options.coalesce = v == "on";
     } else {
       return std::unexpected(std::format("unknown argument {}", a));
     }
@@ -157,8 +168,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "usage: jitllm_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE "
         "--fusion on|off --out DIR [--restores N] [--relocate] [--partial] "
         "[--spill premapped|managed] [--embeddings duplicated|shared] [--lanes threads|inline] "
-        "[--record (with --lanes inline)] | --load-only N [--weights device|host] "
-        "[--backing managed|premapped] [--slots N]");
+        "[--record (with --lanes inline)] [--coalesce on|off] | --load-only N "
+        "[--weights device|host] [--backing managed|premapped] [--slots N] [--coalesce on|off]");
   }
   return options;
 }
@@ -206,8 +217,10 @@ int main(int argc, char** argv) {
   std::string lines;
   Status ran;
   {
-    ts::PagedNode node(
-        {.compute_streams = 1, .slots = options->slots, .inline_lanes = options->inline_lanes});
+    ts::PagedNode node({.compute_streams = 1,
+                        .slots = options->slots,
+                        .inline_lanes = options->inline_lanes,
+                        .coalesce = options->coalesce});
     jitllm::benchmarks::Fp16Runner runner(node, options->model, 0, 0, recording.get(), lines);
     ran = Run(runner, node);
     const std::array<ts::PagedModel*, 1> models = {&runner};

@@ -261,8 +261,13 @@ class CudaLanes : public ::testing::Test {
 
     storage_lane_ = std::make_unique<StorageService>(
         *storage_,
-        jitllm::providers::ReaderSettings{
-            .alignment = 4096, .request_bytes = 2U << 20U, .retries = 3, .reads = 16, .waiters = 8},
+        jitllm::providers::ReaderSettings{.alignment = 4096,
+                                          .request_bytes = 2U << 20U,
+                                          .retries = 3,
+                                          .reads = 16,
+                                          .waiters = 8,
+                                          .span_bytes = jitllm::providers::kNoCoalescing,
+                                          .span_segments = jitllm::providers::kMaxSegments},
         board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         *execution_, std::span<const StreamId>(&stream_, 1), board_,

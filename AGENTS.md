@@ -83,8 +83,8 @@ affected docs. Until then, these govern.
   metadata and never executes checkpoint code. Initial formats are explicitly
   experimental; compatibility guarantees follow execution/restore evidence.
   Import repacks weights into contiguous, indexed dependency groups
-  (4 KiB-aligned on disk, paged in 2 MiB chunks with coalesced direct
-  reads); v0 uses safetensors shards with a jitLLM manifest/index and no
+  (4 KiB-aligned on disk, paged in 2 MiB chunks with direct reads, which
+  may coalesce; off by default, BP-P1); v0 uses safetensors shards with a jitLLM manifest/index and no
   page-in hashing. (D-009, D-018, D-035, D-056)
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
@@ -263,9 +263,11 @@ reference's on every FP16 arm and both EXL3 fixtures. P4–P6 landed
 write-back of live state through the zone, partial evictions, state
 spill and lifetime cases on both representations and the real
 providers, and the operation contract; BP-S3 alternates FP16 and EXL3 in
-one process, each evicting the other's weights. Open: BP-P1's coalesced
-reads (built in M2 at the owner's choice); D-050 rows whose features
-come later move to their milestones. D-033 is retained; per D-085, BP-F2
-does not run and each engine is held to its reference's speed end to
-end once operational. Keep this
+one process, each evicting the other's weights. BP-P1's coalesced,
+vectored chunk reads are built and restore bit-identically, but stay off
+by default: a quick A/B measured them slower than one read per chunk.
+The parts of D-050's rows whose features come later moved to their
+milestones. D-033 is retained; per D-085, BP-F2 does not run and each
+engine is held to its reference's speed end to end once operational.
+Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

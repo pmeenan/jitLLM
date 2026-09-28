@@ -12,6 +12,8 @@
 // accepted or unknown request produces exactly one completion, whether it
 // succeeded, failed, was cancelled or transferred fewer bytes than asked;
 // a completion also proves the provider will touch that memory no more.
+// A vectored request's count covers its segments in order: a short one
+// filled a prefix of them.
 // Cancellation is a request with its own result: the original still
 // completes, and only its completion retires the memory (D-048).
 //
@@ -34,6 +36,16 @@ namespace jitllm::providers {
 
 enum class IoKind : std::uint8_t { kRead, kWrite };
 
+// One piece of memory of a vectored request.
+struct IoSegment {
+  std::byte* memory = nullptr;
+  std::uint32_t length = 0;
+};
+
+// The most segments one request may carry: the kernel's iovec limit
+// (IOV_MAX, 1,024 on both Sparks; docs/artifact-format.md#page-in-contract).
+inline constexpr std::size_t kMaxSegments = 1024;
+
 struct IoRequest {
   std::uint64_t token = 0;  // the caller's identity for it, echoed back
   IoKind kind = IoKind::kRead;
@@ -41,6 +53,13 @@ struct IoRequest {
   std::uint64_t offset = 0;  // in the file
   std::byte* memory = nullptr;
   std::uint32_t length = 0;
+  // A vectored request when not empty (D-056's coalesced reads): the file
+  // range from `offset`, `length` bytes long, moves to or from these
+  // segments in order, and `memory` is unused. `length` must be the
+  // segments' sum, or the request is refused. Each segment is aligned as
+  // a plain request's memory and length are; at most kMaxSegments. The
+  // provider keeps what it needs of them, so they need outlive only Submit.
+  std::span<const IoSegment> segments;
 };
 
 enum class Submission : std::uint8_t {

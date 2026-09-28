@@ -15,7 +15,11 @@
 //                     [--prefixes 32,144,145,1023,1024] [--restores N]
 //                     [--relocate] [--partial] [--spill premapped|managed]
 //                     [--cancel-in-flight]
-//                     [--lanes threads|inline] [--record]
+//                     [--lanes threads|inline] [--record] [--coalesce on|off]
+//
+// --coalesce on reads chunks that wait behind the four in flight and
+// continue one another in a shard as one vectored request (BP-P1); off,
+// the reader's default, one request per chunk.
 //
 // Every evaluation's logits must equal the first's bit for bit; the first's
 // are written as exl3_exec.cc writes them (.npy per prefix), with a summary
@@ -49,6 +53,7 @@ using Status = ts::Status;
 struct Options {
   Exl3Options model;
   bool inline_lanes = false;
+  bool coalesce = false;  // BP-P1's coalesced reads: the reader's option, off by default
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -119,6 +124,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         return std::unexpected("--lanes is inline or threads");
       }
       options.inline_lanes = v == "inline";
+    } else if (a == "--coalesce") {
+      if (v != "on" && v != "off") {
+        return std::unexpected("--coalesce is on or off");
+      }
+      options.coalesce = v == "on";
     } else {
       return std::unexpected(std::format("unknown argument {}", a));
     }
@@ -130,7 +140,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "usage: jitllm_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O --plan PLAN.txt "
         "--ids FILE --out DIR [--prefixes LIST] [--restores N] [--relocate] [--partial] "
         "[--spill premapped|managed] [--cancel-in-flight] [--lanes threads|inline] "
-        "[--record (with --lanes inline)]");
+        "[--record (with --lanes inline)] [--coalesce on|off]");
   }
   return options;
 }
@@ -169,8 +179,10 @@ int main(int argc, char** argv) {
   }
   Status ran;
   {
-    ts::PagedNode node(
-        {.compute_streams = 1, .slots = ts::kPagedSlots, .inline_lanes = options->inline_lanes});
+    ts::PagedNode node({.compute_streams = 1,
+                        .slots = ts::kPagedSlots,
+                        .inline_lanes = options->inline_lanes,
+                        .coalesce = options->coalesce});
     jitllm::benchmarks::Exl3Runner runner(node, options->model, 0, 0);
     ran = Run(runner, node);
     const std::array<ts::PagedModel*, 1> models = {&runner};

@@ -294,8 +294,13 @@ binds tensors by role and representation, never by these labels.
   destination is separately admitted and protected. The run size is a
   tuning value (64 MiB in the prototype), not ABI. In the Python harness,
   fewer, longer requests loaded Gemma faster. D-034's native io_uring
-  already reached about 15 GB/s with four 2 MiB reads in flight, so the
-  native benefit of coalescing is still to be measured (M2/M4).
+  already reached about 15 GB/s with four 2 MiB reads in flight, and
+  natively coalescing brought no gain: the runtime's reader (BP-P1)
+  loaded the FP16 fixture 2–7% slower with 64 MiB spans than with one
+  read per chunk, at depth 4 through the zone, in ~30% fewer requests
+  ([backend proof](experiments/backend-proof/README.md#bp-p1-coalesced-reads)).
+  So the reader reads one chunk per request by default, and coalescing
+  is an option; the run size stays a tuning value for M4.
 - **No hashing at page-in.** Integrity is established when a file enters
   the installed store: at import/publish, at install from an archive or a
   peer, and by explicit `verify` (D-054). After that it rests on the local
