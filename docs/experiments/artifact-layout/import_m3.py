@@ -18,7 +18,11 @@ M3's imports need around it without copying or changing it:
   python3 import_m3.py build OUT PINS MODEL_ID SOURCE...
   python3 import_m3.py verify ARTIFACT
 
-GGUF sources only (M3's DeepSeek V4 Flash); every other rule is layout.py's.
+GGUF sources (M3's DeepSeek V4 Flash) take layout.py's plan and writer.
+Safetensors sources are Qwen3.8 Flash Next's ModelOpt checkpoint, whose
+bytes are repacked on the way (modelopt_qwen38.py): its shards and the
+config.json beside them are checked against the pins, and layout.py's
+container, index and verifier write and check the artifact.
 """
 import hashlib
 import importlib.util
@@ -42,6 +46,23 @@ def load_layout():
     # Run the bytes that were hashed, not the file read again.
     exec(compile(code, str(path), "exec"), module.__dict__)  # noqa: S102
     return module
+
+
+def load_modelopt():
+    """modelopt_qwen38.py, from the bytes its digest (in the converter
+    version) is taken over."""
+    path = HERE / "modelopt_qwen38.py"
+    code = path.read_bytes()
+    digest = hashlib.sha256(code).hexdigest()
+    loaded = sys.modules.get("modelopt_qwen38")
+    if loaded is not None and getattr(loaded, "_import_m3_digest", None) == digest:
+        return loaded, digest  # one module object, so its functions pickle by name
+    spec = importlib.util.spec_from_file_location("modelopt_qwen38", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["modelopt_qwen38"] = module  # worker processes import it by name
+    exec(compile(code, str(path), "exec"), module.__dict__)  # noqa: S102
+    module._import_m3_digest = digest
+    return module, digest
 
 
 def converter():
@@ -81,8 +102,16 @@ def main(argv):
     cmd, args = (argv[1], argv[2:]) if len(argv) > 1 else ("", [])
     if cmd == "build" and len(args) >= 4:
         out, pins, model_id, paths = args[0], args[1], args[2], args[3:]
+        if all(Path(p).suffix == ".safetensors" for p in paths):
+            modelopt, digest = load_modelopt()
+            expected = pinned_sources(pins, model_id, [*paths, str(Path(paths[0]).parent / "config.json")])
+            conv = {"name": CONVERTER_NAME,
+                    "version": f"{converter()['version']}+modelopt_qwen38-{digest[:16]}"}
+            final, _ = modelopt.build(layout, out, paths, expected=expected, converter=conv)
+            print(final)
+            return
         if any(Path(p).suffix != ".gguf" for p in paths):
-            raise SystemExit("import_m3.py takes GGUF sources only")
+            raise SystemExit("import_m3.py takes GGUF sources, or Qwen3.8's safetensors shards")
         expected = pinned_sources(pins, model_id, paths)
         src = layout.load_sources(paths)
         p = layout.plan(src, tie_check=True)

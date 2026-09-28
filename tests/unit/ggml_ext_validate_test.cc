@@ -54,15 +54,31 @@ class GgmlExtValidateTest : public ::testing::Test {
 };
 
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
-  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 7U);
+  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 8U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {
     EXPECT_TRUE(kg::IsQuantizedWeightType(type)) << ggml_type_name(type);
     ggml_tensor* w = New(type, 4096, 256);
     ggml_tensor* x = New(GGML_TYPE_F32, 4096, 5);
     Accepted(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), w, x))));
   }
-  EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_NVFP4));  // a later slice's A/B
+  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_NVFP4));  // Qwen3.8's experts
   EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_Q4_0));
+  // Rows short of a 512-element step (Qwen3.8's 640-element down
+  // projection): refused unless the binder vouches for their padding, and
+  // then only in whole blocks.
+  ggml_tensor* x640 = New(GGML_TYPE_F32, 640, 5);
+  ggml_tensor* nv = New(GGML_TYPE_NVFP4, 640, 256);
+  Refused(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), nv, x640))));
+  kg::MarkRowPaddingReadable(nv);
+  EXPECT_TRUE(kg::RowPaddingReadable(nv));
+  Accepted(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), nv, x640))));
+  ggml_tensor* x4064 = New(GGML_TYPE_F32, 4064, 5);
+  ggml_tensor* torn = New(GGML_TYPE_Q8_0, 4064, 256);  // 127 whole Q8_0 blocks: accepted marked
+  kg::MarkRowPaddingReadable(torn);
+  Accepted(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), torn, x4064))));
+  // A view does not inherit the mark.
+  ggml_tensor* view = ggml_view_2d(c(), nv, 640, 128, nv->nb[1], 0);
+  EXPECT_FALSE(kg::RowPaddingReadable(view));
   // Not a compiled type; float weights; rows not whole 512-element steps;
   // F16 activations; an output over the weights.
   ggml_tensor* x = New(GGML_TYPE_F32, 4096, 5);
@@ -287,9 +303,8 @@ TEST_F(GgmlExtValidateTest, SinksNeedWholeGroupsOfEightQueryHeads) {
   const auto attention = [this](std::int64_t head, std::int64_t heads, std::int64_t kv_heads,
                                 std::int64_t rows, std::int64_t cells, bool sinks) {
     ggml_tensor* k = New(GGML_TYPE_F16, head, cells, kv_heads);
-    ggml_tensor* node =
-        ggml_flash_attn_ext(c(), New(GGML_TYPE_F32, head, rows, heads), k, k,
-                            New(GGML_TYPE_F16, cells, rows), 0.1f, 0.0f, 0.0f);
+    ggml_tensor* node = ggml_flash_attn_ext(c(), New(GGML_TYPE_F32, head, rows, heads), k, k,
+                                            New(GGML_TYPE_F16, cells, rows), 0.1f, 0.0f, 0.0f);
     if (sinks) {
       ggml_flash_attn_ext_add_sinks(node, New(GGML_TYPE_F32, heads));
     }
@@ -298,10 +313,10 @@ TEST_F(GgmlExtValidateTest, SinksNeedWholeGroupsOfEightQueryHeads) {
   Accepted(kg::CheckFlashAttnMma(attention(512, 64, 1, 1, 256, true)));
   Accepted(kg::CheckFlashAttnMma(attention(256, 32, 2, 3, 512, true)));
   Accepted(kg::CheckFlashAttnMma(attention(256, 24, 2, 1, 256, false)));
-  Refused(kg::CheckFlashAttnMma(attention(256, 24, 2, 1, 256, true)));   // 12 per KV head
-  Refused(kg::CheckFlashAttnMma(attention(512, 20, 1, 9, 256, true)));   // 20
-  Refused(kg::CheckFlashAttnMma(attention(512, 60, 5, 1, 256, true)));   // 12, last group short
-  ggml_tensor* sparse = attention(512, 36, 3, 1, 4096, true);            // 12, sparse-eligible
+  Refused(kg::CheckFlashAttnMma(attention(256, 24, 2, 1, 256, true)));  // 12 per KV head
+  Refused(kg::CheckFlashAttnMma(attention(512, 20, 1, 9, 256, true)));  // 20
+  Refused(kg::CheckFlashAttnMma(attention(512, 60, 5, 1, 256, true)));  // 12, last group short
+  ggml_tensor* sparse = attention(512, 36, 3, 1, 4096, true);           // 12, sparse-eligible
   ggml_flash_attn_ext_set_n_kv_max(sparse, 256);
   Refused(kg::CheckFlashAttnMma(sparse));
 }

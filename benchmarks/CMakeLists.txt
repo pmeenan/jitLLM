@@ -78,6 +78,15 @@ if(JITLLM_CUDA)
                                                  jitllm_artifact jitllm_model jitllm_warnings)
   target_link_options(jitllm_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # M3's second model slice: Qwen3.8 Flash Next (Mia's NVFP4 and MXFP8
+  # checkpoint), native and resident (docs/experiments/qwen38-native/).
+  add_executable(jitllm_qwen38_exec qwen38_exec.cc)
+  target_include_directories(jitllm_qwen38_exec SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_qwen38_exec PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                   jitllm_artifact jitllm_model jitllm_warnings)
+  target_link_options(jitllm_qwen38_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # The paged model runners: the FP16 fixture and an EXL3 fixture, each a
   # model on a paged node (tests/support/paged_node.h), so one process can
   # hold either or both (BP-S3). Their binaries link the launch recorder

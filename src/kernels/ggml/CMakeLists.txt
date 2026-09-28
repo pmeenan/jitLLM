@@ -23,8 +23,9 @@
 #                        (validate_ext.h) here and their implementations
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc qwen2_graph.cc
-                                       tensors.cc validate.cc validate_ext.cc)
+add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+                                       qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
+                                       validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model PRIVATE jitllm_warnings)
@@ -53,8 +54,8 @@ if(JITLLM_CUDA)
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu fattn_mma.cu
-                                         fattn_mma_d256.cu fattn_mma_d512.cu cublas.cc
-                                         executor.cc implementations.cc)
+                                         fattn_mma_d256.cu fattn_mma_d512.cu jitllm_ops.cu
+                                         cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -106,8 +107,9 @@ if(JITLLM_CUDA)
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
-                   implementations.h launch.cu launch.h module_digest.cmake mul_mat_cublas.cu
-                   mul_mat_q.cu ops.cu ops.h ops_ext.cu ops_ext.h qwen2_graph.cc qwen2_graph.h
+                   implementations.h jitllm_ops.cc jitllm_ops.cu jitllm_ops.h launch.cu launch.h
+                   module_digest.cmake mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
+                   ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_graph.cc qwen38_graph.h
                    tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

@@ -31,7 +31,7 @@
 #if !defined(GGML_JITLLM_MMQ_Q8_0) || !defined(GGML_JITLLM_MMQ_Q4_K) ||      \
     !defined(GGML_JITLLM_MMQ_Q5_K) || !defined(GGML_JITLLM_MMQ_Q6_K) ||      \
     !defined(GGML_JITLLM_MMQ_IQ2_XS) || !defined(GGML_JITLLM_MMQ_IQ3_XXS) || \
-    !defined(GGML_JITLLM_MMQ_MXFP4)
+    !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4)
 #error "validate_ext.h's quantized weight types need their MMQ instance units"
 #endif
 
@@ -197,7 +197,12 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
   const ggml_tensor* input = node->src[1];
   const int cc = Device(launch).cc;
   const bool fallback = weights->ne[1] % 128 != 0;
-  const bool native_fp4 = blackwell_mma_available(cc) && weights->type == GGML_TYPE_MXFP4;
+  // Blackwell's FP4 tensor cores take FP4 activations for MXFP4 and NVFP4
+  // weights; NVFP4's also carry one F32 scale per activation row
+  // (mmq.cu:131-140, 207-213).
+  const bool native_fp4 = blackwell_mma_available(cc) &&
+                          (weights->type == GGML_TYPE_MXFP4 || weights->type == GGML_TYPE_NVFP4);
+  const bool row_scales = native_fp4 && weights->type == GGML_TYPE_NVFP4;
   const std::uint64_t y_block = native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
   const auto y_values = static_cast<std::uint64_t>(native_fp4 ? QK_FP4_MMQ : QK8_1_MMQ);
   const auto padded = static_cast<std::uint64_t>(GGML_PAD(input->ne[0], MATRIX_ROW_PADDING));
@@ -212,6 +217,9 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
       return Rejected("MMQ's activation quantization beyond its grid");
     }
     draws.Add((columns * padded * y_block / y_values) + (j_max * sizeof(block_q8_1_mmq)));
+    if (row_scales) {
+      draws.Add(columns * sizeof(float));
+    }
     auto fixup = TileFixup(launch, weights->type, weights->ne[1], weights->ne[0], node->ne[1],
                            input->ne[2] * input->ne[3]);
     if (!fixup) {
@@ -234,6 +242,9 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
   draws.Add(rows * sizeof(std::int32_t));
   draws.Add(static_cast<std::uint64_t>(weights->ne[2] + 1) * sizeof(std::int32_t));
   draws.Add((rows * padded * y_block / y_values) + (j_max * sizeof(block_q8_1_mmq)));
+  if (row_scales) {
+    draws.Add(rows * sizeof(float));
+  }
   // The tile grid spans every token for each expert (ncols_max: tokens).
   auto fixup = TileFixup(launch, weights->type, weights->ne[1], weights->ne[0], input->ne[2],
                          weights->ne[2]);

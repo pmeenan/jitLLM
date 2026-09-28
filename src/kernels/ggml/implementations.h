@@ -57,6 +57,12 @@
 //   ggml.lightning_indexer.wmma  {lightning_indexer}     ops_ext.h LightningIndexer
 //   ggml.dsv4_hc_comb, _pre, _post                       ops_ext.h HcComb, HcPre, HcPost
 //   ggml.flash_attn_ext.mma      {flash_attn_ext}        ops_ext.h FlashAttnMma
+// and jitLLM's own operations on GGML tensors, for Qwen3.8's MXFP8 and
+// NVFP4 tensors (jitllm_ops.h), each a GGML_OP_CUSTOM node:
+//   jitllm.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
+//   jitllm.mxfp8.dequant         {custom}                RunMxfp8Dequant
+//   jitllm.nvfp4.get_rows        {custom}                RunNvfp4Rows
+// (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above.)
 // The quantized products' two implementations are GGML's kernel families,
 // which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
 // ggml.unary and ggml.rope.ext compute the function the node names.

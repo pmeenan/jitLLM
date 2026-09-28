@@ -235,6 +235,14 @@ it appears.
       96.84 GB, 11,053 groups, the plan of the D-056 worked example, in
       11 min 16 s on `spark-b`
       ([dsv4-native](experiments/dsv4-native/README.md)).
+      *Qwen3.8 Flash Next (Mia's NVFP4):* `import_m3.py` with
+      `modelopt_qwen38.py`, which repacks losslessly as it writes (experts
+      into GGML NVFP4 blocks, the n-gram table into 90-byte rows, linear
+      attention's value heads into tiled order; MXFP8 kept as is), wrote
+      artifact `67617f87…`, 103.9 GB, 24,627 groups, in 9 min 16 s on
+      `spark-b` ([qwen38-native](experiments/qwen38-native/README.md),
+      [artifact-format.md](artifact-format.md#qwen38-flash-next-modelopt-nvfp4-and-mxfp8)).
+      Open: the image pipeline.
 - [ ] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
       llama.cpp has much of what the models need (quantized matmul and
       `mul_mat_id`, MoE routing, the lightning indexer, `dsv4-hc`, gated
@@ -256,7 +264,17 @@ it appears.
       forward and back; argsort, top-k and the elementwise and row
       operations. Each is checked on the host in every profile and matches
       an FP64 reference on a GB10 within upstream's test-backend-ops bounds.
-      Open: the NVFP4/MXFP8 A/B; the vector attention at D = 256, which
+      *Qwen3.8's formats, by a quick A/B*
+      ([qwen38-native](experiments/qwen38-native/README.md#kernel-ab-d-085)):
+      NVFP4 experts on GGML's MMVQ and MMQ (the NVFP4 MMQ instance unit added
+      to the lock); MXFP8 products on jitLLM's own vector product up to 8
+      rows and otherwise dequantized to BF16 for cuBLAS; the n-gram table's
+      NVFP4 rows on jitLLM's own lookup (`kernels/ggml/jitllm_ops.h`). Each
+      matches an FP64 reference built from the format's dequantization on a
+      GB10. CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3) builds for `sm_121a`
+      and was about 1.4–2.2× MMQ at prefill widths in scratch; it is not
+      incorporated (a new lock component and the MoE's device-side setup),
+      and is the prefill lever. Open: the vector attention at D = 256, which
       upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
       runs it meanwhile); the image's operations; and whether to admit CUB,
       which the build leaves out (top-k takes GGML's radix select;
@@ -289,6 +307,24 @@ it appears.
       harness's logits ([swap](experiments/fast-swap/swap.md)).
       Open: the executed-plan record against llama.cpp's, and the other
       models.
+      *Qwen3.8 Flash Next, native and resident* (`model/qwen38.h`,
+      `kernels/ggml/qwen38_graph.h`, `jitllm_qwen38_exec`): llama.cpp's
+      `qwen4exp.cpp` operation plan (hyper-connections, the n-gram
+      embedding layer, Gated DeltaNet, QSA with its indexer and budget, 512
+      experts top-10 plus the gated shared one, the head) over the artifact
+      on `spark-b`. Against Mia's vLLM (deterministic, MTP off) on the same
+      checkpoint: 180 of 192 teacher-forced greedy steps agree, the other 12
+      at oracle margins of at most 1.0 nats, within the 95th percentile of
+      jitLLM's own kernel-to-kernel margin noise (a bound set after the
+      first comparison, so not pre-registered; it fails at the 90th);
+      perplexity 14.43 against 14.66 (−1.5%), top-1 accuracy equal. The
+      KV, indexer, recurrent and convolution state is explicit and bounded
+      (`Qwen38StateLayout`, three D-068 representations), and a spill and
+      restore of it is bit-identical. Decode 0.99× the oracle's; prefill
+      0.37×, which fails D-085's 10% gate; peak memory 0.97× at a 4,096-token
+      context against vLLM's 262,144
+      ([qwen38-native](experiments/qwen38-native/README.md)). Open: prefill
+      speed, device jobs over leased closures, the image pipeline.
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
@@ -300,8 +336,12 @@ it appears.
       kernels ([artifact-format.md](artifact-format.md#executable-views));
       no A/B, since the pointer table needs a kernel patch and gives a
       resident model nothing. All 43 layers' routed products (387 cases,
-      MMVQ and MMQ) equal the reference layout's bit for bit. Open: the
-      NVFP4 path's.
+      MMVQ and MMQ) equal the reference layout's bit for bit.
+      *GGML NVFP4, Qwen3.8:* the same layout, S = 2,768,976 bytes; the down
+      projection's short rows read their padding inside the slab. All 48
+      layers' routed products (432 cases) equal the packed reference's bit
+      for bit ([qwen38-native](experiments/qwen38-native/README.md)). A
+      grouped-GEMM path (CUTLASS) would bring its own views.
 - [x] **Tokenizer and chat templates** (pulled from M5; D-067): the native
       tokenizer, renderers for each model's pinned template (DeepSeek's
       upstream ships Python encoding scripts, not a template), stop rules,

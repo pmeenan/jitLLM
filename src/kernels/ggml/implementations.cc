@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
@@ -81,7 +82,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 44> kKernels = {{
+constexpr std::array<Kernel::Entry, 47> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -406,6 +407,25 @@ constexpr std::array<Kernel::Entry, 44> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
+    // jitLLM's own (jitllm_ops.h), for Qwen3.8's MXFP8 and NVFP4 tensors.
+    {.name = "jitllm.mxfp8.mul_mat_vec",
+     .operation = execution::Operation::kMatMul,
+     .variant = "Mxfp8Gemv<columns 1-8>: one warp a row, 16-code vectors, F32 block sums",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMxfp8MulMatVec(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8MulMatVec(launch, n[0]); }},
+    {.name = "jitllm.mxfp8.dequant",
+     .operation = execution::Operation::kConvert,
+     .variant = "Mxfp8ToBf16: sixteen codes a thread",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMxfp8Dequant(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Dequant(launch, n[0]); }},
+    {.name = "jitllm.nvfp4.get_rows",
+     .operation = execution::Operation::kGetRows,
+     .variant = "Nvfp4RowsKernel: a block an id, a thread a value",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckNvfp4Rows(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunNvfp4Rows(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,

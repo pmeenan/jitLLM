@@ -279,6 +279,41 @@ binds tensors by role and representation, never by these labels.
    verbatim. `config.json` is also part of the hashed source identity. Native tokenizer/template extraction remains
    M3 (D-051).
 
+### Qwen3.8 Flash Next (ModelOpt NVFP4 and MXFP8)
+
+M3's importer for this checkpoint (`artifact-layout/modelopt_qwen38.py`)
+writes the same container, index and groups, but not the source's bytes
+verbatim: it repacks them, losslessly, into what the kernels read, and its
+converter version names the module's SHA-256. No transformation is
+recorded for a repack (the manifest's kinds are the two above); the
+converter identity is the record. Resources are named as llama.cpp's
+`qwen4exp` tensors.
+
+- **Routed experts:** ModelOpt NVFP4 (codes with element 2i in a byte's low
+  nibble, E4M3 scales per 16 elements in a separate tensor, one F32 global
+  scale) become GGML `NVFP4` slices (`block_nvfp4`: 64 elements, 4 scale
+  bytes, then 32 code bytes, byte j of a 16-element sub-block holding
+  elements j and j + 8), one expert group per expert with its gate, up and
+  down, as expert arrays `blk.L.ffn_{gate,up,down}_exps.weight`. The global
+  scales are F32 `[experts]` vectors in the layer group
+  (`…_exps.weight_scale_2`), applied after each product.
+- **MXFP8 matrices** (attention, linear attention, the shared expert, the
+  indexer's fused q/k projection) stay in the checkpoint's layout as plain
+  resources: `X.weight` (F8_E4M3 `[out, in]`) and `X.weight_scale` (U8, E8M0,
+  `[out, in/32]`).
+- **The n-gram table:** its 128 shards concatenated into one row table,
+  `per_layer_token_embd.weight` (plain U8 `[320,001,536, 90]`, `access:
+  "rows"`), each row its 80 code bytes then its 10 E4M3 scales, so one row
+  is one contiguous read; its global scale is a plain F32 `[1]`. The hash's
+  constants are plain I64 resources of the n-gram layer.
+- **Linear attention** reorders its value heads from grouped to tiled order
+  (llama.cpp's converter's rule), rows or column blocks moving whole with
+  their MXFP8 scales.
+- **Everything else:** BF16 matrices keep their bytes as GGML `BF16`; norms
+  become F32 with the model's (1 + w) folded in (all but linear attention's
+  gated norm); A becomes −exp(A_log), and dt_bias and the convolution
+  kernels F32.
+
 ## Page-in contract
 
 - **Closure.** A resource needs every chunk its `[offset, offset+readable_bytes)`
@@ -352,7 +387,15 @@ Addresses are rebuilt at load and never serialized.
   all. The pointer table would need a kernel patch and gives a resident
   model nothing, so it waits for demand-paged dispatch (M7); every layer's
   routed products over the slab equal the reference layout's bit for bit
-  ([dsv4-native](experiments/dsv4-native/README.md)).
+  ([dsv4-native](experiments/dsv4-native/README.md)). Qwen3.8 Flash Next's
+  NVFP4 experts take the same layout: `S` is 2,768,976 bytes on every
+  layer (80 bytes over the group), 1.97 MB in all. Its down projection's
+  640-element rows are not whole 512-element steps; GGML's products read
+  past a row up to the next step, into the next row or, after the last
+  expert's last row, into the readable bytes the slice reserves inside its
+  group, which the slab holds; the graph marks those weights as padded
+  (`kernels/ggml/validate_ext.h`), and their products over the slab equal
+  the packed reference's bit for bit ([qwen38-native](experiments/qwen38-native/README.md)).
 - **Row tables:** rows keep their source stride, so a `get_rows` view is
   unchanged. Some rows straddle two chunks (below); their lookups need both.
 

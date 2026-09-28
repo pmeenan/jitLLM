@@ -38,10 +38,13 @@ using detail::Product;
 using detail::Rejected;
 using detail::Span;
 
-constexpr std::array<ggml_type, 7> kQuantizedWeightTypes = {
+constexpr std::array<ggml_type, 8> kQuantizedWeightTypes = {
     GGML_TYPE_Q8_0,   GGML_TYPE_Q4_K,    GGML_TYPE_Q5_K,  GGML_TYPE_Q6_K,
-    GGML_TYPE_IQ2_XS, GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4,
+    GGML_TYPE_IQ2_XS, GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4,
 };
+
+// MarkRowPaddingReadable's bit: above every GGML_TENSOR_FLAG_* (ggml.h).
+constexpr std::int32_t kRowPaddingReadable = std::int32_t{1} << 30;
 
 // MATRIX_ROW_PADDING (common.cuh:186): the quantized products read each
 // weight row in steps of this many elements.
@@ -79,8 +82,11 @@ std::expected<void, KernelFailure> CheckQuantizedOperands(const ggml_tensor* wei
   if (AnyEmpty({weights, input, out}) || !AllSane({weights, input, out})) {
     return Rejected("a quantized product on an empty or unmeasurable tensor");
   }
-  if (weights->ne[0] % kRowPadding != 0) {
-    return Rejected("quantized weight rows must be whole 512-element steps");
+  if (weights->ne[0] % kRowPadding != 0 &&
+      (!RowPaddingReadable(weights) || weights->ne[0] % ggml_blck_size(weights->type) != 0)) {
+    return Rejected(
+        "quantized weight rows must be whole 512-element steps, or whole blocks whose padding "
+        "the binder vouches for");
   }
   if (weights->nb[0] != ggml_type_size(weights->type) ||
       weights->nb[1] < ggml_row_size(weights->type, weights->ne[0]) || !ElementStrides(weights) ||
@@ -156,6 +162,16 @@ std::span<const ggml_type> QuantizedWeightTypes() { return kQuantizedWeightTypes
 
 bool IsQuantizedWeightType(ggml_type type) {
   return std::ranges::find(kQuantizedWeightTypes, type) != kQuantizedWeightTypes.end();
+}
+
+void MarkRowPaddingReadable(ggml_tensor* weights) {
+  if (weights != nullptr) {
+    weights->flags |= kRowPaddingReadable;
+  }
+}
+
+bool RowPaddingReadable(const ggml_tensor* weights) {
+  return weights != nullptr && (weights->flags & kRowPaddingReadable) != 0;
 }
 
 std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node) {

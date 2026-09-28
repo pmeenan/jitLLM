@@ -257,6 +257,13 @@ add_executable(dsv4_test dsv4_test.cc)
 target_link_libraries(dsv4_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The Qwen3.8 Flash Next adapter: binding, n-gram hash, state, chunk inputs
+# and QSA tables, and its chunk graph's plan and placement (model/qwen38.h,
+# kernels/ggml/qwen38_graph.h).
+add_executable(qwen38_test qwen38_test.cc)
+target_link_libraries(qwen38_test PRIVATE jitllm_ggml_tensors jitllm_model)
+jitllm_gtest(qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(ggml_validate_test ggml_validate_test.cc)
 target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -325,6 +332,15 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_ext_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(ggml_ext_ops_test)
+
+  # Qwen3.8's formats: jitLLM's MXFP8 and NVFP4-row operations
+  # (kernels/ggml/jitllm_ops.h), GGML's NVFP4 expert products over repacked
+  # ModelOpt weights, and QSA's attention shape, against FP64 references.
+  add_executable(qwen38_ops_test qwen38_ops_test.cc)
+  target_include_directories(qwen38_ops_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(qwen38_ops_test)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE

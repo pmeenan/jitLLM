@@ -51,6 +51,13 @@ Impact: `CheckFlashAttnMma` refuses sinks unless the heads per KV head are
 a multiple of 8 (DeepSeek V4's 64 are). A model with sinks and another GQA
 ratio needs a padded sinks tensor, or a kernel fix upstream.
 
+**Checked 2026-09-28 for Qwen3.8's QSA** (24 query and 2 KV heads of 256):
+it has no sinks, so the over-read does not arise; without sinks the
+padded heads' loads and writes are bounded and the result matches an FP64
+reference (`unit.Qwen38OpsTest.TensorCoreAttentionAtTwelveQueryHeadsPerKvHead`),
+and the check still refuses sinks at that ratio
+([qwen38-native](experiments/qwen38-native/README.md#re-030)).
+
 ---
 
 ## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: worked-around)

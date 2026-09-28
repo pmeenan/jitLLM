@@ -66,9 +66,16 @@ copy from GGML (`fattn_mma.cu` with `fattn.cu`'s sparse-mask kernel,
 `mul_mat_q.cu`, `ops_ext.cu`), and the ports of llama.cpp's DeepSeek V4
 graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
 `src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
-copyright). The M3 widening compiles more of the kept
+copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
+n-gram hash (`src/kernels/ggml/qwen38_graph.cc`, `src/model/qwen38.cc`).
+jitLLM's own kernels for Qwen3.8's formats (`src/kernels/ggml/jitllm_ops.*`)
+and its importer (`docs/experiments/artifact-layout/modelopt_qwen38.py`,
+which applies llama.cpp's converter's value-head order and norm rules
+without its code) are Apache-2.0 only. The M3 widening compiles more of the kept
 tree (the lock's `license.scope` lists it); every added file is under the
-root MIT license with no header of its own (checked 2026-09-28). Upstream's
+root MIT license with no header of its own (checked 2026-09-28; the NVFP4
+MMQ instance unit Qwen3.8 added, `template-instances/mmq-instance-nvfp4.cu`,
+likewise, checked the same day). Upstream's
 `argsort.cu` and `top-k.cu` would include CUB directly, which the rule
 below does not admit without a D-017 decision, so jitLLM's patch builds
 them without it (bitonic argsort; top-k's radix select, upstream's HIP
@@ -692,7 +699,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
 | DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |
 | Kernels from Mia's recipes (M4) | E3 fat-expert and cooperative MoE: AGPL or mixed provenance (below) | Under D-080 once copyleft is confirmed; mixed provenance blocks until clarified |
-| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`); audit again for the image pipeline's operations and any NVFP4/MXFP8 kernel source |
+| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`), the NVFP4 MMQ instance unit Qwen3.8's A/B chose included; audit again for the image pipeline's operations. Qwen3.8's A/B built CUTLASS 4.7.1's example 79d (NVFP4 grouped GEMM, BSD-3-Clause) in scratch to time it; nothing of CUTLASS is incorporated, and adopting it would be a new lock component with its own record |
 | stable-diffusion.cpp graph code (M3) | MIT at `c92d73c4`; its GGML fork's patches are separate | Audit the ported code; audit the fork's patches before any is used |
 
 ## Pinned reference inventory

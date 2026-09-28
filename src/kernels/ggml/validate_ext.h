@@ -31,9 +31,23 @@ namespace jitllm::kernels::ggml {
 
 // The quantized weight types whose matrix-product kernels this build
 // compiles (third_party/patches/ggml/0002's MMQ instance units): DeepSeek V4
-// Flash UD-Q2_K_XL's Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS and MXFP4.
+// Flash UD-Q2_K_XL's Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS and MXFP4, and
+// Qwen3.8 Flash's NVFP4 experts.
 std::span<const ggml_type> QuantizedWeightTypes();
 bool IsQuantizedWeightType(ggml_type type);
+
+// A weight tensor whose binder vouches that the bytes past its last row are
+// readable up to the row's next 512-element step (MATRIX_ROW_PADDING) and
+// hold no NaN scale codes (Blackwell's FP4 path multiplies the padding's
+// scales by the zero-padded activations' raw; the artifact writes zeros), as
+// upstream's buffers pad them (ggml_backend_cuda_buffer_get_alloc_size) and
+// an artifact's readable_bytes reserve them (docs/artifact-format.md). Only
+// such weights may have rows that are not whole 512-element steps (the
+// quantized products' checks below). A flag bit on the tensor itself
+// (ggml_tensor::flags, above GGML's own), set after binding; views do not
+// inherit it.
+void MarkRowPaddingReadable(ggml_tensor* weights);
+bool RowPaddingReadable(const ggml_tensor* weights);
 
 // GGML's two kernel families for the quantized products, which the plan
 // names as upstream would route them (ops_ext.h SelectMulMatQ).
@@ -47,7 +61,10 @@ enum class QuantMulMatPath : std::uint8_t {
 // Both kernel families quantize the activations to Q8_1 blocks and read each
 // weight row in whole 512-element steps (MATRIX_ROW_PADDING), so rows must be
 // multiples of 512 elements: GGML pads a buffer past a shorter row, jitLLM's
-// memory does not. Weights are packed rows of whole blocks at a 16-byte
+// memory does not unless the binder vouches for it (MarkRowPaddingReadable;
+// a shorter row's steps then read into the next row, or into that padding
+// after the last, against activations the launcher zero-pads). Weights are
+// packed rows of whole blocks at a 16-byte
 // aligned base; activations and output have F32 rows at any whole-element
 // strides, their channels and samples whole multiples of the weights'.
 std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);

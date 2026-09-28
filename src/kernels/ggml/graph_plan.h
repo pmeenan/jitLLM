@@ -118,6 +118,12 @@ inline constexpr std::string_view kHcCombName = "ggml.dsv4_hc_comb";
 inline constexpr std::string_view kHcPreName = "ggml.dsv4_hc_pre";
 inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
 inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
+inline constexpr std::string_view kSsmConvName = "ggml.ssm_conv";
+inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
+// jitLLM's own operations on GGML tensors (jitllm_ops.h).
+inline constexpr std::string_view kMxfp8MulMatVecName = "jitllm.mxfp8.mul_mat_vec";
+inline constexpr std::string_view kMxfp8DequantName = "jitllm.mxfp8.dequant";
+inline constexpr std::string_view kNvfp4RowsName = "jitllm.nvfp4.get_rows";
 
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);

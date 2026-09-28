@@ -20,6 +20,7 @@
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -290,6 +291,28 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         break;
       case GGML_OP_DSV4_HC_POST:
         add(Operation::kHcPost, kHcPostName, i, {node}, 1);
+        break;
+      case GGML_OP_SSM_CONV:
+        add(Operation::kSsmConv, kSsmConvName, i, {node}, 1);
+        break;
+      case GGML_OP_GATED_DELTA_NET:
+        add(Operation::kGatedDeltaNet, kGatedDeltaNetName, i, {node}, 1);
+        break;
+      case GGML_OP_CUSTOM:
+        switch (JitllmOpOf(node)) {
+          case JitllmOp::kMxfp8MulMatVec:
+            add(Operation::kMatMul, kMxfp8MulMatVecName, i, {node}, 1);
+            break;
+          case JitllmOp::kMxfp8Dequant:
+            add(Operation::kConvert, kMxfp8DequantName, i, {node}, 1);
+            break;
+          case JitllmOp::kNvfp4Rows:
+            add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
+            break;
+          case JitllmOp::kNone:
+            return Rejected(
+                std::format("{}: a custom operation jitLLM does not name", Where(graph, i)));
+        }
         break;
       case GGML_OP_FLASH_ATTN_EXT:
         if (node->src[0] == nullptr || (node->src[0]->ne[0] != 256 && node->src[0]->ne[0] != 512)) {
