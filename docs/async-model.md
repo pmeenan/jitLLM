@@ -215,7 +215,7 @@ add real concurrency/lost-wakeup tests, coalesced page-in waiters, task-tree
 unwind, full queues during cleanup, and the GGML execution proof on jitLLM's VMM.
 M2's scheduler thread and lanes (`src/scheduler/scheduler.h`,
 `services.h`) implement this protocol over the fake and real providers,
-with those tests (plan.md, task lanes). Choices they settle:
+with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
 
 - A fence is released on the completion lane, but only while the
   submission lane is between provider calls. The completion lane tries

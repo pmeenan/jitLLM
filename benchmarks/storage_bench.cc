@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Storage queue depth and request (run) size through jitLLM's own providers
-// (docs/plan.md, M2 "Providers"; D-034): direct reads by UringStorage into
+// (docs/m2-record.md, "Providers"; D-034): direct reads by UringStorage into
 // CUDA host-VMM backing from VmmProvider, the path the runtime pages
 // through. Writes an unnamed direct-I/O file (O_TMPFILE, gone when the
 // process exits) of the given size in the given directory, then reads it

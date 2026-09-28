@@ -436,7 +436,7 @@ default. When on, the span is 64 MiB, a tuning value
 | BP-A2 | Pool draws within the plan's bound (table above); cuBLAS workspace declared; no allocation after the first launch in P3's traces. Library-internal growth is in `F`, judged loosely | above, P3 |
 | BP-A3 | FP16: no F32 conversion or extra buffer types; the table's host copy declared, and shown unnecessary (`--embeddings shared` gives the same logits). EXL3: weights are the artifact's bytes plus the declared F32 norms and tables; reconstruction is phase scratch in the region | P2, P3, above |
 | BP-A4 | Passes (above) | above |
-| BP-A5 | Counters reconciled with the catalog on the Spark ([vmm-counters](../vmm-counters/README.md)); the per-run census is replaced by D-085's peak check, which passes | plan.md |
+| BP-A5 | Counters reconciled with the catalog on the Spark ([vmm-counters](../vmm-counters/README.md)); the per-run census is replaced by D-085's peak check, which passes | P2, [M2 record](../../m2-record.md) |
 | BP-N1–N6 | Pass | P0, P1, P3 |
 | BP-N7 | Reported diagnostic: the CPU path is not bit-exact across CPU variants | P0 |
 | BP-P1 | Passes with coalescing on: every weight evicted and restored through coalesced, vectored chunk reads, bit-identical on all four FP16 arms and both EXL3 fixtures. Slower than one read per chunk in a quick A/B, so off by default (D-085) | above |
@@ -478,7 +478,8 @@ Each M2 row, with the tests that carry it
   - unknown provider completion and budget reduction
     (`unit.SchedulerTest.*`, `unit.CommitmentLedger.*`).
 - **Moved to the milestones that build the feature** (owner, 2026-09-27;
-  the matrix marks each part *moved*, and M2's exit criterion covers only
+  the matrix marks each part *moved*, and
+  [M2's exit criterion](../../m2-record.md#exit-criteria-and-the-gate) covers only
   the rest):
   - state growth through branch or copy-on-write, and a fork's divergent
     growth: M4 (retention's branches and sharing);

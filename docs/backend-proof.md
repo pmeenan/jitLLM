@@ -1311,7 +1311,7 @@ reference container.
     sources. That is what makes the launch record's SASS hashes a
     requirement native can meet. The locked build meets it for the 14 GEMM
     kernels the record names (the source lock's `exllamav3` component,
-    [plan.md](plan.md)). It also reproduces the device-code flags that
+    [M2 record](m2-record.md)). It also reproduces the device-code flags that
     PyTorch's extension builder adds: the four `__CUDA_NO_HALF*` macros,
     `--expt-relaxed-constexpr` and C++20.
   - Per case and session:

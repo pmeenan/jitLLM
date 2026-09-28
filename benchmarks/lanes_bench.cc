@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// D-048's lane measurements (docs/plan.md, M2 "Task lanes"): how quickly a
+// D-048's lane measurements (docs/m2-record.md, "Task lanes"): how quickly a
 // sleeping owner wakes for a published completion, and at what CPU cost,
 // against polling; lane throughput by worker count and queue capacity; and
 // the completion board's round trip by mailbox count. Prints Markdown

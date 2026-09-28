@@ -3,21 +3,20 @@
 
 # M2 record — Resource core and backend proof
 
-M2 ran from 2026-09-24, on M1's exit, to 2026-09-27. Its gate ran on
-2026-09-27 (below), and it is ready for the owner's decision: M2 exits on
-the owner's word, not on this record. This is its item-by-item record:
-what each item built, the evidence and hosts behind it, and what it handed
-to later milestones. At exit it replaces M2's task-by-task section in
-[plan.md](plan.md), which then shrinks to a summary.
+M2 ran from 2026-09-24, on M1's exit, to 2026-09-27 and exited on the
+owner's word on 2026-09-27, after its gate (below). This is its
+item-by-item record, moved out of [plan.md](plan.md) at exit so the plan
+stays lean: what each item built, the evidence and hosts behind it, and
+what it handed to later milestones.
 
-**Once M2 exits this is frozen history.** The living documents supersede
-it where they differ: [plan.md](plan.md) owns what M2 handed on,
+**This is frozen history.** The living documents supersede it where they
+differ: [plan.md](plan.md) owns what M2 handed on,
 [decisions.md](decisions.md) the settled choices (D-076 to D-086 are M2's),
 [backend-proof.md](backend-proof.md) and the
 [aggregate report](experiments/backend-proof/README.md) each case's status,
-and [architecture.md](architecture.md) how the runtime works now. Commits
-are cited by short hash; every experiment report cited carries its hosts
-and provenance.
+and [architecture.md](architecture.md) how the runtime works now. Later
+corrections go in those documents, not here. Commits are cited by short
+hash; every experiment report cited carries its hosts and provenance.
 
 Goal: the node-wide catalog, ledgers, reservation and lease state machine
 and D-048's task lanes, deterministic on a fake backend and real on a
@@ -56,7 +55,9 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
       the scheduler polls while a critical completion is imminent, and a
       lane queue takes at most four workers (RE-017). Verified in
       `check:spark` (cross, ASan, TSan) on `spark-b` when it landed, and
-      again at the gate under TSan (below). *Not yet wired:* victim
+      again at the gate under TSan (below); the fake cases also passed on
+      the workstation and under qemu-user in `check`, where
+      `unit.StorageLaneTest.*` (io_uring) is skipped. *Not yet wired:* victim
       selection on a miss, spill as retention (M4), admission driving task
       starts.
 - [x] **Providers** (D-026). `047bbdf`. Device-memory, device-execution
@@ -83,7 +84,21 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
     (D-076, `d95b000`); plan selection between implementations (D-053,
     `3a2d8f5`); every GGML kernel of the FP16 plan and upstream's fusion
     gates (`1982f4b`); ExLlamaV3's GEMM kernels enter the build (`d2601ad`;
-    cleared under D-080). BP-F1 was calibrated and pre-registered (`9576d72`), failed on
+    cleared under D-080). GGML's launchers hold no `throw`, `try` or
+    `catch` at the pin (D-066). The test binary's SASS for the FP16
+    plan's GGML kernels 3–28 and the copied `k_compute_batched_ptrs`
+    (`37c97848…`) has the bridge's recorded hashes, and ExLlamaV3's 14
+    recorded GEMM kernels have the reference's in the `native` and
+    `cross` archives and the linked binary (cuobjdump 13.0.85). All 160
+    traps in the four GEMM units' SASS are `cooperative_groups`' grid
+    sync, which `kernels/exl3/launch_contract.h` guards by launching
+    cooperatively within the co-resident limit on unshared lock slots;
+    the four units cost 75–113 CPU-seconds per CUDA profile. Reported,
+    not gated, on the Spark: fused and unfused RMSNorm-mul, the fused bias
+    add and the fused K write each equal their unfused forms bit for bit;
+    the fused gate/up product (F32 accumulation) differs from the unfused
+    one in every element. BP-F1 was calibrated and pre-registered
+    (`9576d72`), failed on
     host VMM (`14aaf08`: 41 of 53 cases, matrix products 1.10–4.9×
     slower), was diagnosed ([host-vmm-diagnosis](experiments/host-vmm-diagnosis/README.md),
     `554652b`, RE-022; direct landing in device memory impossible,
@@ -94,7 +109,15 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
     [reported](experiments/launch-overhead/README.md).
   - *P2* ([report](experiments/backend-proof-p2/README.md)): the native v0
     artifact reader, judged by M0's prototype on a mutated corpus
-    (`20608ae`); the FP16 memory limits and plan comparator (`b550204`);
+    (`20608ae`: its views of three synthetic artifacts match the
+    prototype's line for line, and its verdicts on 188 mutated and 800
+    seeded random artifacts match, apart from two documented divergences,
+    a string escape and kept `.kv.gguf` metadata it does not parse, each
+    checked to its rule; on `spark-b` it opens the M0 fixtures, Qwen2.5
+    FP16, both EXL3 rates and Gemma 4, as the prototype does); the FP16
+    memory limits and plan comparator (`b550204`; its tests catch and
+    locate 22 mutations and never call a fragment, or a run without its
+    nsys trace, a complete match);
     native Qwen2.5-0.5B FP16 with a complete plan match and logits
     bit-identical to the bridge on all four arms, rung 3 (`202b14a`); the
     D-081 page-in path, and rungs 4 and 5 (paged, evicted, restored,
@@ -136,8 +159,8 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
       harness, about 5 GB of EXL3's `MemAvailable` drop lies outside the
       catalog, not investigated.
     - cuBLAS keeps a 64.1 MiB default pool outside the 32 MiB workspace
-      (RE-028); launches can block a lane while the stream is busy
-      (RE-029).
+      (RE-028), which the owner kept outside that figure (2026-09-27);
+      launches can block a lane while the stream is busy (RE-029).
     - Spill is process-private (`O_TMPFILE`); no spill format exists yet.
 - [x] **Retained-backing comparison.** The swap trace and pre-registered
       criteria (`fb20bd4`), and part (a)'s deterministic replay of D-033
@@ -151,7 +174,10 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
       `PlanProgram`; `unit.ShapeScenarioTest.*` drives draft rollback, a
       canvas paused across boundaries, block output and a two-artifact
       context through admission, the ledgers and the catalog with no
-      special case in the core.
+      special case in the core. Its negative control charges a paused
+      canvas to the phase instead of `R_i`: that request is admitted beside
+      a substitute whose first phase then cannot materialize (a circular
+      wait).
 - [x] **Explainable plans.** `177a20b`, `ccd3c31`. A `ProgramPlan`
       itemizes widths, closures, working sets and envelopes, and a
       rejection names the phase kind, width, required bytes and shortfall;
@@ -279,7 +305,8 @@ the GPU), and the FP16-F `control` with EXL3-G 4.0 bpw alternation, exit
   filter admitting io_uring for `jitllm.service` and a single reaper for
   jobs started from other threads, which M2 did not need: it neither runs
   the storage lane in the service nor starts jobs.
-- To M4: victim selection on a miss, spill as retention with D-055's spill
+- To M4: victim selection on a miss and the D-033 handoff of a victim's
+  backing, spill as retention with D-055's spill
   format, the cohort pause with several paused peers, the moved D-050
   parts, and fast-swap validation on the discrete GPU.
 - To the model-swap work: `ReconGemm` builds and checks its cuBLASLt

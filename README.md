@@ -49,9 +49,9 @@ the work, reviews it, and is the sole committer.
 
 ## Status
 
-**Pre-release. M0 (plan the plan) and M1 (bootstrap) are done; M2 (the
-resource core and backend proof) has passed its gate and awaits the
-owner's decision to exit.** M2's work is internal: test harnesses run a
+**Pre-release. M0 (plan the plan), M1 (bootstrap) and M2 (the resource
+core and backend proof) are done; M3 (one resident model, end to end) is
+next.** M2's work is internal: test harnesses run a
 small FP16 model and two EXL3 fixtures natively, paged through device
 memory, but the runtime serves nothing yet.
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,

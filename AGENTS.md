@@ -176,7 +176,7 @@ the commit gate.
 | [docs/plan.md](docs/plan.md) | What to work on, milestone scope, exit criteria — what "done" means |
 | [docs/m0-record.md](docs/m0-record.md) | Where an M0 result came from: each planning task, spike and reference run with its evidence links and caveats. Frozen history |
 | [docs/m1-record.md](docs/m1-record.md) | Where an M1 result came from: each bootstrap item's outcome, verification hosts and hand-offs. Frozen history |
-| [docs/m2-record.md](docs/m2-record.md) | Where an M2 result came from: each resource-core and backend-proof item's outcome, commits, reports and caveats, and the gate. Frozen once M2 exits |
+| [docs/m2-record.md](docs/m2-record.md) | Where an M2 result came from: each resource-core and backend-proof item's outcome, commits, reports and caveats, and the gate. Frozen history |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
 | [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
@@ -238,17 +238,12 @@ the commit gate.
 
 ## Current status
 
-**M0 (plan the plan) and M1 (Bootstrap) are done**
-([docs/m0-record.md](docs/m0-record.md), [docs/m1-record.md](docs/m1-record.md)).
-The runtime starts, checks and waits; it serves nothing yet. **M2
-(resource core and backend proof) has passed its gate and awaits the
-owner's word to exit** ([docs/m2-record.md](docs/m2-record.md)). It
-built the catalog, ledgers, admission, D-048's task lanes and the fake
-and CUDA providers; native Qwen2.5-0.5B FP16 and both EXL3 fixtures run
-under jitLLM's dispatch, exact against their references, and page
-through a host-VMM landing zone into device VMM (D-081), evicted,
-written back and restored bit-identically; FP16 and EXL3 alternate in
-one process; D-086 records the operation contract. D-033 is retained.
-Under D-085, BP-F2 did not run: each engine is held to its reference's
-speed end to end once it serves (M3). Keep this
-paragraph short and current when plan.md milestone status changes (rule 4).
+**M0 (plan the plan), M1 (Bootstrap) and M2 (resource core and backend
+proof) are done** ([docs/m0-record.md](docs/m0-record.md),
+[docs/m1-record.md](docs/m1-record.md), [docs/m2-record.md](docs/m2-record.md)).
+The runtime starts, checks and waits; it serves nothing yet, though test
+harnesses run native FP16 and EXL3 models paged into device VMM. **M3
+(one resident model, end to end) is next** ([docs/plan.md](docs/plan.md)).
+The owner's first real work after M2 is fast model swapping; its plan is
+being drafted. Keep this paragraph short and current when plan.md
+milestone status changes (rule 4).

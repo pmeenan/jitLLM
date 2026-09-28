@@ -138,7 +138,7 @@ internal contract M3 builds on
 **Context.** Backend proof stage P6
 ([backend-proof.md](backend-proof.md#stages)) asked for this record before
 M3 builds serving on it. P4 (write-back through the zone) and P5 landed
-in the same change; the plan and the report list them.
+in the same change; the [M2 record](m2-record.md) and the report list them.
 
 **Consequences.**
 - Spill in M2 is process-private: the harnesses write it to an unnamed
@@ -201,7 +201,8 @@ The machinery around development was holding it back.
   operational code that it performs at least as fast as the reference for
   each engine."
   - This replaces per-kernel timing gates. BP-F2 does not run; it is
-    D-052's EXL3 gate, and M2's exit criteria allow this as an
+    D-052's EXL3 gate, and
+    [M2's exit criteria](m2-record.md#exit-criteria-and-the-gate) allow this as an
     owner-approved tradeoff.
   - The retained-backing comparison's timed sessions do not run either:
     D-033 is retained on its deterministic replay.
