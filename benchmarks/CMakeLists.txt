@@ -89,8 +89,8 @@ if(JITLLM_CUDA)
 
   # M3's third model slice: the Qwen-Image-2.1 BF16 pipeline, native, from
   # its component artifacts and their composition
-  # (docs/experiments/qwen-image-native/). The native tokenizer and the
-  # prompt renderer link as test support until D-088.
+  # (docs/experiments/qwen-image-native/), with the native tokenizer and the
+  # prompt renderer.
   add_executable(jitllm_qwen_image_exec qwen_image_exec.cc)
   target_include_directories(jitllm_qwen_image_exec SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -138,8 +138,8 @@ if(JITLLM_CUDA)
 
   # M3's swap runner: DeepSeek V4 Flash and the FP16 fixture on one paged
   # node, full swaps A→B→A with each part timed, state spilled and restored
-  # (docs/experiments/fast-swap/swap.md). A harness: it links the native
-  # tokenizer, which production binaries may not until D-088 is accepted.
+  # (docs/experiments/fast-swap/swap.md). A harness: it runs on the test
+  # harness's paged node and links the launch recorder.
   add_executable(jitllm_swap_runner swap_runner.cc)
   target_link_libraries(jitllm_swap_runner PRIVATE jitllm_paged_runners jitllm_launch_recorder
                                                    jitllm_tokenizer jitllm_warnings)

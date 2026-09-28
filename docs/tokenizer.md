@@ -7,9 +7,10 @@ M3's native text front end (plan.md, "Tokenizer and chat templates";
 D-067, D-088): a byte-level BPE tokenizer for the M3 models, native
 renderers for their pinned chat templates, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
-every profile. It links into tests only until the owner accepts D-088 (a
-configure check holds the shipped binaries to that); the swap runner and
-the chat route are its first shipped users.
+every profile. D-088 (accepted 2026-09-28) clears its Unicode tables for
+shipped binaries. Nothing shipped links it yet: the swap runner, once in
+`jitllm-runtime`, and the chat route will be its first users there. A package built from the tables
+lists Unicode-3.0 and carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 
 ## Modules
 

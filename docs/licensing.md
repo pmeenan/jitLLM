@@ -29,8 +29,8 @@ Every file follows the [REUSE specification 3.3](https://reuse.software/spec-3.3
   `mise.lock`, which mise rewrites) has a `.license` sidecar with the same
   tags. There is no `REUSE.toml`: it could override a file's own header.
 - [LICENSES/](../LICENSES/) holds the text of every license a file declares:
-  Apache-2.0 (the same bytes as the root `LICENSE`) and MIT (SPDX License
-  List 3.29.0).
+  Apache-2.0 (the same bytes as the root `LICENSE`), MIT (SPDX License
+  List 3.29.0) and Unicode-3.0 (the tokenizer's tables, below).
 - [NOTICE](../NOTICE) carries jitLLM's attribution and names the
   third-party material in the repository.
 
@@ -133,7 +133,8 @@ For a CUDA-enabled arm64 `jitllm`, cross-built by the SDK:
   not Apache-2.0; and the CUDA headers' Disclaimer and U.S. Government End
   Users Notice, which their text requires in user documentation. The SBOM
   must also identify the GCC 16.2.0 runtime and glibc.
-- **When the code is used:** the Unicode notice (any `<format>` or `<print>`;
+- **When the code is used:** the Unicode notice (any `<format>` or `<print>`,
+  or the tokenizer's tables;
   shipped by default unless the owner decides otherwise), fast_float's MIT
   notice, Norbert Juffa's and SoftFloat's notices for CUDA device math, the
   MIT text of Clang's NEON headers, the IBM-HRL and Siek notices, and
@@ -233,22 +234,26 @@ The inventory is not clearance of the future compiled dependency closure.
 | Official Qwen GGUF and base metadata/tokenizer files | External model/test data; both repositories supply the same Apache-2.0 license file. No weights redistributed; retain source terms and required notices with future derived artifacts. Exact source-to-GGUF conversion lineage is unverified |
 | Pinned llama.cpp executable/libraries and GGUF Python inspector | External reference/inspection tools, root MIT and gguf-py MIT; actual container/runtime terms remain in the reference setup record. Used only outside jitLLM serving |
 | Selected GGML core, CPU/CUDA kernels; Qwen2 graph/tensor semantics; native GGUF reader | Future core implementation candidates, root MIT plus local MIT notices (including Mozilla llamafile SGEMM and YaRN authors). Preserve notices and audit the selected compiled closure before adoption. GGML allocator/workspace behavior still needs the M2 proof |
-| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp`'s provenance was established on 2026-09-28: UCD 15.1.0 ([below](#tokenizer-unicode-tables-m3)). Not incorporated: jitLLM's tokenizer generates its own tables from the pinned UCD files, and adopting them waits for D-088 (proposed) |
+| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp`'s provenance was established on 2026-09-28: UCD 15.1.0 ([below](#tokenizer-unicode-tables-m3)). Not incorporated: jitLLM's tokenizer generates its own tables from the pinned UCD files, admitted to the core by D-088 (accepted 2026-09-28) |
 | Chat-template rendering | The pinned template is model data under its source terms. Future owned native rendering must pass exact byte/token fixtures for enabled branches. Full `common/jinja`, chat/parser and vendor closure is not adopted or cleared |
 | HF converter and Python package closure | Inspected only; neither executed nor incorporated. The split converter has remote-code/legacy-checkpoint paths outside the selected model path. Any future use needs independently pinned/audited tools, allowlisted data formats and remote code disabled |
 | CUDA, driver and standard runtimes; NumPy/GGUF Python packages | D-017 platform dependencies and external experiment tools, respectively; retain exact image/component identities and their own terms. No new platform exception or source dependency is approved |
 
 The current [Unicode license](https://www.unicode.org/license.txt) is Unicode
-License V3 with notice requirements. D-017 does not list that license, so
-regeneration or copying needs a permitted path or a deliberate policy
-amendment: D-088 proposes one ([below](#tokenizer-unicode-tables-m3)).
+License V3 with notice requirements. D-017 did not list that license;
+D-088, which the owner accepted on 2026-09-28, amends its core allowlist to
+admit Unicode-3.0 for data derived from Unicode's data files, not code
+([below](#tokenizer-unicode-tables-m3)).
 No whole-vendor-tree, complete-image or redistribution clearance follows from
 root MIT.
 
 ## Tokenizer Unicode tables (M3)
 
 The provenance record for the native tokenizer's Unicode data (D-017's
-fields; D-088, proposed; checked 2026-09-28).
+fields; checked 2026-09-28). D-088, which the owner accepted on 2026-09-28
+("Unicode license accepted"), admits the Unicode License V3 (SPDX
+`Unicode-3.0`) to D-017's core allowlist for data: the generated tables
+below, not code.
 
 **llama.cpp's tables, traced.** At the pinned `b29c606e`,
 `src/unicode-data.cpp` says only "generated with
@@ -281,7 +286,8 @@ Apache-2.0; a developer-run build tool) generates
 | Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, compiled into `jitllm_tokenizer` |
 | Version | Unicode Character Database 15.1.0 (release 2023-09) |
 | License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
-| In a binary | None yet: the tokenizer links into tests only until D-088 is accepted. A shipped binary that links it carries the Unicode notice, which every package already ships (decision 4 above) |
+| In a binary | None shipped yet: `jitllm` and `jitllm-runtime` do not link `jitllm_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
+| Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/jitllm_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside D-017's code allowlist without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
 | Source file | `src/tokenizer/unicode_data.cc` declares `Apache-2.0 AND Unicode-3.0` and "1991-2023 Unicode, Inc."; [NOTICE](../NOTICE) names it |
 
 **Chat templates' text.** The renderers write the format text their

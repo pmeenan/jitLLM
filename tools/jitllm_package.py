@@ -15,7 +15,12 @@ version they import, and in CUDA builds the driver's libcuda.so.1 at
 NVIDIA's minimum for the toolkit's major version (CUDA_DRIVER_FLOOR).
 Notices are included for every platform unit that ships and every product
 component, whether or not this build's code reaches the part a notice
-covers: an extra notice costs nothing, a missing one is a defect.
+covers: an extra notice costs nothing, a missing one is a defect. Third-party
+data in jitLLM's own files (IN_TREE_UNITS: the tokenizer's Unicode tables)
+is listed, with its license and notice, whenever Ninja's record shows a
+packaged executable built from it; a src/ file declaring a license outside
+D-017's code allowlist that IN_TREE_UNITS does not list, a listed file that
+is gone, or a failed Ninja query stops the package.
 """
 
 from __future__ import annotations
@@ -52,6 +57,30 @@ ALLOWED_NEEDED = {"libc.so.6": "libc6", "libm.so.6": "libc6", "ld-linux-aarch64.
 DEBIAN_ARCH = {"aarch64-linux-gnu": "arm64", "x86_64-linux-gnu": "amd64"}
 # Provenance units whose code reaches only CUDA builds.
 CUDA_UNITS = ("cuda-runtime", "cccl")
+# jitLLM's own files that hold third-party data under a license beyond
+# Apache-2.0 and belong to no source-lock component (docs/licensing.md). A
+# unit ships when a packaged executable is built from any of its `files`, as
+# Ninja records the executables' inputs; the package then names its license
+# in the copyright file, lists it in the SBOM and carries its `notice` (a
+# provenance.toml [notices] record) under its own heading. So that no such
+# file is missed, every file under src/ whose SPDX header declares a license
+# outside D-017's code allowlist must be listed here, and every listed file
+# must be a translation unit that exists: Ninja's inputs name sources, not
+# the headers they include.
+TRANSLATION_UNITS = (".c", ".cc", ".cpp", ".cu")
+IN_TREE_UNITS = {
+    "unicode-data": {
+        "files": ("src/tokenizer/unicode_data.cc",),
+        "name": "Unicode Character Database",
+        "version": "15.1.0",
+        "license": "Unicode-3.0",
+        "copyright": "Copyright (c) 1991-2023 Unicode, Inc.",
+        "download": "https://www.unicode.org/Public/15.1.0/ucd/",
+        "notice": "unicode",
+        "enters": "The tokenizer's tables, src/tokenizer/unicode_data.cc, which tools/gen-unicode-tables generates "
+                  "from UnicodeData.txt, PropList.txt and DerivedNormalizationProps.txt (D-088)",
+    },
+}
 
 
 class PackageError(Exception):
@@ -145,12 +174,72 @@ def license_pointer(expression: str) -> str:
         lines.append(" /usr/share/doc/jitllm/THIRD-PARTY-NOTICES.")
     if re.search(r"(^|[ (])MIT([ )]|$)", expression):
         lines.append(" The MIT texts, with their copyright notices, are in /usr/share/doc/jitllm/THIRD-PARTY-NOTICES.")
+    if re.search(r"(^|[ (])Unicode-3\.0([ )]|$)", expression):
+        lines.append(" The Unicode License V3 text, with Unicode, Inc.'s copyright notice, is in")
+        lines.append(" /usr/share/doc/jitllm/THIRD-PARTY-NOTICES.")
     return "\n".join(lines)
 
 
 def shipped_units(provenance: dict, cuda: bool) -> list[tuple[str, dict]]:
     return [(name, unit) for name, unit in provenance["units"].items()
             if unit["ships"] and (cuda or name not in CUDA_UNITS)]
+
+
+def built_from(build: pathlib.Path, ninja: pathlib.Path) -> set[pathlib.Path]:
+    """Every file the packaged executables are built from, recursively, as Ninja records their inputs, resolved."""
+    build = build.resolve()
+    targets = [built for built, _ in EXECUTABLES]
+    result = subprocess.run([ninja, "-C", build, "-t", "inputs", "-0", "-E", *targets], capture_output=True, text=True)
+    if result.returncode:
+        raise PackageError(f"ninja cannot list the inputs of {', '.join(targets)} in {build}: "
+                           f"{(result.stderr or result.stdout).strip()}")
+    return {(build / path).resolve() for path in result.stdout.split("\0") if path}
+
+
+# A header's license tag, split so that REUSE does not read this line as one.
+_LICENSE_TAG = re.compile("SPDX-" + r"License-Identifier:\s*(.*?)\s*(?:\*/|-->)?\s*$")
+
+
+def declared_license(path: pathlib.Path) -> str | None:
+    """The license expression in path's header (its first ten lines), or None."""
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:10]
+    except OSError as e:
+        raise PackageError(f"cannot read {path}: {e}") from None
+    return next((match[1] for line in head if (match := _LICENSE_TAG.search(line))), None)
+
+
+def check_in_tree_units(root: pathlib.Path = REPO) -> None:
+    """Fails unless IN_TREE_UNITS lists every file under root/src that declares a license outside D-017's code
+    allowlist (srclib.CORE_LICENSES), or no license, and lists only translation units that exist. Allowlisted
+    licenses beside Apache-2.0 mark code adapted from a source-lock component, whose notices come with it."""
+    listed = {path for unit in IN_TREE_UNITS.values() for path in unit["files"]}
+    for path in sorted(listed):
+        if pathlib.PurePosixPath(path).suffix not in TRANSLATION_UNITS or not (root / path).is_file():
+            raise PackageError(f"IN_TREE_UNITS lists {path}, which is not a translation unit in the repository, "
+                               "so Ninja's inputs cannot show whether an executable is built from it")
+    for path in sorted(p for p in (root / "src").rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        declared = declared_license(path)
+        ids = set(re.findall(r"[A-Za-z0-9.+-]+", declared or "")) - {"AND", "OR", "WITH"}
+        if (not ids or not ids <= srclib.CORE_LICENSES) and rel not in listed:
+            raise PackageError(f"{rel} declares {declared or 'no license'}, beyond D-017's code allowlist, and no "
+                               "IN_TREE_UNITS entry lists it (its license and notice would not reach the package)")
+
+
+def in_tree_units(inputs: set[pathlib.Path]) -> list[tuple[str, dict]]:
+    """The IN_TREE_UNITS any of whose files is among inputs (resolved paths, from built_from), once
+    check_in_tree_units passes."""
+    check_in_tree_units()
+    return [(name, unit) for name, unit in IN_TREE_UNITS.items()
+            if any((REPO / path).resolve() in inputs for path in unit["files"])]
+
+
+def data_notice(unit: dict, provenance: dict, sdk_root: pathlib.Path) -> str:
+    """An in-tree unit's section of THIRD-PARTY-NOTICES, after its separator."""
+    return "\n".join([f"{unit['name']} {unit['version']} ({unit['license']}), in jitLLM: {unit['enters']}",
+                      unit["download"], unit["copyright"], "",
+                      extract(provenance["notices"][unit["notice"]]["extract"], sdk_root)])
 
 
 def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
@@ -186,6 +275,7 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
 
     products = [c for c in receipt["components"] if c["use"] == "product"]
     units = shipped_units(provenance, cuda)
+    data_units = in_tree_units(built_from(build, sdk.root / "bin" / "ninja"))
     out.mkdir(parents=True, exist_ok=True)
 
     # THIRD-PARTY-NOTICES.
@@ -195,8 +285,8 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
         "",
         f"For jitllm {receipt['version']['product']}, {receipt['target']}, license profile "
         f"{receipt['license_profile']}. jitLLM's own code is under the Apache License 2.0 (LICENSE, NOTICE).",
-        "The binaries also carry the code below, under the terms that follow. A notice is included whenever its",
-        "component ships, whether or not this build uses the part it covers.",
+        "The binaries also carry the code and data below, under the terms that follow. A notice is included",
+        "whenever its component ships, whether or not this build uses the part it covers.",
     ]
     if cuda:
         parts += ["",
@@ -211,6 +301,10 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
                   entry["upstream"]["repository"], ""]
         for notice in entry["license"]["notices"]:
             parts.append(component_notice(source, notice))
+    # The GCC runtime's `unicode` notice below is the same text, for its own
+    # tables; each work keeps its notice under its own heading.
+    for name, unit in data_units:
+        parts += ["", "-" * 78, data_notice(unit, provenance, sdk.root)]
     for name, unit in units:
         for notice in unit["notices"]:
             if notice in seen:
@@ -229,6 +323,9 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
         entry = lock["components"][component["id"]]
         contains.append(f" {component['id']} {component['version']}: {entry['license']['expression']}")
         licenses.append(entry["license"]["expression"])
+    for name, unit in data_units:
+        contains.append(f" {unit['name']} {unit['version']} (data, {', '.join(unit['files'])}): {unit['license']}")
+        licenses.append(unit["license"])
     for name, unit in units:
         contains.append(f" {name} (build toolchain, {unit['category']}): {unit['license']}")
         licenses.append(unit["license"])
@@ -240,7 +337,7 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
         "Files: *\nCopyright: 2026 jitLLM contributors\nLicense: Apache-2.0",
         f"Files: {executables}\nCopyright: 2026 jitLLM contributors, and the holders named in THIRD-PARTY-NOTICES\n"
         f"License: {' AND '.join(f'({x})' if ' ' in x else x for x in distinct)}\n"
-        "Comment: These executables also contain code from the following, whose notices are in\n"
+        "Comment: These executables also contain code or data from the following, whose notices are in\n"
         " /usr/share/doc/jitllm/THIRD-PARTY-NOTICES; jitllm.spdx.json lists them with their versions.\n"
         + "\n".join(contains),
         "License: Apache-2.0\n On Debian systems, the full text of the Apache License 2.0 is in\n"
@@ -275,6 +372,16 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
             "licenseConcluded": entry["license"]["expression"], "licenseDeclared": entry["license"]["expression"],
             "copyrightText": "NOASSERTION", "filesAnalyzed": False, "primaryPackagePurpose": "LIBRARY",
             "comment": f"Commit {entry['upstream']['commit']}; incorporated implementation, {entry['tier']} tier (D-017).",
+        })
+        relationships.append({"spdxElementId": root_id, "relationshipType": "CONTAINS", "relatedSpdxElement": ident})
+    for name, unit in data_units:
+        ident = f"SPDXRef-Data-{name}"
+        packages.append({
+            "SPDXID": ident, "name": unit["name"], "versionInfo": unit["version"],
+            "downloadLocation": unit["download"], "licenseConcluded": unit["license"],
+            "licenseDeclared": unit["license"], "copyrightText": unit["copyright"], "filesAnalyzed": False,
+            "primaryPackagePurpose": "OTHER",
+            "comment": f"Incorporated data, core tier (D-017, D-088): {unit['enters']}.",
         })
         relationships.append({"spdxElementId": root_id, "relationshipType": "CONTAINS", "relatedSpdxElement": ident})
     for name, unit in units:
@@ -460,6 +567,21 @@ def check_package(deb: pathlib.Path, build: pathlib.Path, sdk: sdklib.Sdk) -> li
             if text.strip() not in notices:
                 problems.append(f"notices: {component['id']}'s {notice} is missing")
     provenance = tomllib.loads(PROVENANCE.read_text())
+    identities = {p["SPDXID"]: p for p in sbom["packages"]}
+    copyright_text = (doc / "copyright").read_text()
+    executables = " ".join(installed for _, installed in EXECUTABLES)
+    license_line = re.search(rf"^Files: {re.escape(executables)}\n.*\nLicense: (.*)$", copyright_text, re.MULTILINE)
+    for name, unit in in_tree_units(built_from(build, sdk.root / "bin" / "ninja")):
+        entry = identities.get(f"SPDXRef-Data-{name}")
+        if not entry or entry["versionInfo"] != unit["version"] or entry["licenseDeclared"] != unit["license"]:
+            problems.append(f"SBOM: {name} {unit['version']} ({unit['license']}), which the executables are built "
+                            "from, is missing or differs")
+        if not license_line or unit["license"] not in re.split(r"[ ()]+", license_line[1]):
+            problems.append(f"copyright: the executables' license does not name {unit['license']} ({name})")
+        # The whole section, not the text alone, which the GCC runtime's
+        # `unicode` notice already puts in every package.
+        if data_notice(unit, provenance, sdk.root).strip() not in notices:
+            problems.append(f"notices: {name}'s section, with its {unit['notice']} notice, is missing")
     for name, unit in shipped_units(provenance, bool(receipt["cuda"])):
         if name not in listed:
             problems.append(f"SBOM: the shipped platform unit {name} is missing")

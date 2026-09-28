@@ -5,8 +5,8 @@
 // docs/experiments/fast-swap/swap.md): DeepSeek V4 Flash (A,
 // dsv4_runner.h) and the Qwen2.5-0.5B FP16 fixture (B, fp16_runner.h) on
 // one paged node, full swaps A→B→A in one process, each part of each swap
-// timed. A harness binary, not jitllm-runtime: it links the native
-// tokenizer, which production binaries may not until D-088 is accepted.
+// timed. A harness binary, not jitllm-runtime: it runs on the test
+// harness's paged node (tests/support/paged_node.h).
 //
 //   jitllm_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE
 //                      --out DIR [--text FILE] [--context-tokens N]

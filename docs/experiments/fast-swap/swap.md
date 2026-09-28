@@ -81,8 +81,9 @@ the outgoing extents, state first, 256 at a time, with or without the
 handoff, then materializes the incoming closure, and notes when each ended.
 
 **The swap runner** (`benchmarks/swap_runner.cc`, `jitllm_swap_runner`): a
-harness binary, since the native tokenizer it links may not enter a
-production binary until D-088 is accepted. See its header for the
+harness binary, built on the test harness's paged node (the native
+tokenizer it links is cleared for production binaries by D-088). See its
+header for the
 protocol. In short:
 - **A** is DeepSeek V4 Flash (artifact `8a355bfb…`), context 8,704. Its
   8,192-token context is the first 8,192 tokens, BOS first, of

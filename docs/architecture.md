@@ -1248,8 +1248,8 @@ M7's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M3's large pair
   renderers; patterns from artifact metadata are never compiled. The
   vocabulary, merges and special tokens come from the artifact, and the
   result must reproduce the reference token IDs on fixtures. M3's byte-level
-  BPE with its UCD 15.1.0 tables is in [tokenizer.md](tokenizer.md); its
-  adoption into shipped binaries waits for D-088.
+  BPE with its UCD 15.1.0 tables is in [tokenizer.md](tokenizer.md),
+  cleared for shipped binaries by D-088.
 - **Renderer:** one native renderer per supported template hash, with golden
   fixtures and segment boundaries (D-067).
 - **Output:** incremental detokenization that holds back incomplete UTF-8,

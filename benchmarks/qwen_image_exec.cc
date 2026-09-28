@@ -1370,8 +1370,7 @@ Status Run(const Options& o) {
     comp.bound = std::move(*bound);
   }
 
-  // The prompt's tokens (the native tokenizer and renderer, test support
-  // until D-088).
+  // The prompt's tokens (the native tokenizer and renderer).
   const auto tokenizer_json = composition->Metadata("tokenizer.json");
   if (!tokenizer_json) {
     return Error("the composition keeps no tokenizer.json");

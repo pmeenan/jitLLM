@@ -33,7 +33,7 @@ Inputs, fixed in the repository (D-087's entry rule):
   packed `randn_tensor` output), the simpler of the two routes the slice
   allowed.
 - **Tokens:** jitLLM's native tokenizer and prompt renderer
-  (`src/tokenizer`, `src/chat`, test support until D-088) must give the
+  (`src/tokenizer`, `src/chat`) must give the
   reference's 39 token IDs exactly, and drop the 14 system-turn tokens.
 
 **Calibration** (the scale of "small", from the same reference run on

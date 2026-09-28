@@ -124,7 +124,8 @@ affected docs. Until then, these govern.
   is needed now. (D-011, D-012, D-084, D-085)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
   jitLLM's own code is Apache-2.0. Incorporated core implementation uses
-  Apache-2.0 / BSD / MIT / MPL-2.0; other implementation licenses live in
+  Apache-2.0 / BSD / MIT / MPL-2.0, plus Unicode-3.0 for Unicode's data
+  (D-088); other implementation licenses live in
   optional modules, which jitLLM's own builds ship by default; the
   copyleft-disabled profile is the build-time opt-out. Unknown or
   incompatible terms still block. A component counts
@@ -248,8 +249,8 @@ harnesses run native FP16 and EXL3 models paged into device VMM. **M3
 DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
 in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. Landed: its models
 and baselines pinned, with licenses recorded; GGML widened for the two
-LLMs' operations; the native tokenizer, chat renderers and sampling, in
-tests only until the owner accepts D-088; DeepSeek V4 Flash imported
+LLMs' operations; the native tokenizer, chat renderers and sampling
+(D-088 clears their Unicode tables); DeepSeek V4 Flash imported
 and run natively (bit-identical to llama.cpp unfused on the same GGUF),
 now as device jobs over leased closures on the paged node; and the swap
 path's core (full swaps with the D-033 backing handoff, state spill and

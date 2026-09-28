@@ -157,9 +157,9 @@ Unicode data; root MIT alone does not resolve the derived-data terms.
 The provenance is now established (2026-09-28): the tables are UCD 15.1.0
 data ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)). jitLLM's
 tokenizer does not copy them; it generates its own from the pinned UCD
-15.1.0 files, and D-088 (proposed) admits Unicode-licensed data to the core.
-The gate closes when the owner accepts D-088; until then the native
-tokenizer ([tokenizer.md](tokenizer.md)) links into tests only. Owned native
+15.1.0 files, and D-088 admits Unicode-licensed data to the core. The
+owner accepted D-088 on 2026-09-28, closing the gate: the native tokenizer
+([tokenizer.md](tokenizer.md)) may link into shipped binaries. Owned native
 renderers pass exact fixtures without the upstream Jinja/parser/vendor
 closure; this fixture's Qwen2.5 template (`d5495a1e…`) has none yet (M5).
 

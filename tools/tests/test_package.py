@@ -89,6 +89,74 @@ class ReadDeb(unittest.TestCase):
             package.read_deb(self.deb({"debian-binary": b"3.0\n"}))
 
 
+class InTreeUnits(unittest.TestCase):
+    """jitLLM's files with third-party data are listed exactly when an executable is built from them (D-088)."""
+
+    def test_listed_only_when_built_from(self):
+        tables = (package.REPO / "src/tokenizer/unicode_data.cc").resolve()
+        other = (package.REPO / "src/tokenizer/unicode.cc").resolve()
+        self.assertEqual([name for name, _ in package.in_tree_units({tables, other})], ["unicode-data"])
+        self.assertEqual(package.in_tree_units({other}), [])
+        self.assertEqual(package.in_tree_units(set()), [])
+
+    def test_records_match_the_files_and_notices(self):
+        notices = tomllib.loads(package.PROVENANCE.read_text())["notices"]
+        license_tag = "SPDX-" + "License-Identifier:"  # split, so REUSE does not read it as this file's tag
+        for name, unit in package.IN_TREE_UNITS.items():
+            with self.subTest(unit=name):
+                self.assertIn(unit["notice"], notices)
+                self.assertTrue((package.REPO / "LICENSES" / f"{unit['license']}.txt").is_file())
+                for path in unit["files"]:
+                    header = (package.REPO / path).read_text(encoding="utf-8").splitlines()[:5]
+                    declared = next(line.split(":", 1)[1].strip() for line in header if license_tag in line)
+                    self.assertIn(unit["license"], declared.split(" AND "))
+
+    def test_license_pointer_names_unicode(self):
+        self.assertIn("THIRD-PARTY-NOTICES", package.license_pointer("Unicode-3.0"))
+        self.assertNotIn("Unicode", package.license_pointer("MIT"))
+
+    def test_repository_files_are_all_listed(self):
+        package.check_in_tree_units()
+
+    def tree(self, files: dict[str, str]) -> pathlib.Path:
+        """A synthetic repository root holding files, each with a header declaring its license."""
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        root = pathlib.Path(scratch.name)
+        license_tag = "SPDX-" + "License-Identifier:"  # split, so REUSE does not read it as this file's tag
+        for path, expression in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(f"// {license_tag} {expression}\nint x;\n" if expression else "int x;\n")
+        return root
+
+    def test_unlisted_or_missing_data_fails_loudly(self):
+        listed = next(iter(package.IN_TREE_UNITS.values()))["files"][0]
+        mixed = "Apache-2.0 AND Unicode-3.0"
+        package.check_in_tree_units(self.tree({listed: mixed, "src/a/b.cc": "Apache-2.0", "src/a/c.h": "Apache-2.0",
+                                               "src/a/adapted.cu": "MIT AND Apache-2.0"}))  # a lock component's
+        for files in ({listed: mixed, "src/tokenizer/renamed_data.cc": mixed},  # moved or copied tables
+                      {listed: mixed, "src/a/other.cc": "Apache-2.0 AND CC-BY-4.0"},  # any other data license
+                      {listed: mixed, "src/tokenizer/unicode_data.inc": mixed},  # tables in an included file
+                      {listed: mixed, "src/a/no_header.cc": None},
+                      {"src/tokenizer/renamed_data.cc": mixed}):  # the listed file is gone
+            with self.subTest(files=sorted(files)), self.assertRaises(package.PackageError):
+                package.check_in_tree_units(self.tree(files))
+
+    def test_built_from_reads_ninja_and_fails_loudly(self):
+        root = self.tree({})
+        build = root / "build"
+        build.mkdir()
+        ninja = root / "ninja"
+        ninja.write_text("#!/bin/sh\n[ \"$3 $4 $5 $6\" = \"-t inputs -0 -E\" ] || exit 2\n"
+                         "printf '%s\\0' /abs/src/x.cc src/lib.a\n")
+        ninja.chmod(0o755)
+        self.assertEqual(package.built_from(build, ninja),
+                         {pathlib.Path("/abs/src/x.cc"), (build / "src/lib.a").resolve()})
+        ninja.write_text("#!/bin/sh\necho \"ninja: error: loading 'build.ninja'\" >&2\nexit 1\n")
+        with self.assertRaisesRegex(package.PackageError, "build.ninja"):
+            package.built_from(build, ninja)
+
+
 class Provenance(unittest.TestCase):
     """Every shipped unit's notices can be extracted from this SDK and repository."""
 

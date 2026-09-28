@@ -148,7 +148,8 @@ perplexity text, or image prompts and seeds, are fixed with the bounds
 below. The provenance of llama.cpp's generated Unicode tables is cleared
 under D-017 before the native tokenizer is adopted
 ([first-slice.md](first-slice.md)): traced to UCD 15.1.0 on 2026-09-28;
-jitLLM generates its own tables, and D-088 (proposed) awaits the owner.
+jitLLM generates its own tables, and the owner accepted D-088 on
+2026-09-28.
 
 **Models, in this order.** Each runs its reference's quantization.
 
@@ -381,7 +382,8 @@ it appears.
       and greedy and seeded sampling. Landed in tests
       ([tokenizer.md](tokenizer.md)): token for token with llama.cpp and
       Hugging Face on a 92-item corpus for all three models, and both
-      templates byte for byte; shipped binaries wait for D-088. The output
+      templates byte for byte; shipped binaries may link them (D-088,
+      accepted 2026-09-28). The output
       parsers and the request mapping are the chat route's.
 - [ ] **Speculative decoding in the core** (pulled from M9; D-068): Qwen3.8's
       MTP layer and DeepSeek's DSpark drafter, with verify and rollback that
@@ -453,11 +455,11 @@ it appears.
 - [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
-      *As a harness binary for now* (`jitllm_swap_runner`, since the
-      tokenizer waits for D-088): DeepSeek with the FP16 fixture as B,
+      *As a harness binary for now* (`jitllm_swap_runner`, on the test
+      harness's paged node): DeepSeek with the FP16 fixture as B,
       first-use and prepared cycles, 0 context, evict-all reloads and the
-      RE-029 overlap probe. Open: moving it into `jitllm-runtime` once
-      D-088 is settled, and the three M3 models.
+      RE-029 overlap probe. Open: moving it into `jitllm-runtime` (D-088
+      no longer holds the tokenizer back), and the three M3 models.
 - [ ] Start the model support matrix (moved from M5), recording template
       hashes.
 - [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible
