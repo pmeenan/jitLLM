@@ -33,7 +33,11 @@
 //     the selection keeps every cell, so its scoring is not built (the
 //     indexer's keys are still cached);
 //   - the rows the head computes are gathered before the final mixer
-//     (llama.cpp gathers them in the last layer).
+//     (llama.cpp gathers them in the last layer);
+//   - by default (Qwen38GraphOptions::fused) the hyper-connections' and the
+//     MoE output's elementwise nodes run as jitLLM's fusions of them, and
+//     wide float products read activations converted to BF16 once
+//     (jitllm_ops.h), with the unfused graph's result.
 //
 // Routed experts are 3D weights [k, n, experts] at the caller's expert
 // stride (the resident expert layout, docs/artifact-format.md#executable-views);
@@ -112,6 +116,9 @@ struct Qwen38LayerTensors {
   ggml_tensor* gate_exps = nullptr;  // [k, n, experts] at the caller's stride
   ggml_tensor* up_exps = nullptr;
   ggml_tensor* down_exps = nullptr;
+  // The layer's expert slab as bytes [stride, experts] (the CUTLASS layout,
+  // moe_layout.h), in place of the three GGML weights.
+  ggml_tensor* experts = nullptr;
   ggml_tensor* gate_exps_scale = nullptr;  // F32 [experts]
   ggml_tensor* up_exps_scale = nullptr;
   ggml_tensor* down_exps_scale = nullptr;
@@ -128,7 +135,27 @@ struct Qwen38GraphOptions {
   // Each layer's routed-expert stride in bytes (nb[2] of the three expert
   // weights); 0 for the packed stride of one slice.
   std::vector<std::uint64_t> expert_stride;
+  // jitLLM's fusions (jitllm_ops.h) in place of the GGML nodes they repeat:
+  // the hyper-connections' combine, norm and mix, the experts' scales with
+  // SwiGLU, and their weighted sum with the gated shared expert; and, above
+  // kQwen38Bf16Rows rows, each float product's activations converted to
+  // BF16 once for all the products that read them (GGML's cuBLAS path
+  // converts them per product). The result is the unfused graph's, bit for
+  // bit; false builds the unfused graph.
+  bool fused = true;
+  // The routed experts' resident layout: GGML's block_nvfp4 slices (GGML's
+  // mul_mat_id: MMVQ and MMQ), or the CUTLASS layout (moe_layout.h;
+  // jitllm.moe.gemv up to 8 rows, else CUTLASS's grouped GEMM over rows
+  // sorted by expert, jitllm_ops.h), which needs the fused graph and an
+  // expert stride per layer.
+  enum class Experts : std::uint8_t { kGgml, kCutlass };
+  Experts experts = Experts::kGgml;
 };
+
+// The rows above which GGML's float products run on cuBLAS (MMVF and MMF
+// stop at 16), so that the fused graph's BF16 activations feed the same
+// cuBLAS call.
+inline constexpr std::int64_t kQwen38Bf16Rows = 16;
 
 struct Qwen38Graph {
   // Inputs, host-built (model/qwen38.h Qwen38ChunkInputs).

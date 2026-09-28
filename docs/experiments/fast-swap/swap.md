@@ -19,8 +19,10 @@ each part: [M3's swap pairs](#m3s-swap-pairs) between the three models
 ### Qwen3.8 Flash Next on the paged node
 
 `benchmarks/qwen38_runner.h`: the resident harness's graph, plan and
-kernels (`qwen38_common.h`, a copy of `qwen38_exec.cc`'s planning, as
-`dsv4_common.h` is of DeepSeek's) over catalog extents, in DeepSeek's
+kernels (`qwen38_common.h`, one planning path that `qwen38_exec.cc` now
+calls too; since the prefill slice, the fused graph and, from the
+CUTLASS-layout artifact, CUTLASS's grouped GEMM and jitLLM's vector
+products over the slots as they land) over catalog extents, in DeepSeek's
 layout, now one helper (`paged_weights.h`):
 - **Dense groups:** every group but the n-gram table's, a 2 MiB-aligned
   region each, a chunk an extent, landed from its shard.
@@ -32,7 +34,9 @@ layout, now one helper (`paged_weights.h`):
   16, the stride's own alignment (`LayOutSlab` takes it as a parameter
   now; the resident harness's odd experts are 16-aligned too).
   35,873 extents, 75,235,266,560 bytes read per load (the table's
-  28,800,138,240 not among them).
+  28,800,138,240 not among them). The CUTLASS-layout artifact's groups
+  are 2,764,800 bytes with no padding, so its stride is that and a load
+  reads 75,002,167,296 bytes; nothing is rewritten after page-in.
 - **The state** (`Qwen38StateLayout`: the QSA layers' K, V and indexer
   caches, the linear-attention layers' recurrent and convolution state,
   the n-gram layer's convolution history): kPreserve live state with a
@@ -264,6 +268,38 @@ the shards 5.7–5.8 h (DeepSeek) and 4.2 h (Qwen3.8) old; the prepared
 return's first token 0.059 s (a replayed graph) against 0.064 s before.
 Peak memory 96.1–97.0 GiB in five swaps and 107.6 GiB in the first
 (94.4–96.0 GiB before); not investigated (one sample, `spark-b` shared).
+
+**Qwen3.8 from the CUTLASS-layout artifact** (the prefill slice's
+review: `c4fb47a9…`, the fused graph with CUTLASS's grouped GEMM on the
+paged node, no rewrite at load; `spark-b`, 08:51–08:57, one process per
+ordered pair, the same protocol, raw outputs in
+`~/scratch/m3qpre-review/`). The paged runner's logits equal the resident
+harness's for the six prompts' 32 steps (0 of 6 × 32 × 248,320 differ, the
+resident run from the same build and artifact). Every swap row exact: A's
+state digest after every return, every continued step, B's output across
+cycles.
+
+| A ↔ B | Swap | Total | Evict | Page-in (GB at GB/s) | First output | Before (above) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| DeepSeek ↔ Qwen3.8 | A→B, first use | 7.917 | 2.424 | 5.109 (75.00 at 14.7) | 0.380 | 8.789 |
+| | B→A, first use | 8.886 | 1.211 | 7.458 (97.46 at 12.9) | 0.119 | 9.040 |
+| | A→B, prepared | 7.031 | 1.654 | 5.083 (75.00 at 14.8) | 0.291 | 7.673 |
+| | B→A, prepared | 8.638 | 1.262 | 7.216 (97.46 at 13.3) | 0.061 | 8.763 |
+| Qwen3.8 ↔ DeepSeek | A→B, first use | 8.767 | 1.330 | 7.263 (97.00 at 13.4) | 0.171 | 8.729 |
+| | B→A, first use | 6.863 | 1.679 | 5.038 (75.39 at 14.8) | 0.084 | 7.372 |
+| | A→B, prepared | 8.698 | 1.335 | 7.254 (97.00 at 13.4) | 0.106 | 8.635 |
+| | B→A, prepared | 6.879 | 1.704 | 5.055 (75.39 at 14.7) | 0.059 | 7.423 |
+
+Swaps into Qwen3.8 took 6.9–7.9 s against 7.4–8.8 s before: nothing is
+added at load (the prefill work's load-time rewrite took 3.9–4.0 s), and
+its page-in ran at 14.7–14.8 GB/s against 11.5–13.4 (the new artifact's
+shards were under an hour old, RE-027's recent-write rate, so part of
+that is file age). The swaps out of it are unchanged.
+Peak memory 94.2–100.3 GiB (100.3 in the first DeepSeek → Qwen3.8 swap,
+95.1–95.5 in the other order), against 94.4–96.3 before; one sample.
+Qwen3.8's cycle prefills against the process's control differ from the
+11th chunk on, and so its continued steps against the control's (RE-031,
+not a swap check).
 
 Beside the baselines ([baselines.md](baselines.md), cold page cache, one
 run each): llama.cpp's DeepSeek 0731 → Qwen3.8 (UD-IQ3_XXS) swap took

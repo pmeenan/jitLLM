@@ -18,6 +18,7 @@
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
@@ -57,6 +58,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanMulMatQ(launch, step.nodes.front());
     } else if (step.implementation == kTopKName) {
       planned = PlanTopK(launch, step.nodes.front());
+    } else if (step.implementation == kMoeGemmName) {
+      planned = PlanMoeGemm(launch, step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaName) {
       auto attention = PlanFlashAttnMma(launch, step.nodes.front());
       if (!attention) {

@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
@@ -82,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 48> kKernels = {{
+constexpr std::array<Kernel::Entry, 65> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -434,16 +435,134 @@ constexpr std::array<Kernel::Entry, 48> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckNvfp4Rows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunNvfp4Rows(launch, n[0]); }},
+    // jitLLM's fusions of Qwen3.8's GGML nodes (jitllm_ops.h), GGML's
+    // arithmetic in its order.
+    {.name = "jitllm.hc.combine",
+     .operation = execution::Operation::kHcCombine,
+     .variant = "HcCombineKernel: four columns a thread",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcCombine(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcCombine(launch, n[0]); }},
+    {.name = "jitllm.hc.norm",
+     .operation = execution::Operation::kHcNorm,
+     .variant = "HcNormKernel<F32 or BF16>: a stream of a token a 1,024-thread block, "
+                "rms_norm_f32<1024>'s reduction",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcNorm(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcNorm(launch, n[0]); }},
+    {.name = "jitllm.hc.mix",
+     .operation = execution::Operation::kHcMix,
+     .variant = "HcMixKernel: a token a 1,024-thread block, rms_norm_f32<1024>'s reduction per "
+                "stream",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcMix(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcMix(launch, n[0]); }},
+    {.name = "jitllm.moe.glu",
+     .operation = execution::Operation::kMoeGlu,
+     .variant = "MoeGluKernel: four columns a thread",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeGlu(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeGlu(launch, n[0]); }},
+    {.name = "jitllm.moe.combine",
+     .operation = execution::Operation::kMoeCombine,
+     .variant = "MoeCombineKernel: four columns a thread, experts in order",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeCombine(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeCombine(launch, n[0]); }},
+    {.name = "jitllm.bf16",
+     .operation = execution::Operation::kConvert,
+     .variant = "Bf16Kernel: __float2bfloat16, an element a thread",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckBf16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunBf16(launch, n[0]); }},
+    {.name = "jitllm.gemm.bf16",
+     .operation = execution::Operation::kMatMul,
+     .variant =
+         "cublasGemmEx BF16 x BF16 into F32, CUBLAS_COMPUTE_32F, default tensor-op algorithm",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGemmBf16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGemmBf16(launch, n[0]); }},
+    {.name = "jitllm.gated_delta_net.columns",
+     .operation = execution::Operation::kGatedDeltaNet,
+     .variant = "GdnColumnsKernel<4>: gated_delta_net_cuda<128>'s per-column arithmetic, four "
+                "value columns a warp, four warps a block",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGatedDeltaNetColumns(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGatedDeltaNetColumns(launch, n[0]); }},
+    {.name = "jitllm.gated_delta_net.lanes",
+     .operation = execution::Operation::kGatedDeltaNet,
+     .variant = "GdnLanesKernel: a value column over 8 lanes of 16 rows, 64 columns a block, "
+                "16-token chunks staged in shared memory by asynchronous copies",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGatedDeltaNetLanes(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGatedDeltaNetLanes(launch, n[0]); }},
+    {.name = "jitllm.gdn.conv",
+     .operation = execution::Operation::kSsmConv,
+     .variant = "GdnConvKernel: a head of a token a 128-thread block; ssm_conv, silu, and "
+                "rms_norm_f32<256>'s reduction for the query and key heads",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGdnConv(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGdnConv(launch, n[0]); }},
+    {.name = "jitllm.gdn.norm_gate",
+     .operation = execution::Operation::kNormGate,
+     .variant = "GdnNormGateKernel<F32 or BF16>: a head a warp, rms_norm_f32<256>'s reduction",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGdnNormGate(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGdnNormGate(launch, n[0]); }},
+    // The routed experts over the CUTLASS layout (jitllm_ops.h, moe_layout.h).
+    {.name = "jitllm.moe.route",
+     .operation = execution::Operation::kMoeRoute,
+     .variant = "RouteCount, RouteScan, RouteAssign: 64-token chunks, slots in token order",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeRoute(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeRoute(launch, n[0]); }},
+    {.name = "jitllm.moe.quantize",
+     .operation = execution::Operation::kQuantize,
+     .variant = "QuantizeRows: quantize_mmq_nvfp4's row and block scales, a token a block",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeQuantize(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeQuantize(launch, n[0]); }},
+    {.name = "jitllm.moe.gemm.cutlass",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "CUTLASS 4.7.1 Sm120 block-scaled NVFP4 grouped GEMM, KernelPtrArrayTmaWarp"
+                "SpecializedPingpong, tile 128x128x256, cluster 1x1x1, BF16 LinearCombination "
+                "epilogue; device-side problem shapes from SetupGroups",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeGemm(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemm(launch, n[0]); }},
+    {.name = "jitllm.moe.glu_quantize",
+     .operation = execution::Operation::kMoeGlu,
+     .variant = "GluQuantizeRows: SwiGLU then quantize_mmq_nvfp4's scales, a row a block",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeGluQuantize(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeGluQuantize(launch, n[0]); }},
+    {.name = "jitllm.moe.combine_sorted",
+     .operation = execution::Operation::kMoeCombine,
+     .variant = "CombineSorted: four columns a thread, experts in order",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeCombineSorted(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeCombineSorted(launch, n[0]); }},
+    {.name = "jitllm.moe.gemv",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "Gemv: a warp an output row of a slot, 16-value blocks a lane, F32 activations",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeGemv(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemv(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,
                                   std::string_view variant) {
+  // The grouped GEMM is CUTLASS's kernel: its identity names that tree too.
+  const bool cutlass = name == kMoeGemmName;
   return {
       .name = std::string(name),
       .operation = operation,
-      .source = "ggml",
-      .revision = std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
-                              ModuleSourcesDigest()),
+      .source = cutlass ? "cutlass" : "ggml",
+      .revision = cutlass ? std::format("cutlass tree {}; ggml tree {}; jitllm module {}",
+                                        JITLLM_CUTLASS_SOURCE_TREE, JITLLM_GGML_SOURCE_TREE,
+                                        ModuleSourcesDigest())
+                          : std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
+                                        ModuleSourcesDigest()),
       .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
                            JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
                            JITLLM_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, JITLLM_GGML_SANITIZE),

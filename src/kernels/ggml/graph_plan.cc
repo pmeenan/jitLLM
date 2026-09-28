@@ -296,7 +296,15 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kSsmConv, kSsmConvName, i, {node}, 1);
         break;
       case GGML_OP_GATED_DELTA_NET:
-        add(Operation::kGatedDeltaNet, kGatedDeltaNetName, i, {node}, 1);
+        // jitLLM's column-blocked recurrence where it takes the shape (the
+        // same arithmetic, jitllm_ops.h), else upstream's.
+        if (GatedDeltaNetLanesFits(node)) {
+          add(Operation::kGatedDeltaNet, kGatedDeltaNetLanesName, i, {node}, 1);
+        } else if (GatedDeltaNetColumnsFits(node)) {
+          add(Operation::kGatedDeltaNet, kGatedDeltaNetColumnsName, i, {node}, 1);
+        } else {
+          add(Operation::kGatedDeltaNet, kGatedDeltaNetName, i, {node}, 1);
+        }
         break;
       case GGML_OP_CUSTOM:
         switch (JitllmOpOf(node)) {
@@ -308,6 +316,51 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case JitllmOp::kNvfp4Rows:
             add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcCombine:
+            add(Operation::kHcCombine, kHcCombineName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcNorm:
+            add(Operation::kHcNorm, kHcNormName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcMix:
+            add(Operation::kHcMix, kHcMixName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeGlu:
+            add(Operation::kMoeGlu, kMoeGluName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeCombine:
+            add(Operation::kMoeCombine, kMoeCombineName, i, {node}, 1);
+            break;
+          case JitllmOp::kBf16:
+            add(Operation::kConvert, kBf16Name, i, {node}, 1);
+            break;
+          case JitllmOp::kGemmBf16:
+            add(Operation::kMatMul, kGemmBf16Name, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeRoute:
+            add(Operation::kMoeRoute, kMoeRouteName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeQuantize:
+            add(Operation::kQuantize, kMoeQuantizeName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeGemm:
+            add(Operation::kMulMatId, kMoeGemmName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeGluQuantize:
+            add(Operation::kMoeGlu, kMoeGluQuantizeName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeCombineSorted:
+            add(Operation::kMoeCombine, kMoeCombineSortedName, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeGemv:
+            add(Operation::kMulMatId, kMoeGemvName, i, {node}, 1);
+            break;
+          case JitllmOp::kGdnConv:
+            add(Operation::kSsmConv, kGdnConvName, i, {node}, 1);
+            break;
+          case JitllmOp::kGdnNormGate:
+            add(Operation::kNormGate, kGdnNormGateName, i, {node}, 1);
             break;
           case JitllmOp::kNone:
             return Rejected(

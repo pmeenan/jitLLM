@@ -150,7 +150,8 @@ std::expected<void, KernelFailure> CheckSetRowsExt(const ggml_tensor* node);
 // ggml_ssm_conv (ssm-conv.cu:152-206), unfused: the sliding window
 // [conv - 1 + tokens, channels, sequences] of packed F32 rows, the F32
 // weights [conv, channels], conv 3, 4, 5, 9 or 15 and channels a multiple
-// of 128, into F32 [channels, tokens, sequences].
+// of 128, into F32 [channels, tokens, sequences]; past 32 tokens, whole
+// 32-token blocks only (the long-token kernel loads whole blocks, RE-032).
 std::expected<void, KernelFailure> CheckSsmConv(const ggml_tensor* node);
 
 // ggml_gated_delta_net (gated_delta_net.cu:209-320): q and k [S, Hk, T, N]

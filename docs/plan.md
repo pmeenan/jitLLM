@@ -242,7 +242,10 @@ it appears.
       attention's value heads into tiled order; MXFP8 kept as is), wrote
       artifact `67617f87…`, 103.9 GB, 24,627 groups, in 9 min 16 s on
       `spark-b` ([qwen38-native](experiments/qwen38-native/README.md),
-      [artifact-format.md](artifact-format.md#qwen38-flash-next-modelopt-nvfp4-and-mxfp8)).
+      [artifact-format.md](artifact-format.md#qwen38-flash-next-modelopt-nvfp4-and-mxfp8));
+      since the prefill work the experts go into the CUTLASS layout the
+      grouped GEMM reads, so nothing is rewritten at load or on a swap:
+      artifact `c4fb47a9…`, 103.8 GB, in 12 min 49 s with its verification.
       *Qwen-Image-2.1:* one artifact per component and a composition naming
       them (D-089; [artifact-format.md](artifact-format.md#compositions)):
       `import_m3.py component` wrote the text encoder (17.53 GB), denoiser
@@ -277,10 +280,12 @@ it appears.
       rows and otherwise dequantized to BF16 for cuBLAS; the n-gram table's
       NVFP4 rows on jitLLM's own lookup (`kernels/ggml/jitllm_ops.h`). Each
       matches an FP64 reference built from the format's dequantization on a
-      GB10. CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3) builds for `sm_121a`
-      and was about 1.4–2.2× MMQ at prefill widths in scratch; it is not
-      incorporated (a new lock component and the MoE's device-side setup),
-      and is the prefill lever.
+      GB10. For prefill, CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3, a new
+      lock component, headers only) now takes the routed experts over a
+      CUTLASS layout the importer writes, with jitLLM's own vector products
+      over it for decode; 1.16–2.84× GGML's MoE block at 512 to 8,192
+      tokens
+      ([qwen38-native](experiments/qwen38-native/README.md#prefill-d-085)).
       *The image pipeline's* (Qwen-Image-2.1, BF16, chosen per operation by
       speed): cuBLAS BF16 products, jitLLM's own FlashAttention-2 kernel
       (3.37 ms per denoiser block, as PyTorch's flash kernel; GGML's
@@ -340,20 +345,27 @@ it appears.
       perplexity 14.43 against 14.66 (−1.5%), top-1 accuracy equal. The
       KV, indexer, recurrent and convolution state is explicit and bounded
       (`Qwen38StateLayout`, three D-068 representations), and a spill and
-      restore of it is bit-identical. Decode 0.99× the oracle's; prefill
-      0.37×, which fails D-085's 10% gate; peak memory 0.97× at a 4,096-token
-      context against vLLM's 262,144
-      ([qwen38-native](experiments/qwen38-native/README.md)).
+      restore of it is bit-identical. Decode 0.99× the oracle's; prefill,
+      after fused hyper-connection, MoE-output and Gated DeltaNet kernels
+      and CUTLASS's grouped GEMM for the routed experts, 0.91× at 8,192
+      tokens in 8,192-row chunks, within D-085's 10% gate (0.89× in
+      4,096-row chunks misses it; 1.40× at 2,048, 1.10× at 512); peak
+      memory 0.97× at a 4,096-token context against vLLM's 262,144, 1.07×
+      while prefilling 8,192 tokens in one chunk
+      ([qwen38-native](experiments/qwen38-native/README.md#prefill-d-085)).
       *On the paged node* (`benchmarks/qwen38_runner.h`): chunks as device
       jobs over leased closures, the expert slabs as DeepSeek's pages, the
       28.8 GB n-gram table never resident but read by rows before each
       chunk (4 KiB-aligned direct reads, D-035's evidence recorded: 486×
       fewer bytes than whole chunks), the state spilled and restored
       through the swap path; the six prompts' 32 steps bit-identical to the
-      resident harness's logits ([swap](experiments/fast-swap/swap.md)).
+      resident harness's logits ([swap](experiments/fast-swap/swap.md)),
+      again since the prefill work with the fused graph and CUTLASS's
+      grouped GEMM over the CUTLASS-layout artifact, which it pages in as
+      is (swaps into Qwen3.8 6.9–7.9 s, against 7.4–8.8 s before).
       Past 2,051 attended cells the QSA indexer's top-k is not repeatable
       (RE-031: GGML's radix select picks among ties by timing).
-      Open: prefill speed; a deterministic top-k.
+      Open: a deterministic top-k.
       *Qwen-Image-2.1, native* (`model/qwen_image.h`,
       `jitllm_qwen_image_exec`): the text encoder (Qwen3-VL's text path, the
       system turn dropped), the block-causal DiT with its text K/V prefix
@@ -389,7 +401,11 @@ it appears.
       projection's short rows read their padding inside the slab. All 48
       layers' routed products (432 cases) equal the packed reference's bit
       for bit ([qwen38-native](experiments/qwen38-native/README.md)). A
-      grouped-GEMM path (CUTLASS) would bring its own views.
+      grouped-GEMM path brings its own view: the harness rewrites each slot
+      in place into CUTLASS's layout (the same bytes, permuted; every layer
+      converts back to the loaded bytes exactly), which the grouped GEMM
+      and jitLLM's decode products read
+      ([artifact-format.md](artifact-format.md#executable-views)).
 - [x] **Tokenizer and chat templates** (pulled from M5; D-067): the native
       tokenizer, renderers for each model's pinned template (DeepSeek's
       upstream ships Python encoding scripts, not a template), stop rules,

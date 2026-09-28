@@ -79,15 +79,25 @@ most about 1.1× its), and the results below say where they stand.
   code bytes, 10 scales); linear attention's value heads into tiled order,
   as llama.cpp's converter; norms with (1 + w) folded in, A as −exp(A_log).
   Vision tower, MTP block and the experts' static activation scales are not
-  imported.
+  imported. **Since the prefill work's review** the importer writes the
+  routed experts in the CUTLASS layout instead ([below](#prefill-d-085)):
+  converter `m3-1+layout-a0d1980a9eddd1ad+modelopt_qwen38-031ed8750c9da55d`,
+  on `spark-b` in 12 min 49 s wall with its deep verification (peak RSS
+  2.52 GB, 8 repack processes), artifact
+  `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`:
+  103,813,038,080 bytes in 20 shards, the same 24,627 groups, 1,600
+  resources and 66,261 chunks, 192 expert arrays (four a layer), each
+  expert group 2,764,800 bytes used and stored. Every other resource is the
+  first import's.
 - **Load** (`jitllm_qwen38_exec`): the artifact opened as untrusted input,
   bound to the compiled-in profile (`model/qwen38.h`), and read with
   coalesced direct reads through pinned staging into `cudaMalloc` memory:
-  103,902,969,856 bytes in 7.45–8.14 s (12.8–13.9 GB/s). Everything is
+  103,902,969,856 bytes in 7.45–8.14 s (12.8–13.9 GB/s; the
+  CUTLASS-layout artifact's 103,802,306,560 in 7.71 s). Everything is
   resident, the 28.8 GB n-gram table included (row paging is the swap
   path's). The n-gram hash's constants are checked against the table before
   any chunk.
-- **Resident expert layout:** uniform stride over a per-layer slab, stock
+- **Resident expert layout:** as loaded, uniform stride over a per-layer slab, stock
   GGML `mul_mat_id` kernels, as DeepSeek V4's: S = 2,768,976 bytes (the
   stored group rounded to 144, NVFP4's 36-byte blocks and 16), 1,966,080
   bytes over the groups in all. The down projection's 640-element rows are
@@ -97,6 +107,15 @@ most about 1.1× its), and the results below say where they stand.
   every slice's readable bytes, the last expert's included. `--layout-proof`: every layer's
   gate, up and down products at 1, 5 and 64 tokens (432 cases, MMVQ and MMQ)
   over the slab and the packed reference: 129,024,000 outputs, 0 differing.
+  The CUTLASS layout (`kernels/ggml/moe_layout.h`,
+  [artifact-format.md](../../artifact-format.md#executable-views)): gate and
+  up as one block of 1,280 rows, then down, E2M1 codes then the swizzled
+  E4M3 scales, 2,764,800 bytes a slot. The prefill work first wrote it over
+  each slot of the GGML-layout artifact at load (3.9–4.0 s; now only with
+  `--convert-experts`, whose `--layout-proof` converts every layer back and
+  compares: 67,947,724,800 bytes, 0 differing); the importer now writes it,
+  and the harness and the paged node read it as loaded, `S` = 2,764,800
+  (no padding).
 - **Graph** (`kernels/ggml/qwen38_graph.h`): llama.cpp's `qwen4exp.cpp`
   operation plan — hyper-connections (4 streams, rank 320), the n-gram
   layer (hash on the host, lookup, gate and dilated convolution), Gated
@@ -106,7 +125,10 @@ most about 1.1× its), and the results below say where they stand.
   plus the gated shared expert, and the head — planned with fusion off:
   5,052 steps a decode step at position 0, 5,436 for a 512-row prefill
   chunk, 5,808 with QSA's selection. The graph header lists where it
-  departs from upstream's nodes.
+  departs from upstream's nodes. Since the prefill work ([below](#prefill-d-085))
+  the graph runs jitLLM's fusions of those nodes and the CUTLASS expert
+  path by default (`--unfused` builds the nodes): 2,717 steps a decode step
+  at position 0, 3,017 for a prefill chunk, 3,389 with QSA's selection.
 - **State** (`model/qwen38.h Qwen38StateLayout`): the QSA layers' F16 K and V
   caches and F32 indexer keys (a cell per position), the linear-attention
   layers' F32 recurrent state (128 × 128 × 48) and convolution history, and
@@ -121,9 +143,9 @@ is served from L2: they rank the candidates, not the model's bandwidth.
 
 | Operation | Candidate | 1 token | 8 tokens | 512 | 2,048 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| NVFP4 experts, gate 2560→640, 10 of 512 | GGML MMVQ / MMQ (chosen) | 0.010 ms | 0.323 ms | 2.80 ms | 3.79 ms |
-| NVFP4 experts, down 640→2560 | GGML MMVQ / MMQ (chosen) | 0.020 ms | 0.315 ms | 3.42 ms | 5.97 ms |
-| NVFP4 grouped GEMM, 512 groups | CUTLASS 4.7.1 example 79d (sm_121a), m 16 / 40 per group | — | — | 2.50 ms (m 16, gate shape) | 2.71 ms (m 40) |
+| NVFP4 experts, gate 2560→640, 10 of 512 | GGML MMVQ / MMQ (chosen first; now `--ggml-experts`) | 0.010 ms | 0.323 ms | 2.80 ms | 3.79 ms |
+| NVFP4 experts, down 640→2560 | GGML MMVQ / MMQ (chosen first; now `--ggml-experts`) | 0.020 ms | 0.315 ms | 3.42 ms | 5.97 ms |
+| NVFP4 grouped GEMM, 512 groups | CUTLASS 4.7.1 example 79d (sm_121a), m 16 / 40 per group (chosen for prefill, [below](#prefill-d-085)) | — | — | 2.50 ms (m 16, gate shape) | 2.71 ms (m 40) |
 | MXFP8 QKV 2560→10240 | jitLLM vector product (chosen ≤ 8) | 0.080 ms | 0.233 ms | | |
 | | BF16 weights, GGML MMVF / MMF | 0.198 ms | 0.220 ms | | |
 | | dequantize to BF16, cuBLAS (chosen > 8) | | | 0.745 ms | |
@@ -132,21 +154,16 @@ is served from L2: they rank the candidates, not the model's bandwidth.
 | MXFP8 Q 2560→12288 | jitLLM vector product | 0.134 ms | 0.281 ms | 1.075 ms (dequant + cuBLAS) | |
 | | BF16 weights, MMVF / MMF | 0.243 ms | 0.264 ms | | |
 
-- **NVFP4 experts: GGML** (a new MMQ instance unit, `mmq-instance-nvfp4.cu`,
+- **NVFP4 experts: GGML at first** (a new MMQ instance unit, `mmq-instance-nvfp4.cu`,
   in the source lock; MMVQ already instantiated NVFP4). CUTLASS's
   block-scaled grouped GEMM (BSD-3, v4.7.1, the version vLLM fetches) exists
-  for SM12x and builds for `sm_121a` with the SDK's NVCC (built and run in
-  scratch, nothing incorporated). Over 512 groups it took 2.50 ms for 16
-  rows a group (8,192 rows, against MMQ's 5,120 at 512 tokens in 2.80 ms) and
-  2.71 ms for 40 (20,480 rows, against MMQ's 3.79 ms for gate and 5.97 ms
-  for down at 2,048 tokens): about 1.4× MMQ's gate and 2.2× its down at
-  prefill widths, measured on the gate's shape only. It would be a new
-  source-lock component (large), with the MoE's grouped problem setup, the
-  scale-factor swizzle and routing on the device still to build. vLLM's
-  Apache-2.0 NVFP4 paths on this GPU are CUTLASS-based too (FlashInfer's
-  CUTLASS MoE, which Mia's engine runs; vLLM's own `nvfp4_scaled_mm_sm120`),
-  so they cost the same integration. Deferred: the prefill lever below. The
-  CuTe-DSL kernels were not considered (licensing.md).
+  for SM12x and builds for `sm_121a` with the SDK's NVCC. Over 512 groups it
+  took 2.50 ms for 16 rows a group (8,192 rows, against MMQ's 5,120 at 512
+  tokens in 2.80 ms) and 2.71 ms for 40 (20,480 rows, against MMQ's 3.79 ms
+  for gate and 5.97 ms for down at 2,048 tokens), measured on the gate's
+  shape only; deferred to the prefill work, which adopted it
+  ([below](#prefill-d-085)). The CuTe-DSL kernels were not considered
+  (licensing.md).
 - **MXFP8: jitLLM's own**, a vector product up to 8 columns (1.8–4.3× the BF16
   candidate at one token) and, wider, the weights dequantized to BF16 in the
   activations and GGML's cuBLAS product. Converting MXFP8 to BF16 at import
@@ -154,6 +171,111 @@ is served from L2: they rank the candidates, not the model's bandwidth.
   and is slower at decode widths.
 - **n-gram table rows:** jitLLM's own lookup of ModelOpt NVFP4 rows (GGML's
   NVFP4 needs 64-value blocks; the rows hold 160 values).
+
+## Prefill (D-085)
+
+The first results left prefill at 0.37× the oracle's. The prefill work
+took the levers a profile named, biggest first, on `spark-b` (`nsys`,
+kernels; `--bench-prefill 8192`, synthetic tokens from an empty context,
+best of three):
+
+| Change (cumulative) | 2,048-row chunks | 4,096 | 8,192 |
+| --- | ---: | ---: | ---: |
+| Before (`a7a9faa`, GGML's nodes unfused) | 10.6 s (773 tok/s) | | |
+| Hyper-connections' mix, combine and norms, the experts' SwiGLU and weighted sum as jitLLM kernels (`jitllm.hc.*`, `jitllm.moe.glu`, `jitllm.moe.combine`); F32 activations to BF16 once per product | 7.14 s (1,148) | | |
+| The gated delta rule, 4 columns a warp (`jitllm.gdn.columns`, bit-identical to upstream's) | 6.91 s (1,185) | | |
+| Routed experts on CUTLASS's NVFP4 grouped GEMM (below) | 5.56 s | 5.41 s | |
+| Gated DeltaNet's convolution with its norms, and its gated norm into BF16 (`jitllm.gdn.conv`, `jitllm.gdn.norm_gate`) | 4.86 s | 4.67 s | 4.56 s |
+| The gated delta rule over 16-token chunks staged in shared memory, 8 lanes a column (`jitllm.gdn.lanes`, past 16 rows) | 4.54 s (1,805) | 4.36 s (1,880) | 4.27 s (1,920) |
+
+Each fused kernel is checked against the unfused nodes and an FP64
+reference (`qwen38_fused_test`); all but the chunked delta rule are
+bit-identical to GGML's nodes (before the chunked delta rule, the fused
+graph with GGML's experts gave every logit of the six prompts equal to the
+unfused graph's). The chunked
+delta rule reorders the state's sums: NMSE about 2e-16 against upstream's
+kernel.
+
+**Profile, before and after** (GPU time a pass of 8,192 tokens): before,
+in 2,048-row chunks, about 10.4 s: elementwise multiply 2.04 s and add
+1.34 s (the hyper-connections' four streams, the n-gram layer, the
+experts' weighted sum), NVFP4 MMQ 2.0 s, the gated delta rule 0.74 s,
+cuBLAS's F32-to-BF16 conversions 0.65 s, BF16 GEMMs 0.51 s, sigmoid 0.34 s,
+RMS norms 0.31 s. After, in 8,192-row chunks, about 4.1 s: the dense BF16
+GEMMs (the MXFP8 linears dequantized, the shared expert, the head) 1.04 s,
+the routed experts 0.67 s (CUTLASS 0.42 s, the weighted sum 0.12 s,
+quantization 0.11 s), the hyper-connection kernels 0.85 s, flash attention
+0.30 s, Gated DeltaNet's recurrence, convolution and gated norm 0.37 s, the
+remaining elementwise nodes about 0.48 s and QSA's top-k 0.11 s.
+
+**CUTLASS for the routed experts.** CUTLASS 4.7.1's SM120 block-scaled
+grouped GEMM (`KernelPtrArrayTmaWarpSpecializedPingpong`, 128×128×256
+tiles, BF16 out, `kernels/ggml/moe_cutlass.cu`) enters the source lock
+(BSD-3, headers only, `third_party/sources.lock.json`). The prefill path
+sorts the routing by expert (`jitllm.moe.route`), quantizes each token's
+activations once to NVFP4 as GGML's MMQ does (`jitllm.moe.quantize`), runs
+gate and up as one grouped GEMM, SwiGLU and the second quantization in one
+kernel, the down GEMM, and the weighted sum in expert order with the shared
+expert (`jitllm.moe.combine_sorted`). A/B over one layer's MoE block (the
+whole block, routing to weighted sum, layer 0's weights; `--ab`, mean of
+10 runs after a warm-up):
+
+| Tokens | GGML MMQ | CUTLASS | Ratio |
+| ---: | ---: | ---: | ---: |
+| 512 | 9.60 ms | 8.26 ms | 1.16× |
+| 2,048 | 15.57 ms | 9.92 ms | 1.57× |
+| 8,192 | 45.76 ms | 16.14 ms | 2.84× |
+
+End to end, 6.91 s to 5.56 s at 2,048-row chunks (−20%): adopted. The
+grouped GEMM reads the CUTLASS layout, which the harness first wrote over
+each slab slot at load (3.9–4.0 s, lossless). That would have added ~4 s
+to every swap into Qwen3.8 on the paged node, which pages the model in
+each time, so the importer writes the layout instead (a new artifact,
+[above](#what-runs)): every logit of the six prompts' 32 teacher-forced
+steps is the same, bit for bit, from the new artifact as from the old one
+converted at load (`--convert-experts`, same build). So decode reads the
+same layout: `jitllm.moe.gemv` computes up to 8 tokens'
+routed products from it, the activations quantized to 8 bits a 16-value
+block and 8-bit dot products as GGML's MMVQ does, gate and up with their
+SwiGLU in one launch (NMSE 2.2e-5 against FP64, bound 5e-4, upstream's
+test-backend-ops bound). MMVQ's `q8_1` blocks are 32 values; a block of
+16 is each NVFP4 scale's own span, so one lane's dot product needs one
+activation scale, and the finer blocks only lower the quantization error.
+Decode on
+`spark`, one run each in one session, 128 steps: 24.69 tok/s with it,
+24.93 with the fused graph on GGML's MMVQ, 24.54 unfused (the graph before
+this work).
+
+**MXFP8 on tensor cores** (not adopted). A standalone A/B of CUTLASS's
+MXFP8 GEMM (activations quantized to MXFP8, F32 out) against the current
+dequantize-to-BF16 and cuBLAS at 4,096 rows: QKV 1.64 against 2.64 ms, z
+0.98 against 1.59, out 0.88 against 1.64, Q 2.04 against 3.12; at 8,192
+rows F32 out was slower for the wide products. About 0.3 s a pass of
+8,192 tokens at best (estimated from those numbers, not measured end to
+end), and it would quantize the activations the checkpoint's linears see,
+which jitLLM keeps in BF16. Left for later: prefill meets the gate without
+it.
+
+**Chunk size.** Larger chunks help (fewer passes over the weights); the
+memory they take is activations and the attention's mask and scores:
+
+| Tokens (chunk rows) | jitLLM, 3 runs | Mia's vLLM, MTP off, deterministic | MTP 3 launch | Peak memory (jitLLM, context 8,704) |
+| --- | ---: | ---: | ---: | ---: |
+| 8,192 (8,192) | 1,918–1,924 tok/s: **0.91×** | 2,101 (8,266 tokens) | 2,066: 0.93× | 110.3–110.5 GiB (1.07× vLLM's 102.7) |
+| 8,192 (4,096) | 1,879–1,883: 0.89× | 2,101 | 2,066: 0.91× | 104.7–104.9 GiB (1.02×) |
+| 2,048 (2,048) | 1,947–1,972: 1.39–1.41× | 1,398 (~2,130) | 1,625: 1.20–1.21× | |
+| 512 (512) | 1,334–1,346: 1.09–1.10× | 1,220 (~590) | 1,198: 1.11–1.12× | |
+
+The baseline binary in the same session: 772–773, 802 and 749–751 tok/s.
+From the CUTLASS-layout artifact (the review's build, `spark-b`, two
+runs, each best of three): 8,192 tokens in 8,192-row chunks at
+1,931.7–1,943.5 tok/s (0.92×), peak 110.4–110.5 GiB (1.08× vLLM's, under
+D-085's 1.1×); decode 24.98 tok/s (128 steps, context 4,096; 0.99×).
+Prefill at 8,192 tokens is within D-085's 10% of the oracle's in
+8,192-row chunks, and just outside it (0.89×) in 4,096-row chunks; at 512
+and 2,048 tokens jitLLM is ahead. What remains is the dense BF16 GEMMs
+(the MXFP8 lever above), the hyper-connections' four-stream traffic and
+the elementwise nodes left unfused (the n-gram layer's, QSA's).
 
 ## RE-030
 
@@ -183,6 +305,36 @@ GB10, driver 580.178.04. Raw outputs in `~/scratch/m3qwen/` on `spark-b`.
 | Expert layout (bound 4) | 0 of 129,024,000 outputs differ |
 | State spill and restore (bound 5) | 0 of 47,677,440 logits differ (6 prompts, restored at step 16 of 32) |
 
+**Again after the prefill work** (the default graph: fused kernels, the
+chunked delta rule, CUTLASS's experts and `jitllm.moe.gemv`; on `spark`,
+2026-09-28, raw outputs in `~/scratch/m3qpre/v2_*`): greedy 181 of 192
+equal to the oracle's, the 11 others at oracle margins 0.0 (×4), 0.125,
+0.25, 0.625, 0.75 and 1.0 (×3), so within both this run's bound (1.125,
+jitLLM's own margin move p95 1.024, top-5 \|dlogprob\| RMS 0.465 between
+its two runs) and the first results' 1.0: **passes**; \|dlogprob\| against
+the oracle RMS 0.50–1.19 per prompt, max 2.5–5.8; free-running identical
+for the first 22, 3, 21, 32, 9 and 2 tokens. Perplexity 14.4165 in
+512-row chunks (−1.6%) and 14.4747 in 4,096-row chunks (−1.3%), top-1
+agreement 84.3% and 84.0%. Expert layout 0 of 129,024,000 outputs differ
+(GGML's layout, before the conversion), and the conversion back from
+CUTLASS's layout gives all 67,947,724,800 bytes exactly; state spill and
+restore 0 of 47,677,440 logits differ. The perplexity before position
+2,048 repeats exactly (mean \|dNLL\| 0.26916 in this run and in the
+previous build's, whose prefill path is the same); after it QSA's selection is not
+repeatable run to run (ties in its top-k), so the whole text's perplexity
+moves in the fourth digit (14.4800 and 14.4165 in 512-row chunks).
+
+**Again from the CUTLASS-layout artifact** (`c4fb47a9…`, the review's
+build, `spark-b`, 2026-09-28, raw outputs in `~/scratch/m3qpre-review/`):
+the six prompts' 32 teacher-forced steps give every logit equal, bit for
+bit, to the first artifact's with the experts converted at load
+(`--convert-experts`, whose layout proof and conversion proof again found
+0 of 129,024,000 outputs and 0 of 67,947,724,800 bytes differing); greedy
+181 of 192, the 11 others near-ties at oracle margins up to 1.0 (bound
+1.125): **passes**; perplexity 14.4800 in 512-row chunks (−1.2%) and
+14.4747 in 4,096-row chunks (−1.3%), top-1 agreement 84.1% and 84.0%;
+state spill and restore 0 of 47,677,440 logits differ.
+
 **Bound 1's sensitivity** (from jitLLM's runs only; repeating either run
 gives identical logits): the top-1 to top-2 margin moves between the two
 runs by p50 0.22, p90 0.75, p95 0.94, p99 1.85 and at most 1.92 nats over
@@ -207,27 +359,27 @@ bounds; neither side speculates):
 
 | | jitLLM | Mia's vLLM (MTP off, deterministic mode) |
 | --- | --- | --- |
-| Prefill, 8,192 tokens | 772 tok/s in 2,048-row chunks, 681 in 512-row (best of 3) | 2,101 tok/s (8,266 tokens) |
-| Decode | 24.77 tok/s (128 steps from an empty context, mean of 3 after a warm-up); 23.9–25.1 in the prompt runs | 25.12 / 25.33 tok/s (`prose` / `code`, 256 steps) |
-| Load | 7.5–8.1 s (artifact, direct reads) | 10 min 52 s to `/health` |
-| Peak memory (drop in `MemAvailable`) | 99.3–99.9 GiB at context 4,096 | 102.7 GiB |
+| Prefill, 8,192 tokens | first results: 772 tok/s in 2,048-row chunks, 681 in 512-row (best of 3); after the prefill work: 1,918–1,924 in 8,192-row chunks, 1,879–1,883 in 4,096-row ([above](#prefill-d-085)) | 2,101 tok/s (8,266 tokens) |
+| Decode | 24.77 tok/s (128 steps from an empty context, mean of 3 after a warm-up); 23.9–25.1 in the prompt runs; after the prefill work 24.53–24.60 against the earlier binary's 24.47–24.50 in the same session (3 runs each, alternating) | 25.12 / 25.33 tok/s (`prose` / `code`, 256 steps) |
+| Load | 7.5–8.1 s (artifact, direct reads); the CUTLASS-layout artifact 7.7 s, as loaded (the prefill work's load-time rewrite added 3.9–4.0 s) | 10 min 52 s to `/health` |
+| Peak memory (drop in `MemAvailable`) | 99.3–99.9 GiB at context 4,096; 104.7–104.9 GiB prefilling 8,192 tokens in 4,096-row chunks, 110.3–110.5 in one chunk (context 8,704) | 102.7 GiB |
 
-So decode is 0.99× the oracle's and within D-085's 10%. **Prefill is 0.37×
-the oracle's and fails D-085's 10% gate; it stays open** (M3's exit needs
-at least about 0.9×). Peak memory is 0.97×, but not like for like: jitLLM
+So decode is 0.97–0.99× the oracle's and within D-085's 10%. Prefill was
+0.37× the oracle's at first; after the prefill work it is 0.91× at 8,192
+tokens in 8,192-row chunks, within D-085's 10%. Peak memory is 0.97×, but not like for like: jitLLM
 holds a 4,096-token context (244 MB of state), vLLM its configured 262,144
 (a 19.21 GiB KV pool). At vLLM's context jitLLM's state alone would add
 about 7.5 GiB (30,720 bytes a position in the QSA layers' caches,
 computed, not measured), about 1.05× before the chunk masks and indexer
-scores, which also grow with the context. A
-profile of the 2,048-row prefill (`nsys`, kernels) puts the time in the
+scores, which also grow with the context. At first a
+profile of the 2,048-row prefill (`nsys`, kernels) put the time in the
 elementwise broadcasts the hyper-connections, the n-gram layer and the
 experts' weighted sum make at four streams' width (multiply 17%, add 12%),
 the NVFP4 MMQ products (16%), the gated delta rule (6%), cuBLAS's F32-to-BF16
 activation conversion (5%) and the BF16 and dequantized MXFP8 GEMMs; the
-levers are fused hyper-connection and MoE-reduction kernels, the grouped
-NVFP4 GEMM above, and an MXFP8 tensor-core GEMM. Decode launches each of its
-5,052 steps from the host (no CUDA graphs yet, an M3 item).
+prefill work took those levers ([above](#prefill-d-085)). Decode launches
+each of its steps from the host (2,717 at position 0 after the prefill
+work, 5,052 before; no CUDA graphs yet, an M3 item).
 
 ## Judgement calls
 
@@ -242,7 +394,22 @@ NVFP4 GEMM above, and an MXFP8 tensor-core GEMM. Decode launches each of its
 - **Not imported:** the vision tower, the MTP block (the speculation slice
   re-imports) and the experts' static activation scales (GGML quantizes
   activations per row).
-- **Kernels:** as the A/B above; CUTLASS left for the prefill work.
+- **Kernels:** as the A/B above; CUTLASS left for the prefill work, which
+  adopted it.
+- **Prefill work:** the fused kernels are jitLLM's own, planned as named
+  implementations (D-053) with the unfused nodes still built by
+  `--unfused`; CUTLASS enters the lock as a header-only component rather
+  than a vendored copy; the CUTLASS layout replaces GGML's in the artifact
+  (the same bytes permuted, so no second copy of 68 GB, and no rewrite at
+  load, which every swap into the model would pay), which moves decode
+  onto jitLLM's vector product (MMVQ's arithmetic, a scale per 16 values
+  rather than 32); its arrays are GGML `I8` bytes, so the artifact format
+  and readers are unchanged; MXFP8 on tensor cores is not taken, since the
+  gate is met without changing what the linears' activations are.
+- **Chunks of 1,024 rows and more** are rounded down to a multiple of 64
+  (`ChunkRows`): the tensor-core flash attention's mask pre-pass reads
+  whole column tiles past a chunk's last row, which the check refuses; the
+  earlier binary fails the same way at 4,096-row chunks.
 - **The down projection's short rows:** a flag the binder sets on weights
   whose padding is readable, rather than a relaxed check for every weight.
 - **Graph departures** (qwen38_graph.h): an F32 indexer cache, the shared
@@ -269,3 +436,13 @@ NVFP4 GEMM above, and an MXFP8 tensor-core GEMM. Decode launches each of its
   prompts, below that, do.
 - The state's spill and restore is the harness's copy of one region; the
   swap path's spill format is M4's (D-086).
+- The grouped GEMM is built for `sm_121a` only (`PlanMoeGemm` requires
+  compute capability 12.1): elsewhere a CUTLASS-layout artifact's prefill
+  is refused, and the GGML-layout artifact runs GGML's products. The
+  harness's `--unfused`, `--layout-proof` and `--ab` read GGML's layout, so
+  they take the first artifact.
+- The unfused graph (`--unfused`) keeps GGML's `ssm_conv`, which past 32
+  tokens loads whole 32-token blocks (RE-032): it pads a chunk that is not
+  whole blocks and drops the padding's outputs, and `CheckSsmConv` refuses
+  an unpadded one; the fused graph uses `ssm_conv` only for chunks of 1–2
+  tokens.

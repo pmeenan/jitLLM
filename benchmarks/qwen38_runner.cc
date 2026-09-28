@@ -191,7 +191,8 @@ Status Qwen38Runner::Setup() {
                                   .array = [](std::uint32_t) { return std::uint64_t{1} << 44U; },
                                   .stride = std::move(stride),
                                   .state = std::uint64_t{1} << 45U,
-                                  .ple_table = std::uint64_t{1} << 44U}};
+                                  .ple_table = std::uint64_t{1} << 44U},
+                       .cutlass = binding_.cutlass()};
   md::Qwen38PleHash stand_in;
   stand_in.multipliers.assign(profile_.ngram, 1);
   stand_in.offsets.assign(profile_.ple_heads(), 0);
@@ -277,7 +278,7 @@ Status Qwen38Runner::ReserveWeights() {
     const md::Qwen38Layer& l = binding_.layers[il];
     std::uint64_t unit = 16;
     std::optional<std::uint32_t> first_group;
-    for (const md::Qwen38Tensor* t : {&l.gate_exps, &l.up_exps, &l.down_exps}) {
+    for (const md::Qwen38Tensor* t : l.expert_arrays(binding_.cutlass())) {
       const auto& a = artifact_->expert_arrays()[t->index];
       auto type = kg::GgmlTypeOf(t->type);
       if (!type) {

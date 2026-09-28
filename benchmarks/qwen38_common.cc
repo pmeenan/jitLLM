@@ -90,9 +90,16 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
     bind(l.gate_exps_scale, r.gate_exps_scale);
     bind(l.up_exps_scale, r.up_exps_scale);
     bind(l.down_exps_scale, r.down_exps_scale);
-    kg::TensorArena::Bind(l.gate_exps, m.places.array(r.gate_exps.index));
-    kg::TensorArena::Bind(l.up_exps, m.places.array(r.up_exps.index));
-    kg::TensorArena::Bind(l.down_exps, m.places.array(r.down_exps.index));
+    if (l.experts != nullptr) {
+      // The CUTLASS layout fills each slot from its start: the layer's first
+      // array's address less its offset in the expert group.
+      const md::Qwen38Tensor& first = b.cutlass() ? r.gate_up_codes : r.gate_exps;
+      kg::TensorArena::Bind(l.experts, m.places.array(first.index) - first.group_offset);
+    } else {
+      kg::TensorArena::Bind(l.gate_exps, m.places.array(r.gate_exps.index));
+      kg::TensorArena::Bind(l.up_exps, m.places.array(r.up_exps.index));
+      kg::TensorArena::Bind(l.down_exps, m.places.array(r.down_exps.index));
+    }
     const auto state = [&](ggml_tensor* t, K kind) {
       if (t == nullptr) {
         return;
@@ -112,21 +119,33 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
 
 std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     const Qwen38Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
-    std::uint64_t activations, std::uint64_t activation_bytes) {
+    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep) {
   auto out = std::make_unique<Qwen38Planned>();
   auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(*m.profile));
   if (!arena) {
     return Error(arena.error().detail);
   }
   out->arena.emplace(std::move(*arena));
-  auto graph = kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape,
-                                    {.expert_stride = m.places.stride});
+  auto graph =
+      kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape,
+                           {.expert_stride = m.places.stride,
+                            .fused = m.fused,
+                            .experts = m.cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
+                                                 : kg::Qwen38GraphOptions::Experts::kGgml});
   if (!graph) {
     return Error(graph.error().detail);
   }
   out->graph = std::move(*graph);
   kg::Qwen38Graph& g = out->graph;
   BindQwen38Weights(m, g);
+  std::vector<ggml_tensor*> kept;
+  for (const std::string& name : keep) {
+    ggml_tensor* t = g.Named(name);
+    if (t == nullptr) {
+      return Error(std::format("the graph names no {}", name));
+    }
+    kept.push_back(t);
+  }
   constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
   std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
   const auto inputs = g.inputs();
@@ -139,7 +158,7 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
   if (!first) {
     return Error(first.error().detail);
   }
-  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 256, {});
+  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 256, kept);
   if (!placement) {
     return Error(placement.error().detail);
   }

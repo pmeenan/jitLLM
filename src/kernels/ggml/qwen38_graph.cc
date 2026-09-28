@@ -26,6 +26,7 @@
 #include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 #include "model/qwen38.h"
@@ -44,8 +45,8 @@ std::size_t U(std::int64_t n) { return static_cast<std::size_t>(n); }
 class Builder {
  public:
   Builder(ggml_context* c, const model::Qwen38Profile& p, const model::Qwen38Binding& b,
-          const Qwen38ChunkShape& s, Qwen38Graph& g)
-      : c_(c), p_(p), b_(b), s_(s), g_(g) {}
+          const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool cutlass)
+      : c_(c), p_(p), b_(b), s_(s), g_(g), fused_(fused), cutlass_(cutlass) {}
 
   std::expected<void, KernelFailure> Leaves(const Qwen38GraphOptions& options);
   void Build();
@@ -82,8 +83,9 @@ class Builder {
                            1.0f);
   }
   // An MXFP8 product y[n, t] = W x: jitLLM's vector product up to its
-  // column bound, else the weights dequantized to BF16 for GGML's product.
-  ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, ggml_tensor* x) {
+  // column bound, else the weights dequantized to BF16 for GGML's product,
+  // or for jitLLM's BF16 product where `x_bf16`, x converted, is given.
+  ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, ggml_tensor* x, ggml_tensor* x_bf16 = nullptr) {
     if (!ggml_is_contiguous(x)) {
       x = ggml_cont(c_, x);
     }
@@ -93,8 +95,20 @@ class Builder {
     if (x->ne[1] <= kMxfp8VecColumns) {
       return Mxfp8MulMatVec(c_, w.codes, w.scales, x);
     }
+    if (x_bf16 != nullptr) {
+      return GemmBf16(c_, Mxfp8Dequant(c_, w.codes, w.scales), x_bf16);
+    }
     return ggml_mul_mat(c_, Mxfp8Dequant(c_, w.codes, w.scales), x);
   }
+  // A product with BF16 weights: jitLLM's over `x_bf16` where given, else
+  // GGML's.
+  ggml_tensor* MulMat(ggml_tensor* w, ggml_tensor* x, ggml_tensor* x_bf16) {
+    return x_bf16 != nullptr ? GemmBf16(c_, w, x_bf16) : ggml_mul_mat(c_, w, x);
+  }
+  // Whether the fused graph gives a float product of `rows` BF16 inputs.
+  bool Bf16Inputs(std::int64_t rows) const { return fused_ && rows > kQwen38Bf16Rows; }
+  // `x` [n, t] converted to BF16 for the products that read it, or null.
+  ggml_tensor* Bf16Of(ggml_tensor* x) { return Bf16Inputs(x->ne[1]) ? ToBf16(c_, x) : nullptr; }
   // build_lora_mm_id with a per-expert scale (llama-graph.cpp:1545-1581).
   ggml_tensor* MulMatId(ggml_tensor* w, ggml_tensor* x, ggml_tensor* ids, ggml_tensor* scale) {
     ggml_tensor* res = ggml_mul_mat_id(c_, w, x, ids);
@@ -118,7 +132,8 @@ class Builder {
                            std::int64_t channels);
   ggml_tensor* Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_tensor* hidden, int il);
   ggml_tensor* LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
-  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
+  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggml_tensor* cur_bf16,
+                       int il);
   ggml_tensor* Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
   ggml_tensor* Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
 
@@ -127,6 +142,8 @@ class Builder {
   const model::Qwen38Binding& b_;
   const Qwen38ChunkShape& s_;
   Qwen38Graph& g_;
+  bool fused_;
+  bool cutlass_;
   std::vector<ggml_tensor*> expanded_;
 };
 
@@ -311,6 +328,35 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
       }
       return {};
     };
+    if (options.experts == Qwen38GraphOptions::Experts::kCutlass) {
+      // The slab as bytes: every slot must hold the CUTLASS layout.
+      const moe::ExpertLayout layout{.ffn = p_.expert_ffn, .width = p_.width};
+      if (stride == 0 || stride < layout.bytes() || stride % 16 != 0) {
+        return Rejected(std::format(
+            "layer {}: an expert stride of {} bytes does not hold the CUTLASS layout's {}", il,
+            stride, layout.bytes()));
+      }
+      // An artifact in the CUTLASS layout: its arrays at the layout's
+      // offsets, byte for byte (else the slots were converted at load).
+      if (b_.cutlass() &&
+          (w.gate_up_codes.group_offset != moe::ExpertLayout::gate_up_codes() ||
+           w.gate_up_scales.group_offset != layout.gate_up_scales() ||
+           w.down_codes.group_offset != layout.down_codes() ||
+           w.down_scales.group_offset != layout.down_scales() ||
+           w.down_scales.group_offset + (w.down_scales.ne[0] * w.down_scales.ne[1]) !=
+               layout.bytes())) {
+        return Rejected(std::format(
+            "layer {}: the artifact's CUTLASS expert arrays are not at the layout's offsets", il));
+      }
+      l.experts =
+          ggml_new_tensor_2d(c_, GGML_TYPE_I8, static_cast<std::int64_t>(stride), p_.experts);
+      continue;
+    }
+    if (b_.cutlass()) {
+      return Rejected(
+          "the artifact's experts are in the CUTLASS layout, which GGML's products "
+          "do not read");
+    }
     if (auto e = experts(l.gate_exps, w.gate_exps); !e) {
       return e;
     }
@@ -334,6 +380,21 @@ ggml_tensor* Builder::HcMix(ggml_tensor* x, ggml_tensor* w_norm, ggml_tensor* w_
   const std::int64_t hc_dim = p_.hc_width();
   const std::int64_t nt = x->ne[2];
   const std::int64_t n_embd = p_.width;
+  if (fused_) {
+    // The norm (in BF16 for cuBLAS's products), the products, then the
+    // gate and fold over the streams, the norm recomputed (jitllm.hc.mix).
+    const bool bf16 = Bf16Inputs(nt);
+    ggml_tensor* xn = HcNorm(c_, x, w_norm, p_.rms_eps, bf16 ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+    ggml_tensor* lo = bf16 ? GemmBf16(c_, w_down, xn) : ggml_mul_mat(c_, w_down, xn);
+    lo = ggml_silu(c_, ggml_scale(c_, lo, 1.0f / static_cast<float>(hc)));
+    ggml_tensor* gate = ggml_mul_mat(c_, w_up, lo);
+    ggml_tensor* mixed = ggml::HcMix(c_, x, w_norm, gate, p_.rms_eps);
+    Name(mixed, "hc_mixed", il);
+    if (inject != nullptr) {
+      *inject = bf16 ? GemmBf16(c_, w_inject, xn) : ggml_mul_mat(c_, w_inject, xn);
+    }
+    return mixed;
+  }
   ggml_tensor* xn = ggml_rms_norm(c_, x, p_.rms_eps);
   xn = ggml_reshape_2d(c_, xn, hc_dim, nt);
   xn = ggml_mul(c_, xn, w_norm);
@@ -362,6 +423,9 @@ ggml_tensor* Builder::HcCombine(ggml_tensor* residual, ggml_tensor* block_out,
                                 ggml_tensor* inject) {
   const std::int64_t hc = p_.hc;
   const std::int64_t nt = residual->ne[2];
+  if (fused_) {
+    return ggml::HcCombine(c_, residual, ggml_reshape_2d(c_, block_out, p_.width, nt), inject);
+  }
   ggml_tensor* w = ggml_sigmoid(c_, ggml_scale(c_, inject, 1.0f / static_cast<float>(hc)));
   w = ggml_scale(c_, w, 2.0f);
   w = ggml_reshape_3d(c_, w, 1, hc, nt);
@@ -446,20 +510,54 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   const std::int64_t hk = p_.lin_k_heads;
   const std::int64_t hv = p_.lin_v_heads;
   const std::int64_t channels = p_.conv_channels();
-  ggml_tensor* qkv = Linear(l.qkv, cur);
+  ggml_tensor* cur_bf16 = Bf16Of(cur);
+  ggml_tensor* qkv = Linear(l.qkv, cur, cur_bf16);
   qkv = ggml_reshape_3d(c_, qkv, qkv->ne[0], nt, 1);
-  ggml_tensor* z = Linear(l.z, cur);
-  ggml_tensor* beta = Linear(l.beta, cur);
+  ggml_tensor* z = Linear(l.z, cur, cur_bf16);
+  ggml_tensor* beta = Linear(l.beta, cur, cur_bf16);
   beta = ggml_reshape_4d(c_, beta, 1, hv, nt, 1);
   beta = ggml_sigmoid(c_, beta);
-  ggml_tensor* alpha = Linear(l.alpha, cur);
+  ggml_tensor* alpha = Linear(l.alpha, cur, cur_bf16);
   alpha = ggml_reshape_3d(c_, alpha, hv, nt, 1);
   ggml_tensor* alpha_sp = ggml_softplus(c_, ggml_add(c_, alpha, l.dt_bias));
   ggml_tensor* gate = ggml_mul(c_, alpha_sp, l.ssm_a);
   gate = ggml_reshape_4d(c_, gate, 1, hv, nt, 1);
-  ggml_tensor* conv_input = ConvStateAt(l.conv_state, qkv, p_.conv - 1, channels);
   ggml_tensor* state = ggml_reshape_4d(c_, l.recurrent, d, d, hv, 1);
-  ggml_tensor* conv = ggml_silu(c_, ggml_ssm_conv(c_, conv_input, l.conv1d));
+  const std::int64_t history = p_.conv - 1;
+  // jitLLM's convolution (jitllm.gdn.conv) reads the history and the rows
+  // in place and normalizes the query and key heads itself; it takes whole
+  // histories' worth of rows, so that the new history is the last rows.
+  const bool fused_conv = fused_ && d == 128 && p_.conv == 4 && nt >= history;
+  ggml_tensor* conv = nullptr;
+  if (fused_conv) {
+    const auto n = static_cast<float>(d);
+    conv = GdnConv(c_, ggml_reshape_2d(c_, qkv, channels, nt), l.conv_state, l.conv1d, 2 * d * hk,
+                   d, p_.rms_eps / n, 1.0f / std::sqrt(n));
+    // The convolution reads the old history before the new one is stored.
+    Expand(conv);
+    ggml_tensor* tail = ggml_view_2d(c_, qkv, channels, history, qkv->nb[1],
+                                     static_cast<std::size_t>(nt - history) * qkv->nb[1]);
+    Expand(StoreState(l.conv_state, ggml_cont(c_, ggml_transpose(c_, tail))));
+  } else {
+    ggml_tensor* conv_input = ConvStateAt(l.conv_state, qkv, history, channels);
+    // Past 32 tokens upstream's convolution loads whole 32-token windows,
+    // which would read past the window when the tokens are not a multiple of
+    // 32 (RE-032; CheckSsmConv refuses that): the window is padded to whole
+    // windows with copies of its first columns, whose outputs are dropped.
+    const std::int64_t pad = nt > 32 && nt % 32 != 0 ? 32 - (nt % 32) : 0;
+    if (pad != 0) {
+      ggml_tensor* first =
+          ggml_view_3d(c_, conv_input, pad, channels, 1, conv_input->nb[1], conv_input->nb[2], 0);
+      conv_input = ggml_concat(c_, conv_input, ggml_cont(c_, first), 0);
+    }
+    ggml_tensor* windows = ggml_ssm_conv(c_, conv_input, l.conv1d);
+    if (pad != 0) {
+      // The first nt tokens' outputs, packed (one sequence).
+      windows = ggml_view_3d(c_, windows, channels, nt, 1, windows->nb[1],
+                             windows->nb[1] * static_cast<std::size_t>(nt), 0);
+    }
+    conv = ggml_silu(c_, windows);
+  }
   // A head's stride (views' nb1), a token's (nb2) and the chunk's (nb3).
   const std::size_t head_stride = ggml_row_size(conv->type, d);
   const std::size_t token_stride = ggml_row_size(conv->type, channels);
@@ -469,8 +567,10 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
                                 ggml_row_size(conv->type, d * hk));
   ggml_tensor* v = ggml_view_4d(c_, conv, d, hv, nt, 1, head_stride, token_stride, chunk_stride,
                                 ggml_row_size(conv->type, 2 * d * hk));
-  q = L2Norm(q);
-  k = L2Norm(k);
+  if (!fused_conv) {
+    q = L2Norm(q);
+    k = L2Norm(k);
+  }
   ggml_tensor* result = ggml_gated_delta_net(c_, q, k, v, gate, beta, state, 1);
   ggml_tensor* output = ggml_view_4d(c_, result, d, hv, nt, 1, ggml_row_size(result->type, d),
                                      ggml_row_size(result->type, d * hv),
@@ -479,24 +579,35 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
       c_, result, d, d, hv, 1, ggml_row_size(result->type, d), ggml_row_size(result->type, d * d),
       ggml_row_size(result->type, d * d * hv), ggml_row_size(result->type, d * hv * nt));
   Expand(StoreState(l.recurrent, new_state));
-  ggml_tensor* z4 = ggml_reshape_4d(c_, z, d, hv, nt, 1);
-  // build_norm_gated: the sigmoid output gate.
-  ggml_tensor* normed = ggml_mul(c_, Norm(output, l.ssm_norm), ggml_sigmoid(c_, z4));
-  ggml_tensor* flat = ggml_reshape_2d(c_, normed, d * hv, nt);
-  ggml_tensor* out = Linear(l.ssm_out, flat);
+  ggml_tensor* out = nullptr;
+  if (fused_ && d == 128) {
+    // build_norm_gated as jitllm.gdn.norm_gate, in BF16 for cuBLAS's product.
+    const bool bf16 = Bf16Inputs(nt);
+    ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
+                                      p_.rms_eps, bf16 ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+    out = bf16 ? GemmBf16(c_, Mxfp8Dequant(c_, l.ssm_out.codes, l.ssm_out.scales), normed)
+               : Linear(l.ssm_out, normed);
+  } else {
+    ggml_tensor* z4 = ggml_reshape_4d(c_, z, d, hv, nt, 1);
+    // build_norm_gated: the sigmoid output gate.
+    ggml_tensor* normed = ggml_mul(c_, Norm(output, l.ssm_norm), ggml_sigmoid(c_, z4));
+    ggml_tensor* flat = ggml_reshape_2d(c_, normed, d * hv, nt);
+    out = Linear(l.ssm_out, flat);
+  }
   Name(out, "linear_attn_out", il);
   return out;
 }
 
 // build_qsa_top_k (qwen4exp.cpp:525-674), one stream, the per-block bias.
-ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, int il) {
+ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggml_tensor* cur_bf16,
+                              int il) {
   const std::int64_t idx_dim = p_.indexer_head_dim;
   const std::int64_t n_idx_h = p_.indexer_heads;
   const std::int64_t r = p_.indexer_ratio;
   const std::int64_t n_kv = s_.n_kv;
   const std::int64_t n_blocks = s_.qsa_blocks;
   const std::int64_t nt = cur->ne[1];
-  ggml_tensor* qk = Linear(l.idx_qk, cur);  // [q heads · dim | dim, nt]
+  ggml_tensor* qk = Linear(l.idx_qk, cur, cur_bf16);  // [q heads · dim | dim, nt]
   ggml_tensor* k_raw =
       ggml_view_2d(c_, qk, idx_dim, nt, qk->nb[1], ggml_row_size(qk->type, n_idx_h * idx_dim));
   // The cached keys are raw: pooling precedes their norm and rotation.
@@ -551,14 +662,16 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   const std::int64_t kvh = p_.kv_heads;
   const std::int64_t nt = cur->ne[1];
   const std::int64_t n_kv = s_.n_kv;
-  ggml_tensor* top_k = QsaTopK(l, cur, il);
-  ggml_tensor* q_full = Linear(l.q, cur);  // [(d · 2) · heads, nt]: per head, q then its gate
+  ggml_tensor* cur_bf16 = Bf16Of(cur);
+  ggml_tensor* top_k = QsaTopK(l, cur, cur_bf16, il);
+  // [(d · 2) · heads, nt]: per head, q then its gate
+  ggml_tensor* q_full = Linear(l.q, cur, cur_bf16);
   const std::size_t f = ggml_element_size(q_full);
   const std::size_t per_head = f * U(d) * 2;  // q then its gate
   ggml_tensor* q = ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), 0);
   q = Norm(q, l.q_norm);
-  ggml_tensor* k = Linear(l.k, cur);
-  ggml_tensor* v = Linear(l.v, cur);
+  ggml_tensor* k = Linear(l.k, cur, cur_bf16);
+  ggml_tensor* v = Linear(l.v, cur, cur_bf16);
   k = ggml_reshape_3d(c_, k, d, kvh, nt);
   k = Norm(k, l.k_norm);
   ggml_tensor* gate =
@@ -617,7 +730,8 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il)
   const std::int64_t nt = cur->ne[1];
   const std::int64_t n_expert = p_.experts;
   const std::int64_t used = p_.experts_used;
-  ggml_tensor* logits = ggml_mul_mat(c_, l.router, cur);
+  ggml_tensor* cur_bf16 = Bf16Of(cur);
+  ggml_tensor* logits = MulMat(l.router, cur, cur_bf16);
   ggml_tensor* probs = ggml_soft_max(c_, logits);
   ggml_tensor* selected = ggml_argsort_top_k(c_, probs, static_cast<int>(used));
   Name(selected, "ffn_moe_topk", il);
@@ -630,6 +744,56 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il)
   weights = ggml_reshape_3d(c_, weights, 1, used, nt);
   Expand(weights);
   ggml_tensor* x = ggml_reshape_3d(c_, cur, n_embd, 1, nt);
+  // The shared expert's gate, one value a token: GGML's products refuse a
+  // one-row output (its rows are not 8-byte aligned), so the dot product is
+  // the gate row (read as F32) times each token, summed.
+  const auto shared_gate_dot = [&] {
+    ggml_tensor* gate_row =
+        ggml_get_rows(c_, ggml_reshape_2d(c_, l.shared_gate, n_embd, 1), g_.row_zero);
+    return ggml_sum_rows(c_, ggml_mul(c_, cur, gate_row));
+  };
+  if (cutlass_) {
+    // The CUTLASS layout: moe_layout.h's parts of each slot.
+    const moe::ExpertLayout layout{.ffn = p_.expert_ffn, .width = p_.width};
+    const std::int64_t f = p_.expert_ffn;
+    ggml_tensor* sh_up = Linear(l.up_shexp, cur, cur_bf16);
+    ggml_tensor* sh_gate = Linear(l.gate_shexp, cur, cur_bf16);
+    ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
+    if (nt <= kMoeGemvTokens) {
+      // Decode: each slot's products straight from the layout (gate and up
+      // with their SwiGLU in one), then the same weighted sum as GGML's
+      // products feed.
+      ggml_tensor* act =
+          MoeGemvSwiglu(c_, l.experts, x, selected, f, l.gate_exps_scale, l.up_exps_scale,
+                        moe::ExpertLayout::gate_up_codes(), layout.gate_up_scales());
+      ggml_tensor* down = MoeGemv(c_, l.experts, act, selected, n_embd, 0, n_embd,
+                                  layout.down_codes(), layout.down_scales());
+      return MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate_dot());
+    }
+    // Prefill: the rows sorted by expert, quantized once, CUTLASS's grouped
+    // GEMMs (gate and up as one), SwiGLU with the next quantization, and
+    // the weighted sum.
+    ggml_tensor* route = MoeRoute(c_, selected, n_expert);
+    ggml_tensor* a1 = MoeQuantize(c_, cur, route);
+    ggml_tensor* d1 = MoeGemm(c_, a1, route, l.experts, 2 * f, moe::ExpertLayout::gate_up_codes(),
+                              layout.gate_up_scales());
+    ggml_tensor* a2 = MoeGluQuantize(c_, d1, a1, route, l.gate_exps_scale, l.up_exps_scale);
+    ggml_tensor* d2 =
+        MoeGemm(c_, a2, route, l.experts, n_embd, layout.down_codes(), layout.down_scales());
+    return MoeCombineSorted(c_, d2, a2, route, l.down_exps_scale, weights, sh, shared_gate_dot());
+  }
+  if (fused_) {
+    // jitllm.moe.glu and jitllm.moe.combine over the same products.
+    ggml_tensor* up = ggml_mul_mat_id(c_, l.up_exps, x, selected);
+    ggml_tensor* gate = ggml_mul_mat_id(c_, l.gate_exps, x, selected);
+    ggml_tensor* act = MoeGlu(c_, gate, up, selected, l.gate_exps_scale, l.up_exps_scale);
+    ggml_tensor* down = ggml_mul_mat_id(c_, l.down_exps, act, selected);
+    ggml_tensor* sh_up = Linear(l.up_shexp, cur, cur_bf16);
+    ggml_tensor* sh_gate = Linear(l.gate_shexp, cur, cur_bf16);
+    ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
+    // (Named ffn_out by the caller: the fusion includes the shared expert.)
+    return MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate_dot());
+  }
   ggml_tensor* up = MulMatId(l.up_exps, x, selected, l.up_exps_scale);
   ggml_tensor* gate = MulMatId(l.gate_exps, x, selected, l.gate_exps_scale);
   ggml_tensor* act = ggml_swiglu_split(c_, gate, up);
@@ -654,12 +818,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il)
   ggml_tensor* sh_up = Linear(l.up_shexp, cur);
   ggml_tensor* sh_gate = Linear(l.gate_shexp, cur);
   ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
-  // The shared expert's gate, one value a token: GGML's products refuse a
-  // one-row output (its rows are not 8-byte aligned), so the dot product is
-  // the gate row (read as F32) times each token, summed.
-  ggml_tensor* gate_row =
-      ggml_get_rows(c_, ggml_reshape_2d(c_, l.shared_gate, n_embd, 1), g_.row_zero);
-  ggml_tensor* shared_gate = ggml_sigmoid(c_, ggml_sum_rows(c_, ggml_mul(c_, cur, gate_row)));
+  ggml_tensor* shared_gate = ggml_sigmoid(c_, shared_gate_dot());
   sh = ggml_mul(c_, sh, shared_gate);
   Name(sh, "ffn_shexp_gated", il);
   return ggml_add(c_, moe_out, sh);
@@ -772,7 +931,11 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
     return std::unexpected(room.error());
   }
   Qwen38Graph g;
-  Builder builder(arena.context(), profile, binding, shape, g);
+  const bool cutlass = options.experts == Qwen38GraphOptions::Experts::kCutlass;
+  if (cutlass && (!options.fused || options.expert_stride.empty())) {
+    return Rejected("the CUTLASS expert layout takes the fused graph and an expert stride");
+  }
+  Builder builder(arena.context(), profile, binding, shape, g, options.fused, cutlass);
   if (auto leaves = builder.Leaves(options); !leaves) {
     return std::unexpected(leaves.error());
   }

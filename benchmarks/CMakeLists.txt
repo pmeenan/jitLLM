@@ -79,8 +79,9 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # M3's second model slice: Qwen3.8 Flash Next (Mia's NVFP4 and MXFP8
-  # checkpoint), native and resident (docs/experiments/qwen38-native/).
-  add_executable(jitllm_qwen38_exec qwen38_exec.cc)
+  # checkpoint), native and resident (docs/experiments/qwen38-native/),
+  # planning through the path the paged runner shares (qwen38_common.h).
+  add_executable(jitllm_qwen38_exec qwen38_exec.cc qwen38_common.cc)
   target_include_directories(jitllm_qwen38_exec SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(jitllm_qwen38_exec PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory

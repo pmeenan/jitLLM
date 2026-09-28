@@ -291,12 +291,19 @@ converter identity is the record. Resources are named as llama.cpp's
 
 - **Routed experts:** ModelOpt NVFP4 (codes with element 2i in a byte's low
   nibble, E4M3 scales per 16 elements in a separate tensor, one F32 global
-  scale) become GGML `NVFP4` slices (`block_nvfp4`: 64 elements, 4 scale
-  bytes, then 32 code bytes, byte j of a 16-element sub-block holding
-  elements j and j + 8), one expert group per expert with its gate, up and
-  down, as expert arrays `blk.L.ffn_{gate,up,down}_exps.weight`. The global
-  scales are F32 `[experts]` vectors in the layer group
-  (`…_exps.weight_scale_2`), applied after each product.
+  scale), one expert group per expert, in the CUTLASS layout
+  ([below](#executable-views)): four expert arrays of GGML `I8` bytes
+  packed from the group's start, `blk.L.ffn_gate_up_exps.codes`
+  (`[w/2, 2f]`: gate's f rows then up's, ModelOpt's code bytes verbatim),
+  `blk.L.ffn_gate_up_exps.scales` (`[512, atoms]`: their E4M3 scales in
+  CUTLASS's swizzled 512-byte atoms), then `blk.L.ffn_down_exps.codes`
+  (`[f/2, w]`) and `.scales`. The global scales are F32 `[experts]` vectors
+  in the layer group (`…_exps.weight_scale_2`), applied after each product.
+  The first Qwen3.8 import (`67617f87…`, still readable) wrote GGML
+  `NVFP4` slices instead (`block_nvfp4`: 64 elements, 4 scale bytes, then
+  32 code bytes, byte j of a 16-element sub-block holding elements j and
+  j + 8), as expert arrays `blk.L.ffn_{gate,up,down}_exps.weight`; the
+  runtime binds either (`model/qwen38.h Qwen38Experts`).
 - **MXFP8 matrices** (attention, linear attention, the shared expert, the
   indexer's fused q/k projection) stay in the checkpoint's layout as plain
   resources: `X.weight` (F8_E4M3 `[out, in]`) and `X.weight_scale` (U8, E8M0,
@@ -410,6 +417,25 @@ Addresses are rebuilt at load and never serialized.
   group, which the slab holds; the graph marks those weights as padded
   (`kernels/ggml/validate_ext.h`), and their products over the slab equal
   the packed reference's bit for bit ([qwen38-native](experiments/qwen38-native/README.md)).
+- **Routed NVFP4 experts, CUTLASS layout.** CUTLASS's block-scaled grouped
+  GEMM reads E2M1 codes with element 2i in the low nibble and its E4M3
+  scales in a swizzled layout (128-row by 4-scale atoms of 512 bytes), not
+  GGML's `block_nvfp4` (four scales, then codes interleaved by 8). The
+  Qwen3.8 importer writes each expert group in that layout
+  (`kernels/ggml/moe_layout.h`): gate and up as one block of 2f rows, then
+  down, codes then scales, 2,764,800 bytes (675 × 4 KiB, so the group is
+  stored with no padding and `S` is 2,764,800), which the runtime copies
+  or pages in as they are, with no rewrite at load. ModelOpt's codes are
+  already CUTLASS's; the scales are a permutation, so the import is
+  lossless, and what it writes equals the harness's former load-time
+  conversion of the GGML-layout artifact byte for byte (unit-tested on
+  synthetic experts; every logit of the six prompts' 32 steps equal
+  between the two, [qwen38-native](experiments/qwen38-native/README.md)).
+  The slab serves CUTLASS's grouped GEMM (prefill) and jitLLM's vector
+  products over the same layout (decode), not GGML's `mul_mat_id`. The
+  arrays are GGML `I8` bytes, so the container and both readers are
+  unchanged; the binder checks their shapes and that they are packed
+  from each group's start.
 - **Row tables:** rows keep their source stride, so a `get_rows` view is
   unchanged. Some rows straddle two chunks (below); their lookups need both.
 

@@ -1030,10 +1030,11 @@ TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
 
 TEST_F(GgmlExtOpsTest, CausalConvolutionMatchesTheReference) {
   // Qwen3.8's Gated DeltaNet input convolution: 2 x 16 x 128 + 48 x 128
-  // channels, kernel 4, for one token and a 40-token prefill.
+  // channels, kernel 4, for one token and a 64-token prefill (past 32
+  // tokens, whole 32-token blocks: RE-032).
   constexpr std::int64_t kChannels = 10240;
   constexpr std::int64_t kConv = 4;
-  for (const std::int64_t tokens : {1, 40}) {
+  for (const std::int64_t tokens : {1, 64}) {
     const std::int64_t window = kConv - 1 + tokens;
     const std::vector<float> x = Normal(121, static_cast<std::size_t>(window * kChannels));
     const std::vector<float> w = Normal(122, static_cast<std::size_t>(kConv * kChannels), 0.5f);

@@ -29,12 +29,14 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
@@ -64,8 +66,9 @@ constexpr std::uint64_t kExpertStride = 2768976;
 
 // The artifact's resources (docs/experiments/artifact-layout/modelopt_qwen38.py):
 // GGML BF16 and F32, plain MXFP8 and I64 and the n-gram table, then the
-// routed experts' NVFP4 arrays.
-std::vector<md::Qwen38Resource> ArtifactLike(const md::Qwen38Profile& p) {
+// routed experts' arrays: GGML's NVFP4 (the first import) or, with
+// `cutlass`, the CUTLASS layout's four I8 arrays (the importer's since).
+std::vector<md::Qwen38Resource> ArtifactLike(const md::Qwen38Profile& p, bool cutlass = false) {
   std::vector<md::Qwen38Resource> r;
   std::vector<md::Qwen38Resource> arrays;
   const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
@@ -136,6 +139,29 @@ std::vector<md::Qwen38Resource> ArtifactLike(const md::Qwen38Profile& p) {
     // of 921,600 bytes, down's rows padded to 1,024 elements (216 bytes of
     // over-read after its last row).
     std::uint64_t group_offset = 0;
+    if (cutlass) {
+      // Gate and up codes, their scales, down's codes and scales: 1,638,400,
+      // 204,800, 819,200 and 102,400 bytes from the group's start.
+      for (const char* proj : {"gate", "up", "down"}) {
+        ggml(std::format("{}ffn_{}_exps.weight_scale_2", n, proj), "F32", {512});
+      }
+      for (const auto& [name, ne] :
+           {std::pair{"gate_up_exps.codes", std::vector<std::uint64_t>{1280, 1280}},
+            std::pair{"gate_up_exps.scales", std::vector<std::uint64_t>{512, 400}},
+            std::pair{"down_exps.codes", std::vector<std::uint64_t>{320, 2560}},
+            std::pair{"down_exps.scales", std::vector<std::uint64_t>{512, 200}}}) {
+        arrays.push_back({.roles = {std::format("{}ffn_{}", n, name)},
+                          .plain = false,
+                          .type = "I8",
+                          .ne = ne,
+                          .expert_array = true,
+                          .count = 512,
+                          .group_offset = group_offset,
+                          .readable = ne[0] * ne[1]});
+        group_offset += ne[0] * ne[1];
+      }
+      continue;
+    }
     for (const char* proj : {"gate", "up", "down"}) {
       const bool down = std::string_view(proj) == "down";
       ggml(std::format("{}ffn_{}_exps.weight_scale_2", n, proj), "F32", {512});
@@ -227,6 +253,49 @@ TEST(Qwen38Test, BindsTheArtifactsTensorsAndRefusesWhatDiffers) {
     }
   }
   EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", few)).find("experts"), std::string::npos);
+}
+
+TEST(Qwen38Test, BindsTheCutlassExpertLayoutPackedFromEachGroupsStart) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  const std::vector<md::Qwen38Resource> resources = ArtifactLike(p, true);
+  auto bound = md::BindQwen38(p, "qwen4exp", resources);
+  ASSERT_TRUE(bound.has_value()) << Why(bound);
+  EXPECT_TRUE(bound->cutlass());
+  const md::Qwen38Layer& l = bound->layers[47];
+  EXPECT_EQ(l.gate_up_codes.type, "I8");
+  EXPECT_EQ(l.gate_up_scales.group_offset, 1638400U);
+  EXPECT_EQ(l.down_codes.group_offset, 1843200U);
+  EXPECT_EQ(l.down_scales.group_offset, 2662400U);
+  EXPECT_EQ(l.down_scales.ne, (std::vector<std::uint64_t>{512, 200}));
+  EXPECT_EQ(l.expert_arrays(true).size(), 4U);
+  // A gap between the arrays, a wrong atom count, and a layer left in
+  // GGML's layout are refused.
+  auto gap = resources;
+  for (md::Qwen38Resource& r : gap) {
+    if (r.roles[0] == "blk.5.ffn_down_exps.scales") {
+      r.group_offset += 256;
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", gap)).find("layer 5"), std::string::npos);
+  auto atoms = resources;
+  for (md::Qwen38Resource& r : atoms) {
+    if (r.roles[0] == "blk.2.ffn_gate_up_exps.scales") {
+      r.ne = {512, 200};
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", atoms)).find("blk.2.ffn_gate_up_exps.scales"),
+            std::string::npos);
+  auto mixed = resources;
+  std::erase_if(mixed, [](const md::Qwen38Resource& r) {
+    return r.roles[0].starts_with("blk.9.ffn_") && r.expert_array;
+  });
+  const std::vector<md::Qwen38Resource> ggml = ArtifactLike(p);
+  for (const md::Qwen38Resource& r : ggml) {
+    if (r.expert_array && r.roles[0].starts_with("blk.9.")) {
+      mixed.push_back(r);
+    }
+  }
+  EXPECT_FALSE(md::BindQwen38(p, "qwen4exp", mixed).has_value());
 }
 
 TEST(Qwen38Test, TheNgramHashMustStayInsideTheTable) {
@@ -432,14 +501,31 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
   ASSERT_TRUE(state.has_value());
   const md::Qwen38PleHash h = Hash();
   const std::vector<std::uint64_t> strides(p.layers, kExpertStride);
-  for (const auto& [n_past, rows] : {std::pair{0U, 37U}, {37U, 1U}, {2800U, 512U}, {4095U, 1U}}) {
+  for (const auto& [n_past, rows, fused, cutlass] : {std::tuple{0U, 37U, true, false},
+                                                     {37U, 1U, true, false},
+                                                     {2800U, 512U, true, false},
+                                                     {4095U, 1U, true, false},
+                                                     {0U, 37U, false, false},
+                                                     {37U, 1U, false, false},
+                                                     {2800U, 512U, false, false},
+                                                     {4095U, 1U, false, false},
+                                                     {40U, 12U, true, false},
+                                                     {0U, 37U, true, true},
+                                                     {37U, 1U, true, true},
+                                                     {2800U, 512U, true, true},
+                                                     {40U, 8U, true, true}}) {
     std::vector<std::int32_t> history(std::size_t{n_past} + rows, 1000);
     auto chunk = md::Qwen38Chunk(p, *state, h, history, n_past, rows);
     ASSERT_TRUE(chunk.has_value()) << Why(chunk);
     const kg::Qwen38ChunkShape shape = kg::Qwen38ShapeOf(*state, *chunk, rows);
     auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
     ASSERT_TRUE(arena.has_value());
-    auto graph = kg::BuildQwen38Graph(*arena, p, *binding, shape, {.expert_stride = strides});
+    auto graph =
+        kg::BuildQwen38Graph(*arena, p, *binding, shape,
+                             {.expert_stride = strides,
+                              .fused = fused,
+                              .experts = cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
+                                                 : kg::Qwen38GraphOptions::Experts::kGgml});
     ASSERT_TRUE(graph.has_value()) << Why(graph);
     std::uint64_t next = std::uint64_t{1} << 40U;
     const auto bind_leaf = [&](ggml_tensor* t) {
@@ -466,13 +552,42 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
       used.insert(step.implementation);
     }
     for (const std::string_view name :
-         {kg::kNvfp4RowsName, kg::kSsmConvName, kg::kGatedDeltaNetName, kg::kFlashAttnMmaName,
-          kg::kArgsortName, kg::kRopeExtName, kg::kSetRowsExtName, kg::kConcatName,
-          kg::kSumRowsName, kg::kRepeatName}) {
+         {kg::kNvfp4RowsName, kg::kFlashAttnMmaName, kg::kArgsortName, kg::kRopeExtName,
+          kg::kSetRowsExtName, kg::kConcatName, kg::kSumRowsName, kg::kRepeatName}) {
       EXPECT_TRUE(used.contains(name)) << name << " at " << rows << " rows";
     }
-    EXPECT_TRUE(used.contains(rows <= 8 ? kg::kMulMatIdVecQ : kg::kMulMatIdQ));
     EXPECT_TRUE(used.contains(rows <= 8 ? kg::kMxfp8MulMatVecName : kg::kMxfp8DequantName));
+    // The routed experts: GGML's mul_mat_id over GGML's layout; over the
+    // CUTLASS layout, the vector products up to 8 rows, else the grouped
+    // GEMM path.
+    const bool vector = rows <= 8;
+    EXPECT_EQ(used.contains(kg::kMulMatIdVecQ), !cutlass && vector) << rows;
+    EXPECT_EQ(used.contains(kg::kMulMatIdQ), !cutlass && !vector) << rows;
+    EXPECT_EQ(used.contains(kg::kMoeGemvName), cutlass && vector) << rows;
+    for (const std::string_view name : {kg::kMoeRouteName, kg::kMoeQuantizeName, kg::kMoeGemmName,
+                                        kg::kMoeGluQuantizeName, kg::kMoeCombineSortedName}) {
+      EXPECT_EQ(used.contains(name), cutlass && !vector) << name << " at " << rows << " rows";
+    }
+    // The fusions replace the hyper-connections' and the MoE output's
+    // elementwise nodes; past 16 rows the float products read BF16 once.
+    for (const std::string_view name : {kg::kHcCombineName, kg::kHcNormName, kg::kHcMixName}) {
+      EXPECT_EQ(used.contains(name), fused) << name << " at " << rows << " rows";
+    }
+    // (Over the CUTLASS layout decode's SwiGLU is the vector product's.)
+    EXPECT_EQ(used.contains(kg::kMoeGluName), fused && !cutlass) << rows;
+    EXPECT_EQ(used.contains(kg::kMoeCombineName), fused && (!cutlass || vector)) << rows;
+    // The linear-attention layers: GGML's convolution unless fused over
+    // whole histories of rows; the recurrence as the plan picks by rows.
+    EXPECT_EQ(used.contains(kg::kGdnConvName), fused && rows >= 3) << rows;
+    EXPECT_EQ(used.contains(kg::kSsmConvName), !fused || rows < 3) << rows;
+    EXPECT_EQ(used.contains(kg::kGdnNormGateName), fused) << rows;
+    EXPECT_TRUE(used.contains(static_cast<std::int64_t>(rows) > kg::kGatedDeltaNetLanesTokens
+                                  ? kg::kGatedDeltaNetLanesName
+                                  : kg::kGatedDeltaNetColumnsName))
+        << rows;
+    const bool bf16 = fused && static_cast<std::int64_t>(rows) > kg::kQwen38Bf16Rows;
+    EXPECT_EQ(used.contains(kg::kBf16Name), bf16) << rows;
+    EXPECT_EQ(used.contains(kg::kGemmBf16Name), bf16) << rows;
     EXPECT_EQ(used.contains(kg::kTopKName), chunk->qsa_select) << rows << " at " << n_past;
     auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
     ASSERT_TRUE(placed.has_value()) << Why(placed);

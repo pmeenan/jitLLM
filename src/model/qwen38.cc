@@ -129,6 +129,12 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
   }
   Qwen38Binding b;
   b.layers.resize(p.layers);
+  // The experts' layout: the CUTLASS layout's arrays where the artifact has
+  // them (every layer's, or the binding is refused below), else GGML's.
+  const bool cutlass = std::ranges::any_of(resources, [](const Qwen38Resource& r) {
+    return r.expert_array && std::ranges::contains(r.roles, "blk.0.ffn_gate_up_exps.codes");
+  });
+  b.experts = cutlass ? Qwen38Experts::kCutlass : Qwen38Experts::kGgml;
   const std::uint64_t w = p.width;
   std::vector<Want> want;
   const auto ggml = [&](std::string role, std::string_view type, std::vector<std::uint64_t> ne,
@@ -205,17 +211,42 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
     mxfp8(n + "ffn_gate_shexp", w, p.shared_ffn, &l.gate_shexp);
     mxfp8(n + "ffn_up_shexp", w, p.shared_ffn, &l.up_shexp);
     mxfp8(n + "ffn_down_shexp", p.shared_ffn, w, &l.down_shexp);
+    const std::uint64_t f = p.expert_ffn;
     for (const auto& [proj, into, scale, k, out] :
-         {std::tuple{"gate", &l.gate_exps, &l.gate_exps_scale, w, std::uint64_t{p.expert_ffn}},
-          std::tuple{"up", &l.up_exps, &l.up_exps_scale, w, std::uint64_t{p.expert_ffn}},
-          std::tuple{"down", &l.down_exps, &l.down_exps_scale, std::uint64_t{p.expert_ffn}, w}}) {
-      want.push_back({.role = std::format("{}ffn_{}_exps.weight", n, proj),
-                      .plain = false,
-                      .type = "NVFP4",
-                      .ne = {k, out},
-                      .expert_array = true,
-                      .into = into});
+         {std::tuple{"gate", &l.gate_exps, &l.gate_exps_scale, w, f},
+          std::tuple{"up", &l.up_exps, &l.up_exps_scale, w, f},
+          std::tuple{"down", &l.down_exps, &l.down_exps_scale, f, w}}) {
+      if (!cutlass) {
+        want.push_back({.role = std::format("{}ffn_{}_exps.weight", n, proj),
+                        .plain = false,
+                        .type = "NVFP4",
+                        .ne = {k, out},
+                        .expert_array = true,
+                        .into = into});
+      }
       ggml(std::format("{}ffn_{}_exps.weight_scale_2", n, proj), "F32", {p.experts}, scale);
+    }
+    if (cutlass) {
+      // A matrix's swizzled scales: 512-byte atoms of 128 rows by 4 scales
+      // (64 of k), the rows padded to 128.
+      const auto atoms = [](std::uint64_t rows, std::uint64_t k) {
+        return Pad(rows, 128) / 128 * (k / 64);
+      };
+      for (const auto& [name, ne, into] :
+           {std::tuple{"gate_up_exps.codes", std::vector<std::uint64_t>{w / 2, 2 * f},
+                       &l.gate_up_codes},
+            std::tuple{"gate_up_exps.scales", std::vector<std::uint64_t>{512, atoms(2 * f, w)},
+                       &l.gate_up_scales},
+            std::tuple{"down_exps.codes", std::vector<std::uint64_t>{f / 2, w}, &l.down_codes},
+            std::tuple{"down_exps.scales", std::vector<std::uint64_t>{512, atoms(w, f)},
+                       &l.down_scales}}) {
+        want.push_back({.role = std::format("{}ffn_{}", n, name),
+                        .plain = false,
+                        .type = "I8",
+                        .ne = ne,
+                        .expert_array = true,
+                        .into = into});
+      }
     }
   }
 
@@ -266,6 +297,21 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
                .group_offset = r.group_offset,
                .readable = r.readable};
   }
+  if (cutlass) {
+    // The four arrays back to back from each group's start, as the kernels
+    // read a slot (the artifact reader already put every layer's arrays in
+    // the same expert groups).
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      std::uint64_t at = 0;
+      for (const Qwen38Tensor* t : b.layers[il].expert_arrays(true)) {
+        if (t->group_offset != at) {
+          return Refused(std::format(
+              "layer {}'s CUTLASS expert arrays are not packed from each group's start", il));
+        }
+        at += t->ne[0] * t->ne[1];
+      }
+    }
+  }
   return b;
 }
 
@@ -308,9 +354,16 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& profil
   // Expert arrays are indexed among the artifact's expert arrays.
   const auto rebase = [&](Qwen38Tensor& t) { t.index -= static_cast<std::uint32_t>(first_array); };
   for (Qwen38Layer& l : bound->layers) {
-    rebase(l.gate_exps);
-    rebase(l.up_exps);
-    rebase(l.down_exps);
+    if (bound->cutlass()) {
+      rebase(l.gate_up_codes);
+      rebase(l.gate_up_scales);
+      rebase(l.down_codes);
+      rebase(l.down_scales);
+    } else {
+      rebase(l.gate_exps);
+      rebase(l.up_exps);
+      rebase(l.down_exps);
+    }
   }
   return bound;
 }

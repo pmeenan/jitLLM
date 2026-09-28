@@ -731,6 +731,15 @@ std::expected<void, KernelFailure> CheckSsmConv(const ggml_tensor* node) {
   if (channels % 128 != 0) {
     return Rejected("ssm_conv takes channels in blocks of 128");
   }
+  // Past 32 tokens the launcher runs ssm_conv_long_token_f32, whose blocks
+  // each load conv - 1 + 32 columns of every row whatever tokens are left
+  // (ssm-conv.cu:81-101): the last block reads up to 31 floats past the
+  // window unless the tokens are whole 32-token blocks (RE-032).
+  if (tokens > 32 && tokens % 32 != 0) {
+    return Rejected(
+        "ssm_conv past 32 tokens takes whole 32-token blocks (its last block loads past the "
+        "window otherwise, RE-032)");
+  }
   // Packed windows, contiguous weight rows, and every stride and index an
   // int (ssm-conv.cu:5-99, 181-184).
   if (!Packed(window) || weights->nb[0] != sizeof(float) || node->nb[0] != sizeof(float) ||

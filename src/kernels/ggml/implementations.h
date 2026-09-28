@@ -65,7 +65,19 @@
 //   jitllm.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
 //   jitllm.mxfp8.dequant         {custom}                RunMxfp8Dequant
 //   jitllm.nvfp4.get_rows        {custom}                RunNvfp4Rows
-// (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above.)
+// (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above), and
+// jitLLM's fusions of Qwen3.8's GGML nodes, the same arithmetic in the same
+// order:
+//   jitllm.hc.combine            {custom}                RunHcCombine
+//   jitllm.hc.norm               {custom}                RunHcNorm
+//   jitllm.hc.mix                {custom}                RunHcMix
+//   jitllm.moe.glu               {custom}                RunMoeGlu
+//   jitllm.moe.combine           {custom}                RunMoeCombine
+//   jitllm.bf16                  {custom}                RunBf16
+//   jitllm.gemm.bf16             {custom}                RunGemmBf16
+// and a second implementation of GGML's gated_delta_net node, chosen where
+// it takes the shape (jitllm_ops.h GatedDeltaNetColumnsFits):
+//   jitllm.gated_delta_net.columns {gated_delta_net}     RunGatedDeltaNetColumns
 // The quantized products' two implementations are GGML's kernel families,
 // which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
 // ggml.unary and ggml.rope.ext compute the function the node names.

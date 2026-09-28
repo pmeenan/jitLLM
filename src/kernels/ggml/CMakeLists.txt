@@ -28,7 +28,11 @@ add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc jit
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
-                                                 jitllm_model PRIVATE jitllm_warnings)
+                                                 jitllm_model
+                                          # cutlass/version.h only (jitllm_ops.cc pins the
+                                          # version the CUTLASS expert layout was written
+                                          # against), in every profile
+                                          PRIVATE jitllm_cutlass_headers jitllm_warnings)
 
 if(JITLLM_CUDA)
   # cuBLAS, the SDK's pinned shared library, linked dynamically (D-076):
@@ -55,16 +59,28 @@ if(JITLLM_CUDA)
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
-                                         jitllm_ops.cu
+                                         jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h): its
+  # own unit, device code for sm_121a only (the SM120 block-scaled kernels
+  # build for no other target; a plan names it only on that device), with
+  # the flags CUTLASS's examples build with.
+  add_library(jitllm_ggml_cutlass STATIC moe_cutlass.cu)
+  target_include_directories(jitllm_ggml_cutlass PUBLIC "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(jitllm_ggml_cutlass PRIVATE jitllm_cutlass_headers)
+  set_target_properties(jitllm_ggml_cutlass PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  # 20012: __host__ __device__ on a defaulted constructor, which CUTLASS's
+  # SM100 tile scheduler declares.
+  target_compile_options(jitllm_ggml_cutlass PRIVATE --expt-relaxed-constexpr
+                                                     --diag-suppress=20012)
   target_link_libraries(jitllm_ggml_kernels
                         PUBLIC jitllm_ggml_tensors jitllm_ggml_cuda jitllm_device_memory
                                jitllm_cublas jitllm_cublaslt jitllm_execution
                         # the NVIDIA driver, for ggml_support.cu's device queries
-                        PRIVATE jitllm_cuda_device_memory jitllm_warnings)
+                        PRIVATE jitllm_cuda_device_memory jitllm_warnings jitllm_ggml_cutlass)
   # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
   # the profile's discrete GPUs (D-082).
   set(architectures 121a-real ${JITLLM_CUDA_DISCRETE_SASS})
@@ -75,8 +91,10 @@ if(JITLLM_CUDA)
   # (NDEBUG, and with it GGML's device asserts) and any sanitizers.
   # A missing receipt, entry or digest fails configure: never an identity
   # without the tree.
+  # The CUTLASS tree likewise, for the grouped GEMM's identity.
   get_property(sources GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
   set(ggml_tree "")
+  set(cutlass_tree "")
   string(JSON count ERROR_VARIABLE error LENGTH "${sources}")
   if(NOT error AND count GREATER 0)
     # foreach(RANGE -1) would still run, for 0 and -1.
@@ -85,17 +103,21 @@ if(JITLLM_CUDA)
       string(JSON id ERROR_VARIABLE error GET "${sources}" ${i} id)
       if(NOT error AND id STREQUAL "ggml")
         string(JSON ggml_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
+      elseif(NOT error AND id STREQUAL "cutlass")
+        string(JSON cutlass_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
       endif()
     endforeach()
   endif()
-  string(LENGTH "${ggml_tree}" length)
-  if(NOT length EQUAL 64 OR NOT ggml_tree MATCHES "^[0-9a-f]+$")
-    message(FATAL_ERROR "The source receipt has no GGML tree digest for the registry's identities")
-  endif()
+  foreach(tree IN ITEMS ggml_tree cutlass_tree)
+    string(LENGTH "${${tree}}" length)
+    if(NOT length EQUAL 64 OR NOT ${tree} MATCHES "^[0-9a-f]+$")
+      message(FATAL_ERROR "The source receipt has no ${tree} digest for the registry's identities")
+    endif()
+  endforeach()
   string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
   list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
-    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
+    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
 
   # And jitLLM's own code in the module: every file in this directory, whose
   # digest a build-time command writes into a generated source
@@ -109,8 +131,10 @@ if(JITLLM_CUDA)
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                    fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
-                   implementations.h jitllm_ops.cc jitllm_ops.cu jitllm_ops.h launch.cu launch.h
-                   module_digest.cmake mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
+                   implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
+                   jitllm_ops.h launch.cu launch.h
+                   module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
+                   mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_graph.cc qwen38_graph.h
                    tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)
@@ -148,9 +172,11 @@ if(JITLLM_CUDA)
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention
   # instances and the sparse gather, the quantized products' host code, and
-  # the other launchers' wrappers.
+  # the other launchers' wrappers. jitLLM's fusions of GGML nodes
+  # (jitllm_fused.cu) build with the same flags, so that their arithmetic
+  # compiles as the nodes' does.
   set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
-                              mul_mat_q.cu
-                              ops_ext.cu PROPERTIES COMPILE_OPTIONS
+                              mul_mat_q.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
+                              PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

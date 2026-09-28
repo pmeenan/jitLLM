@@ -88,6 +88,47 @@
       },
       "verification": "Pinned to commit 6b84a21b6f1e5da3f291b9e1019061f0de788279 (2026-09-20, one commit after tag v1.5.1), the revision of the EXL3 reference and the P0 bridge (docs/experiments/exl3-reference/pins.json, docs/experiments/backend-proof-p0/). GitHub's archive of that commit was downloaded twice on 2026-09-27 with identical SHA-256 and size; its 743 files are byte-identical to the commit's Git tree. tree_sha256 is the kept, patched tree, computed by the shared tools/jitllm_sources.py validator during preparation, configure and build. The patches (third_party/patches/exllamav3/) remove util.cuh's exiting error checks (inline header code, so no guard macro could keep them out of every translation unit that includes it), drop six no-op `register` specifiers that NVCC rejects with a Clang host compiler, add jitLLM's build and instance unit, and remove the ATen host wrappers from the three sources whose kernels the native linear launches. The build reproduces the P0 reference's device flags (NVCC 13.4.92, -O3 --use_fast_math, sm_121 SASS, C++20, PyTorch's half-operator macros and --expt-relaxed-constexpr; the x86-64 native build adds its discrete GPUs' SASS, sm_86, D-082): every ExLlamaV3 function the native sweep's binary holds (the 64 GEMM and multi-GEMM instances and the instance unit's 29) has SASS identical, text and encodings, to its namesake in the reference extension built by NVCC 13.4.92 (aa8b9f16...), the 27 the per-linear sweep launches among them (cuobjdump 13.0.85 on spark-b, 2026-09-27; docs/experiments/backend-proof-p3/)."
     },
+    "cutlass": {
+      "version": "4.7.1",
+      "kind": "archive",
+      "category": "implementation",
+      "tier": "core",
+      "use": "test",
+      "machine": "target",
+      "upstream": {
+        "repository": "https://github.com/NVIDIA/cutlass",
+        "release": "https://github.com/NVIDIA/cutlass/releases/tag/v4.7.1",
+        "tag": "v4.7.1",
+        "commit": "cb4247394dd82148787aed73e5dc7cef33cbf862"
+      },
+      "archive": {
+        "file": "cutlass-cb4247394dd82148787aed73e5dc7cef33cbf862.tar.gz",
+        "urls": ["https://github.com/NVIDIA/cutlass/archive/cb4247394dd82148787aed73e5dc7cef33cbf862.tar.gz"],
+        "sha256": "7a37329b43a47aaf9ef142be99baff3e71dbeea007b975891350cc0e50bc598b",
+        "size": 42506340,
+        "keep": ["LICENSE.txt", "include/cute", "include/cutlass", "tools/util/include/cutlass/util/packed_stride.hpp"]
+      },
+      "patches": [
+        {"path": "patches/cutlass/0001-jitllm-build.patch", "sha256": "3acafc2c7ee5f50969973bf2e89ce7a1fe86cb16f1f95ec82da3efb83a6daf3a"}
+      ],
+      "tree_sha256": "cfccf6eed8cc89173bcd3d91b029b24c3e81f95ac3d0876768b651d0c6034de0",
+      "depends": [],
+      "cmake": {
+        "subdirectory": "jitllm",
+        "options": {},
+        "platform_packages": [],
+        "targets": ["jitllm_cutlass_headers"]
+      },
+      "license": {
+        "expression": "BSD-3-Clause",
+        "files": ["LICENSE.txt"],
+        "notices": ["LICENSE.txt"],
+        "scope": "Header-only: jitllm/CMakeLists.txt (added by patches/cutlass/0001-jitllm-build.patch) defines the interface target jitllm_cutlass_headers over include/ and tools/util/include/ and builds and runs nothing; CUTLASS's own CMake is not kept. Two jitLLM translation units include it: src/kernels/ggml/jitllm_ops.cc (target jitllm_ggml_tensors, every profile), only cutlass/version.h, to pin the version the CUTLASS expert layout was written against; and src/kernels/ggml/moe_cutlass.cu (Apache-2.0, target jitllm_ggml_cutlass, CUDA profiles, device code for sm_121a only), which instantiates the SM120 block-scaled NVFP4 grouped GEMM (cutlass::gemm::kernel::GemmUniversal with the Sm120 OpClassBlockScaledTensorOp collectives, KernelPtrArrayTmaWarpSpecializedPingpong, a 128 x 128 x 256 tile and a BF16 LinearCombination epilogue) through cute/tensor.hpp, cutlass/cutlass.h, cutlass/gemm/{collective/collective_builder.hpp, device/gemm_universal_adapter.h, group_array_problem_shape.hpp, kernel/gemm_universal.hpp}, cutlass/epilogue/collective/collective_builder.hpp and cutlass/util/packed_stride.hpp; on spark-b that unit's include closure is 502 of the 825 kept headers, and the two header trees are kept whole so that another host compiler's or target's closure cannot miss a file. archive.keep drops everything else: examples, test, tools (but that header), python (the CuTe DSL, under NVIDIA's EULA), media, docs and CUTLASS's CMake.",
+        "evidence": "Root LICENSE.txt (SHA-256 ad1513ca983da737a6843364ad19e8424a56d860736c2da773b8c5be527e1475) is BSD-3-Clause, Copyright (c) 2017 - 2026 NVIDIA CORPORATION & AFFILIATES; its only exception, the NVIDIA EULA for python/CuTeDSL, covers no kept file. Every one of the 825 kept files under include/cute and include/cutlass, and tools/util/include/cutlass/util/packed_stride.hpp, carries 'SPDX-License-Identifier: BSD-3-Clause' with an NVIDIA CORPORATION & AFFILIATES copyright and no other copyright line (checked file by file on spark-b, 2026-09-28); the headers are .h, .hpp, .inl and .cuh only. No kept file is generated or executed at build time.",
+        "obligations": "Linked so far only into test and benchmark executables (the GGML module's kernels library, which links only there); sources.closure refuses a shipped executable built from a use: test component. A shipped binary that links it must reproduce CUTLASS's BSD-3-Clause notice (LICENSE.txt: the copyright, the conditions and the disclaimer) in the package's third-party notices, and may not use NVIDIA's name to endorse it. No source offer is owed."
+      },
+      "verification": "Pinned to tag v4.7.1, commit cb4247394dd82148787aed73e5dc7cef33cbf862 (git ls-remote, 2026-09-28), the CUTLASS version vLLM v0.30.0 fetches and the one Qwen3.8's kernel A/B built (docs/licensing.md). GitHub's archive of that commit was downloaded twice on 2026-09-28 with identical SHA-256 and size; its include/ tree is identical (diff -r) to that of the v4.7.1 tag's archive (SHA-256 8290eb914cd5aaf4c665ee4108ba5bd65383cfee1296286a42a7ef711554d365). tree_sha256 is the kept, patched tree, computed by the shared tools/jitllm_sources.py validator during preparation, configure and build."
+    },
     "googletest": {
       "version": "1.18.0",
       "kind": "archive",

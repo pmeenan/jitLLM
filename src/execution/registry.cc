@@ -147,6 +147,22 @@ std::string_view OperationName(Operation operation) {
       return "dsv4_hc_pre";
     case Operation::kHcPost:
       return "dsv4_hc_post";
+    case Operation::kHcCombine:
+      return "hc_combine";
+    case Operation::kHcNorm:
+      return "hc_norm";
+    case Operation::kHcMix:
+      return "hc_mix";
+    case Operation::kMoeGlu:
+      return "moe_glu";
+    case Operation::kMoeCombine:
+      return "moe_combine";
+    case Operation::kMoeRoute:
+      return "moe_route";
+    case Operation::kQuantize:
+      return "quantize";
+    case Operation::kNormGate:
+      return "norm_gate";
   }
   return "unknown";
 }

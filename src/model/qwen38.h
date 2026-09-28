@@ -131,14 +131,36 @@ struct Qwen38Layer {
   // (expert arrays, `ne` of one slice) and their per-expert global scales.
   Qwen38Tensor router, shared_gate;
   Qwen38Mxfp8 gate_shexp, up_shexp, down_shexp;
+  // The routed experts in GGML's layout (Qwen38Experts::kGgml): NVFP4.
   Qwen38Tensor gate_exps, up_exps, down_exps;
+  // Or in the CUTLASS layout (kCutlass): four I8 arrays packed from each
+  // expert group's start (kernels/ggml/moe_layout.h, checked contiguous):
+  // gate's and up's codes as one block of 2f rows ne [w / 2, 2f], their
+  // E4M3 scales swizzled in 512-byte atoms ne [512, atoms], then down's
+  // codes ne [f / 2, w] and scales.
+  Qwen38Tensor gate_up_codes, gate_up_scales, down_codes, down_scales;
   Qwen38Tensor gate_exps_scale, up_exps_scale, down_exps_scale;
+
+  // The layer's routed-expert arrays of `experts`' layout, in group order.
+  std::vector<const Qwen38Tensor*> expert_arrays(bool cutlass) const {
+    if (cutlass) {
+      return {&gate_up_codes, &gate_up_scales, &down_codes, &down_scales};
+    }
+    return {&gate_exps, &up_exps, &down_exps};
+  }
 };
+
+// The routed experts' layout in the artifact: GGML's block_nvfp4 per
+// projection (the first Qwen3.8 import), or the CUTLASS layout the importer
+// writes since (docs/artifact-format.md, "Executable views").
+enum class Qwen38Experts : std::uint8_t { kGgml, kCutlass };
 
 struct Qwen38Binding {
   std::vector<Qwen38Layer> layers;
   Qwen38Tensor token_embd, ple_table, ple_table_scale, output, output_hc_norm, output_hc_down,
       output_hc_up;
+  Qwen38Experts experts = Qwen38Experts::kGgml;
+  bool cutlass() const { return experts == Qwen38Experts::kCutlass; }
 };
 
 // A resource or expert array as the adapter sees it.

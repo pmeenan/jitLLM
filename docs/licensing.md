@@ -87,7 +87,8 @@ graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
 copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
 n-gram hash (`src/kernels/ggml/qwen38_graph.cc`, `src/model/qwen38.cc`).
 jitLLM's own kernels for Qwen3.8's formats (`src/kernels/ggml/jitllm_ops.*`)
-and its importer (`docs/experiments/artifact-layout/modelopt_qwen38.py`,
+and its fusions of Qwen3.8's GGML nodes (`jitllm_fused.cu`, which repeats
+their arithmetic without their code) and its importer (`docs/experiments/artifact-layout/modelopt_qwen38.py`,
 which applies llama.cpp's converter's value-head order and norm rules
 without its code) are Apache-2.0 only. The M3 widening compiles more of the kept
 tree (the lock's `license.scope` lists it); every added file is under the
@@ -119,7 +120,19 @@ bitwise-identical output). The selections were equal as index sets on
 distinct values and as value multisets under ties; which tied index is
 chosen differs. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
-([below](#exllamav3-gemm-kernels-in-the-core-m2)).
+([below](#exllamav3-gemm-kernels-in-the-core-m2)). CUTLASS 4.7.1
+(BSD-3-Clause, lock component `cutlass`, headers only; M3's Qwen3.8
+prefill) is included by two jitLLM units: `src/kernels/ggml/moe_cutlass.cu`
+(Apache-2.0), which instantiates its SM120 block-scaled NVFP4 grouped GEMM
+for the routed experts, and `jitllm_ops.cc`, which reads only
+`cutlass/version.h` to pin the version the expert layout follows; it links into tests and benchmarks only so far, and
+a shipped binary that links it carries CUTLASS's BSD-3-Clause text. Every
+kept header was checked for its BSD-3-Clause SPDX line and NVIDIA's
+copyright (the lock's `license.evidence`); the CuTe DSL, under NVIDIA's
+EULA, is not kept. The routed experts' activation quantization
+(`src/kernels/ggml/jitllm_moe.cu`) copies GGML's
+`nvfp4_native_scale_error` and repeats `quantize_mmq_nvfp4`'s scale
+search, so that file keeps GGML's MIT notice.
 
 | Unit (version) | Category | License | In a packaged binary |
 | --- | --- | --- | --- |
@@ -731,7 +744,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | vLLM `csrc/libtorch_stable/quantization/fp4/` | vLLM's NVFP4 activation quantization and CUTLASS GEMMs, `nvfp4_scaled_mm_sm120_kernels.cu` among them | Apache-2.0: 9 files "Copyright (c) 2025, NVIDIA CORPORATION" with the Apache notice, 2 MXFP4 files vLLM's SPDX header |
 | FlashInfer `csrc/fused_moe/cutlass_backend/`, `csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/`, `csrc/cute_sm120_mxfp8_groupwise/` (97 files) | The CUTLASS fused MoE and FP4 GEMMs, from TensorRT-LLM, and an sm_120 MXFP8 groupwise GEMM | Apache-2.0 notices, NVIDIA or FlashInfer team copyright. Root `LICENSE` Apache-2.0; `NOTICE` names NVIDIA and the FlashInfer community; `licenses/` holds CUTLASS's BSD-3-Clause, FlashAttention-3's, fmt's and spdlog's texts |
 | FlashInfer `flashinfer/gemm/kernels/` CuTe-DSL kernels, `dense_blockscaled_gemm_sm120_b12x.py` among them | Block-scaled FP4 and FP8 GEMMs written in CUTLASS's Python DSL | BSD-3-Clause SPDX headers (NVIDIA); three cuTile files MIT. They compile through `nvidia-cutlass-dsl` 4.7.1, whose wheel is under NVIDIA's proprietary CUTLASS Python DSL license (PyPI "Other/Proprietary License"; [terms](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html)). Those terms are proprietary, not permissive, so reusing a CuTe-DSL kernel would need a decision (D-091) |
-| CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause |
+| CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause. jitLLM's source lock pins v4.7.1's headers for its own grouped GEMM ([above](#what-builds-jitllm)) |
 | `humming-kernels` 0.1.12, the `b12x` extra | Other vLLM candidates | PyPI declares no license for `humming-kernels`; `b12x` not checked. Unknown until needed |
 
 ### Still owed
@@ -742,7 +755,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
 | DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |
 | Kernels from Mia's recipes (M4) | E3 fat-expert and cooperative MoE: AGPL or mixed provenance (below) | Under D-080 once copyleft is confirmed; mixed provenance blocks until clarified |
-| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`), the NVFP4 MMQ instance unit Qwen3.8's A/B chose included; audit again for the image pipeline's operations. Qwen3.8's A/B built CUTLASS 4.7.1's example 79d (NVFP4 grouped GEMM, BSD-3-Clause) in scratch to time it; nothing of CUTLASS is incorporated, and adopting it would be a new lock component with its own record |
+| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`), the NVFP4 MMQ instance unit Qwen3.8's A/B chose included; audit again for the image pipeline's operations. CUTLASS 4.7.1's headers became a lock component of their own for Qwen3.8's prefill ([above](#what-builds-jitllm)) |
 | stable-diffusion.cpp graph code (M3) | MIT at `c92d73c4`; its GGML fork's patches are separate | Audit the ported code; audit the fork's patches before any is used |
 
 ## Pinned reference inventory

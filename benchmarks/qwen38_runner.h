@@ -11,11 +11,14 @@
 //
 // - Weights: every dense group but the n-gram table's in a 2 MiB-aligned
 //   region, a chunk an extent; each layer's routed experts a slab at the
-//   resident layout's stride (2,768,976 bytes), an extent a 2 MiB page of
-//   it landed in pieces. The slab's offset in its first page is a multiple
-//   of 16, the stride's own alignment (the resident harness's expert e is
-//   16-aligned for odd e too): the 80-byte gap between groups cannot hold
-//   DeepSeek's 256 where a layer's experts change shard.
+//   resident layout's stride, an extent a 2 MiB page of it landed in
+//   pieces: 2,764,800 bytes for an artifact in the CUTLASS layout, whose
+//   slots the grouped GEMM and vector products read as they land (no
+//   rewrite), or 2,768,976 for GGML's (mul_mat_id). The slab's offset in
+//   its first page is a multiple of 16, the stride's own alignment (the
+//   resident harness's expert e is 16-aligned for odd e too): the 80-byte
+//   gap between GGML-layout groups cannot hold DeepSeek's 256 where a
+//   layer's experts change shard.
 // - The n-gram (PLE) table is not paged whole: before each chunk's job the
 //   rows its tokens name are read on demand into a pinned landing and the
 //   job gathers them into row slots (ple_rows.h); the graph is built over a

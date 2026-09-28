@@ -223,6 +223,36 @@ class RepackTests(unittest.TestCase):
                         got[b * 64 + s * 16 + j + 8] = kvalues_fp4[q >> 4] * d
             self.assertEqual(got, want)
 
+    def test_sf1xx_offsets_are_a_permutation(self):
+        for rows, k in ((128, 64), (256, 256), (1280, 2560)):
+            blocks = k // 16
+            seen = {MO.sf1xx_offset(r, b, blocks) for r in range(rows) for b in range(blocks)}
+            self.assertEqual(seen, set(range(rows * blocks)), msg=(rows, k))
+
+    def test_sf1xx_layout_is_the_harness_conversion_of_ggml_blocks(self):
+        # What the importer writes from ModelOpt's tensors equals what the
+        # Qwen3.8 harness wrote at load from GGML's blocks (jitllm_moe.cu
+        # ConvertBlocks), for gate/up rows (2f) and down rows (w) that are
+        # whole 128-row atoms, and for down rows that are not (padded).
+        for ffn, width, seed in ((64, 128, 1), (128, 256, 2), (64, 64, 3)):
+            def proj(rows, k, s):
+                return rnd(rows * k // 2, s), e4m3_scales(rows * k // 16, s + 50)
+            gate, up, down = proj(ffn, width, seed), proj(ffn, width, seed + 1), proj(width, ffn, seed + 2)
+            got = MO.expert_to_sf1xx(gate, up, down, ffn, width)
+            want = MO.ggml_to_sf1xx_reference(MO.nvfp4_to_ggml(*gate, ffn, width),
+                                              MO.nvfp4_to_ggml(*up, ffn, width),
+                                              MO.nvfp4_to_ggml(*down, width, ffn), ffn, width)
+            self.assertEqual(got, want, msg=(ffn, width))
+            self.assertEqual(got[0], gate[0] + up[0])  # codes verbatim
+            self.assertEqual(got[2], down[0])
+            self.assertEqual([len(x) for x in got],
+                             [ffn * width, MO.sf1xx_atoms(2 * ffn, width) * 512, ffn * width // 2,
+                              MO.sf1xx_atoms(width, ffn) * 512])
+        with self.assertRaisesRegex(ValueError, "E4M3 scales negative or NaN"):
+            MO.expert_scales_sf1xx(bytes([0x38, 0x38, 0x80, 0x38]), 1, 64)
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            MO.expert_scales_sf1xx(bytes(8), 1, 64)
+
     def test_scales_outside_what_every_reader_agrees_on_are_refused(self):
         codes = rnd(64 // 2, 1)
         for good in (0x00, 0x01, 0x7E):
@@ -292,7 +322,7 @@ class BuildTests(unittest.TestCase):
                                              "representation": ["ggml", "plain"]})
         self.assertEqual({s["name"] for s in manifest["source"]},
                          {p.name for p in self.paths} | {"config.json"})
-        self.assertEqual(len(index["expert_arrays"]), 12)
+        self.assertEqual(len(index["expert_arrays"]), 16)
         res = {r["name"]: r for r in index["resources"]}
         groups = index["groups"]
 
@@ -308,13 +338,19 @@ class BuildTests(unittest.TestCase):
             return stored(r["group"], r["offset"], r["bytes"])
 
         P = "model.language_model."
-        # Experts: GGML blocks at the arrays' offset in each expert group.
-        arr = next(a for a in index["expert_arrays"] if a["name"] == "blk.2.ffn_down_exps.weight")
-        self.assertEqual(arr["repr"], {"family": "ggml", "type": "NVFP4", "ne": [64, 64]})
+        # Experts: the CUTLASS layout's four arrays packed from each expert
+        # group's start.
+        arrays = [a for a in index["expert_arrays"] if a["layer"] == 2]
+        self.assertEqual([(a["name"], a["repr"], a["group_offset"]) for a in arrays], [
+            ("blk.2.ffn_gate_up_exps.codes", {"family": "ggml", "type": "I8", "ne": [32, 128]}, 0),
+            ("blk.2.ffn_gate_up_exps.scales", {"family": "ggml", "type": "I8", "ne": [512, 1]}, 4096),
+            ("blk.2.ffn_down_exps.codes", {"family": "ggml", "type": "I8", "ne": [32, 64]}, 4608),
+            ("blk.2.ffn_down_exps.scales", {"family": "ggml", "type": "I8", "ne": [512, 1]}, 6656)])
         g = next(i for i, g in enumerate(groups) if g["kind"] == "expert" and g["layer"] == 2 and g["expert"] == 3)
-        w = self.tensors[P + "layers.2.mlp.experts.3.down_proj.weight"][2]
-        s = self.tensors[P + "layers.2.mlp.experts.3.down_proj.weight_scale"][2]
-        self.assertEqual(stored(g, arr["group_offset"], arr["slice_bytes"]), MO.nvfp4_to_ggml(w, s, 64, 64))
+        pairs = [(self.tensors[P + f"layers.2.mlp.experts.3.{p}_proj.weight"][2],
+                  self.tensors[P + f"layers.2.mlp.experts.3.{p}_proj.weight_scale"][2]) for p in ("gate", "up", "down")]
+        self.assertEqual([stored(g, a["group_offset"], a["slice_bytes"]) for a in arrays],
+                         MO.expert_to_sf1xx(*pairs, 64, 64))
         self.assertEqual(array.array("f", resource("blk.2.ffn_down_exps.weight_scale_2")).tolist(),
                          [0.25, 0.5, 0.75, 1.0])
         # MXFP8 verbatim where nothing reorders; value heads tiled where it does.

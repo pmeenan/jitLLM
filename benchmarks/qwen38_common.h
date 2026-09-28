@@ -3,14 +3,12 @@
 
 // What the Qwen3.8 harnesses share (docs/experiments/qwen38-native/,
 // docs/experiments/fast-swap/): each chunk's graph built, bound, planned and
-// placed as the resident harness (qwen38_exec.cc) does it, with the
-// weights' and state's addresses given by the caller, so the paged runner
-// (qwen38_runner.h) plans over device VMM exactly as the resident one plans
-// over cudaMalloc; and each chunk's host-built inputs in the graph's copy
-// order. A copy of the resident harness's code, as dsv4_common.h is of
-// DeepSeek's, so that harness and its comparison with the oracle need no
-// rerun: the paged runner's logits are checked equal to its outputs bit for
-// bit. CUDA builds only.
+// placed, with the weights' and state's addresses given by the caller, so
+// the paged runner (qwen38_runner.h) plans over device VMM exactly as the
+// resident harness (qwen38_exec.cc) plans over cudaMalloc, both through
+// this one path; and each chunk's host-built inputs in the graph's copy
+// order. The paged runner's logits are checked equal to the resident
+// harness's outputs bit for bit. CUDA builds only.
 
 #ifndef JITLLM_BENCHMARKS_QWEN38_COMMON_H_
 #define JITLLM_BENCHMARKS_QWEN38_COMMON_H_
@@ -59,6 +57,12 @@ struct Qwen38Model {
   const model::Qwen38Binding* binding = nullptr;
   const model::Qwen38StateLayout* state = nullptr;
   Qwen38Places places;
+  // The graph (qwen38_graph.h Qwen38GraphOptions): jitLLM's fusions, and
+  // whether each layer's expert slots hold the CUTLASS layout (the
+  // artifact's, binding->cutlass(), or converted at load by the resident
+  // harness) rather than GGML's.
+  bool fused = true;
+  bool cutlass = false;
 };
 
 // One chunk shape's graph, plan, placement and bound implementations.
@@ -75,14 +79,15 @@ struct Qwen38Planned {
 // Binds the graph's weights and state at the model's places.
 void BindQwen38Weights(const Qwen38Model& m, kernels::ggml::Qwen38Graph& g);
 
-// Builds, binds, plans and places one chunk shape's graph (the resident
-// harness's PlanChunk): every computed tensor first at its own address,
-// then placed in `activations` (0 to measure only), planned again, which
-// must give the same plan. Not bound to the registry.
+// Builds, binds, plans and places one chunk shape's graph: every computed
+// tensor first at its own address, then placed in `activations` (0 to
+// measure only), planned again, which must give the same plan; the named
+// intermediates `keep` stay live to the end (the resident harness's
+// dumps). Not bound to the registry.
 std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     const Qwen38Model& m, const kernels::ggml::Qwen38ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
-    std::uint64_t activation_bytes);
+    std::uint64_t activation_bytes, std::span<const std::string> keep = {});
 
 // A chunk's host-built inputs in the graph's copy order (the resident
 // harness's): each input tensor and its bytes, which `in`, `out_ids` and

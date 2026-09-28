@@ -11,12 +11,18 @@ has its own writer: layout.build copies source ranges verbatim.
 What is repacked, all losslessly (docs/experiments/qwen38-native/README.md):
 
 - Routed experts: ModelOpt NVFP4 (two E2M1 codes per byte, element 2k in the
-  low nibble; one E4M3 scale per 16 elements in a separate tensor) becomes
-  GGML's block_nvfp4 (64 elements: 4 scale bytes, then 32 bytes in which byte
-  j of each 16-element sub-block holds elements j and j + 8), so GGML's
-  mul_mat_id kernels read the expert groups directly. Each expert's three
-  projections are one expert group; each layer's per-expert global scales
-  (weight_scale_2) are gathered into F32 [experts] vectors in the layer group.
+  low nibble; one E4M3 scale per 16 elements in a separate tensor) is written
+  in the layout CUTLASS's SM1xx block-scaled grouped GEMM and jitLLM's vector
+  products read (src/kernels/ggml/moe_layout.h; docs/artifact-format.md,
+  "Executable views"), so the runtime maps each expert group as it is. An
+  expert group holds four byte arrays (GGML I8, packed back to back): gate's
+  and up's codes as one block of 2f rows (verbatim: ModelOpt's codes are
+  CUTLASS's), their scales swizzled into 128-row by 4-scale atoms of 512
+  bytes (expert_scales_sf1xx), then down's codes and scales the same way.
+  Each layer's per-expert global scales (weight_scale_2) are gathered into
+  F32 [experts] vectors in the layer group. The first Qwen3.8 artifact wrote
+  GGML's block_nvfp4 instead (nvfp4_to_ggml, kept as the tests' reference),
+  which the Qwen3.8 harness rewrote into this layout at every load.
 - MXFP8 matrices keep ModelOpt's layout (E4M3 [out, in] and E8M0 [out, in/32])
   as plain resources, `.weight` and `.weight_scale`.
 - The n-gram table's shards are concatenated, each row interleaved as its 80
@@ -204,6 +210,82 @@ def nvfp4_to_ggml(codes, scales, rows, k):
     for j in range(32):
         out[4 + j::36] = shuffled[j::32]
     return bytes(out)
+
+
+SF_ATOM_ROWS = 128  # rows of one scale atom
+SF_ATOM_BYTES = 512  # 128 rows x 4 scales
+
+
+def sf1xx_atoms(rows, k):
+    """The 512-byte atoms of a [rows, k] NVFP4 matrix's swizzled scales
+    (rows padded to 128)."""
+    return -(-rows // SF_ATOM_ROWS) * (k // 64)
+
+
+def sf1xx_offset(row, block, blocks):
+    """The byte of row `row`'s scale `block` (of `blocks`, a multiple of 4) in
+    CUTLASS's SM1xx scale layout: moe_cutlass.h SfOffset."""
+    return ((((row // 128) * (blocks // 4)) + (block // 4)) * 512 + (row % 32) * 16
+            + ((row % 128) // 32) * 4 + block % 4)
+
+
+def expert_scales_sf1xx(scales, rows, k):
+    """E4M3 scales [rows, k/16], row-major as ModelOpt stores them, in CUTLASS's
+    swizzled layout (sf1xx_offset); rows past `rows` up to the atom's 128 are
+    zero. Every 4 scales of a row stay together, so the permutation moves
+    32-bit words: row r's words go to one lane of each of its atoms."""
+    blocks = k // 16
+    if k % 64 or rows <= 0 or len(scales) != rows * blocks:
+        raise ValueError("NVFP4 scale sizes disagree with their shape")
+    check_e4m3_scales(scales, "NVFP4 block scales")
+    words = blocks // 4
+    src = array.array("I")
+    if src.itemsize != 4:
+        raise ValueError("no 32-bit array type")
+    src.frombytes(bytes(scales))
+    out = array.array("I", bytes(sf1xx_atoms(rows, k) * SF_ATOM_BYTES))
+    lanes = SF_ATOM_BYTES // 4
+    for r in range(rows):
+        first = (r // SF_ATOM_ROWS) * words * lanes + (r % 32) * 4 + (r % SF_ATOM_ROWS) // 32
+        out[first:first + words * lanes:lanes] = src[r * words:(r + 1) * words]
+    return out.tobytes()
+
+
+def expert_to_sf1xx(gate, up, down, ffn, width):
+    """One expert's (codes, scales) of gate and up [ffn, width] and down [width,
+    ffn] as the four arrays of its group: gate's and up's codes, their scales
+    as one 2·ffn-row matrix, down's codes, down's scales."""
+    for (codes, scales), (rows, k) in zip((gate, up, down), ((ffn, width), (ffn, width), (width, ffn))):
+        if k % 64 or len(codes) != rows * k // 2 or len(scales) != rows * k // 16:
+            raise ValueError("NVFP4 tensor sizes disagree with its shape")
+    return [bytes(gate[0]) + bytes(up[0]),
+            expert_scales_sf1xx(bytes(gate[1]) + bytes(up[1]), 2 * ffn, width),
+            bytes(down[0]),
+            expert_scales_sf1xx(down[1], width, ffn)]
+
+
+def ggml_to_sf1xx_reference(gate, up, down, ffn, width):
+    """The Qwen3.8 harness's load-time conversion (jitllm_moe.cu ConvertBlocks)
+    of an expert's GGML block_nvfp4 projections, byte by byte (tests)."""
+    def part(projections, rows, k):
+        codes = bytearray(rows * k // 2)
+        scales = bytearray(sf1xx_atoms(rows, k) * SF_ATOM_BYTES)
+        for data, row0, rows_here in projections:
+            for r in range(rows_here):
+                for blk in range(k // 64):
+                    g = data[(r * (k // 64) + blk) * 36:(r * (k // 64) + blk + 1) * 36]
+                    v = [0] * 64
+                    for s in range(4):
+                        for j in range(8):
+                            v[16 * s + j] = g[4 + 8 * s + j] & 15
+                            v[16 * s + j + 8] = g[4 + 8 * s + j] >> 4
+                        scales[sf1xx_offset(row0 + r, blk * 4 + s, k // 16)] = g[s]
+                    at = (row0 + r) * (k // 2) + blk * 32
+                    codes[at:at + 32] = bytes(v[2 * b] | v[2 * b + 1] << 4 for b in range(32))
+        return bytes(codes), bytes(scales)
+    gu_codes, gu_scales = part([(gate, 0, ffn), (up, ffn, ffn)], 2 * ffn, width)
+    d_codes, d_scales = part([(down, 0, width)], width, ffn)
+    return [gu_codes, gu_scales, d_codes, d_scales]
 
 
 def nvfp4_to_ggml_reference(codes, scales, rows, k):
@@ -557,22 +639,33 @@ def plan(layout, cfg, src, shard_target=None):
             mem.append(member(f"blk.{il}.ffn_{proj}_exps.weight_scale_2", _ggml("F32", [e]),
                               lambda s, ex=ex: b"".join(check_global_scales(s.read(t2), t2["name"])
                                                         for _, _, t2 in ex)))
+        # The routed experts in CUTLASS's layout: per expert group, four byte
+        # arrays packed back to back (each a multiple of 256 bytes at
+        # Qwen3.8's shapes, so at the offsets moe_layout.h ExpertLayout gives).
         first = len(groups)
         egroups = [group("expert", il, x) for x in range(e)]
-        for proj, (n_out, k_in) in shapes.items():
-            rep = _ggml("NVFP4", [k_in, n_out])
-            arr = dict(name=f"blk.{il}.ffn_{proj}_exps.weight", layer=il, count=e, repr=rep,
-                       slice_bytes=layout.repr_bytes(rep, proj), members=[])
+        ff = cfg.moe_ff
+        parts = ((f"blk.{il}.ffn_gate_up_exps.codes", [h // 2, 2 * ff]),
+                 (f"blk.{il}.ffn_gate_up_exps.scales", [SF_ATOM_BYTES, sf1xx_atoms(2 * ff, h)]),
+                 (f"blk.{il}.ffn_down_exps.codes", [ff // 2, h]),
+                 (f"blk.{il}.ffn_down_exps.scales", [SF_ATOM_BYTES, sf1xx_atoms(h, ff)]))
+        for x in range(e):
+            reads = tuple(((w["path"], w["offset"], w["nbytes"]), (sc["path"], sc["offset"], sc["nbytes"]))
+                          for w, sc, _ in (experts[p][x] for p in ("gate", "up", "down")))
+            # The same repack as reads a worker process can make.
+            egroups[x]["job"] = (reads, ff, h)
+        for i, (name, ne) in enumerate(parts):
+            rep = _ggml("I8", ne)
+            arr = dict(name=name, layer=il, count=e, repr=rep, slice_bytes=layout.repr_bytes(rep, name),
+                       members=[])
             arr["readable"] = layout.readable_for(rep, arr["slice_bytes"])
             for x in range(e):
-                w, sc, _ = experts[proj][x]
-                m = member(f"{arr['name']}#{x}", rep,
-                           lambda s, w=w, sc=sc, n=n_out, k=k_in: nvfp4_to_ggml(s.read(w), s.read(sc), n, k))
+                pairs = [experts[p][x][:2] for p in ("gate", "up", "down")]
+                m = member(f"{name}#{x}", rep,
+                           lambda s, pairs=pairs, i=i: expert_to_sf1xx(
+                               *[(s.read(w), s.read(sc)) for w, sc in pairs], ff, h)[i])
                 m["roles"] = []
                 m["array"] = len(arrays)
-                # The same repack as reads a worker process can make.
-                m["job"] = ((w["path"], w["offset"], w["nbytes"]), (sc["path"], sc["offset"], sc["nbytes"]),
-                            n_out, k_in)
                 egroups[x]["members"].append(m)
                 arr["members"].append(m)
             arr["first_group"] = first
@@ -673,24 +766,25 @@ def _produce(m, src):
         yield from out
 
 
-def _expert_group_bytes(jobs):
-    """Worker: one expert group's members' bytes, from (path, offset, nbytes,
-    ...) reads, repacked (run in a process pool; returns a list of bytes)."""
-    out = []
-    for (wp, wo, wn), (sp, so, sn), n_out, k_in in jobs:
-        with open(wp, "rb") as f:
-            f.seek(wo)
-            w = f.read(wn)
-        with open(sp, "rb") as f:
-            f.seek(so)
-            s = f.read(sn)
-        if len(w) != wn or len(s) != sn:
+def _expert_group_bytes(job):
+    """Worker: one expert group's members' bytes, from its gate, up and down
+    (path, offset, nbytes) reads of codes and scales, repacked (run in a
+    process pool; returns a list of bytes)."""
+    reads, ffn, width = job
+
+    def read(path, offset, n):
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read(n)
+        if len(data) != n:
             raise ValueError("source truncated")
-        try:
-            out.append(nvfp4_to_ggml(w, s, n_out, k_in))
-        except ValueError as e:
-            raise ValueError(f"{sp} at {so}: {e}") from None
-    return out
+        return data
+
+    pairs = [(read(*w), read(*s)) for w, s in reads]
+    try:
+        return expert_to_sf1xx(*pairs, ffn, width)
+    except ValueError as e:
+        raise ValueError(f"{reads[0][1][0]} at {reads[0][1][1]}: {e}") from None
 
 
 def write(layout, p, src, work, converter, sources, metas, workers=8):
@@ -723,7 +817,7 @@ def write(layout, p, src, work, converter, sources, metas, workers=8):
                         g_ = p["groups"][gids[ahead]]
                         if g_["kind"] == "expert":
                             pending[gids[ahead]] = pool.submit(
-                                _expert_group_bytes, [m_["job"] for m_ in g_["members"]])
+                                _expert_group_bytes, g_["job"])
                         ahead += 1
 
                 for gid in gids:

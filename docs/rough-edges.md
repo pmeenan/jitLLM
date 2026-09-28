@@ -28,6 +28,39 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-032: GGML's ssm_conv reads up to 31 floats past its window when the tokens exceed 32 and are not a multiple of 32  (2026-09-28, status: worked-around)
+
+Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s `ssm-conv.cu` under
+jitLLM's dispatch (`kernels/ggml/ops_ext.cu SsmConv`), SDK CUDA 13.4.
+
+Observed: `unit.Qwen38FusedTest.GdnConvIsTheUnfusedNodes` aborted once
+under the Spark test tier's parallel run and never alone; the process
+aborted without a message (the fence query's error through `.value()`).
+`compute-sanitizer --tool memcheck` found 25 invalid global reads in
+`ssm_conv_long_token_f32<false, 128, 4, 32>` at 40 tokens, 13–17 bytes past
+the window's allocation. Past 32 tokens the launcher splits the tokens into
+32-token blocks, and each block loads `d_conv - 1 + 32` columns of every
+channel's row into shared memory whatever `local_n_t` is, so the last
+block of the last channel reads up to `(32 - n_t % 32) % 32` floats past
+the window. Only the loads are unbounded: the outputs read loaded columns
+below `local_n_t + d_conv - 1`. In llama.cpp the window sits in a larger
+compute buffer, so the over-read goes unnoticed.
+
+Expected: loads bounded by the window's columns.
+
+Impact: `CheckSsmConv` did not refuse it, so any unfused graph with an odd
+chunk past 32 tokens (Qwen3.8 with `--unfused`, or a prompt's last chunk)
+read past the concatenation it convolves, inside the activation region
+(no fault seen there). The fused graph's `jitllm.gdn.conv` does not over-read
+and takes every chunk of 3 or more tokens.
+
+Workaround (the prefill slice's review): `CheckSsmConv` refuses more than
+32 tokens that are not whole 32-token blocks, and the unfused graph pads
+such a window to whole blocks with copies of its first columns and drops
+their outputs (the others are the same bit for bit); the fused test builds
+its unfused reference the same way, with no slack. Fix upstream: bound the
+load by the window's columns.
+
 ## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells  (2026-09-28, status: open)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s

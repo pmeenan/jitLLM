@@ -254,9 +254,17 @@ TEST_F(GgmlExtValidateTest, GathersAndScattersTakeTheModelsTypes) {
 }
 
 TEST_F(GgmlExtValidateTest, LinearAttentionTakesQwen38sShapes) {
-  // The causal convolution: 10,240 channels, kernel 4.
-  Accepted(kg::CheckSsmConv(Bound(
-      ggml_ssm_conv(c(), New(GGML_TYPE_F32, 3 + 40, 10240, 1), New(GGML_TYPE_F32, 4, 10240)))));
+  // The causal convolution: 10,240 channels, kernel 4; up to 32 tokens, or
+  // whole 32-token blocks past that (RE-032: the long-token kernel's last
+  // block of 40 tokens would load past the window).
+  for (const std::int64_t tokens : {1, 7, 32, 64, 96}) {
+    Accepted(kg::CheckSsmConv(Bound(ggml_ssm_conv(c(), New(GGML_TYPE_F32, 3 + tokens, 10240, 1),
+                                                  New(GGML_TYPE_F32, 4, 10240)))));
+  }
+  for (const std::int64_t tokens : {33, 40, 63, 65}) {
+    Refused(kg::CheckSsmConv(Bound(ggml_ssm_conv(c(), New(GGML_TYPE_F32, 3 + tokens, 10240, 1),
+                                                 New(GGML_TYPE_F32, 4, 10240)))));
+  }
   // A kernel size without an instance, and channels not in blocks of 128.
   Refused(kg::CheckSsmConv(Bound(
       ggml_ssm_conv(c(), New(GGML_TYPE_F32, 5 + 40, 10240, 1), New(GGML_TYPE_F32, 6, 10240)))));

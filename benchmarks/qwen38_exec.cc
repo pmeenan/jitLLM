@@ -10,7 +10,8 @@
 //   jitllm_qwen38_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                      [--prompts FILE --generate N [--force FILE]]
 //                      [--ppl FILE] [--dump NAMES] [--layout-proof] [--ab]
-//                      [--bench-prefill N --bench-decode N]
+//                      [--bench-prefill N --bench-decode N] [--unfused]
+//                      [--convert-experts]
 //
 // - Weights: the artifact is opened as untrusted input (artifact.h), bound
 //   to the compiled-in Qwen3.8 profile (model/qwen38.h) and read with direct
@@ -18,13 +19,25 @@
 //   every group but the experts' in one region (the n-gram table among them:
 //   resident for this slice), and each layer's routed experts in a slab
 //   where expert e's group sits at e·S, S the group's stored bytes rounded to
-//   the NVFP4 block (the resident expert layout GGML's mul_mat_id addresses at
-//   a uniform stride). The n-gram hash's constants are read back and checked
-//   against the table (model/qwen38.h CheckQwen38PleHash) before any chunk.
+//   the arrays' element (GGML's NVFP4 block) and 16 bytes (the resident
+//   expert layout, addressed at a uniform stride). The n-gram hash's
+//   constants are read back and checked against the table (model/qwen38.h
+//   CheckQwen38PleHash) before any chunk.
 // - Each chunk: host-built inputs (model/qwen38.h Qwen38Chunk), the GGML
-//   graph (kernels/ggml/qwen38_graph.h) planned with fusion off, its
-//   activations placed, bound to the registry's implementations and run on
-//   one stream; plans are kept per chunk shape.
+//   graph (kernels/ggml/qwen38_graph.h) built, bound, planned with fusion
+//   off and placed by the path the paged runner shares (qwen38_common.h),
+//   bound to the registry's implementations and run on one stream; plans
+//   are kept per chunk shape. The graph runs jitLLM's fusions (qwen38_graph.h
+//   Qwen38GraphOptions::fused); --unfused builds the GGML nodes they
+//   repeat, whose logits must be the same bit for bit.
+// - The routed experts: an artifact in the CUTLASS layout (the importer's
+//   since the prefill work) is read as it is, and the graph's grouped GEMM
+//   and vector products read it. An artifact in GGML's layout (the first
+//   import) runs GGML's mul_mat_id (MMVQ and MMQ), or with --convert-experts
+//   each slab is rewritten in place into the CUTLASS layout (moe_layout.h)
+//   after loading (and after the A/B's and layout proof's GGML side); with
+//   --layout-proof every slab is then converted back and compared with the
+//   loaded bytes. --unfused needs GGML's layout, unconverted.
 // - --prompts: lines `name<TAB>ids...`, each from a cleared state as one
 //   prefill chunk then --generate tokens one at a time: greedy, or with
 //   --force the given tokens fed while the argmax is still recorded. Every
@@ -34,7 +47,8 @@
 //   With --state-roundtrip each prompt runs again with the whole state
 //   copied to the host, overwritten on the device and restored halfway
 //   through its steps; every logit must be the first run's, bit for bit.
-// - --ppl: one line of ids from a cleared state in chunks of --max-rows;
+// - --ppl: one line of ids from a cleared state in chunks of --max-rows
+//   (ChunkRows: from 1,024 rows, a multiple of 64);
 //   every row's logits, and the NLL of every token after the first.
 // - --layout-proof: every layer's routed products at 1, 5 and 64 tokens over
 //   the slab and over the reference layout (the slices packed), bit for bit.
@@ -91,16 +105,19 @@
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 #include "model/qwen38.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
+#include "qwen38_common.h"
 
 namespace {
 
 namespace kg = jitllm::kernels::ggml;
+namespace moe = jitllm::kernels::ggml::moe;
 namespace md = jitllm::model;
 using jitllm::base::Bytes;
 using Status = std::expected<void, std::string>;
@@ -278,7 +295,7 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Qwen38
     std::uint64_t unit = 16;
     std::uint64_t stored = 0;
     std::optional<std::uint32_t> first_group;
-    for (const md::Qwen38Tensor* t : {&l.gate_exps, &l.up_exps, &l.down_exps}) {
+    for (const md::Qwen38Tensor* t : l.expert_arrays(binding.cutlass())) {
       const auto& a = artifact.expert_arrays()[t->index];
       auto type = kg::GgmlTypeOf(t->type);
       if (!type) {
@@ -473,15 +490,7 @@ std::expected<md::Qwen38PleHash, std::string> ReadPleHash(const jitllm::artifact
 
 // ------------------------------------------------------------------ chunks
 
-struct Planned {
-  std::optional<kg::TensorArena> arena;
-  kg::Qwen38Graph graph;
-  kg::GraphPlan plan;
-  kg::Placement placement;
-  std::optional<kg::BoundGraph> bound;
-  std::uint64_t scratch = 0;
-  std::uint64_t inputs_bytes = 0;
-};
+using Planned = jitllm::benchmarks::Qwen38Planned;
 
 struct Model {
   const jitllm::artifact::Artifact* artifact = nullptr;
@@ -491,163 +500,36 @@ struct Model {
   const md::Qwen38StateLayout* state = nullptr;
   const md::Qwen38PleHash* hash = nullptr;
   std::uint64_t state_base = 0;
+  bool fused = true;
+  // The slots hold the CUTLASS layout: the artifact's, or GGML's converted
+  // at load (--convert-experts).
+  bool cutlass = true;
 };
 
-void BindWeights(const Model& m, kg::Qwen38Graph& g) {
-  const auto& a = *m.artifact;
-  const auto& w = *m.weights;
-  const auto bind = [&](ggml_tensor* t, const md::Qwen38Tensor& r) {
-    if (t != nullptr) {
-      kg::TensorArena::Bind(t, ResourceAddress(a, w, r.index));
-    }
-  };
-  const auto mx = [&](const kg::Qwen38Mxfp8Tensors& t, const md::Qwen38Mxfp8& r) {
-    bind(t.codes, r.codes);
-    bind(t.scales, r.scales);
-  };
-  const auto& b = *m.binding;
-  bind(g.token_embd, b.token_embd);
-  bind(g.ple_table, b.ple_table);
-  bind(g.ple_table_scale, b.ple_table_scale);
-  bind(g.output, b.output);
-  bind(g.output_hc_norm, b.output_hc_norm);
-  bind(g.output_hc_down, b.output_hc_down);
-  bind(g.output_hc_up, b.output_hc_up);
-  using K = md::Qwen38StateTensor::Kind;
-  for (std::uint32_t il = 0; il < m.profile->layers; ++il) {
-    const md::Qwen38Layer& r = b.layers[il];
-    kg::Qwen38LayerTensors& l = g.layers[il];
-    bind(l.hc_attn_norm, r.hc_attn_norm);
-    bind(l.hc_attn_down, r.hc_attn_down);
-    bind(l.hc_attn_up, r.hc_attn_up);
-    bind(l.hc_attn_inject, r.hc_attn_inject);
-    bind(l.hc_ffn_norm, r.hc_ffn_norm);
-    bind(l.hc_ffn_down, r.hc_ffn_down);
-    bind(l.hc_ffn_up, r.hc_ffn_up);
-    bind(l.hc_ffn_inject, r.hc_ffn_inject);
-    if (r.linear) {
-      mx(l.qkv, r.qkv);
-      mx(l.z, r.z);
-      mx(l.beta, r.beta);
-      mx(l.alpha, r.alpha);
-      mx(l.ssm_out, r.ssm_out);
-      bind(l.dt_bias, r.dt_bias);
-      bind(l.ssm_a, r.ssm_a);
-      bind(l.conv1d, r.conv1d);
-      bind(l.ssm_norm, r.ssm_norm);
-    } else {
-      mx(l.q, r.q);
-      mx(l.k, r.k);
-      mx(l.v, r.v);
-      mx(l.o, r.o);
-      mx(l.idx_qk, r.idx_qk);
-      bind(l.q_norm, r.q_norm);
-      bind(l.k_norm, r.k_norm);
-      bind(l.idx_q_norm, r.idx_q_norm);
-      bind(l.idx_k_norm, r.idx_k_norm);
-    }
-    if (il == m.profile->ple_layer) {
-      bind(l.ple_key, r.ple_key);
-      bind(l.ple_value, r.ple_value);
-      bind(l.ple_norm_key, r.ple_norm_key);
-      bind(l.ple_norm_query, r.ple_norm_query);
-      bind(l.ple_norm_conv, r.ple_norm_conv);
-      bind(l.ple_conv1d, r.ple_conv1d);
-    }
-    bind(l.router, r.router);
-    bind(l.shared_gate, r.shared_gate);
-    mx(l.gate_shexp, r.gate_shexp);
-    mx(l.up_shexp, r.up_shexp);
-    mx(l.down_shexp, r.down_shexp);
-    bind(l.gate_exps_scale, r.gate_exps_scale);
-    bind(l.up_exps_scale, r.up_exps_scale);
-    bind(l.down_exps_scale, r.down_exps_scale);
-    kg::TensorArena::Bind(l.gate_exps, ArrayAddress(a, w, r.gate_exps.index));
-    kg::TensorArena::Bind(l.up_exps, ArrayAddress(a, w, r.up_exps.index));
-    kg::TensorArena::Bind(l.down_exps, ArrayAddress(a, w, r.down_exps.index));
-    const auto state = [&](ggml_tensor* t, K kind) {
-      if (t == nullptr) {
-        return;
-      }
-      const std::int64_t i = m.state->Find(il, kind);
-      kg::TensorArena::Bind(t, m.state_base + m.state->tensors[static_cast<std::size_t>(i)].offset);
-    };
-    state(l.cache_k, K::kK);
-    state(l.cache_v, K::kV);
-    state(l.cache_idx, K::kIndexerK);
-    state(l.conv_state, K::kConv);
-    state(l.recurrent, K::kRecurrent);
-    state(l.ple_state, K::kPleConv);
-  }
+// The shared planning path's view of the model (qwen38_common.h): the
+// weights and state at their cudaMalloc addresses.
+jitllm::benchmarks::Qwen38Model CommonOf(const Model& m) {
+  const jitllm::artifact::Artifact* a = m.artifact;
+  const Weights* w = m.weights;
+  return {.artifact = a,
+          .profile = m.profile,
+          .binding = m.binding,
+          .state = m.state,
+          .places = {.resource = [a, w](std::uint32_t r) { return ResourceAddress(*a, *w, r); },
+                     .array = [a, w](std::uint32_t x) { return ArrayAddress(*a, *w, x); },
+                     .stride = w->stride,
+                     .state = m.state_base,
+                     .ple_table = ResourceAddress(*a, *w, m.binding->ple_table.index)},
+          .fused = m.fused,
+          .cutlass = m.cutlass};
 }
 
 std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
     const Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes) {
-  auto out = std::make_unique<Planned>();
-  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(*m.profile));
-  if (!arena) {
-    return Error(arena.error().detail);
-  }
-  out->arena.emplace(std::move(*arena));
-  auto graph = kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape,
-                                    {.expert_stride = m.weights->stride});
-  if (!graph) {
-    return Error(graph.error().detail);
-  }
-  out->graph = std::move(*graph);
-  kg::Qwen38Graph& g = out->graph;
-  BindWeights(m, g);
-  std::vector<ggml_tensor*> keep;
-  for (const std::string& name : keep_names) {
-    if (ggml_tensor* t = g.Named(name); t != nullptr) {
-      keep.push_back(t);
-    } else {
-      return Error(std::format("the graph names no {}", name));
-    }
-  }
-  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
-  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
-  const auto inputs = g.inputs();
-  for (ggml_tensor* input : inputs) {
-    kg::TensorArena::Bind(input, leaf);
-    leaf += Round(ggml_nbytes(input), 256) + 256;
-  }
-  kg::BindDistinct(g.nodes, kDistinct);
-  auto first = kg::PlanGraph(g.nodes, /*fusion=*/false, choices);
-  if (!first) {
-    return Error(first.error().detail);
-  }
-  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 256, keep);
-  if (!placement) {
-    return Error(placement.error().detail);
-  }
-  out->placement = std::move(*placement);
-  for (ggml_tensor* input : inputs) {
-    out->inputs_bytes += Round(ggml_nbytes(input), 256);
-  }
-  if (activations == 0) {
-    out->plan = std::move(*first);
-    return out;
-  }
-  if (out->placement.extent > activation_bytes) {
-    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
-                             out->placement.extent, activation_bytes));
-  }
-  for (const auto& [tensor, offset] : out->placement.offsets) {
-    kg::TensorArena::Bind(tensor, activations + offset);
-  }
-  kg::BindViews(g.nodes);
-  auto second = kg::PlanGraph(g.nodes, false, choices);
-  if (!second) {
-    return Error(second.error().detail);
-  }
-  if (!kg::SamePlan(*first, *second)) {
-    return Error("the plan changed once the activations were placed");
-  }
-  out->plan = std::move(*second);
-  return out;
+  return jitllm::benchmarks::PlanQwen38Chunk(CommonOf(m), shape, choices, activations,
+                                             activation_bytes, keep_names);
 }
 
 class Runner {
@@ -858,6 +740,20 @@ class Runner {
   std::uint64_t most_scratch_ = 0;
   std::uint64_t most_activations_ = 0;
 };
+
+// The next chunk's rows: at most `max_rows`, and from 1,024 rows on a
+// multiple of 64 (a shorter remainder follows as its own chunk): the
+// tensor-core flash attention's mask pre-pass, which runs from 1,024 query
+// rows, reads whole column tiles (8 rows) of the mask, and the chunk's mask
+// has exactly its rows (fattn_mma.cu PlanFlashAttnMma); 64 is the padding
+// llama.cpp gives its masks (GGML_KQ_MASK_PAD).
+std::uint32_t ChunkRows(std::size_t remaining, std::uint32_t max_rows) {
+  auto rows = static_cast<std::uint32_t>(std::min<std::size_t>(max_rows, remaining));
+  if (rows >= 1024 && rows % 64 != 0) {
+    rows -= rows % 64;
+  }
+  return rows;
+}
 
 // ------------------------------------------------------------------ inputs
 
@@ -1328,6 +1224,213 @@ Status KernelAb(const Model& m, Device& d, kg::LaunchContext& launch,
   return {};
 }
 
+// ------------------------------------------------------------------ the CUTLASS layout
+
+moe::ExpertSlab SlabOf(const Model& m, std::uint32_t il) {
+  const md::Qwen38Layer& l = m.binding->layers[il];
+  const auto& a = *m.artifact;
+  const auto offset = [&](const md::Qwen38Tensor& t) {
+    return a.expert_arrays()[t.index].group_offset.value();
+  };
+  return {.base = Pointer(m.weights->slab[il]),
+          .stride = m.weights->stride[il],
+          .experts = m.profile->experts,
+          .gate = offset(l.gate_exps),
+          .up = offset(l.up_exps),
+          .down = offset(l.down_exps),
+          .layout = {.ffn = m.profile->expert_ffn, .width = m.profile->width}};
+}
+
+// Every layer's slab rewritten in place into the CUTLASS layout
+// (moe_layout.h); with `proof`, each converted back and compared, slice by
+// slice, with the GGML bytes it was loaded with.
+Status ConvertExperts(const Model& m, Device& d, bool proof, std::string& report) {
+  auto stream = d.Stream();
+  if (!stream) {
+    return std::unexpected(stream.error());
+  }
+  constexpr std::int64_t kBatch = 32;
+  const std::uint64_t stride = *std::ranges::max_element(m.weights->stride);
+  const std::uint64_t slab_bytes = stride * m.profile->experts;
+  void* temp = nullptr;
+  void* original = nullptr;
+  void* back = nullptr;
+  if (auto r = Cuda(cudaMalloc(&temp, stride * kBatch), "the conversion's staging"); !r) {
+    return r;
+  }
+  if (proof) {
+    if (auto r = Cuda(cudaMalloc(&original, slab_bytes), "the proof's copy"); !r) {
+      return r;
+    }
+    if (auto r = Cuda(cudaMalloc(&back, slab_bytes), "the proof's inverse"); !r) {
+      return r;
+    }
+  }
+  const auto t0 = Clock::now();
+  std::uint64_t compared = 0;
+  std::uint64_t differing = 0;
+  std::vector<std::uint8_t> host_original;
+  std::vector<std::uint8_t> host_back;
+  for (std::uint32_t il = 0; il < m.profile->layers; ++il) {
+    const moe::ExpertSlab slab = SlabOf(m, il);
+    const std::uint64_t bytes = slab.stride * static_cast<std::uint64_t>(slab.experts);
+    if (proof) {
+      (void)cudaMemcpyAsync(original, slab.base, bytes, cudaMemcpyDeviceToDevice, *stream);
+    }
+    if (!moe::ToCutlassLayout(slab, temp, kBatch, *stream)) {
+      return Error(std::format("layer {}'s expert slab does not hold the CUTLASS layout", il));
+    }
+    if (!proof) {
+      continue;
+    }
+    if (!moe::ToGgmlLayout(slab, back, *stream)) {
+      return Error(std::format("layer {}'s slab could not be converted back", il));
+    }
+    if (auto r = d.Finish(); !r) {
+      return r;
+    }
+    host_original.resize(bytes);
+    host_back.resize(bytes);
+    (void)cudaMemcpy(host_original.data(), original, bytes, cudaMemcpyDeviceToHost);
+    (void)cudaMemcpy(host_back.data(), back, bytes, cudaMemcpyDeviceToHost);
+    const md::Qwen38Layer& l = m.binding->layers[il];
+    for (const md::Qwen38Tensor* t : {&l.gate_exps, &l.up_exps, &l.down_exps}) {
+      const auto& array = m.artifact->expert_arrays()[t->index];
+      for (std::int64_t e = 0; e < slab.experts; ++e) {
+        const std::uint64_t at =
+            (static_cast<std::uint64_t>(e) * slab.stride) + array.group_offset.value();
+        const std::uint64_t n = array.slice_bytes.value();
+        compared += n;
+        for (std::uint64_t i = 0; i < n; ++i) {
+          differing += host_original[at + i] != host_back[at + i];
+        }
+      }
+    }
+  }
+  if (auto r = d.Finish(); !r) {
+    return r;
+  }
+  const double seconds = Seconds(Clock::now() - t0);
+  (void)cudaFree(temp);
+  (void)cudaFree(original);
+  (void)cudaFree(back);
+  report = std::format(R"({{"seconds":{:.3f},"proof_bytes":{},"proof_differing":{}}})", seconds,
+                       compared, differing);
+  std::println(
+      "experts to the CUTLASS layout in {:.2f} s{}", seconds,
+      proof ? std::format("; proof: {} bytes back, {} differing", compared, differing) : "");
+  if (proof && differing != 0) {
+    return Error("the CUTLASS layout does not convert back to the loaded bytes");
+  }
+  return {};
+}
+
+// One MoE block's routed experts (products, SwiGLU, weighted sum; no shared
+// expert) on layer 0's weights at prefill widths, in whichever layout the
+// slab holds: GGML's (mul_mat_id: MMQ) or CUTLASS's (the grouped GEMM path).
+// The mean of 10 runs after a warm-up.
+Status MoeAb(const Model& m, Device& d, kg::LaunchContext& launch,
+             const jitllm::execution::Registry& registry, bool cutlass, std::string& report) {
+  const auto& a = *m.artifact;
+  const auto& w = *m.weights;
+  const md::Qwen38Profile& p = *m.profile;
+  const md::Qwen38Layer& l0 = m.binding->layers[0];
+  constexpr std::uint64_t kBuffer = std::uint64_t{3} << 30U;
+  void* buffer = nullptr;
+  if (auto r = Cuda(cudaMalloc(&buffer, kBuffer), "the A/B buffer"); !r) {
+    return r;
+  }
+  void* inputs = nullptr;
+  constexpr std::uint64_t kInputs = std::uint64_t{256} << 20U;
+  if (auto r = Cuda(cudaMalloc(&inputs, kInputs), "the A/B inputs"); !r) {
+    return r;
+  }
+  std::mt19937 rng(11);  // NOLINT(bugprone-random-generator-seed): reproducible
+  std::normal_distribution<float> normal(0.0f, 1.0f);
+  const auto n_embd = static_cast<std::int64_t>(p.width);
+  const auto f = static_cast<std::int64_t>(p.expert_ffn);
+  const auto used = static_cast<std::int64_t>(p.experts_used);
+  const auto experts = static_cast<std::int64_t>(p.experts);
+  for (const std::int64_t tokens : {512, 2048, 8192}) {
+    auto arena = kg::TensorArena::Create(64);
+    ggml_context* c = arena->context();
+    std::uint64_t at = Address(inputs);
+    const auto place = [&](ggml_tensor* t, const auto& values) {
+      kg::TensorArena::Bind(t, at);
+      (void)cudaMemcpy(t->data, values.data(), ggml_nbytes(t), cudaMemcpyHostToDevice);
+      at += Round(ggml_nbytes(t), 256);
+      return t;
+    };
+    std::vector<float> xs(static_cast<std::size_t>(n_embd * tokens));
+    for (float& v : xs) {
+      v = normal(rng);
+    }
+    const auto routes = RandomRoutes(rng, experts, used, tokens);
+    ggml_tensor* x = place(ggml_new_tensor_2d(c, GGML_TYPE_F32, n_embd, tokens), xs);
+    ggml_tensor* ids = place(ggml_new_tensor_2d(c, GGML_TYPE_I32, used, tokens), routes);
+    ggml_tensor* weights = place(ggml_new_tensor_3d(c, GGML_TYPE_F32, 1, used, tokens),
+                                 std::vector<float>(static_cast<std::size_t>(used * tokens), 0.1f));
+    ggml_tensor* shared = place(ggml_new_tensor_2d(c, GGML_TYPE_F32, n_embd, tokens),
+                                std::vector<float>(static_cast<std::size_t>(n_embd * tokens)));
+    ggml_tensor* shared_gate = place(ggml_new_tensor_2d(c, GGML_TYPE_F32, 1, tokens),
+                                     std::vector<float>(static_cast<std::size_t>(tokens)));
+    const auto scale = [&](const md::Qwen38Tensor& t) {
+      ggml_tensor* s = ggml_new_tensor_1d(c, GGML_TYPE_F32, experts);
+      kg::TensorArena::Bind(s, ResourceAddress(a, w, t.index));
+      return s;
+    };
+    ggml_tensor* gs = scale(l0.gate_exps_scale);
+    ggml_tensor* us = scale(l0.up_exps_scale);
+    ggml_tensor* ds = scale(l0.down_exps_scale);
+    std::vector<ggml_tensor*> nodes;
+    if (cutlass) {
+      const moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
+      ggml_tensor* slab =
+          ggml_new_tensor_2d(c, GGML_TYPE_I8, static_cast<std::int64_t>(w.stride[0]), experts);
+      kg::TensorArena::Bind(slab, w.slab[0]);
+      ggml_tensor* route = kg::MoeRoute(c, ids, experts);
+      ggml_tensor* a1 = kg::MoeQuantize(c, x, route);
+      ggml_tensor* d1 = kg::MoeGemm(c, a1, route, slab, 2 * f, moe::ExpertLayout::gate_up_codes(),
+                                    layout.gate_up_scales());
+      ggml_tensor* a2 = kg::MoeGluQuantize(c, d1, a1, route, gs, us);
+      ggml_tensor* d2 =
+          kg::MoeGemm(c, a2, route, slab, n_embd, layout.down_codes(), layout.down_scales());
+      nodes = {route, a1, d1,
+               a2,    d2, kg::MoeCombineSorted(c, d2, a2, route, ds, weights, shared, shared_gate)};
+    } else {
+      const auto slice = [&](const md::Qwen38Tensor& t) {
+        ggml_tensor* s = ggml_new_tensor_3d(c, GGML_TYPE_NVFP4, static_cast<std::int64_t>(t.ne[0]),
+                                            static_cast<std::int64_t>(t.ne[1]), experts);
+        s->nb[2] = w.stride[0];
+        s->nb[3] = w.stride[0] * p.experts;
+        kg::TensorArena::Bind(s, ArrayAddress(a, w, t.index));
+        kg::MarkRowPaddingReadable(s);
+        return s;
+      };
+      ggml_tensor* x3 = ggml_reshape_3d(c, x, n_embd, 1, tokens);
+      ggml_tensor* up = ggml_mul_mat_id(c, slice(l0.up_exps), x3, ids);
+      ggml_tensor* gate = ggml_mul_mat_id(c, slice(l0.gate_exps), x3, ids);
+      ggml_tensor* act = kg::MoeGlu(c, gate, up, ids, gs, us);
+      ggml_tensor* down = ggml_mul_mat_id(c, slice(l0.down_exps), act, ids);
+      nodes = kg::GraphOrder(std::vector<ggml_tensor*>{
+          kg::MoeCombine(c, down, ids, ds, weights, shared, shared_gate)});
+    }
+    std::string impl;
+    auto ms = RunNodes(d, launch, registry, nodes, Address(buffer), kBuffer, 10, &impl);
+    if (!ms) {
+      return Error(std::format("the MoE A/B at {} tokens: {}", tokens, ms.error()));
+    }
+    report +=
+        std::format(R"({}{{"layout":"{}","tokens":{},"ms":{:.4f},"steps":"{}"}})",
+                    report.empty() ? "" : ",", cutlass ? "cutlass" : "ggml", tokens, *ms, impl);
+    std::println("MoE A/B {:<8} t={:<5} {:.3f} ms  ({})", cutlass ? "cutlass" : "ggml", tokens, *ms,
+                 impl);
+  }
+  (void)cudaFree(buffer);
+  (void)cudaFree(inputs);
+  return {};
+}
+
 // ------------------------------------------------------------------ main
 
 struct Options {
@@ -1344,6 +1447,8 @@ struct Options {
   bool ab = false;
   bool stepwise = false;
   bool state_roundtrip = false;
+  bool unfused = false;
+  bool convert_experts = false;
   std::uint32_t bench_prefill = 0;
   std::uint32_t bench_decode = 0;
 };
@@ -1416,6 +1521,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.stepwise = true;
     } else if (a == "--state-roundtrip") {
       o.state_roundtrip = true;
+    } else if (a == "--unfused") {
+      o.unfused = true;
+    } else if (a == "--convert-experts") {
+      o.convert_experts = true;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -1446,6 +1555,17 @@ Status Run(const Options& o) {
   if (!binding) {
     return std::unexpected(binding.error());
   }
+  // What each layout takes: GGML's products, the layout proof and the
+  // kernel A/B's NVFP4 rows read GGML's layout; the conversion writes the
+  // CUTLASS layout from it.
+  if (binding->cutlass() && (o.convert_experts || o.unfused || o.layout_proof || o.ab)) {
+    return Error(
+        "the artifact's experts are in the CUTLASS layout: --convert-experts, "
+        "--unfused, --layout-proof and --ab take an artifact in GGML's layout");
+  }
+  if (o.convert_experts && o.unfused) {
+    return Error("--unfused reads GGML's layout, which --convert-experts replaces");
+  }
   auto state = md::Qwen38State(profile, o.context, o.max_rows);
   if (!state) {
     return std::unexpected(state.error());
@@ -1475,7 +1595,9 @@ Status Run(const Options& o) {
               .weights = &weights,
               .state = &*state,
               .hash = &*hash,
-              .state_base = Address(state_region)};
+              .state_base = Address(state_region),
+              .fused = !o.unfused,
+              .cutlass = binding->cutlass() || o.convert_experts};
 
   int major = 0;
   int minor = 0;
@@ -1578,6 +1700,27 @@ Status Run(const Options& o) {
       return r;
     }
     summary += R"(,"layout_proof":)" + report;
+  }
+  if (o.convert_experts) {
+    // The MoE A/B's GGML side while the slabs hold GGML's layout, then the
+    // conversion (proved with --layout-proof) and the CUTLASS side.
+    std::string moe_ab;
+    if (o.ab) {
+      if (auto r = MoeAb(model, d, **launch, *registry, false, moe_ab); !r) {
+        return r;
+      }
+    }
+    std::string report;
+    if (auto r = ConvertExperts(model, d, o.layout_proof, report); !r) {
+      return r;
+    }
+    summary += R"(,"cutlass_layout":)" + report;
+    if (o.ab) {
+      if (auto r = MoeAb(model, d, **launch, *registry, true, moe_ab); !r) {
+        return r;
+      }
+      summary += R"(,"moe_ab":[)" + moe_ab + "]";
+    }
   }
 
   const std::uint32_t vocab = profile.vocab;
@@ -1725,9 +1868,8 @@ Status Run(const Options& o) {
     std::vector<std::int32_t> top1;
     std::vector<float> logits;
     const auto t0 = Clock::now();
-    for (std::uint32_t at = 0; at < ids.size(); at += o.max_rows) {
-      const auto rows =
-          static_cast<std::uint32_t>(std::min<std::size_t>(o.max_rows, ids.size() - at));
+    for (std::uint32_t at = 0, rows = 0; at < ids.size(); at += rows) {
+      rows = ChunkRows(ids.size() - at, o.max_rows);
       if (auto r = runner.Chunk(std::span(ids).first(std::size_t{at} + rows), at, rows, logits);
           !r) {
         return Error(std::format("perplexity chunk at {}: {}", at, r.error()));
@@ -1771,9 +1913,8 @@ Status Run(const Options& o) {
         return r;
       }
       const auto t0 = Clock::now();
-      for (std::uint32_t at = 0; at < ids.size(); at += o.max_rows) {
-        const auto rows =
-            static_cast<std::uint32_t>(std::min<std::size_t>(o.max_rows, ids.size() - at));
+      for (std::uint32_t at = 0, rows = 0; at < ids.size(); at += rows) {
+        rows = ChunkRows(ids.size() - at, o.max_rows);
         if (auto r = runner.Chunk(std::span(ids).first(std::size_t{at} + rows), at, 1, logits);
             !r) {
           return r;

@@ -81,6 +81,15 @@ enum class Operation : std::uint8_t {
   kHcComb,            // DeepSeek V4's hyper-connection mixing matrices
   kHcPre,             // hyper-connection streams folded into one
   kHcPost,            // one output spread back over the streams
+  // Qwen3.8 Flash's fused hyper-connection and MoE-output work (M3).
+  kHcCombine,   // a block's output added to each stream, gated per stream
+  kHcNorm,      // each stream's rows scaled to unit RMS, times a weight
+  kHcMix,       // gated streams folded into one
+  kMoeGlu,      // the experts' scales, then SwiGLU
+  kMoeCombine,  // the experts' weighted sum plus the gated shared expert
+  kMoeRoute,    // routed rows sorted by expert
+  kQuantize,    // activations into a quantized format
+  kNormGate,    // rows scaled to unit RMS, times a weight and a sigmoid gate
 };
 
 std::string_view OperationName(Operation operation);

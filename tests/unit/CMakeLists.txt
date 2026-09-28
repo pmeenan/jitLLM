@@ -370,6 +370,24 @@ if(JITLLM_CUDA)
   target_link_libraries(image_kernels_test PRIVATE jitllm_image_kernels)
   jitllm_gpu_gtest(image_kernels_test)
 
+  # jitLLM's fusions of Qwen3.8's hyper-connection and MoE-output nodes
+  # (kernels/ggml/jitllm_ops.h) against the GGML nodes they replace, bit for
+  # bit, and against FP64 references.
+  add_executable(qwen38_fused_test qwen38_fused_test.cc)
+  target_include_directories(qwen38_fused_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_fused_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(qwen38_fused_test)
+
+  # Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
+  # moe_layout.h): the conversion, routing, CUTLASS's grouped GEMM, the
+  # prefill path against GGML's MMQ path and FP64, decode's vector products.
+  add_executable(qwen38_moe_test qwen38_moe_test.cc)
+  target_include_directories(qwen38_moe_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_moe_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(qwen38_moe_test)
+
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
