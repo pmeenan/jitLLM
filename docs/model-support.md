@@ -34,7 +34,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
-| [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one greedy step open (below) |
+| [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
 | [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
@@ -190,8 +190,8 @@ not used. The options each renderer supports and refuses are in
     1.01–1.03× with speculation off on both sides.
 - **Known divergences:**
   - `french` step 3: one greedy step of 192 outside the near-tie bound
-    (oracle margin 2.0, bound 1.0) on the default fast form; open, for
-    the owner to decide
+    (oracle margin 2.0, bound 1.0) on the default fast form; accepted by
+    the owner (2026-09-28) as a known divergence
     ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass)).
   - The near-tie bound was set after the first comparison with the
     oracle, not pre-registered.

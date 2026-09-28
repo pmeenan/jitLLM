@@ -504,11 +504,11 @@ near-tie for jitLLM and not for the oracle fails it. It is reported, not
 waved through: by the letter of bound 1 the fast form fails one step of
 192 (`french` step 3: oracle margin 2.0, bound 1.0; it would fail the
 reference form's bound of 1.25 too), where the perplexity and top-1
-agreement are unchanged. **For the owner's decision** under D-085's speed
-before bit exactness: accept the fast form as the default with this step
-recorded as a miss, or keep the reference form (`--exact`, 0.91× the
-oracle's prefill at 8K) as the default until the bound passes. The bound
-itself is not changed after the fact.
+agreement are unchanged. *Owner, 2026-09-28: accepted* under D-085's
+speed before bit exactness. The fast form stays the default with this step
+recorded as a known miss; the reference form (`--exact`, 0.91× the
+oracle's prefill at 8K) remains available. The bound itself is not
+changed after the fact.
 
 ## Judgement calls
 

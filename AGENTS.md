@@ -271,7 +271,7 @@ perplexity −1.5%; prefill, after a second pass under D-085's speed before
 bit exactness (MXFP8 tensor-core products, fused hyper-connections,
 routing and QSA selection), 1.41× its speed at 8K in 8,192-row chunks and
 1.38× in 4,096-row chunks, perplexity −0.8 to −1.2%, one greedy step
-now outside the near-tie bound, for the owner); and Qwen-Image-2.1 imported as component artifacts joined by a composition
+outside the near-tie bound, accepted by the owner); and Qwen-Image-2.1 imported as component artifacts joined by a composition
 (D-089) and run natively (within its pre-registered bounds of diffusers
 BF16; 0.70× its generation time with weights resident, one prompt at
 1024², 40 steps); and all six ordered swap pairs of the three on the

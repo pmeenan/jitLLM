@@ -366,7 +366,8 @@ it appears.
       at 8,192 tokens in 8,192-row chunks, 1.38× in 4,096-row chunks, 2.02×
       at 2,048, 1.56× at 512; decode unchanged; perplexity −0.8% to −1.2%; one of
       the 192 greedy steps now misses the near-tie bound (jitLLM's own
-      margin there is 0.18 nats in the reference form)
+      margin there is 0.18 nats in the reference form; accepted by the owner,
+      2026-09-28, as a known divergence)
       ([qwen38-native](experiments/qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness)).
       *On the paged node* (`engine/qwen38_runner.h`): chunks as device
       jobs over leased closures, the expert slabs as DeepSeek's pages, the
