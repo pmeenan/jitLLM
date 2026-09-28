@@ -30,10 +30,27 @@
 // which counts it as queued work, so the provider refuses to destroy the
 // stream until a fence after the run has completed and been released; the
 // context must not outlive the provider or the stream.
+//
+// Captured graphs (D-090). Capture records, instead of queuing, what runs
+// and plain stream copies queue on the context's stream, as one CUDA graph
+// (cudaStreamBeginCapture in thread-local mode, so this thread's calls a
+// capture cannot hold fail instead of running); Launch queues one replay,
+// one operation on the stream (RE-029). A replay launches the captured
+// kernels with the captured parameters: every address they hold (operands,
+// the pool's blocks, which the pool hands out in the same order from the
+// same empty stack each run, and the workspace) must still be mapped at the
+// same place and hold what it held, which is the caller's to guarantee
+// (D-090: pinned places), and whatever varies between replays must be data
+// the graph reads, never a launch parameter. A capture queues nothing, so a
+// refused one leaves the context as it was (kRejected), unless the stream
+// reports a device fault (kUnknown, which faults the context). A graph
+// replays only on the context that captured it, and must be destroyed before
+// the workspace or any memory it names is unmapped.
 
 #ifndef JITLLM_KERNELS_GGML_LAUNCH_H_
 #define JITLLM_KERNELS_GGML_LAUNCH_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -44,11 +61,49 @@
 #include "providers/device_execution.h"
 
 struct ggml_backend_cuda_context;
+struct CUgraphExec_st;  // cudaGraphExec_t's
 
 namespace jitllm::kernels::ggml {
 
 class CublasHandle;
 class WorkspacePool;
+class LaunchContext;
+
+// An instantiated graph a context captured (LaunchContext::Capture). Move
+// only; destroying it frees the executable graph (after a replay in flight
+// completes, as CUDA does).
+class CapturedGraph {
+ public:
+  CapturedGraph(CapturedGraph&& other) noexcept;
+  CapturedGraph& operator=(CapturedGraph&& other) noexcept;
+  CapturedGraph(const CapturedGraph&) = delete;
+  CapturedGraph& operator=(const CapturedGraph&) = delete;
+  ~CapturedGraph();
+
+  // The captured graph's nodes: kernels, copies and memsets.
+  std::size_t nodes() const { return nodes_; }
+  // Host time capturing it, and instantiating and uploading it.
+  double capture_seconds() const { return capture_seconds_; }
+  double instantiate_seconds() const { return instantiate_seconds_; }
+
+ private:
+  friend class LaunchContext;
+  CapturedGraph(std::uint64_t owner, CUgraphExec_st* exec, std::size_t nodes,
+                double capture_seconds, double instantiate_seconds)
+      : owner_(owner),
+        exec_(exec),
+        nodes_(nodes),
+        capture_seconds_(capture_seconds),
+        instantiate_seconds_(instantiate_seconds) {}
+
+  // The capturing context's identity, never reused in the process (not
+  // its address, which a later context may take).
+  std::uint64_t owner_ = 0;
+  CUgraphExec_st* exec_ = nullptr;
+  std::size_t nodes_ = 0;
+  double capture_seconds_ = 0;
+  double instantiate_seconds_ = 0;
+};
 
 class LaunchContext {
  public:
@@ -86,6 +141,30 @@ class LaunchContext {
     return End();
   }
 
+  // Captures what `record(*this)` queues on the context's stream (its runs,
+  // and copies the caller queues on the same stream) into a graph, which it
+  // instantiates and uploads; `record` returns std::expected<void,
+  // KernelFailure>. Nothing it records runs. Refused (kRejected), with the
+  // context as it was, if the context is faulted or already capturing, the
+  // stream is being captured, or the capture fails: `record` fails, or a call
+  // it makes cannot be captured. kUnknown, faulting the context, if the
+  // stream reports a device fault or the upload fails.
+  template <typename Record>
+  std::expected<CapturedGraph, KernelFailure> Capture(Record&& record) {
+    if (auto begun = BeginCapture(); !begun) {
+      return std::unexpected(begun.error());
+    }
+    std::expected<void, KernelFailure> recorded = std::forward<Record>(record)(*this);
+    return EndCapture(std::move(recorded));
+  }
+
+  // Queues one replay of `graph`, which this context captured: one
+  // operation on the stream. Refused, with nothing queued, if another
+  // context captured it or the context is faulted; kUnknown if the launch
+  // reports an error, which faults the context.
+  std::expected<void, KernelFailure> Launch(const CapturedGraph& graph);
+  bool capturing() const { return capturing_; }
+
   // The most scratch any run has held at once, since the context was made
   // or the peak was last reset.
   base::Bytes scratch_peak() const;
@@ -104,7 +183,11 @@ class LaunchContext {
 
   std::expected<void, KernelFailure> Begin(base::Bytes scratch);
   std::expected<void, KernelFailure> End();
+  std::expected<void, KernelFailure> BeginCapture();
+  std::expected<CapturedGraph, KernelFailure> EndCapture(
+      std::expected<void, KernelFailure> recorded);
 
+  std::uint64_t id_;  // what its graphs record as their owner
   int device_;
   providers::DeviceExecution& execution_;
   providers::StreamId stream_;
@@ -116,6 +199,8 @@ class LaunchContext {
   Workspace workspace_;
   CublasHandle* cublas_;
   bool faulted_ = false;
+  bool capturing_ = false;
+  std::int64_t capture_started_ = 0;  // steady_clock ticks, while capturing
 };
 
 }  // namespace jitllm::kernels::ggml

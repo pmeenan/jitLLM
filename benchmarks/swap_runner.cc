@@ -14,6 +14,7 @@
 //                      [--copy-lane on|off] [--fp16-expect SHA256]
 //                      [--context N] [--reload N] [--overlap]
 //                      [--prompts FILE --expect DIR --generate N]
+//                      [--graphs on|off] [--bench N]
 //
 // - A's context: --text tokenized by the native tokenizer from the
 //   artifact's GGUF metadata, BOS first, its first --context-tokens
@@ -48,6 +49,19 @@
 //   cleared state, prefill then --generate - 1 greedy steps, every step's
 //   logits compared bit for bit. Run it with the resident run's --context.
 // - Peak memory: the lowest MemAvailable, sampled every 50 ms.
+// - --graphs (on by default): A's decode steps as captured CUDA graphs
+//   (dsv4_runner.h, D-090). The control then runs launch by launch, so every
+//   continued step after a swap, replayed from a graph captured before it
+//   in a prepared cycle, is compared with launch-by-launch logits. After
+//   each swap back to A, A's places are checked to be the pinned ones every
+//   graph names (CheckPlaces). Each swap reports how A's first token ran.
+// - --bench N: decode speed as llama-bench's tg-N measures it, N one-token
+//   steps from an empty context (BOS, then each step's greedy token): a
+//   warm-up and three passes launch by launch, then a pass that captures
+//   and three that replay; every pass's logits must equal the warm-up's
+//   bit for bit. Then N replays of the first step's graph back to back in
+//   one job: the step's device time without the host's part. Needs --text
+//   (its BOS).
 //
 // Exit 1 on any failed check; swap.json in --out has every number.
 
@@ -199,6 +213,7 @@ struct Options {
   std::filesystem::path prompts;
   std::filesystem::path expect;
   std::uint32_t generate = 32;
+  std::uint32_t bench = 0;
 };
 
 // One swap's parts, in seconds.
@@ -218,8 +233,10 @@ struct SwapTimes {
   std::uint64_t handed_off = 0;
   std::uint64_t parked = 0;
   std::uint64_t released_unused = 0;
-  double plan_seconds = 0;  // A's planning within its first token
-  bool exact = true;        // what it then computed equals the control
+  double plan_seconds = 0;       // A's planning within its first token
+  bool exact = true;             // what it then computed equals the control
+  std::string first_path = "-";  // A's first token: eager, captured or replayed (D-090)
+  std::uint64_t captured = 0;    // A's graphs captured within the swap's first token
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -276,6 +293,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.expect = v;
     } else if (a == "--generate") {
       ok = number(o.generate) && o.generate >= 1;
+    } else if (a == "--graphs") {
+      o.dsv4.graphs = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--bench") {
+      ok = number(o.bench) && o.bench >= 1 && o.bench <= 1024;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -284,13 +306,17 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     }
   }
   if (o.dsv4.artifact.empty() || o.fp16.artifact.empty() || o.fp16.tokens.empty() ||
-      o.out.empty() || ((o.cycles > 0 || o.reload > 0 || o.overlap) && o.text.empty()) ||
+      o.out.empty() ||
+      ((o.cycles > 0 || o.reload > 0 || o.overlap || o.bench > 0) && o.text.empty()) ||
       (o.prompts.empty() != o.expect.empty())) {
     return Error(
         "usage: jitllm_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE --out DIR "
         "[--text FILE] [--context-tokens N] [--continue N] [--cycles N] [--handoff on|off] "
         "[--copy-lane on|off] [--fp16-expect SHA256] [--context N] [--reload N] [--overlap] "
-        "[--prompts FILE --expect DIR --generate N]");
+        "[--prompts FILE --expect DIR --generate N] [--graphs on|off] [--bench N]");
+  }
+  if (o.bench >= o.dsv4.context) {
+    return Error("--context must hold the bench's steps");
   }
   if (o.cycles > 0 && o.context_tokens + o.continue_tokens + 1 > o.dsv4.context) {
     return Error("--context must hold the context and the continuation");
@@ -340,6 +366,9 @@ class Swapper {
   Status Settle(SwapTimes& t, const sc::SchedulerStats& before, Clock::time_point swapped);
   Status Reload(int round);
   Status Overlap();
+  Status Bench();
+  // After a swap back to A: A's places are the pinned ones (D-090).
+  void CheckPlaces(const SwapTimes& t);
   Status Write();
 
   const Options& o_;
@@ -369,8 +398,27 @@ class Swapper {
   std::vector<SwapTimes> reloads_;
   std::string overlap_;
   std::string prompts_;
+  std::string bench_;
   std::vector<std::string> problems_;
 };
+
+std::string PathName(jb::Dsv4Path path) {
+  switch (path) {
+    case jb::Dsv4Path::kEager:
+      return "eager";
+    case jb::Dsv4Path::kCaptured:
+      return "captured";
+    case jb::Dsv4Path::kReplayed:
+      return "replayed";
+  }
+  return "?";
+}
+
+void Swapper::CheckPlaces(const SwapTimes& t) {
+  if (auto r = dsv4_.CheckPlaces(); !r) {
+    problems_.push_back(std::format("{}: {}", t.name, r.error()));
+  }
+}
 
 Status Swapper::Tokenize() {
   // The tokenizer from the artifact's GGUF metadata (import rule 7).
@@ -537,6 +585,7 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
   }
   const auto first = Clock::now();
   t.setup = Seconds(first - report.loaded);
+  const std::uint64_t captured_before = dsv4_.graph_stats().captured;
   std::vector<std::vector<float>> steps;
   std::vector<std::int32_t> tokens;
   if (continuing) {
@@ -562,6 +611,8 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
   t.first = Seconds(done - first);
   t.total = Seconds(done - requested);
   t.plan_seconds = dsv4_.plan_seconds() - planned_before;
+  t.first_path = PathName(dsv4_.last_path());
+  t.captured = dsv4_.graph_stats().captured - captured_before;
   if (continuing) {
     // The rest of the continuation: every step equal to the control's.
     std::vector<std::vector<float>> rest;
@@ -583,7 +634,11 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
                       t.name, differing, steps.size()));
     }
   }
-  return Settle(t, *before, report.loaded);
+  if (auto r = Settle(t, *before, report.loaded); !r) {
+    return r;
+  }
+  CheckPlaces(t);
+  return {};
 }
 
 Status Swapper::Prompts() {
@@ -673,6 +728,7 @@ Status Swapper::Reload(int round) {
   t.setup = Seconds(first - report.loaded);
   std::vector<float> row;
   const std::int32_t next = a_next_;
+  const std::uint64_t captured_before = dsv4_.graph_stats().captured;
   if (auto r = dsv4_.Chunk(a_position_, std::span(&next, 1), row); !r) {
     return r;
   }
@@ -681,10 +737,127 @@ Status Swapper::Reload(int round) {
   const auto done = Clock::now();
   t.first = Seconds(done - first);
   t.total = Seconds(done - requested);
+  t.first_path = PathName(dsv4_.last_path());
+  t.captured = dsv4_.graph_stats().captured - captured_before;
   if (auto r = Settle(t, *before, report.loaded); !r) {
     return r;
   }
+  CheckPlaces(t);
   reloads_.push_back(t);
+  return {};
+}
+
+Status Swapper::Bench() {
+  const std::uint32_t steps = o_.bench;
+  const auto n = static_cast<double>(steps);
+  std::vector<std::vector<float>> reference;
+  struct Pass {
+    double seconds = 0;
+    double submit = 0;  // the jobs' host time, in all
+  };
+  const auto pass = [&](std::string_view name, bool graphs, Pass& out) -> Status {
+    dsv4_.set_graphs(graphs);
+    if (auto r = dsv4_.Clear(); !r) {
+      return r;
+    }
+    const jb::Dsv4GraphStats before = dsv4_.graph_stats();
+    std::vector<std::vector<float>> logits(steps);
+    std::int32_t token = context_.front();  // BOS
+    const auto start = Clock::now();
+    for (std::uint32_t k = 0; k < steps; ++k) {
+      if (auto r = dsv4_.Chunk(k, std::span(&token, 1), logits[k]); !r) {
+        return Error(std::format("bench {} step {}: {}", name, k, r.error()));
+      }
+      out.submit += dsv4_.last_submit_seconds();
+      token = jb::Argmax(logits[k]);
+    }
+    out.seconds = Seconds(Clock::now() - start);
+    const jb::Dsv4GraphStats& after = dsv4_.graph_stats();
+    std::size_t differing = 0;
+    if (reference.empty()) {
+      reference = std::move(logits);
+    } else {
+      for (std::uint32_t k = 0; k < steps; ++k) {
+        differing += SameBits(logits[k], reference[k]) ? 0 : 1;
+      }
+    }
+    if (differing != 0) {
+      problems_.push_back(std::format("bench {}: {} of {} steps' logits differ from the warm-up's",
+                                      name, differing, steps));
+    }
+    bench_ += std::format(
+        R"({}{{"pass":"{}","graphs":{},"seconds":{:.6f},"tokens_per_second":{:.3f},)"
+        R"("submit_ms_per_token":{:.4f},"eager":{},"captured":{},"replayed":{},)"
+        R"("capture_seconds":{:.6f},"instantiate_seconds":{:.6f},"differing_steps":{}}})",
+        bench_.empty() ? "" : ",\n  ", name, graphs ? "true" : "false", out.seconds,
+        n / out.seconds, out.submit * 1e3 / n, after.eager - before.eager,
+        after.captured - before.captured, after.replayed - before.replayed,
+        after.capture_seconds - before.capture_seconds,
+        after.instantiate_seconds - before.instantiate_seconds, differing);
+    std::println(
+        "bench {}: {} steps in {:.3f} s ({:.2f} tok/s), jobs' host time {:.3f} ms per token; "
+        "eager {}, captured {}, replayed {}; {} steps differ",
+        name, steps, out.seconds, n / out.seconds, out.submit * 1e3 / n, after.eager - before.eager,
+        after.captured - before.captured, after.replayed - before.replayed, differing);
+    return {};
+  };
+  Pass warm;
+  if (auto r = pass("warm-up, eager", false, warm); !r) {
+    return r;
+  }
+  std::array<Pass, 3> eager{};
+  for (std::size_t i = 0; i < eager.size(); ++i) {
+    if (auto r = pass(std::format("eager {}", i + 1), false, eager.at(i)); !r) {
+      return r;
+    }
+  }
+  Pass capturing;
+  if (auto r = pass("capturing", true, capturing); !r) {
+    return r;
+  }
+  std::array<Pass, 3> graphs{};
+  for (std::size_t i = 0; i < graphs.size(); ++i) {
+    if (auto r = pass(std::format("graphs {}", i + 1), true, graphs.at(i)); !r) {
+      return r;
+    }
+  }
+  // The step's device time alone: its graph replayed back to back in one
+  // job, so that the host's part of a step (the scheduler's round trip, the
+  // closure's lease and fence, the inputs) shows as the difference.
+  auto back_to_back = dsv4_.TimeReplays(0, context_.front(), steps);
+  if (!back_to_back) {
+    return Error("bench back-to-back replays: " + back_to_back.error());
+  }
+  if (auto r = dsv4_.Clear(); !r) {
+    return r;
+  }
+  std::println("bench: {} replays back to back in one job: {:.3f} ms each", steps,
+               *back_to_back * 1e3);
+  dsv4_.set_graphs(o_.dsv4.graphs);
+  const auto mean = [&](const std::array<Pass, 3>& passes) {
+    double tps = 0;
+    double submit = 0;
+    for (const Pass& p : passes) {
+      tps += n / p.seconds;
+      submit += p.submit * 1e3 / n;
+    }
+    const auto count = static_cast<double>(passes.size());
+    return std::pair(tps / count, submit / count);
+  };
+  const auto [eager_tps, eager_submit] = mean(eager);
+  const auto [graph_tps, graph_submit] = mean(graphs);
+  std::println(
+      "bench: {} steps, eager {:.2f} tok/s ({:.3f} ms host per token), graphs {:.2f} tok/s "
+      "({:.3f} ms host per token): {:.3f}x",
+      steps, eager_tps, eager_submit, graph_tps, graph_submit, graph_tps / eager_tps);
+  bench_ = std::format(
+      R"({{"steps":{},"eager_tokens_per_second":{:.3f},"graph_tokens_per_second":{:.3f},)"
+      R"("eager_submit_ms_per_token":{:.4f},"graph_submit_ms_per_token":{:.4f},)"
+      R"("back_to_back_ms_per_replay":{:.4f},)"
+      "\n \"passes\":[\n  {}]}}",
+      steps, eager_tps, graph_tps, eager_submit, graph_submit, *back_to_back * 1e3, bench_);
+  a_position_ = steps;
+  a_next_ = jb::Argmax(reference.back());
   return {};
 }
 
@@ -791,8 +964,15 @@ Status Swapper::Run() {
       return r;
     }
   }
+  if (o_.bench > 0) {
+    if (auto r = Bench(); !r) {
+      return r;
+    }
+  }
   if (o_.cycles > 0) {
-    // The control: A's context, then its continuation, never swapped.
+    // The control: A's context, then its continuation, never swapped, and
+    // launch by launch (the cycles' graphs are compared with it).
+    dsv4_.set_graphs(false);
     if (auto r = dsv4_.Clear(); !r) {
       return r;
     }
@@ -807,6 +987,7 @@ Status Swapper::Run() {
       return r;
     }
     control_decode_seconds_ = Seconds(Clock::now() - start);
+    dsv4_.set_graphs(o_.dsv4.graphs);
     if (auto r = tokenizer_->Decode(control_tokens_, {}, continuation_); !r) {
       return Error(r.error().ToString());
     }
@@ -899,21 +1080,21 @@ std::string SwapJson(const SwapTimes& t) {
       R"({{"name":"{}","evict":{:.6f},"restore":{:.6f},"page_in":{:.6f},"setup":{:.6f},)"
       R"("first_token":{:.6f},"total":{:.6f},"release_after":{:.6f},"evicted":{},"loaded":{},)"
       R"("read_bytes":{},"spilled_bytes":{},"handed_off":{},"parked":{},"released_unused":{},)"
-      R"("plan_seconds":{:.6f},"exact":{}}})",
+      R"("plan_seconds":{:.6f},"exact":{},"first_path":"{}","captured":{}}})",
       t.name, t.evict, t.restore, t.page_in, t.setup, t.first, t.total, t.release, t.evicted,
       t.loaded, t.read_bytes, t.spilled_bytes, t.handed_off, t.parked, t.released_unused,
-      t.plan_seconds, t.exact ? "true" : "false");
+      t.plan_seconds, t.exact ? "true" : "false", t.first_path, t.captured);
 }
 
 void Print(const SwapTimes& t) {
   const double weights_in = t.page_in > 0 ? static_cast<double>(t.read_bytes) / 1e9 : 0;
   std::println(
       "{}: total {:.3f} s = evict {:.3f} + restore {:.3f} + page-in {:.3f} ({:.2f} GB, "
-      "{:.2f} GB/s) + setup {:.3f} + first token {:.3f}; handed off {}, released after {:.3f} s; "
-      "{}",
+      "{:.2f} GB/s) + setup {:.3f} + first token {:.3f} ({}); handed off {}, released after "
+      "{:.3f} s; {}",
       t.name, t.total, t.evict, t.restore, t.page_in, weights_in,
       t.page_in + t.restore > 0 ? weights_in / (t.page_in + t.restore) : 0.0, t.setup, t.first,
-      t.handed_off, t.release, t.exact ? "exact" : "DIFFERS");
+      t.first_path, t.handed_off, t.release, t.exact ? "exact" : "DIFFERS");
 }
 
 Status Swapper::Write() {
@@ -936,6 +1117,25 @@ Status Swapper::Write() {
     problems += std::format(R"({}"{}")", problems.empty() ? "" : ",", problem);
   }
   const std::uint64_t low = memory_.low();
+  const jb::Dsv4GraphStats& g = dsv4_.graph_stats();
+  const std::string graphs = std::format(
+      R"({{"on":{},"eager":{},"captured":{},"replayed":{},"refused":{},"capture_seconds":{:.6f},)"
+      R"("instantiate_seconds":{:.6f},"nodes":{},"memory_bytes":{},"graphs_kept":{},)"
+      R"("graphs_dropped":{},"first_refusal":"{}"}})",
+      o_.dsv4.graphs ? "true" : "false", g.eager, g.captured, g.replayed, g.refused,
+      g.capture_seconds, g.instantiate_seconds, g.nodes, g.memory_bytes, dsv4_.graphs(), g.dropped,
+      [&] {
+        std::string text = g.first_refusal;  // as a JSON string's contents
+        std::ranges::replace_if(
+            text, [](char c) { return c == '"' || c == '\\' || c < ' '; }, '\'');
+        return text;
+      }());
+  std::println(
+      "graphs: {} captured ({} nodes, {:.3f} s capturing, {:.3f} s instantiating and uploading, "
+      "{:.1f} MiB by free memory), {} replayed, {} eager, {} refused, {} dropped{}",
+      g.captured, g.nodes, g.capture_seconds, g.instantiate_seconds,
+      static_cast<double>(g.memory_bytes) / (1U << 20U), g.replayed, g.eager, g.refused, g.dropped,
+      g.first_refusal.empty() ? "" : " (" + g.first_refusal + ")");
   std::filesystem::create_directories(o_.out);
   std::ofstream file(o_.out / "swap.json");
   file << std::format(
@@ -946,6 +1146,7 @@ Status Swapper::Write() {
       "\"control_prefill_seconds\":{:.6f},\"control_decode_seconds\":{:.6f},"
       "\"coverage_tensors\":{},\"coverage_violations\":{},\"mem_available_before\":{},"
       "\"mem_available_low\":{},\"problems\":[{}],\n \"prompts\":[{}],\n \"overlap\":{},\n"
+      " \"graphs\":{},\n \"bench\":{},\n"
       " \"swaps\":[\n  {}],\n \"reloads\":[\n  {}]}}\n",
       o_.dsv4.artifact.filename().string(), o_.fp16.artifact.filename().string(),
       o_.handoff ? "true" : "false", o_.copy_lane ? "true" : "false", o_.dsv4.context, text_sha256_,
@@ -953,7 +1154,8 @@ Status Swapper::Write() {
       dsv4_.weight_read_bytes(), dsv4_.state_bytes(), dsv4_.weights().size(), dsv4_.slab_padding(),
       control_prefill_seconds_, control_decode_seconds_, dsv4_.coverage_tensors(),
       dsv4_.coverage_violations(), available_before_, low, problems, prompts_,
-      overlap_.empty() ? "null" : overlap_, swaps, reloads);
+      overlap_.empty() ? "null" : overlap_, graphs, bench_.empty() ? "null" : bench_, swaps,
+      reloads);
   std::println(
       "peak by MemAvailable: {:.2f} GiB; wrote {}",
       static_cast<double>(available_before_ > low ? available_before_ - low : 0) / (1ULL << 30U),

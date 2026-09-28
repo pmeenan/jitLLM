@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -160,7 +162,11 @@ LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
                              std::unique_ptr<ggml_backend_cuda_context> context,
                              std::unique_ptr<WorkspacePool> pool, Workspace workspace,
                              CublasHandle* cublas)
-    : device_(device),
+    : id_([] {
+        static std::atomic<std::uint64_t> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+      }()),
+      device_(device),
       execution_(execution),
       stream_(stream),
       native_(native),
@@ -170,6 +176,14 @@ LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
       cublas_(cublas) {}
 
 LaunchContext::~LaunchContext() {
+  if (capturing_) {
+    // Never left capturing (Capture always ends it); ended here all the same.
+    cudaGraph_t graph = nullptr;
+    (void)cudaStreamEndCapture(static_cast<cudaStream_t>(native_.handle), &graph);
+    if (graph != nullptr) {
+      (void)cudaGraphDestroy(graph);
+    }
+  }
   // Take back what was lent, so GGML's destructor finds nothing to destroy.
   context_->streams[device_][0] = nullptr;
   (void)context_->pools[device_][0].release();
@@ -236,6 +250,168 @@ std::expected<void, KernelFailure> LaunchContext::End() {
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = *error});
   }
   return {};
+}
+
+// ------------------------------------------------------------------ graphs
+
+CapturedGraph::CapturedGraph(CapturedGraph&& other) noexcept
+    : owner_(std::exchange(other.owner_, 0)),
+      exec_(std::exchange(other.exec_, nullptr)),
+      nodes_(other.nodes_),
+      capture_seconds_(other.capture_seconds_),
+      instantiate_seconds_(other.instantiate_seconds_) {}
+
+CapturedGraph& CapturedGraph::operator=(CapturedGraph&& other) noexcept {
+  if (this != &other) {
+    if (exec_ != nullptr) {
+      (void)cudaGraphExecDestroy(exec_);
+    }
+    owner_ = std::exchange(other.owner_, 0);
+    exec_ = std::exchange(other.exec_, nullptr);
+    nodes_ = other.nodes_;
+    capture_seconds_ = other.capture_seconds_;
+    instantiate_seconds_ = other.instantiate_seconds_;
+  }
+  return *this;
+}
+
+CapturedGraph::~CapturedGraph() {
+  if (exec_ != nullptr) {
+    // A replay still in flight completes first: CUDA frees the executable
+    // graph once it has.
+    (void)cudaGraphExecDestroy(exec_);
+  }
+}
+
+namespace {
+
+std::int64_t Now() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
+
+double Since(std::int64_t ticks) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch() -
+                                       std::chrono::steady_clock::duration(ticks))
+      .count();
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> LaunchContext::BeginCapture() {
+  if (capturing_) {
+    return Rejected("the context is already capturing");
+  }
+  // As a run begins: the context usable, the stream counted as queued
+  // work (an upload follows a capture), no error pending.
+  if (auto begun = Begin(base::Bytes(0)); !begun) {
+    return begun;
+  }
+  auto* const stream = static_cast<cudaStream_t>(native_.handle);
+  cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+  if (const cudaError_t queried = cudaStreamIsCapturing(stream, &status);
+      queried != cudaSuccess || status != cudaStreamCaptureStatusNone) {
+    (void)cudaGetLastError();
+    return Rejected("the stream is being captured, or its capture state cannot be read");
+  }
+  // Thread-local: a call on this thread that a capture cannot hold (a
+  // synchronization, an allocation) fails and invalidates the capture
+  // instead of running; other threads' calls are unaffected.
+  if (const cudaError_t begun = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+      begun != cudaSuccess) {
+    (void)cudaGetLastError();
+    return Rejected(std::string("cudaStreamBeginCapture: ") + cudaGetErrorString(begun));
+  }
+  capturing_ = true;
+  capture_started_ = Now();
+  return {};
+}
+
+std::expected<CapturedGraph, KernelFailure> LaunchContext::EndCapture(
+    std::expected<void, KernelFailure> recorded) {
+  auto* const stream = static_cast<cudaStream_t>(native_.handle);
+  cudaGraph_t graph = nullptr;
+  const cudaError_t ended = cudaStreamEndCapture(stream, &graph);
+  capturing_ = false;
+  const double captured = Since(capture_started_);
+  // What a launcher recorded during the capture, and the runtime's record,
+  // belong to the capture: taken so that no later run inherits them.
+  const std::optional<std::string> launcher = internal::TakeCudaError();
+  const cudaError_t runtime = cudaGetLastError();
+  if (!recorded || ended != cudaSuccess || graph == nullptr || launcher || runtime != cudaSuccess) {
+    if (graph != nullptr) {
+      (void)cudaGraphDestroy(graph);
+    }
+    // Nothing captured ran. Only a device fault, which the provider or the
+    // stream now reports, makes the context's state unknown.
+    if (auto native = execution_.Submission(stream_);
+        !native && native.error().error == providers::ProviderError::kUnknown) {
+      faulted_ = true;
+      return std::unexpected(
+          KernelFailure{.error = KernelError::kUnknown,
+                        .detail = "the stream faulted during a capture: " + native.error().detail});
+    }
+    const cudaError_t probe = cudaStreamQuery(stream);
+    (void)cudaGetLastError();
+    if (probe != cudaSuccess && probe != cudaErrorNotReady) {
+      faulted_ = true;
+      return std::unexpected(KernelFailure{
+          .error = KernelError::kUnknown,
+          .detail =
+              std::string("the stream faulted during a capture: ") + cudaGetErrorString(probe)});
+    }
+    faulted_ = false;  // a run refused during the capture queued nothing
+    std::string why;
+    if (!recorded) {
+      why = recorded.error().detail;
+    } else if (launcher) {
+      why = *launcher;
+    } else if (ended != cudaSuccess) {
+      why = std::string("cudaStreamEndCapture: ") + cudaGetErrorString(ended);
+    } else {
+      why = std::string("a call the capture could not hold: ") + cudaGetErrorString(runtime);
+    }
+    return Rejected("the capture failed: " + why);
+  }
+  const std::int64_t instantiating = Now();
+  std::size_t nodes = 0;
+  (void)cudaGraphGetNodes(graph, nullptr, &nodes);
+  cudaGraphExec_t exec = nullptr;
+  const cudaError_t instantiated = cudaGraphInstantiate(&exec, graph, 0);
+  (void)cudaGraphDestroy(graph);  // the executable graph keeps what it needs
+  if (instantiated != cudaSuccess || exec == nullptr) {
+    (void)cudaGetLastError();
+    return Rejected(std::string("cudaGraphInstantiate: ") + cudaGetErrorString(instantiated));
+  }
+  // Uploaded now, so that the first replay costs what every other does.
+  if (const cudaError_t uploaded = cudaGraphUpload(exec, stream); uploaded != cudaSuccess) {
+    (void)cudaGetLastError();
+    (void)cudaGraphExecDestroy(exec);
+    faulted_ = true;
+    return std::unexpected(
+        KernelFailure{.error = KernelError::kUnknown,
+                      .detail = std::string("cudaGraphUpload: ") + cudaGetErrorString(uploaded)});
+  }
+  return CapturedGraph(id_, exec, nodes, captured, Since(instantiating));
+}
+
+std::expected<void, KernelFailure> LaunchContext::Launch(const CapturedGraph& graph) {
+  if (graph.owner_ != id_ || graph.exec_ == nullptr) {
+    return Rejected("the graph was captured by another launch context, or moved from");
+  }
+  if (capturing_) {
+    return Rejected("a graph replay while capturing");
+  }
+  if (auto begun = Begin(base::Bytes(0)); !begun) {
+    return begun;
+  }
+  if (const cudaError_t launched =
+          cudaGraphLaunch(graph.exec_, static_cast<cudaStream_t>(native_.handle));
+      launched != cudaSuccess) {
+    (void)cudaGetLastError();
+    faulted_ = true;
+    return std::unexpected(
+        KernelFailure{.error = KernelError::kUnknown,
+                      .detail = std::string("cudaGraphLaunch: ") + cudaGetErrorString(launched)});
+  }
+  return End();
 }
 
 base::Bytes LaunchContext::scratch_peak() const { return base::Bytes(pool_->peak()); }

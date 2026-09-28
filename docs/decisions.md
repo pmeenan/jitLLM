@@ -39,6 +39,96 @@ one Spark and on two.
 
 ---
 
+## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
+
+**Decision.**
+- **What a graph holds.** A graph is captured per model, plan and chunk
+  shape through the K-C launch context (`LaunchContext::Capture`,
+  thread-local capture mode on the model's stream): the input copies from
+  pinned staging, every step of the bound plan, and the logits copy. It
+  replays as one `cudaGraphLaunch` (`LaunchContext::Launch`), inside a
+  device job over the model's leased closure like any run. Its kernels
+  keep their captured parameters: every address in them must hold the same
+  thing at every replay, and whatever varies between steps of a shape (the
+  token, its position, cache cells, masks, the compressors' indices) is
+  data the graph copies in and reads, never a launch parameter. No
+  `cudaGraphExecKernelNodeSetParams` updates: GGML's launchers derive every
+  parameter from shapes, strides, addresses and operation parameters,
+  which the plan fixes per shape, and the GGML pool hands out the same
+  blocks from the same empty stack each run.
+- **Pinned places.** The addresses a graph names are the model's
+  reservations' (weights, state), the node's workspace and pool, the
+  model's cuBLAS workspace and its pinned staging. The scheduler already
+  maps an extent's backing where its registered source says (reservation
+  and offset, `BackingPlace`) and copies its contents to the source's
+  destinations, whatever backing a load takes (created, or handed off by
+  D-033's handoff); only `SetSource` with a new place relocates it (BP-P5).
+  So a model pins its places (`Scheduler::PinPlaces`) when it registers
+  them, and `SetSource` refuses (kBusy) any source that would put a pinned
+  extent's contents anywhere else (`SamePlace`), resident or not. The
+  reservations live as long as the model; the workspace, pool, cuBLAS
+  workspace and staging are mapped for the model's life and never have
+  managed backing, so no swap unmaps them. The landing zone is never in a
+  graph (only the copy lane touches it). A pin is invariant 2's
+  registration of the place: graphs are destroyed with their plans, before
+  the launch context, before the memory they name is freed, and before
+  any unpin (`UnpinPlaces` is the caller's to order; the scheduler cannot
+  see graphs).
+- **What a replay reads.** A pin fixes where contents go, not which
+  contents: `SamePlace` ignores the file range. Which bytes a replay reads
+  is settled as for any run, by materializing its closure at the recorded
+  generations (invariant 4: discarded state is not restored, a stale
+  generation is refused). A graph belongs to one runner's plans, bound to
+  one artifact; another artifact or version is another model, with its
+  own reservations, plans and graphs.
+- **When.** A one-row (decode) chunk whose shape has run once launch by
+  launch is captured; later chunks of that shape replay. Prefill chunks run
+  launch by launch. A refused capture (a call the capture cannot hold, a
+  failed record) leaves the context as it was and that shape launch by
+  launch. "Previously prepared" (D-087's swap table) means the plans and
+  graphs survive the swap in the process; "first use" drops them. Graph
+  memory is the driver's, outside the catalog, so a model keeps a bounded
+  number of graphs (the DeepSeek runner: 8, the oldest destroyed first).
+
+**Why.** The alternative, re-pointing graphs after a swap with executable
+graph updates, needs every kernel node's parameters decoded per kernel
+(GGML's launchers pass structs of addresses), and a model that moves after
+every swap gains nothing from it: D-033's handoff already keeps places and
+moves only backing. Pinning turns "the swap happens to restore the same
+addresses" into an invariant the scheduler enforces, and costs nothing per
+step.
+
+**Evidence** (`spark-b`, GB10, driver 580.178.04; [graphs](experiments/fast-swap/graphs.md)).
+- On the fakes, a full swap A→B→A with the handoff maps each of A's extents
+  back at its own place, a pinned place cannot move resident or not, and an
+  unpinned one moves and is seen to (`unit.VmmWork/PageInTest.AfterASwapEveryPinnedExtentIsBackAtItsAddress/*`).
+- On the GB10, a graph of a small GGML plan captured before two full swaps
+  (state written back and restored; the second without the handoff, so the
+  weights come back over new backing) replays bit for bit what a
+  never-swapped control launches, never captured again
+  (`unit.CudaGraphTest.*`).
+- DeepSeek V4 Flash on the paged node: every decode step replayed from a
+  graph is bit-identical to launch by launch and to the resident harness
+  (and so to llama.cpp with fusion off), and A resumed after B replays the
+  graph captured before the swap.
+- RE-029: a replay takes one entry of its stream's queue: behind a closed
+  gate a stream took 1,020 replays of a 1,500-kernel graph before a launch
+  blocked, the same depth as plain launches.
+
+**Consequences.** Relocating a model's extents (compaction, a different
+layout after a swap) requires unpinning, which requires dropping its
+graphs first. Graph memory is per shape, tens of MiB each (measured
+coarsely, by free memory), up to the model's cap and not in the catalog's
+account; the runtime's reservation policy counts it with the model's fixed
+overhead when graphs leave the harness. Captured graphs carry the plan's
+identity implicitly: a new plan is a new graph.
+
+**Reopen if.** A model must move between swaps (then per-node parameter
+updates or re-capture after a relocation), a kernel's parameters come to
+depend on per-step host data, graph memory grows past what a fixed
+per-model allowance covers, or captured replays stop matching launches
+bit for bit.
+
 ## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); the owner may amend; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
 
 **Decision.**
@@ -328,7 +418,7 @@ plus the work that cannot overlap it exceeds it), a model's reference
 format cannot be supported under D-017 and D-080, or the owner moves the
 product milestones ahead of the swap work.
 
-## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs)
+## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs, and answered on 2026-09-28 by D-090: graphs replay at pinned places)
 
 **Decision.** What M2's backend proof built and checked becomes the
 internal contract M3 builds on
@@ -445,7 +535,8 @@ in the same change; the [M2 record](m2-record.md) and the report list them.
 
 **Reopen if.**
 - M3's serving needs graph capture: pointer tables and captured graphs
-  then need the relocation rules.
+  then need the relocation rules. *Met; answered by D-090 (2026-09-28):
+  places are pinned, and a job may replay a graph captured on its stream.*
 - A phase kind's working set cannot be itemized from its plan.
 - The loose process-level memory comparison fails and the excess is
   jitLLM's own.

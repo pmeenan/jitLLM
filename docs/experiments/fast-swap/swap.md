@@ -172,7 +172,7 @@ page-in bound: 97.46 GB at the SSD's at-rest rate is 7.2 s, and everything
 else in the swap took 0.18–0.28 s. A's first load in each run, cold, took
 7.26 s (13.37 GB/s). A's prefill of 8,192 tokens took 27.3 s
 (300 tokens/s) and 16 decode steps 1.10 s (14.5 tokens/s at 8K context),
-on the paged node with no CUDA graphs. Peak memory by `MemAvailable`:
+on the paged node with no CUDA graphs (decode graphs since: [graphs](graphs.md)). Peak memory by `MemAvailable`:
 96.4 GiB over the whole run (A and B both resident at its end).
 
 **The handoff's effect** (the same runs with `--handoff off`: evictions
@@ -306,8 +306,10 @@ killed by the kernel's OOM killer (no number here comes from it).
   as state (D-055's named spill format stays in M6).
 - The FP16 fixture's file age at the runs was not recorded (RE-027); its
   page-in is too small for the at-rest rate to show.
-- No CUDA graphs (a separate slice): "prepared" means A's plans and B's
-  cuBLAS handle exist, nothing more.
+- These runs had no CUDA graphs: "prepared" meant A's plans and B's
+  cuBLAS handle exist. With decode graphs (D-090, [graphs](graphs.md)) a
+  prepared return's first token replays a graph captured before the swap:
+  0.060 s against 0.064 s here, within noise, so the table above stands.
 - The overlap probe's page-in beside a busy chunk is still 0.07 s slower
   than alone (the GPU and memory are shared); not investigated. Other
   driver calls than those checked (record, query, copy, synchronize on an

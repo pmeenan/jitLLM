@@ -16,6 +16,7 @@
 #include <deque>
 #include <expected>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -101,6 +102,9 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
     return std::unexpected(WorkError::kInvalid);  // only live mutable contents are written back
   }
   const auto old = sources_.find(extent);
+  if (pinned_.contains(extent) && (old == sources_.end() || !SamePlace(old->second, source))) {
+    return std::unexpected(WorkError::kBusy);  // a captured graph names its place (D-090)
+  }
   if (view->state != catalog::ExtentState::kNonresident) {
     // Its backing is where its last source put it: an eviction must unmap
     // that place, so the place cannot change until then. With no source
@@ -128,6 +132,46 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
   }
   sources_[extent] = source;
   return {};
+}
+
+bool SamePlace(const PageSource& a, const PageSource& b) {
+  if (a.backing != b.backing || a.landed != b.landed) {
+    return false;
+  }
+  if (!a.landed) {
+    return a.read.memory == b.read.memory;
+  }
+  if (a.destination != b.destination || a.piece_count != b.piece_count) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.piece_count && i < kMaxDeviceCopies; ++i) {
+    if (a.pieces.at(i).destination != b.pieces.at(i).destination ||
+        a.pieces.at(i).length != b.pieces.at(i).length) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::expected<void, WorkError> Scheduler::PinPlaces(std::span<const catalog::ExtentId> extents) {
+  for (const catalog::ExtentId extent : extents) {
+    if (!sources_.contains(extent)) {
+      return std::unexpected(WorkError::kUnavailable);
+    }
+  }
+  for (const catalog::ExtentId extent : extents) {
+    ++pinned_[extent];
+  }
+  return {};
+}
+
+void Scheduler::UnpinPlaces(std::span<const catalog::ExtentId> extents) {
+  for (const catalog::ExtentId extent : extents) {
+    const auto found = pinned_.find(extent);
+    if (found != pinned_.end() && --found->second == 0) {
+      pinned_.erase(found);
+    }
+  }
 }
 
 // Materialization -------------------------------------------------------------------

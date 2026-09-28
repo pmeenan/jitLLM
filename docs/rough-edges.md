@@ -144,9 +144,17 @@ itself stays free. The options are the two above, now with a number:
 submit the zone's copies from their own thread, or keep each stream's
 queued launches under the limit (split phases into jobs of well under
 1,000 launches, or count a stream's outstanding launches before
-submitting). A replayed CUDA graph may take far fewer entries than its
-kernels (not measured). The depth is observed, not documented, and may
-change with the driver; whichever design M3 picks measures it again.
+submitting). The depth is observed, not documented, and may change with
+the driver; whichever design M3 picks measures it again.
+
+**Measured 2026-09-28: a graph replay is one entry** (`spark-b`, same
+driver; `unit.CudaGraphTest.AGraphOfManyKernelsIsOneOperationInItsStream`).
+Behind a `cuStreamWaitValue32` gate, a stream took 1,020 replays of a
+1,500-kernel graph before the next `cudaGraphLaunch` blocked: the same
+depth as plain launches, one entry per replay whatever the graph holds.
+DeepSeek's decode steps now replay as graphs (D-090), so a decode job
+queues one operation instead of 4,972 and never fills its stream; its
+prefill chunks still do.
 
 ## RE-028: cuBLAS's handle keeps a 64 MiB default workspace pool that `cublasSetWorkspace` does not free, and nsys's memory trace hides who allocated it  (2026-09-27, status: worked-around)
 

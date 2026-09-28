@@ -8,7 +8,8 @@
 // copy into device backing, publication only after the copy's fence, and
 // slots reused only after it. Failed and short reads, backing failures,
 // cancellation in every stage, a full zone, unproven copies and unmaps,
-// evictions that really release backing, relocation, and kernel jobs whose
+// evictions that really release backing, relocation and pinned places that
+// a swap brings back at the same addresses (D-090), and kernel jobs whose
 // lease holds until their fence, even when their first copy's outcome is
 // unknown. The deterministic tests turn each lane themselves; the
 // threaded one runs every lane on its own thread.
@@ -16,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -2547,6 +2549,160 @@ TEST_P(PageInTest, AKeptBackingWhoseMapIsRefusedIsReleased) {
   EXPECT_EQ(Occupied().Total(), Bytes());
   EXPECT_FALSE(scheduler_->fault().has_value());
   EXPECT_EQ(scheduler_->stats().released_unused, 1U);
+}
+
+// D-090: a captured graph replays after a swap only if every extent it
+// reads is back at the address it was captured at. A full swap A→B→A with
+// the handoff maps whatever backing A's loads take at A's own places again,
+// so every address a graph captured before the swap names A's bytes after
+// it; a pinned place cannot be moved, resident or not; and once unpinned, a
+// move is seen by comparing the extent's place with the captured one (the
+// check that fails if an address changed).
+TEST_P(PageInTest, AfterASwapEveryPinnedExtentIsBackAtItsAddress) {
+  Build(kSlots, 32, kSize * 3);  // room for three extents: each swap evicts first
+  const std::vector<ExtentId> a = {extents_[0], extents_[1], extents_[2]};
+  const std::vector<ExtentId> b = {extents_[3], extents_[4], extents_[5]};
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  ASSERT_TRUE(scheduler_->PinPlaces(a).has_value());
+  // What a graph captured now holds: each extent's place.
+  std::vector<PageSource> captured;
+  for (const ExtentId extent : a) {
+    ASSERT_NE(scheduler_->SourceOf(extent), nullptr);
+    captured.push_back(*scheduler_->SourceOf(extent));
+  }
+  const auto mapped = [&](ReservationId reservation, std::size_t i) {
+    return memory_.MappedAt(reservation, Bytes(i * kSize)).has_value();
+  };
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    ASSERT_TRUE(mapped(weights_, i)) << i;
+  }
+
+  HandoffProgram::Report out;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<HandoffProgram>(out, a, Of({3, 4, 5}))).has_value());
+  Settle();
+  ASSERT_EQ(out.outcome, TaskOutcome::kSucceeded);
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_FALSE(mapped(weights_, i)) << i;  // A's places are empty while B runs
+  }
+  HandoffProgram::Report back;
+  ASSERT_TRUE(
+      scheduler_->Start(3, std::make_unique<HandoffProgram>(back, b, Of({0, 1, 2}))).has_value());
+  Settle();
+  ASSERT_EQ(back.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(scheduler_->stats().handed_off, 6U);  // A's backing to B, and B's to A
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(View(a[i]).state, ExtentState::kResident) << i;
+    EXPECT_TRUE(mapped(weights_, i)) << i;  // at its own place ...
+    EXPECT_FALSE(mapped(moved_, i)) << i;   // ... and nowhere else
+    EXPECT_TRUE(jitllm::scheduler::SamePlace(*scheduler_->SourceOf(a[i]), captured[i])) << i;
+    EXPECT_TRUE(Loaded(i, weights_)) << i;  // its bytes at the captured address
+  }
+
+  // A pinned place cannot move, resident or not; another file range for
+  // the same place is no move.
+  EXPECT_EQ(Failed(scheduler_->SetSource(a[0], Source(0, moved_))), WorkError::kBusy);
+  // Resident, the same backing place with its contents copied elsewhere in
+  // it: only the pin refuses that (a resident extent's backing may not
+  // move anyway).
+  PageSource shifted = captured[1];
+  shifted.destination += 256;
+  EXPECT_EQ(Failed(scheduler_->SetSource(a[1], shifted)), WorkError::kBusy);
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(4, Evicting(evicted, a)).has_value());
+  Settle();
+  ASSERT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(Failed(scheduler_->SetSource(a[0], Source(0, moved_))), WorkError::kBusy);
+  PageSource reread = captured[0];
+  reread.read.offset = kSize;  // another range of the file, landed at the same place
+  EXPECT_TRUE(scheduler_->SetSource(a[0], reread).has_value());
+  EXPECT_TRUE(scheduler_->SetSource(a[0], captured[0]).has_value());
+
+  // Pins count, and need a source: an extent without one pins nothing.
+  const ExtentId orphan = catalog_
+                              .AddExtent({.domain = domain_,
+                                          .memory_class = jitllm::catalog::MemoryClass::kWeights,
+                                          .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                                          .size = Bytes(kSize),
+                                          .content = {.artifact = {}, .group = 9, .chunk = 0}})
+                              .value();
+  EXPECT_EQ(Failed(scheduler_->PinPlaces(std::vector<ExtentId>{a[1], orphan})),
+            WorkError::kUnavailable);
+  ASSERT_TRUE(scheduler_->PinPlaces(std::vector<ExtentId>{a[0]}).has_value());
+  scheduler_->UnpinPlaces(a);
+  EXPECT_TRUE(scheduler_->PlacePinned(a[0]));  // pinned twice, unpinned once
+  EXPECT_FALSE(scheduler_->PlacePinned(a[1]));
+  EXPECT_EQ(Failed(scheduler_->SetSource(a[0], Source(0, moved_))), WorkError::kBusy);
+  scheduler_->UnpinPlaces(std::vector<ExtentId>{a[0]});
+  EXPECT_FALSE(scheduler_->PlacePinned(a[0]));
+
+  // Unpinned, it moves: the next load maps it at the new place, and its
+  // place no longer matches the captured one.
+  ASSERT_TRUE(scheduler_->SetSource(a[0], Source(0, moved_)).has_value());
+  LoadProgram::Report moved;
+  ASSERT_TRUE(scheduler_->Start(5, Load(moved, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(moved.outcome, TaskOutcome::kSucceeded);
+  EXPECT_FALSE(jitllm::scheduler::SamePlace(*scheduler_->SourceOf(a[0]), captured[0]));
+  EXPECT_TRUE(mapped(moved_, 0));
+  EXPECT_FALSE(mapped(weights_, 0));
+  EXPECT_TRUE(Loaded(0, moved_));
+}
+
+// What counts as the same place: the backing's place and where the
+// contents land, not the file range they come from.
+TEST(PlaceTest, SamePlaceComparesWhereContentsGoNotWhereTheyComeFrom) {
+  using jitllm::scheduler::LandedPiece;
+  using jitllm::scheduler::SamePlace;
+  const PageSource landed{
+      .read = ReadSpec{.fd = 3, .offset = 0, .memory = nullptr, .length = kSize},
+      .landed = true,
+      .destination = 0x10000,
+      .backing = BackingPlace{
+          .reservation = {}, .offset = Bytes(0), .size = Bytes(kSize), .allocation_class = 0}};
+  PageSource other = landed;
+  other.read.fd = 4;
+  other.read.offset = kSize;
+  EXPECT_TRUE(SamePlace(landed, other));
+  other = landed;
+  other.destination += 256;
+  EXPECT_FALSE(SamePlace(landed, other));
+  other = landed;
+  other.backing = BackingPlace{
+      .reservation = {}, .offset = Bytes(kSize), .size = Bytes(kSize), .allocation_class = 0};
+  EXPECT_FALSE(SamePlace(landed, other));
+  other = landed;
+  other.backing.reset();
+  EXPECT_FALSE(SamePlace(landed, other));
+  // Pieces: each piece's destination and length.
+  PageSource pieces = landed;
+  pieces.destination = 0;
+  pieces.piece_count = 2;
+  pieces.pieces[0] = LandedPiece{.slot_offset = 0, .destination = 0x10000, .length = Bytes(64)};
+  pieces.pieces[1] = LandedPiece{.slot_offset = 64, .destination = 0x10100, .length = Bytes(64)};
+  other = pieces;
+  other.pieces[1].slot_offset = 128;
+  EXPECT_TRUE(SamePlace(pieces, other));
+  other.pieces[1].destination = 0x10200;
+  EXPECT_FALSE(SamePlace(pieces, other));
+  other = pieces;
+  other.pieces[0].length = Bytes(32);
+  EXPECT_FALSE(SamePlace(pieces, other));
+  EXPECT_FALSE(SamePlace(pieces, landed));
+  // Direct: the memory the read lands in.
+  PageSource direct = landed;
+  direct.landed = false;
+  direct.destination = 0;
+  std::array<std::byte, 16> memory{};
+  direct.read.memory = memory.data();
+  other = direct;
+  other.read.offset = kSize;
+  EXPECT_TRUE(SamePlace(direct, other));
+  other.read.memory = memory.data() + 8;
+  EXPECT_FALSE(SamePlace(direct, other));
 }
 
 // RE-029: with a copy lane (and a VMM lane, as the paged node has them), a

@@ -413,8 +413,8 @@ it appears.
       reload 9.07 s, all from the request to the first token; page-in at
       13.4 GB/s; A resumed after B bit-identical to A never swapped. The
       handoff saves 1.3–1.4 s of a 46k-extent eviction. Open: the
-      Qwen3.8 and image pairs, overlapping eviction with page-in, and
-      graph restore.
+      Qwen3.8 and image pairs, and overlapping eviction with page-in.
+      Graph restore: DeepSeek's decode graphs survive swaps (D-090).
 - [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
@@ -422,6 +422,22 @@ it appears.
       per-token host cost is measured on these models (about 1.9 µs per
       launch measured on the fixtures; several milliseconds per MoE token
       is an estimate).
+      *DeepSeek V4 Flash, on the paged node* (D-090,
+      [graphs](experiments/fast-swap/graphs.md)): each one-row chunk shape
+      is captured on its second step through the launch context (input
+      copies, 4,972 steps, logits copy: one 5,920-node graph, about 25 ms)
+      and replayed as one launch; the relocation proof pins the weights'
+      and state's places in the scheduler, so a swap maps backing back at
+      the addresses every graph names. Replayed steps are bit-identical to
+      launch by launch and to the resident harness (so to llama.cpp with
+      fusion off), and A resumed after B replays graphs captured before the
+      swap without capturing again. Decode 19.05–19.53 tok/s against
+      18.13–18.82 launch by launch; llama-bench's tg64 is 20.62 with fusion
+      and graphs on, 20.04 with fusion off; the step's device time alone is
+      48.3–48.6 ms, and the rest is the paged node's per-step round trip.
+      The job's host time per token fell from ~41.5 ms (launches waiting on
+      a full stream) to 0.13–0.16 ms. Open: Qwen3.8's graphs, once it runs
+      on the paged node, and the per-step round trip.
 - [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
       on the GB10, one `cuDeviceGetAttribute` call. Mia's
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`

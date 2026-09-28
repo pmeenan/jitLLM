@@ -108,6 +108,12 @@
 //     published. Its lease and hold are released only once its terminal
 //     result proves no further access.
 //   - Spawn children, whose finishing wakes the parent.
+//   - Pin places (D-090): a captured graph names device addresses, so while
+//     it may replay, the places of the extents it reads must not move.
+//     A pinned extent's source cannot be replaced by one that puts its
+//     contents anywhere else (SamePlace): every load maps its backing at the
+//     same place of the same reservation and copies its contents to the same
+//     addresses, whatever backing it takes (created, or handed off).
 //
 // Observations reconcile acceptance and the terminal result in either
 // order. Not started (from the lane, or the scheduler's own rollback of a
@@ -146,6 +152,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <variant>
@@ -278,6 +285,12 @@ struct PageSource {
   // spill role, never shared by two places.
   bool write_back = false;
 };
+
+// Whether two sources put an extent's contents at the same addresses: the
+// same managed backing place (reservation, offset, size and class), and,
+// landed, the same destination or pieces' destinations and lengths, or,
+// direct, the same memory. The file range may differ.
+bool SamePlace(const PageSource& a, const PageSource& b);
 
 // The landing zone (D-081): a persistent pool of `slots` host-VMM
 // addresses of `slot_bytes` each, mapped read-write for the CPU and the
@@ -443,8 +456,25 @@ class Scheduler {
   // empty or exceeds a slot, no destination, a write instead of a read,
   // or a write-back place for an extent that is not kPreserve.
   // Registering a new place for a nonresident extent relocates its next
-  // load (BP-P5).
+  // load (BP-P5), unless its place is pinned: then a source whose place
+  // differs is refused (kBusy) in every state.
   std::expected<void, WorkError> SetSource(catalog::ExtentId extent, const PageSource& source);
+  // Pins the places of `extents` (D-090), each of which must have a
+  // source (else kUnavailable, pinning none). Pins count: each extent
+  // pinned n times stays pinned until unpinned n times.
+  std::expected<void, WorkError> PinPlaces(std::span<const catalog::ExtentId> extents);
+  // Unpins one pin of each; an extent not pinned is left alone. A pin is
+  // what lets a captured graph name the place (invariant 2's
+  // registration): the caller unpins only once every graph naming these
+  // extents is destroyed, never before; the scheduler cannot see graphs.
+  void UnpinPlaces(std::span<const catalog::ExtentId> extents);
+  bool PlacePinned(catalog::ExtentId extent) const { return pinned_.contains(extent); }
+  // The source registered for an extent, if any: where its next load puts
+  // its contents, and where its backing is mapped while it is resident.
+  const PageSource* SourceOf(catalog::ExtentId extent) const {
+    const auto found = sources_.find(extent);
+    return found == sources_.end() ? nullptr : &found->second;
+  }
   // One turn; true if anything happened.
   bool Turn();
   // Turns until shutdown completes. Returns its result: a fault if work
@@ -701,6 +731,7 @@ class Scheduler {
   // once per queued release.
   bool pumping_releases_ = false;
   std::map<catalog::ExtentId, PageSource> sources_;
+  std::map<catalog::ExtentId, std::uint32_t> pinned_;  // D-090: pins per extent
   // The landing zone's slots, and the loads waiting: to start (kQueued),
   // for a slot (kSlot), or for a mailbox to open their next stage.
   std::vector<SlotState> slots_;

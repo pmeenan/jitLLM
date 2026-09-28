@@ -135,7 +135,11 @@ position as llama.cpp's does, and every NLL matches.
 So prefill is 1.08× llama.cpp's, decode 0.94×, peak memory 0.99×. jitLLM
 launches each of the 4,972 steps from the host every token (no CUDA
 graphs yet, an M3 item), where llama-bench replays a captured graph; that
-is the likely share of the 6% decode gap, not measured.
+is the likely share of the 6% decode gap, not measured. *Measured since*
+([graphs](../fast-swap/graphs.md)): graphs are worth 4–5% on the paged
+node, and most of the gap was fusion (llama.cpp with fusion off: 20.04
+tok/s with graphs, 19.86 without); what remains is the paged node's
+per-step round trip.
 
 ## Judgement calls
 

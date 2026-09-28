@@ -46,6 +46,26 @@
 //   job that copies the inputs, runs the bound plan under the K-C launch
 //   context and copies the last row's logits out. The first chunk of each
 //   shape checks every tensor the plan binds against the catalog (BP-A1).
+// - Decode graphs (D-090), with graphs on: a one-row chunk whose shape has
+//   run once launch by launch is captured, the input copies, the plan's
+//   4,972 steps and the logits copy together, as one CUDA graph on the
+//   model's stream, and every later chunk of that shape replays it: one
+//   launch. What varies between steps of a shape (the token, its position,
+//   the cache cells, the masks and the compressors' indices) is the inputs'
+//   data, which the host stages at the same offsets of the pinned staging
+//   every time (checked at each replay), never a launch parameter: the
+//   plan's launch parameters follow from the shape alone. Every address a
+//   graph holds stays put across swaps: the weights' and the state's
+//   places are pinned in the scheduler at registration (SetSource refuses
+//   to move them), so a load maps whatever backing it takes at the same
+//   place; the workspace, pool, cuBLAS workspace and staging are mapped for
+//   the model's life; the landing zone is never in a graph. Graphs live
+//   with their plans: DropPlans and Release destroy them first; at most
+//   kMaxGraphs are kept (a capture past it destroys the oldest graph).
+//   The places stay pinned for the runner's life (never unpinned: the
+//   pins go with the scheduler, after Release has destroyed every graph).
+//   Prefill chunks run launch by launch. A capture the runtime refuses
+//   leaves that shape launch by launch.
 // - The hash-routed layers' token-to-expert tables, which the kernels index
 //   with unchecked, are checked after every full load (CheckHashRouting).
 
@@ -82,6 +102,27 @@ struct Dsv4Options {
   std::filesystem::path out;  // the spill file's directory
   std::uint32_t context = 8704;
   std::uint32_t max_rows = 512;
+  bool graphs = true;  // decode graphs (D-090); set_graphs changes it between chunks
+};
+
+// How the chunks ran (decode graphs, D-090).
+enum class Dsv4Path : std::uint8_t {
+  kEager,     // launch by launch
+  kCaptured,  // captured, then replayed once
+  kReplayed,  // one launch of a graph captured earlier
+};
+
+struct Dsv4GraphStats {
+  std::uint64_t eager = 0;
+  std::uint64_t captured = 0;
+  std::uint64_t replayed = 0;
+  std::uint64_t refused = 0;       // captures refused: those shapes stay launch by launch
+  std::uint64_t dropped = 0;       // graphs destroyed to keep at most kMaxGraphs
+  double capture_seconds = 0;      // capturing
+  double instantiate_seconds = 0;  // instantiating and uploading
+  std::uint64_t nodes = 0;         // in every graph captured
+  std::int64_t memory_bytes = 0;   // the drop in the device's free memory across captures
+  std::string first_refusal;
 };
 
 // A page of a layer's expert slab: its read and the (at most two) pieces
@@ -119,10 +160,13 @@ std::expected<SlabLayout, std::string> LayOutSlab(std::span<const std::uint32_t>
 class Dsv4Runner final : public test_support::PagedModel {
  public:
   using Status = test_support::Status;
+  // The most decode graphs kept (D-090): driver memory outside the
+  // catalog, tens of MiB each; capturing another destroys the oldest.
+  static constexpr std::size_t kMaxGraphs = 8;
 
   Dsv4Runner(test_support::PagedNode& node, const Dsv4Options& options, int owner,
              std::uint32_t stream)
-      : node_(node), o_(options), owner_(owner), stream_(stream) {}
+      : node_(node), o_(options), owner_(owner), stream_(stream), graphs_(options.graphs) {}
 
   // Before the scheduler exists: the artifact, binding and state layout,
   // the largest chunk shapes measured, the model's own memory mapped
@@ -131,7 +175,8 @@ class Dsv4Runner final : public test_support::PagedModel {
   Status Setup();
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
-  // After Start, before Run: every weight's and the state's source.
+  // After Start, before Run: every weight's and the state's source, their
+  // places pinned (D-090).
   Status Register();
   // After the node's workspace, before Run: the closures, the cuBLAS
   // handle, the launch context and the registry.
@@ -145,12 +190,34 @@ class Dsv4Runner final : public test_support::PagedModel {
   // probe: a page-in beside a long job); its failure fails the chunk.
   Status Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, const std::function<Status()>& meanwhile = {});
+  // The device's time for `count` replays of the decode graph of the step
+  // at n_past, queued back to back in one job with one input (the same
+  // token and position each time): the decode step's GPU time without the
+  // host's part. Changes the state (clear it after); refused if that shape
+  // has no graph yet.
+  std::expected<double, std::string> TimeReplays(std::uint32_t n_past, std::int32_t token,
+                                                 std::uint32_t count);
   // The hash-routed layers' tables name only experts.
   Status CheckHashRouting();
-  // Forgets every planned shape: the next chunk of each plans it again.
+  // Every weight and state extent is still pinned at the place registered
+  // for it, which every captured graph names (D-090); refused, dropping
+  // every graph, if one has moved. Between chunks, with the scheduler
+  // running.
+  Status CheckPlaces();
+  // Forgets every planned shape and its graph: the next chunk of each
+  // plans it again.
   void DropPlans() { plans_.clear(); }
   std::size_t plans() const { return plans_.size(); }
+  std::size_t graphs() const;
   double plan_seconds() const { return plan_seconds_; }  // spent planning, in all
+  // Decode graphs on or off for the next chunks; captured graphs are kept.
+  void set_graphs(bool on) { graphs_ = on; }
+  const Dsv4GraphStats& graph_stats() const { return graph_stats_; }
+  // The last chunk: how it ran, and the job's host time (the inputs built
+  // and staged, and everything queued, waits for room in the stream
+  // included, RE-029).
+  Dsv4Path last_path() const { return last_path_; }
+  double last_submit_seconds() const { return last_submit_seconds_; }
 
   // Every extent a chunk leases: weights, state, workspace and staging.
   const catalog::Closure& everything() const { return everything_; }
@@ -172,9 +239,21 @@ class Dsv4Runner final : public test_support::PagedModel {
   Status Release() override;
 
  private:
+  // One chunk shape's plan, and its decode graph once captured.
+  struct ShapePlan {
+    kernels::ggml::Dsv4ChunkShape shape;
+    std::unique_ptr<Dsv4Planned> planned;
+    std::uint32_t eager_runs = 0;
+    bool uncapturable = false;  // a capture was refused
+    std::optional<kernels::ggml::CapturedGraph> graph;
+    // The input copies the graph holds: each input's device address, its
+    // bytes and its offset in the staging.
+    std::vector<std::array<std::uint64_t, 3>> copies;
+  };
+
   Status ReserveWeights();
   Status RegisterState();
-  std::expected<Dsv4Planned*, std::string> Planned(const kernels::ggml::Dsv4ChunkShape& shape);
+  std::expected<ShapePlan*, std::string> Planned(const kernels::ggml::Dsv4ChunkShape& shape);
   void Check(const kernels::ggml::Dsv4Graph& graph);
 
   test_support::PagedNode& node_;
@@ -213,6 +292,7 @@ class Dsv4Runner final : public test_support::PagedModel {
   std::uint64_t slab_padding_ = 0;
 
   test_support::Mapped state_;
+  std::vector<scheduler::PageSource> state_sources_;  // registered, by state extent
   test_support::Mapped cublas_workspace_;
   std::vector<catalog::ExtentId> staging_;
   void* inputs_ = nullptr;
@@ -230,7 +310,11 @@ class Dsv4Runner final : public test_support::PagedModel {
   catalog::Closure fence_;       // the state: what a clear or a fence leases
   void* hash_tables_ = nullptr;  // pinned: the hash-routed layers' tables, read back
 
-  std::vector<std::pair<kernels::ggml::Dsv4ChunkShape, std::unique_ptr<Dsv4Planned>>> plans_;
+  std::vector<ShapePlan> plans_;  // destroyed before the launch context (Release)
+  bool graphs_ = true;
+  Dsv4GraphStats graph_stats_;
+  Dsv4Path last_path_ = Dsv4Path::kEager;
+  double last_submit_seconds_ = 0;
   double plan_seconds_ = 0;
   std::uint64_t coverage_tensors_ = 0;
   std::uint64_t coverage_violations_ = 0;

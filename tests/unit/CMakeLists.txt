@@ -145,6 +145,17 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(cuda_paged_node_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+  # Decode graphs (D-090) on a GB10: a small GGML plan captured through the
+  # launch context replays bit for bit, also after full swaps that page its
+  # model back in at its pinned places; refused captures leave the context
+  # as it was; a graph is one operation in its stream (RE-029).
+  add_executable(cuda_graph_test cuda_graph_test.cc)
+  target_include_directories(cuda_graph_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(cuda_graph_test PRIVATE jitllm_paged_node jitllm_ggml_kernels)
+  jitllm_gpu_gtest(cuda_graph_test
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   # The DeepSeek runner's expert-slab pages (benchmarks/dsv4_runner.h): a
   # host-only check, in the CUDA build that has the runner.
   add_executable(slab_layout_test slab_layout_test.cc)

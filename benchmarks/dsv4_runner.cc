@@ -51,13 +51,6 @@ constexpr std::uint64_t kFileAlignment = 4096;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
-Status Cuda(cudaError_t result, std::string_view what) {
-  if (result != cudaSuccess) {
-    return Error(std::format("{}: {}", what, cudaGetErrorString(result)));
-  }
-  return {};
-}
-
 void* Pointer(std::uint64_t address) {
   return reinterpret_cast<void*>(address);  // NOLINT(performance-no-int-to-ptr)
 }
@@ -526,7 +519,56 @@ Status Dsv4Runner::Register() {
                    .device = !w.host,
                    .owner = owner_});
   }
-  return RegisterState();
+  if (auto r = RegisterState(); !r) {
+    return r;
+  }
+  // D-090: the places every graph will name stay put for the model's life.
+  const std::vector<ExtentId> managed = managed_extents();
+  if (auto pinned = node_.scheduler().PinPlaces(managed); !pinned) {
+    return Error(std::format("pinning DeepSeek's places: {}", sc::ToString(pinned.error())));
+  }
+  return {};
+}
+
+Status Dsv4Runner::CheckPlaces() {
+  std::size_t moved = 0;
+  std::string first;
+  auto checked = node_.Call(
+      [&]() -> Status {
+        const auto check = [&](ExtentId extent, const sc::PageSource& registered) {
+          const sc::PageSource* now = node_.scheduler().SourceOf(extent);
+          if (now == nullptr || !sc::SamePlace(*now, registered) ||
+              !node_.scheduler().PlacePinned(extent)) {
+            if (moved++ == 0) {
+              first = std::format("extent {}", extent.index());
+            }
+          }
+        };
+        for (const WeightExtent& w : extents_) {
+          check(w.extent, w.source);
+        }
+        for (std::size_t i = 0; i < state_.extents.size() && i < state_sources_.size(); ++i) {
+          check(state_.extents[i], state_sources_[i]);
+        }
+        return {};
+      },
+      "checking DeepSeek's places");
+  if (!checked) {
+    return checked;
+  }
+  if (moved != 0 || state_sources_.size() != state_.extents.size()) {
+    DropPlans();
+    return Error(
+        std::format("{} extents are no longer pinned at their places (first: {}); every "
+                    "graph was dropped",
+                    moved, first));
+  }
+  return {};
+}
+
+std::size_t Dsv4Runner::graphs() const {
+  return static_cast<std::size_t>(
+      std::ranges::count_if(plans_, [](const ShapePlan& p) { return p.graph.has_value(); }));
 }
 
 // The state's write-back places: one 2 MiB range of an unnamed direct-I/O
@@ -538,21 +580,22 @@ Status Dsv4Runner::RegisterState() {
     return Error(std::format("the spill file in {}: {}", o_.out.string(),
                              std::generic_category().message(errno)));
   }
+  state_sources_.clear();
   for (std::size_t i = 0; i < state_.extents.size(); ++i) {
-    auto set = node_.scheduler().SetSource(
-        state_.extents[i],
-        sc::PageSource{
-            .read = {.fd = spill_fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
-            .landed = true,
-            .destination = state_.base + (i * kExtent),
-            .backing = sc::BackingPlace{.reservation = state_.reservation,
-                                        .offset = Bytes(i * kExtent),
-                                        .size = Bytes(kExtent),
-                                        .allocation_class = node_.device_class()},
-            .write_back = true});
+    const sc::PageSource source{
+        .read = {.fd = spill_fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
+        .landed = true,
+        .destination = state_.base + (i * kExtent),
+        .backing = sc::BackingPlace{.reservation = state_.reservation,
+                                    .offset = Bytes(i * kExtent),
+                                    .size = Bytes(kExtent),
+                                    .allocation_class = node_.device_class()},
+        .write_back = true};
+    auto set = node_.scheduler().SetSource(state_.extents[i], source);
     if (!set) {
       return Error(std::format("the state's write-back place: {}", sc::ToString(set.error())));
     }
+    state_sources_.push_back(source);
   }
   state_.backings.clear();  // the VMM lane releases them on eviction (D-033)
   return {};
@@ -650,10 +693,12 @@ Status Dsv4Runner::CheckHashRouting() {
   return {};
 }
 
-std::expected<Dsv4Planned*, std::string> Dsv4Runner::Planned(const kg::Dsv4ChunkShape& shape) {
-  const auto found = std::ranges::find_if(plans_, [&](const auto& e) { return e.first == shape; });
+std::expected<Dsv4Runner::ShapePlan*, std::string> Dsv4Runner::Planned(
+    const kg::Dsv4ChunkShape& shape) {
+  const auto found =
+      std::ranges::find_if(plans_, [&](const ShapePlan& e) { return e.shape == shape; });
   if (found != plans_.end()) {
-    return found->second.get();
+    return &*found;
   }
   const auto start = std::chrono::steady_clock::now();
   auto planned = PlanDsv4Chunk(model_, shape, kg::DeviceChoicesOf(*launch_), {},
@@ -678,10 +723,15 @@ std::expected<Dsv4Planned*, std::string> Dsv4Runner::Planned(const kg::Dsv4Chunk
   Check((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
   if (plans_.size() >= 32) {
-    plans_.erase(plans_.begin());
+    plans_.erase(plans_.begin());  // its graph with it
   }
-  plans_.emplace_back(shape, std::move(*planned));
-  return plans_.back().second.get();
+  plans_.push_back(ShapePlan{.shape = shape,
+                             .planned = std::move(*planned),
+                             .eager_runs = 0,
+                             .uncapturable = false,
+                             .graph = std::nullopt,
+                             .copies = {}});
+  return &plans_.back();
 }
 
 // BP-A1's in-process check, once per planned shape: every tensor the plan
@@ -739,53 +789,136 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  Dsv4Planned* p = *planned;
+  ShapePlan& entry = **planned;
+  Dsv4Planned* p = entry.planned.get();
   const kg::Dsv4Graph& g = p->graph;
   // The host table, which the job's lease holds resident.
   const std::span<const std::byte> table(
       reinterpret_cast<const std::byte*>(table_base_),  // NOLINT(performance-no-int-to-ptr)
       table_bytes_);
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
+  // Decode graphs (D-090): replay a shape's graph; capture a one-row
+  // shape that has run once launch by launch; otherwise launch by launch.
+  const bool replay = graphs_ && entry.graph.has_value();
+  const bool capture =
+      graphs_ && !replay && rows == 1 && !entry.uncapturable && entry.eager_runs > 0;
+  if (capture && graphs() >= kMaxGraphs) {
+    // Graph memory is the driver's, outside the catalog: at most
+    // kMaxGraphs are kept. Decode moves on to later shapes, so the oldest
+    // goes (no job is in flight between chunks: nothing replays it).
+    const auto oldest =
+        std::ranges::find_if(plans_, [](const ShapePlan& p) { return p.graph.has_value(); });
+    oldest->graph.reset();
+    oldest->copies.clear();
+    ++graph_stats_.dropped;
+  }
+  Dsv4Path path = Dsv4Path::kEager;
   Status ran;
   Dsv4HostInputs host;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    // The embedding rows and the chunk plan's inputs, then their copies.
+    const auto started = std::chrono::steady_clock::now();
+    // The embedding rows and the chunk plan's inputs, staged in order.
     if (auto r = BuildDsv4Inputs(model_, g, *in, tokens, table, host); !r) {
       ran = std::unexpected(r.error());
       return sc::JobResult::kNotStarted;
     }
     auto* const stream = static_cast<cudaStream_t>(native.handle);
+    std::vector<std::array<std::uint64_t, 3>> copies;  // to, bytes, staging offset
+    copies.reserve(host.sources.size());
     std::uint64_t staged = 0;
     for (const auto& [tensor, source] : host.sources) {
       const std::uint64_t bytes = ggml_nbytes(tensor);
       if (staged + bytes > input_bytes_) {
         ran = Error("the inputs exceed their staging");
-        return staged == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kFailed;
+        return sc::JobResult::kNotStarted;
       }
-      auto* at = static_cast<std::byte*>(inputs_) + staged;
-      std::memcpy(at, source, bytes);
-      if (auto r = Cuda(cudaMemcpyAsync(tensor->data, at, bytes, cudaMemcpyHostToDevice, stream),
-                        "an input copy");
-          !r) {
-        ran = r;
-        return sc::JobResult::kUnknown;  // a runtime error, even the first: its effect is unknown
-      }
+      std::memcpy(static_cast<std::byte*>(inputs_) + staged, source, bytes);
+      copies.push_back({Address(tensor->data), bytes, staged});
       staged += Round(bytes, 256);
     }
-    if (auto r = p->bound->Run(*launch_); !r) {
-      ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
-      return r.error().error == kg::KernelError::kUnknown ? sc::JobResult::kUnknown
-                                                          : sc::JobResult::kFailed;
+    // The input copies, the plan and the logits copy, as one run queues
+    // them and a capture records them.
+    const auto queue = [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
+      const auto unknown = [](std::string what) {
+        return std::unexpected(
+            kg::KernelFailure{.error = kg::KernelError::kUnknown, .detail = std::move(what)});
+      };
+      for (const auto& [to, bytes, at] : copies) {
+        if (const cudaError_t copied =
+                cudaMemcpyAsync(Pointer(to), static_cast<const std::byte*>(inputs_) + at, bytes,
+                                cudaMemcpyHostToDevice, stream);
+            copied != cudaSuccess) {
+          return unknown(std::format("an input copy: {}", cudaGetErrorString(copied)));
+        }
+      }
+      if (auto r = p->bound->Run(launch); !r) {
+        return r;
+      }
+      // The last row's logits: the next token's.
+      if (const cudaError_t copied = cudaMemcpyAsync(
+              logits_,
+              static_cast<const std::byte*>(g.logits->data) + (std::uint64_t{rows - 1} * row_bytes),
+              row_bytes, cudaMemcpyDeviceToHost, stream);
+          copied != cudaSuccess) {
+        return unknown(std::format("the logits copy: {}", cudaGetErrorString(copied)));
+      }
+      return {};
+    };
+    std::expected<void, kg::KernelFailure> queued;
+    bool before = false;  // work queued before `queued`'s outcome
+    if (replay) {
+      // What the graph copies must be where the host staged it.
+      if (copies != entry.copies) {
+        ran = Error("the inputs' staging differs from the captured graph's");
+        return sc::JobResult::kNotStarted;
+      }
+      path = Dsv4Path::kReplayed;
+      queued = launch_->Launch(*entry.graph);
+    } else {
+      if (capture) {
+        std::size_t free_before = 0;
+        std::size_t free_after = 0;
+        std::size_t total = 0;
+        (void)cudaMemGetInfo(&free_before, &total);
+        auto captured = launch_->Capture(queue);
+        (void)cudaMemGetInfo(&free_after, &total);
+        (void)cudaGetLastError();
+        if (captured) {
+          graph_stats_.capture_seconds += captured->capture_seconds();
+          graph_stats_.instantiate_seconds += captured->instantiate_seconds();
+          graph_stats_.nodes += captured->nodes();
+          graph_stats_.memory_bytes +=
+              static_cast<std::int64_t>(free_before) - static_cast<std::int64_t>(free_after);
+          entry.graph.emplace(std::move(*captured));
+          entry.copies = copies;
+          path = Dsv4Path::kCaptured;
+          before = true;  // the upload
+          queued = launch_->Launch(*entry.graph);
+        } else if (captured.error().error == kg::KernelError::kUnknown) {
+          ran = Error(std::format("chunk at {}: {}", n_past, captured.error().detail));
+          return sc::JobResult::kUnknown;
+        } else {
+          // Refused, with nothing queued: this shape runs launch by launch.
+          entry.uncapturable = true;
+          if (graph_stats_.refused++ == 0) {
+            graph_stats_.first_refusal = captured.error().detail;
+          }
+        }
+      }
+      if (path == Dsv4Path::kEager) {
+        ++entry.eager_runs;
+        queued = queue(*launch_);
+        before = true;  // any input copy before a refusal
+      }
     }
-    // The last row's logits: the next token's.
-    if (auto r = Cuda(cudaMemcpyAsync(logits_,
-                                      static_cast<const std::byte*>(g.logits->data) +
-                                          (std::uint64_t{rows - 1} * row_bytes),
-                                      row_bytes, cudaMemcpyDeviceToHost, stream),
-                      "the logits copy");
-        !r) {
-      ran = r;
-      return sc::JobResult::kUnknown;
+    last_submit_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (!queued) {
+      ran = Error(std::format("chunk at {}: {}", n_past, queued.error().detail));
+      if (queued.error().error == kg::KernelError::kUnknown) {
+        return sc::JobResult::kUnknown;
+      }
+      return before ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
     }
     return sc::JobResult::kQueued;
   };
@@ -812,9 +945,83 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   if (launch_->faulted()) {
     return Error(std::format("chunk at {}: the launch context faulted", n_past));
   }
+  last_path_ = path;
+  switch (path) {
+    case Dsv4Path::kEager:
+      ++graph_stats_.eager;
+      break;
+    case Dsv4Path::kCaptured:
+      ++graph_stats_.captured;
+      break;
+    case Dsv4Path::kReplayed:
+      ++graph_stats_.replayed;
+      break;
+  }
   const auto* values = static_cast<const float*>(logits_);
   logits.assign(values, values + profile_.vocab);
   return {};
+}
+
+std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past, std::int32_t token,
+                                                           std::uint32_t count) {
+  auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1);
+  if (!in) {
+    return std::unexpected(in.error());
+  }
+  auto planned = Planned(kg::Dsv4ShapeOf(layout_, *in));
+  if (!planned) {
+    return std::unexpected(planned.error());
+  }
+  ShapePlan& entry = **planned;
+  if (!entry.graph) {
+    return Error("the step's shape has no graph yet");
+  }
+  const std::span<const std::byte> table(
+      reinterpret_cast<const std::byte*>(table_base_),  // NOLINT(performance-no-int-to-ptr)
+      table_bytes_);
+  Dsv4HostInputs host;
+  if (auto r =
+          BuildDsv4Inputs(model_, entry.planned->graph, *in, std::span(&token, 1), table, host);
+      !r) {
+    return std::unexpected(r.error());
+  }
+  std::vector<std::array<std::uint64_t, 3>> copies;
+  std::uint64_t staged = 0;
+  for (const auto& [tensor, source] : host.sources) {
+    const std::uint64_t bytes = ggml_nbytes(tensor);
+    if (staged + bytes > input_bytes_) {
+      return Error("the inputs exceed their staging");
+    }
+    std::memcpy(static_cast<std::byte*>(inputs_) + staged, source, bytes);
+    copies.push_back({Address(tensor->data), bytes, staged});
+    staged += Round(bytes, 256);
+  }
+  if (copies != entry.copies) {
+    return Error("the inputs' staging differs from the captured graph's");
+  }
+  std::string failed;
+  const auto start = std::chrono::steady_clock::now();
+  auto posted = node_.Job(
+      everything_,
+      [&](providers::NativeStream) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+          if (auto r = launch_->Launch(*entry.graph); !r) {
+            failed = r.error().detail;
+            if (r.error().error == kg::KernelError::kUnknown) {
+              return sc::JobResult::kUnknown;
+            }
+            return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kFailed;
+          }
+        }
+        return sc::JobResult::kQueued;
+      },
+      "back-to-back replays", stream_);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  if (!posted || !failed.empty()) {
+    return Error(failed.empty() ? posted.error() : failed);
+  }
+  return seconds / count;
 }
 
 Status Dsv4Runner::Release() {

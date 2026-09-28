@@ -1099,9 +1099,12 @@ the guarantee.
 The **dispatcher** walks a phase's invocations on the device submission lane
 and records a completion fence after the phase's last consumer. It fences
 earlier only where the plan needs host visibility, such as an MoE routing
-report (below). Initially each active request has one compute stream. Graph
-capture stays off until BP-F4 has measured dispatch overhead and a
-captured-pointer relocation proof exists ([backend-proof.md](backend-proof.md)).
+report (below). Initially each active request has one compute stream.
+Decode steps replay as CUDA graphs captured per model, plan and shape
+(D-090): each captured graph names fixed addresses, so the extents it reads
+have pinned places the scheduler refuses to move, a swap maps whatever
+backing it takes at those places, and what varies between steps is data
+the graph copies in, never a launch parameter.
 The M2 proof chooses, per GGML-derived operation, between a context adapter
 and a lifted kernel, and settles the contract's exact types.
 
