@@ -329,9 +329,7 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
     device_lane_ = std::make_unique<DeviceService>(
         lane_execution_ != nullptr ? *lane_execution_ : *execution_,
         std::span<const StreamId>(&stream_, 1), board_,
-        DeviceSettings{.queue = {.capacity = 64, .reserved = 8, .batch = 16},
-                       .handoff = 64,
-                       .poll_sleep = std::chrono::microseconds(0)},
+        DeviceSettings{.queue = {.capacity = 64, .reserved = 8, .batch = 16}, .handoff = 64},
         GetParam() ? nullptr : memory_.get());  // one lane calls the provider
     if (GetParam()) {
       backing_lane_ = std::make_unique<jitllm::scheduler::BackingService>(

@@ -492,7 +492,7 @@ against D-034's no-page-cache intent. Tests that expect the kernel to refuse
 misaligned direct I/O accept either outcome on btrfs
 (`unit.UringTest.*`). The Spark roles are ext4.
 
-## RE-017: A sleeping thread takes hundreds of microseconds to wake on the Spark  (2026-09-24, status: open)
+## RE-017: A sleeping thread takes hundreds of microseconds to wake on the Spark  (2026-09-24, status: worked-around)
 
 Environment: `spark-c4e2`, GB10 (Cortex-X925/A725), DGX OS 7.6.0, kernel
 7.0.0-1019-nvidia, cpuidle `acpi_idle` with the `menu` governor (LPI-0 to
@@ -528,6 +528,25 @@ request steps and for 100 ms after its last step. That window is the
 paged harness's (`NodeSettings::poll_window`); the scheduler's and the
 lanes' defaults stay 200 µs
 ([swap](experiments/fast-swap/swap.md#a-lease-per-request)).
+
+**Worked around 2026-09-28: the runtime wake (D-094,
+[runtime-wake](experiments/runtime-wake/README.md)).** Waking on the GPU's
+own signal is slower still on `spark-b` (same driver): a blocking-sync
+event's wait returned 1.0–1.4 ms after the step's end at the median, a
+host function's futex 1.4–1.7 ms, and a host function holds its stream
+until the driver's callback thread runs it. So the device completion
+lane sleeps through most of a fence's expected length (its stream's
+recent lengths), spins only around its likely ends, and as it starts to
+spin wakes the scheduler and the submission lane to poll ahead of the
+completion; the scheduler polls after a step for about as long
+as its client takes to ask for the next. With a synthetic 45 ms step,
+the gap from a step's end to the next step's start fell from 0.56–0.67 ms
+(200 µs windows, 2 cores busy) to 26–28 µs at the median, at 0.11–0.12 of
+a core while stepping and none while idle; every thread polling (the
+harness's 100 ms) took 9 µs and 4 cores. The idle states themselves are
+unchanged: a thread that sleeps when it was not anticipated still pays
+this, and a PM QoS request (`/dev/cpu_dma_latency`, root) that might
+avoid it was not tried.
 
 ## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
 

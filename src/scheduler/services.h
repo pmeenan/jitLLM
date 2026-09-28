@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "base/bounded_queue.h"
+#include "base/wake.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
 #include "providers/direct_reader.h"
@@ -143,16 +144,29 @@ struct DeviceSettings {
   // the most the completion lane holds at once (watched or awaiting
   // release): past that, submission waits for room (backpressure).
   std::size_t handoff = 64;
-  // How the completion lane waits between queries while fences are
-  // pending: zero yields (a whole core, the fastest to notice); otherwise
-  // it sleeps this long. A setting to measure, not a tuned value (RE-017).
-  std::chrono::microseconds poll_sleep{0};
+  // How the completion lane waits for a fence (the runtime wake,
+  // docs/experiments/runtime-wake/). Each of the last eight lengths of
+  // fences on its stream (recorded to seen, base::Expectation) is a likely
+  // end: it sleeps until `spin_ahead` before the next likely end the fence
+  // has not yet outlasted, querying at least every `backstop`, and spins
+  // (yielding) until `spin_past` after it; from the start while its stream
+  // has no history. Past the longest it backs off, sleeping from 50 us up
+  // to `backstop` between queries. As it starts to spin it wakes the owner
+  // (CompletionBoard::Anticipate) and its own submission lane to poll until
+  // then too: a thread asleep on the Spark takes hundreds of microseconds
+  // to run once woken (RE-017), which a decode step paid at every hop.
+  // Each at most SchedulerSettings::kLongest; `backstop` positive.
+  // Measured choices, not tuned to a model.
+  std::chrono::microseconds spin_ahead{1000};
+  std::chrono::microseconds spin_past{1000};
+  std::chrono::microseconds backstop{1000};
   // How long the submission lane's Run loop keeps polling its queue (with
   // yield) after its last command before it sleeps; zero never polls. A
   // sleeping thread wakes slowly on the Spark (RE-017), and a page-in
   // through the zone hands this lane a copy every ~140 us at disk speed:
   // asleep between them, it took 94-199 us at the median to wake for the
-  // next (docs/experiments/pagein-perf/). The scheduler's window, not a tuned
+  // next (docs/experiments/pagein-perf/). It also polls while an
+  // anticipation runs (Anticipate). The scheduler's window, not a tuned
   // value; at most SchedulerSettings::kLongest.
   std::chrono::microseconds poll_window{200};
   // Known failures (the call changed nothing) in a row, of a query or a
@@ -198,6 +212,18 @@ struct DeviceSettings {
 // the work it fenced was already proven complete, and the fence stays
 // recorded (its stream cannot be destroyed).
 //
+// Between turns (the runtime wake, docs/experiments/runtime-wake/): the
+// submission lane polls its queue for its poll window after its last
+// command and while an anticipation runs (Anticipate), and otherwise
+// sleeps on its own wake flag, which Submit and Close signal. The
+// completion lane sleeps while it holds no fence, and otherwise through
+// most of each fence, spinning only around its likely ends (its stream's
+// recent lengths, DeviceSettings), and as it starts to spin it has the
+// owner and the submission lane poll until then too. What the lanes publish, and when a
+// fence counts as complete, do not depend on any of it: only a query that
+// sees a fence complete proves it, and a sleeping lane still queries at
+// least every `backstop`.
+//
 // The streams belong to the program, which destroys them once both lanes
 // have returned.
 class DeviceService {
@@ -214,12 +240,28 @@ class DeviceService {
   // Moves from `command` only if it is accepted.
   base::PushResult Submit(DeviceCommand&& command,
                           base::PushKind kind = base::PushKind::kOrdinary) {
-    return queue_.TryPush(std::move(command), kind);
+    const base::PushResult pushed = queue_.TryPush(std::move(command), kind);
+    if (pushed == base::PushResult::kAccepted) {
+      submission_wake_.Signal();  // after the push: the lane looks again once woken
+    }
+    return pushed;
   }
   // No new commands. The submission lane returns once it has carried out
   // what was queued; the completion lane, once every fence it was handed
   // has been seen and released (or is unproven).
-  void Close() { queue_.Close(); }
+  void Close() {
+    queue_.Close();
+    submission_wake_.Signal();
+  }
+  // Any thread: the submission lane should poll its queue until `until`,
+  // since a command is likely by then (the scheduler, once a step is done,
+  // for the next; the completion lane, as a fence's likely end nears). A
+  // hint: no command is lost without it.
+  void Anticipate(base::WakeFlag::Clock::time_point until) { submission_wake_.Anticipate(until); }
+  // The submission lane polls now (tests).
+  bool Anticipating(base::WakeFlag::Clock::time_point now) const {
+    return submission_wake_.Anticipating(now);
+  }
 
   // The submission lane's thread.
   bool SubmissionTurn();
@@ -229,12 +271,18 @@ class DeviceService {
   void RunCompletion();
 
  private:
+  using Clock = base::WakeFlag::Clock;
   struct Watch {
     OperationId operation;  // invalid for a fence that only balances its stream
     providers::FenceId fence;
     Outcome outcome = Outcome::kSucceeded;
     std::uint64_t bytes = 0;
     std::uint32_t refusals = 0;  // known query failures in a row
+    std::uint32_t stream = 0;    // an index into streams_
+    Clock::time_point recorded;  // when the fence was recorded
+    // Until when the owner and the submission lane were last told to poll
+    // for it (an end it nears).
+    Clock::time_point relayed;
   };
   struct Release {
     providers::FenceId fence;
@@ -247,9 +295,13 @@ class DeviceService {
   void Copy(OperationId operation, const DeviceWork& work);
   void Run(OperationId operation, LaunchWork& work);
   void Back(OperationId operation, const BackingWork& work);
-  // Records a fence after what a copy or job queued and hands it over.
-  void Fence(OperationId operation, providers::StreamId stream, bool queued, bool refused,
-             bool unknown, std::uint64_t bytes);
+  // Records a fence after what a copy or job queued on streams_[stream]
+  // and hands it over.
+  void Fence(OperationId operation, std::uint32_t stream, bool queued, bool refused, bool unknown,
+             std::uint64_t bytes);
+  // Completion lane: how long it waits (or spins) before its next turn,
+  // relaying to the owner and the submission lane as fences near their end.
+  void AwaitCompletion(bool releasing);
   // Submission side: hands a fence to the completion lane, or keeps it
   // until there is room; nothing more launches meanwhile.
   void Hand(const Watch& watch);
@@ -274,8 +326,17 @@ class DeviceService {
   // Completion lane only, together at most `handoff` (allocated once).
   std::vector<Watch> watches_;
   std::vector<Release> releases_;
+  // Completion lane only: each stream's fences' recent lengths, and the
+  // current back-off.
+  std::vector<base::Expectation> expected_;
+  Clock::duration backoff_;
   // Submission lane only: backing kept for a handoff.
   HandoffStash stash_;
+  // The lanes' own wake flags: a command queued, or an anticipation, wakes
+  // the submission lane; a fence handed over, or the handoff's close, the
+  // completion lane.
+  base::WakeFlag submission_wake_;
+  base::WakeFlag completion_wake_;
 };
 
 // The VMM lane (D-033, D-081): managed backing's VMM work (BackingWork),

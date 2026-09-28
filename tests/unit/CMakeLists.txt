@@ -66,6 +66,13 @@ add_executable(scheduler_test scheduler_test.cc)
 target_link_libraries(scheduler_test PRIVATE jitllm_scheduler jitllm_fake_providers)
 jitllm_gtest(scheduler_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The runtime wake (docs/experiments/runtime-wake/): the device lanes on
+# their own threads over the fake device, which completes fences when the
+# test chooses; lost wakeups, the backstop, the relay and shutdown.
+add_executable(wake_test wake_test.cc)
+target_link_libraries(wake_test PRIVATE jitllm_scheduler jitllm_fake_providers)
+jitllm_gtest(wake_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The D-081 page-in path, its evictions and kernel jobs' leases, over the
 # fake providers: deterministic turns and a threaded stress.
 add_executable(pagein_test pagein_test.cc)

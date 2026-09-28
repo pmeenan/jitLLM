@@ -633,7 +633,6 @@ Status Bench::Setup() {
       *execution_, streams, *board_,
       sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
                          .handoff = 256,
-                         .poll_sleep = std::chrono::microseconds(0),
                          .poll_window = o_.submit_poll},
       o_.vmm_lane ? nullptr : memory_.get());  // one lane calls the provider
   if (o_.vmm_lane) {

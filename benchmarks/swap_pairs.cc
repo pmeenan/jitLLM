@@ -80,9 +80,11 @@
 //   equal the first warm-up's bit for bit. Per step: the wall, the job's
 //   host time, and the device's span of the step's work (CUDA events), so
 //   the round trip a step adds is the wall less the device's span.
-//   --poll-us sets how long the scheduler and the device lane poll after
-//   their last progress (RE-017; by default 100,000, the paged node's,
-//   longer than a decode step; the lanes' own is 200).
+//   By default the node runs the runtime's own wake (its defaults,
+//   docs/experiments/runtime-wake/). --poll-us, a diagnostic, instead has
+//   the scheduler and the device lane poll that long after their last
+//   progress (RE-017): the figures once measured at 100,000, longer than a
+//   decode step, are the harness-polled ones.
 // - Diagnostics: --poison-probe fills the shared workspace with 0x00, then
 //   0xFF, before each of A's prefill chunks; --scrub-probe fills Qwen3.8's
 //   weight extents' unwritten bytes so; a chunk whose logits then differ
@@ -116,6 +118,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <print>
 #include <span>
 #include <string>
@@ -470,7 +473,7 @@ struct Options {
   std::filesystem::path expect;
   std::uint32_t generate = 32;
   std::uint32_t bench = 0;
-  std::uint32_t poll_us = 100000;  // the node's poll window (RE-017)
+  std::optional<std::uint32_t> poll_us;  // a diagnostic poll window (RE-017); unset: the runtime's
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -546,7 +549,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--bench") {
       ok = number(o.bench) && o.bench >= 1 && o.bench <= 1024;
     } else if (a == "--poll-us") {
-      ok = number(o.poll_us) && o.poll_us <= 1000000;
+      std::uint32_t us = 0;
+      ok = number(us) && us <= 1000000;
+      o.poll_us = us;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -686,7 +691,9 @@ class Swapper {
                .copy_lane = true,
                .slot_bytes = jb::kSlabSlotBytes,
                .observer = &times_,
-               .poll_window = std::chrono::microseconds(options.poll_us)}) {
+               .poll_window = options.poll_us
+                                  ? std::optional(std::chrono::microseconds(*options.poll_us))
+                                  : std::nullopt}) {
     a_ = Make(o_.a, kA);
     b_ = Make(o_.b, kB);
   }

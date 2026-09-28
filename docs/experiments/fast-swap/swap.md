@@ -206,17 +206,22 @@ step. For a full-swap model the closure is the whole model, so a request
   builds (DeepSeek's embedding rows are dequantized on the host), so the
   logits must be on the host each step. Sampling on the device would not
   remove the trip, only shrink what crosses it; host sampling stays.
-- **Polling through a step.** The scheduler (while a critical operation is
-  in flight or a request holds its lease) and the device lane poll for a
-  window after their last progress before they sleep (RE-017). At the
-  lanes' 200 µs a step still paid 0.26–0.46 ms of wakeups; the paged node
-  now polls for 100 ms, longer than a step, and the round trip is 0.01 ms.
-  It costs two cores (the scheduler's and the device submission lane's
-  threads) spinning while a request steps and for 100 ms after its last
-  step; the completion lane already polls while fences are out, and the
-  harness's driver spins on each step's result. The window is the paged
-  harness's (`NodeSettings::poll_window`, `--poll-us`); the scheduler's
-  and the lanes' defaults stay 200 µs, and the runtime sets none yet.
+- **Polling through a step (harness-polled).** The scheduler (while a
+  critical operation is in flight or a request holds its lease) and the
+  device lane poll for a window after their last progress before they
+  sleep (RE-017). At the lanes' 200 µs a step still paid 0.26–0.46 ms of
+  wakeups; the paged node then polled for 100 ms, longer than a step, and
+  the round trip was 0.01 ms, at the cost of four cores spinning while a
+  request stepped (the scheduler, the device lane's two threads and the
+  harness's driver). The figures below marked "100 ms poll" are those.
+  **Since the runtime wake** (D-094,
+  [runtime-wake](../runtime-wake/README.md)) the node runs the runtime's
+  own defaults: the completion lane sleeps through most of a step and
+  wakes the scheduler and the submission lane just ahead of its end, the
+  harness's driver waits the same way, and the round trip is about 26 µs
+  on a synthetic step at 0.11–0.12 of a core; the 100 ms window remains a
+  diagnostic (`NodeSettings::poll_window`, `--poll-us`). Its figures are
+  [below](#with-the-runtime-wake).
 - **No hold and wait.** A task holding a request's lease, or whose
   ancestor does, is refused `AwaitRelease`, so no two holders can wait for
   each other. The wait itself has no bound or priority: only the holder
@@ -310,6 +315,82 @@ first output: Materialize and the lease over the closure, once.
   model resident and unleased after the end; a swap between a request's
   steps ends it first, and the incoming model reads back whole under its
   own request.
+
+### With the runtime wake
+
+The figures above were harness-polled. From D-094 on the node runs the
+runtime's own wake ([runtime-wake](../runtime-wake/README.md)): the
+completion lane sleeps through most of a step and wakes the scheduler and
+the submission lane just ahead of its end, and the harness's driver waits
+the same way. Re-measured on `spark-b` with the same driver, build
+conditions and artifacts as the Qwen3.8 review's above (DeepSeek
+`8a355bfb…`, Qwen3.8 `c4fb47a9…`, the DSpark drafter `dd2d3f9c…`), the
+memory gate before each process, one process per run, in two sessions:
+on the lease-per-request tree (`a84146c` with this change, 10:31–11:24),
+and after main's Qwen3.8 fast prefill (`f9a4e0f` with this change,
+11:26–11:39), from which Qwen3.8's figures come. "100 ms windows" is the
+same binary with `--poll-us 100000`, the old harness's polling, as a
+same-session reference. Raw outputs: `~/scratch/m3wake/models`,
+`models2` and `models3` on `spark-b`.
+
+| Decode (tok/s, mean of three passes) | Runtime wake | 100 ms windows | Round trip a step (wake; windows) |
+| --- | ---: | ---: | ---: |
+| DeepSeek, lease per request, graphs (64 steps; `a84146c` twice, `f9a4e0f` once) | **20.42; 20.50; 20.48** | 20.32 | 0.033–0.046; 0.017 ms |
+| DeepSeek, lease per step, graphs | 19.92; 19.94; 19.97 | 19.68 | 1.36–1.45; 1.51 ms |
+| Qwen3.8, lease per request (128 steps, `f9a4e0f`) | **24.09; 23.85** | 24.03 | 0.029–0.033; 0.015 ms |
+| Qwen3.8, lease per step (`f9a4e0f`) | 23.26; 23.56 | 23.67 | 1.01–1.67; 0.90 ms |
+| DeepSeek with DSpark, `prose` / `code` (256 tokens, median of three, `a84146c`) | **29.67 / 30.85** | 29.63 / 30.30 | ([dspark](../dspark/README.md#performance-and-memory)) |
+
+Every bench pass equalled its first warm-up (0 steps differ), and every
+DSpark greedy check was bit-identical. The runtime wake's round trip is
+0.01–0.03 ms a step above polling's, which the steps' device time (48.5–48.9
+ms for DeepSeek, 40.2–40.9 for Qwen3.8) varies by more from run to run;
+decode is not slower for it. The per-step arms (a lease of their own per
+step, M7's path) paid more before the follow window covered them
+([runtime-wake](../runtime-wake/README.md#re-benchmark-the-models-with-the-runtime-wake));
+the `f9a4e0f` rows have it. Against the references: DeepSeek at
+1.020–1.024× llama.cpp's tg64 with fusion off and graphs on (20.01 ± 0.07,
+the same session) and 0.999–1.003× with fusion on (20.43 ± 0.10);
+Qwen3.8 at 0.94–0.96× Mia's vLLM with speculation off (25.12–25.33);
+DeepSeek with DSpark at 0.96× / 0.97× llama.cpp's with the same drafter
+(30.80 / 31.94, baselines.md).
+
+**Prefill** (the pairs' controls: 8,192 tokens of `docs/decisions.md` in
+the model's chunks, under one request, runtime wake): DeepSeek 27.37–27.45
+s (298–299 tok/s; 27.56 s with the 100 ms windows; 27.34 s harness-polled
+in the lease-per-request slice's run); Qwen3.8 6.84 s at `f9a4e0f` (1,198
+tok/s; 8.20 s on the `a84146c` tree, 8.10 s before D-093 with the lanes'
+200 µs windows). Prefill chunks run for seconds, so the wake is noise
+there.
+
+**DeepSeek ↔ Qwen3.8** (seconds, runtime wake; the protocol above, every
+check exact: A's state digest and every continued step in both returns,
+B's output across cycles, each cycle's prefill equal to the control's for
+DeepSeek, and for Qwen3.8 at `f9a4e0f`, whose fast graph breaks ties by
+cell (RE-031); on the `a84146c` tree Qwen3.8's still differed, as RE-031
+allows):
+
+| A ↔ B | Swap | `f9a4e0f` | `a84146c` | `a84146c`, 100 ms windows | Page-in GB/s (`f9a4e0f`) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| DeepSeek ↔ Qwen3.8 | A→B, first use | 7.462 | 7.421 | 7.788 | 13.89 |
+| | B→A, first use | 8.692 | 8.704 | 8.786 | 13.37 |
+| | A→B, prepared | 7.390 | 7.382 | 7.404 | 13.86 |
+| | B→A, prepared | 8.666 | 8.698 | 8.719 | 13.37 |
+| | A→B, 0 context | 7.373 | 7.358 | 7.483 | 13.87 |
+| | B→A, 0 context | 8.806 | 8.774 | 8.804 | 13.35 |
+| Qwen3.8 ↔ DeepSeek | A→B, first use | 8.801 | 8.771 | | 13.35 |
+| | B→A, first use | 7.186 | 7.082 | | 13.89 |
+| | A→B, prepared | 8.704 | 8.702 | | 13.34 |
+| | B→A, prepared | 7.184 | 7.057 | | 13.88 |
+| | A→B, 0 context | 8.702 | 8.651 | | 13.36 |
+| | B→A, 0 context | 7.246 | 7.233 | | 13.88 |
+
+The swaps did not move (7.1–8.8 s, against 6.9–8.9 s in the Qwen3.8
+review's runs above): they are page-in bound, and the zone's copies,
+whose completion lane now sleeps between likely ends as well, still land
+at 13.3–14.1 GB/s. The prepared return's first token 0.058–0.062 s. Peak
+memory 95.6–96.5 GiB (98.8 in the 100 ms run; one sample each, the host
+shared).
 
 ## Results: M3's swap pairs (`spark-b`, 2026-09-28)
 

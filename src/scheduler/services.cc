@@ -30,6 +30,14 @@
 namespace jitllm::scheduler {
 namespace {
 
+// The completion lane's first back-off once a fence is later than
+// expected; it doubles up to DeviceSettings::backstop.
+constexpr std::chrono::microseconds kFirstBackoff{50};
+// The longest a device lane sleeps with nothing to do: a timer tick, never
+// needed for correctness (every command queued and fence handed over
+// signals the lane that takes it).
+constexpr std::chrono::milliseconds kTick{100};
+
 Outcome OutcomeOf(providers::ReadOutcome outcome) {
   switch (outcome) {
     case providers::ReadOutcome::kComplete:
@@ -264,15 +272,22 @@ DeviceService::DeviceService(providers::DeviceExecution& execution,
       board_(board),
       settings_(settings),
       queue_(settings.queue.capacity, settings.queue.reserved),
-      handoff_(settings.handoff, 0) {
+      handoff_(settings.handoff, 0),
+      backoff_(kFirstBackoff) {
   base::Check(settings_.queue.batch > 0 && !streams_.empty() && settings_.refusals > 0,
               "a device service needs streams, a turn of at least one command and a refusal bound");
   // Compared in the clock's nanoseconds, where an unbounded value overflows.
-  base::Check(settings_.poll_window >= std::chrono::microseconds::zero() &&
-                  settings_.poll_window <= std::chrono::hours(1),
-              "a submission poll window must be non-negative and at most an hour");
+  const auto bounded = [](std::chrono::microseconds d) {
+    return d >= std::chrono::microseconds::zero() && d <= std::chrono::hours(1);
+  };
+  base::Check(bounded(settings_.poll_window) && bounded(settings_.spin_ahead) &&
+                  bounded(settings_.spin_past) && bounded(settings_.backstop) &&
+                  settings_.backstop > std::chrono::microseconds::zero(),
+              "a device service's poll and spin windows must be non-negative and at most an hour, "
+              "and its backstop positive");
   watches_.reserve(settings_.handoff);
   releases_.reserve(settings_.handoff);
+  expected_.resize(streams_.size());
 }
 
 void DeviceService::Launch(DeviceCommand& command) {
@@ -312,7 +327,7 @@ void DeviceService::Copy(OperationId operation, const DeviceWork& work) {
     unknown = copied.error().error == providers::ProviderError::kUnknown;
     break;
   }
-  Fence(operation, stream, queued, refused, unknown, bytes);
+  Fence(operation, work.stream, queued, refused, unknown, bytes);
 }
 
 void DeviceService::Run(OperationId operation, LaunchWork& work) {
@@ -328,21 +343,29 @@ void DeviceService::Run(OperationId operation, LaunchWork& work) {
   } else if (native.error().error == providers::ProviderError::kUnknown) {
     result = JobResult::kUnknown;
   }
-  Fence(operation, stream, result == JobResult::kQueued || result == JobResult::kFailed,
+  Fence(operation, work.stream, result == JobResult::kQueued || result == JobResult::kFailed,
         result == JobResult::kFailed || result == JobResult::kUnknown,
         result == JobResult::kUnknown, 0);
 }
 
-void DeviceService::Fence(OperationId operation, providers::StreamId stream, bool queued,
-                          bool refused, bool unknown, std::uint64_t bytes) {
+void DeviceService::Fence(OperationId operation, std::uint32_t stream, bool queued, bool refused,
+                          bool unknown, std::uint64_t bytes) {
   // Recorded even when nothing started: the provider counts an attempted
   // copy or launch as queued work, and only a fence seen complete balances
   // it.
-  const auto fence = execution_.Record(stream);
+  const auto fence = execution_.Record(streams_[stream]);
+  const Clock::time_point recorded = Clock::now();
   if (!queued && !unknown) {
     (void)board_.Accept(operation, Acceptance::kNotStarted);
     if (fence) {
-      Hand(Watch{.operation = {}, .fence = *fence, .outcome = Outcome::kFailed, .bytes = 0});
+      Hand(Watch{.operation = {},
+                 .fence = *fence,
+                 .outcome = Outcome::kFailed,
+                 .bytes = 0,
+                 .refusals = 0,
+                 .stream = stream,
+                 .recorded = recorded,
+                 .relayed = {}});
     }
     return;
   }
@@ -357,7 +380,11 @@ void DeviceService::Fence(OperationId operation, providers::StreamId stream, boo
   Hand(Watch{.operation = operation,
              .fence = *fence,
              .outcome = refused ? Outcome::kFailed : Outcome::kSucceeded,
-             .bytes = bytes});
+             .bytes = bytes,
+             .refusals = 0,
+             .stream = stream,
+             .recorded = recorded,
+             .relayed = {}});
 }
 
 void DeviceService::Back(OperationId operation, const BackingWork& work) {
@@ -370,7 +397,9 @@ void DeviceService::Hand(const Watch& watch) {
   base::Check(pushed != base::PushResult::kClosed, "a fence handed over after the lane finished");
   if (pushed != base::PushResult::kAccepted) {
     unhanded_ = watch;  // the completion lane is full: launch nothing more until it takes it
+    return;
   }
+  completion_wake_.Signal();  // after the push: the lane looks again once woken
 }
 
 bool DeviceService::HandPending() {
@@ -383,6 +412,7 @@ bool DeviceService::HandPending() {
     return false;
   }
   unhanded_.reset();
+  completion_wake_.Signal();
   return true;
 }
 
@@ -390,6 +420,7 @@ void DeviceService::Finish() {
   if (!finished_) {
     finished_ = true;
     handoff_.Close();  // the completion lane drains what it has, then returns
+    completion_wake_.Signal();
   }
 }
 
@@ -411,8 +442,7 @@ bool DeviceService::SubmissionTurn() {
 }
 
 void DeviceService::RunSubmission() {
-  const std::stop_token never;
-  auto last = std::chrono::steady_clock::now();
+  auto last = Clock::now();
   while (true) {
     if (unhanded_) {
       if (!SubmissionTurn()) {
@@ -420,25 +450,27 @@ void DeviceService::RunSubmission() {
       }
       continue;
     }
+    // Consumed before looking: a command queued after the look signals
+    // again, so the sleep below returns at once.
+    (void)submission_wake_.Consume();
     std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
       if (queue_.drained()) {
         break;
       }
-      if (std::chrono::steady_clock::now() - last < settings_.poll_window) {
+      const auto now = Clock::now();
+      if (now - last < settings_.poll_window || submission_wake_.Anticipating(now)) {
         std::this_thread::yield();  // more is likely soon: stay awake (RE-017)
-        continue;
+      } else {
+        (void)submission_wake_.WaitFor(kTick);
       }
-      command = queue_.Pop(never);
-      if (!command) {
-        break;  // closed and drained
-      }
+      continue;
     }
     {
       const std::scoped_lock lock(submitting_);
       Launch(*command);
     }
-    last = std::chrono::steady_clock::now();
+    last = Clock::now();
   }
   Finish();
 }
@@ -467,6 +499,9 @@ bool DeviceService::CompletionTurn() {
         (void)board_.Complete(
             it->operation,
             Terminal{.outcome = it->outcome, .bytes = it->bytes, .no_further_access = true});
+        // Seen now, or later if the lane slept past it: then an
+        // overestimate, a likely end a little past the true one.
+        expected_[it->stream].Add(Clock::now() - it->recorded);
       }
       releases_.push_back(Release{.fence = it->fence, .refusals = 0});
     } else if (state.error().error == providers::ProviderError::kUnknown ||
@@ -512,23 +547,70 @@ bool DeviceService::CompletionTurn() {
 }
 
 void DeviceService::RunCompletion() {
-  const std::stop_token never;
   while (true) {
+    // Consumed before looking: a fence handed over (or the handoff closed)
+    // after the look signals again, so a sleep below returns at once.
+    (void)completion_wake_.Consume();
+    const bool progress = CompletionTurn();
+    if (watches_.empty() && releases_.empty() && handoff_.drained()) {
+      return;  // the submission lane finished and every fence is settled
+    }
+    if (progress) {
+      backoff_ = kFirstBackoff;
+      continue;
+    }
     if (watches_.empty() && releases_.empty()) {
-      std::optional<Watch> watch = handoff_.Pop(never);
-      if (!watch) {
-        return;  // the submission lane finished and every fence is settled
-      }
-      watches_.push_back(*watch);
+      (void)completion_wake_.WaitFor(kTick);  // nothing handed over yet
+      continue;
     }
-    if (!CompletionTurn()) {
-      if (settings_.poll_sleep.count() > 0) {
-        std::this_thread::sleep_for(settings_.poll_sleep);
-      } else {
-        std::this_thread::yield();
-      }
-    }
+    AwaitCompletion(!releases_.empty());
   }
+}
+
+void DeviceService::AwaitCompletion(bool releasing) {
+  const auto now = Clock::now();
+  Clock::time_point until = now + settings_.backstop;
+  bool spin = false;
+  bool late = releasing;  // a release waits for the submission lane: back off
+  for (Watch& watch : watches_) {
+    const base::Expectation& expected = expected_[watch.stream];
+    if (!expected.known()) {
+      // No history: spin through the first `spin_past`, then back off.
+      spin = spin || now < watch.recorded + settings_.spin_past;
+      late = late || now >= watch.recorded + settings_.spin_past;
+      continue;
+    }
+    // The next of the stream's recent lengths this fence has not outlasted.
+    const std::optional<Clock::duration> next =
+        expected.Next(now - watch.recorded, settings_.spin_past);
+    if (!next) {
+      late = true;  // longer than any of them
+      continue;
+    }
+    const Clock::time_point end = watch.recorded + *next;
+    if (now < end - settings_.spin_ahead) {
+      until = std::min(until, end - settings_.spin_ahead);  // asleep until the spin
+      continue;
+    }
+    if (watch.relayed < end + settings_.spin_past) {
+      // The owner and the submission lane poll through the end too: a
+      // step's completion is on its request's critical path, and its next
+      // step follows.
+      watch.relayed = end + settings_.spin_past;
+      board_.Anticipate(watch.relayed);
+      submission_wake_.Anticipate(watch.relayed);
+    }
+    spin = true;
+  }
+  if (spin) {
+    std::this_thread::yield();
+    return;
+  }
+  if (late) {
+    until = std::min(until, now + backoff_);
+    backoff_ = std::min<Clock::duration>(backoff_ * 2, settings_.backstop);
+  }
+  (void)completion_wake_.WaitUntil(until);
 }
 
 BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard& board,

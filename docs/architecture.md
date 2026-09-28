@@ -348,12 +348,16 @@ wakes slowly on the Spark (RE-017), so the scheduler, storage and device
 submission lanes poll for a bounded window (200 µs, not tuned) after their
 last progress before they sleep; page-in through the zone reached the
 in-place reads' bandwidth only with them
-([pagein-perf](experiments/pagein-perf/README.md)). The scheduler also
-polls while a request holds its lease; with a window longer than a decode
-step (the paged harness's 100 ms) no lane sleeps between a request's
-steps, which saved 0.26–0.65 ms a step
-([swap](experiments/fast-swap/swap.md#a-lease-per-request)). Durations use
-monotonic clocks.
+([pagein-perf](experiments/pagein-perf/README.md)). Between a request's
+steps they wake by anticipation (D-094,
+[runtime-wake](experiments/runtime-wake/README.md)): the device completion
+lane sleeps through most of a step and spins only around its likely ends,
+waking the scheduler and the submission lane ahead of the completion, and
+the scheduler polls after a step for about as long as its client takes to
+ask for the next. That removed the 0.26–0.65 ms a step the sleeping lanes
+cost, at about a tenth of a core while stepping and none while idle, where
+polling through every step (the paged harness's old 100 ms window) took
+four cores. Durations use monotonic clocks.
 
 ## Request path
 

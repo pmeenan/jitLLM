@@ -448,8 +448,10 @@ it appears.
       tok/s on `prose` / `code` against llama.cpp's 30.8 / 31.9 with the
       same drafter (0.91× / 0.92× on the medians, a narrow pass: one
       `prose` repeat of three was 0.87×; acceptance 0.55 / 0.58), peak
-      memory equal (104.7 GiB). Open: Qwen3.8's MTP layer, and the
-      verify's device time.
+      memory equal (104.7 GiB). Since then, with each generation a
+      request (D-093) and the runtime wake (D-094): 29.7 / 30.8 tok/s,
+      0.96× / 0.97× ([dspark](experiments/dspark/README.md#performance-and-memory)).
+      Open: Qwen3.8's MTP layer, and the verify's device time.
 - [ ] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
       page-in through the landing zone overlapping the rest. Creating and
@@ -517,8 +519,8 @@ it appears.
       *A lease per request* (D-093, [swap](experiments/fast-swap/swap.md#a-lease-per-request)):
       a request (a turn; for the image, one generation) leases its model's
       closure once and runs every chunk under it; with the lanes polling
-      through a step the per-step round trip fell from 1.3–2.6 ms to
-      0.01 ms. DeepSeek decodes at 20.34–20.46 tok/s, 1.016–1.022×
+      through a step (harness-polled) the per-step round trip fell from
+      1.3–2.6 ms to 0.01 ms. DeepSeek decodes at 20.34–20.46 tok/s, 1.016–1.022×
       llama.cpp's fusion-off, graphs-on tg64 (20.02) and 0.990–0.996× its
       default (20.54), the same session (two runs); Qwen3.8 from the
       CUTLASS-layout artifact at 23.71–23.81 tok/s paged, 0.94× Mia's vLLM
@@ -541,6 +543,27 @@ it appears.
       full one blocks the thread, so the swap path keeps the zone's copies
       off a thread that can launch into a full stream, or keeps each
       stream under the limit.
+- [x] **The runtime wake** (D-094, [runtime-wake](experiments/runtime-wake/README.md)):
+      benchmarks measure what the runtime does, not the harness's 100 ms
+      of polling. On the GB10 a blocking-sync event or a host function
+      woke 1.0–1.7 ms after a step's end; every sleeping thread on a
+      step's path cost 0.1–0.6 ms (RE-017). The device completion lane
+      now sleeps through most of a step, spins only around its likely
+      ends and wakes the scheduler and the submission lane ahead of the
+      completion; the scheduler polls after a step for about as long as
+      its client takes to ask for the next. A synthetic step's round trip
+      is 26–28 µs at 0.11–0.12 of a core while stepping and none idle
+      (harness-polled: 9 µs, four cores; the old defaults: 0.56–0.67 ms,
+      two). With it DeepSeek decodes at 20.42–20.50 tok/s (graphs),
+      Qwen3.8 (after its fast prefill, `f9a4e0f`) at 23.85–24.09, and
+      DSpark speculates at 29.67 / 30.85 tok/s (`prose` / `code`, 0.96× /
+      0.97× llama.cpp's), each generation now a request; DeepSeek is
+      1.020–1.024× llama.cpp's fusion-off tg64 and 0.999–1.003× its
+      default in the same session, Qwen3.8 0.94–0.96× Mia's vLLM. Against
+      the old window the wake costs 0.01–0.03 ms a step, inside the runs'
+      spread. Prefill (8,192 tokens: DeepSeek 27.37–27.45 s, Qwen3.8
+      6.84 s) and the DeepSeek ↔ Qwen3.8 swaps (7.1–8.8 s, page-in
+      13.3–14.1 GB/s) did not move with the wake; every check stays exact.
 - [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.

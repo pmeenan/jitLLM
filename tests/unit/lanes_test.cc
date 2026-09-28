@@ -172,6 +172,123 @@ TEST(WakeFlag, SignalsCoalesceAndAreNeverLost) {
   EXPECT_EQ(seen, kProducers * kEach);
 }
 
+// An anticipation (the runtime wake) raises the owner's polling deadline
+// and wakes it; an earlier one changes nothing and wakes nobody. It is a
+// hint: it never stands in for a publication's signal.
+TEST(WakeFlag, AnAnticipationOnlyRaisesTheDeadlineAndWakesTheOwner) {
+  using Clock = WakeFlag::Clock;
+  WakeFlag wake;
+  const auto now = Clock::now();
+  EXPECT_FALSE(wake.Anticipating(now));
+  wake.Anticipate(now + std::chrono::seconds(10));
+  EXPECT_TRUE(wake.Anticipating(now));
+  EXPECT_TRUE(wake.Anticipating(now + std::chrono::seconds(9)));
+  EXPECT_FALSE(wake.Anticipating(now + std::chrono::seconds(10)));
+  EXPECT_TRUE(wake.Consume());  // it woke the owner
+  wake.Anticipate(now + std::chrono::seconds(5));
+  EXPECT_FALSE(wake.Consume());  // earlier: no change, no wakeup
+  EXPECT_FALSE(wake.Anticipating(now + std::chrono::seconds(10)));
+  wake.Anticipate(now + std::chrono::seconds(20));
+  EXPECT_TRUE(wake.Anticipating(now + std::chrono::seconds(10)));
+  EXPECT_TRUE(wake.Consume());
+}
+
+// WaitUntil returns at once for a pending signal, early for one sent while
+// it waits, and otherwise at its deadline.
+TEST(WakeFlag, WaitUntilReturnsForASignalOrAtItsDeadline) {
+  using Clock = WakeFlag::Clock;
+  WakeFlag wake;
+  wake.Signal();
+  EXPECT_TRUE(wake.WaitUntil(Clock::now() + kPatience));
+  auto start = Clock::now();
+  EXPECT_FALSE(wake.WaitUntil(start + std::chrono::milliseconds(20)));
+  EXPECT_GE(Clock::now() - start, std::chrono::milliseconds(20));
+  std::jthread signaller([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wake.Signal();
+  });
+  start = Clock::now();
+  EXPECT_TRUE(wake.WaitUntil(start + kPatience));  // a lost signal shows as a hang
+  EXPECT_LT(Clock::now() - start, kPatience);
+}
+
+// The owner polls while anticipating and sleeps otherwise; producers
+// publish then signal, and anticipate between publications. Every
+// publication is seen, however the anticipations and sleeps interleave.
+TEST(WakeFlag, AnticipationsAmongManyPublishersLoseNoWakeup) {
+  using Clock = WakeFlag::Clock;
+  WakeFlag wake;
+  constexpr int kProducers = 4;
+  constexpr int kEach = 5000;
+  std::atomic<int> published{0};
+  std::vector<std::jthread> producers;
+  producers.reserve(kProducers);
+  for (int p = 0; p < kProducers; ++p) {
+    producers.emplace_back([&, p] {
+      for (int i = 0; i < kEach; ++i) {
+        if ((i + p) % 3 == 0) {
+          wake.Anticipate(Clock::now() + std::chrono::microseconds(50));
+        }
+        published.fetch_add(1, std::memory_order_relaxed);
+        wake.Signal();
+        if (i % 32 == 0) {
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+      }
+    });
+  }
+  const auto give_up = Clock::now() + kPatience;
+  int seen = 0;
+  while (seen < kProducers * kEach && Clock::now() < give_up) {
+    (void)wake.Consume();
+    seen = published.load(std::memory_order_acquire);
+    if (seen < kProducers * kEach) {
+      if (wake.Anticipating(Clock::now())) {
+        std::this_thread::yield();
+      } else {
+        (void)wake.WaitFor(std::chrono::seconds(5));  // a lost wakeup shows as a hang
+      }
+    }
+  }
+  EXPECT_EQ(seen, kProducers * kEach);
+}
+
+// The expectation is the shortest of the last eight samples.
+TEST(Expectation, IsTheShortestOfTheLastEight) {
+  jitllm::base::Expectation expected;
+  EXPECT_FALSE(expected.known());
+  expected.Add(std::chrono::milliseconds(50));
+  EXPECT_TRUE(expected.known());
+  EXPECT_EQ(expected.value(), std::chrono::milliseconds(50));
+  expected.Add(std::chrono::milliseconds(40));
+  expected.Add(std::chrono::milliseconds(60));
+  EXPECT_EQ(expected.value(), std::chrono::milliseconds(40));
+  for (int i = 0; i < 7; ++i) {
+    expected.Add(std::chrono::milliseconds(500));
+  }
+  EXPECT_EQ(expected.value(), std::chrono::milliseconds(60));  // the eighth sample back
+  expected.Add(std::chrono::milliseconds(500));
+  EXPECT_EQ(expected.value(), std::chrono::milliseconds(500));  // 60 is nine back
+  expected.Add(std::chrono::milliseconds(5));
+  EXPECT_EQ(expected.value(), std::chrono::milliseconds(5));
+}
+
+// Each recent length is a likely end: Next is the shortest not yet more
+// than `past` behind the elapsed time, and none once all are.
+TEST(Expectation, NextIsTheNearestLikelyEndNotYetOutlasted) {
+  using std::chrono::milliseconds;
+  jitllm::base::Expectation expected;
+  EXPECT_FALSE(expected.Next(milliseconds(0), milliseconds(1)).has_value());
+  for (const int length : {45, 5, 45, 20}) {
+    expected.Add(milliseconds(length));
+  }
+  EXPECT_EQ(expected.Next(milliseconds(0), milliseconds(1)), milliseconds(5));
+  EXPECT_EQ(expected.Next(milliseconds(5), milliseconds(1)), milliseconds(5));  // within its past
+  EXPECT_EQ(expected.Next(milliseconds(6), milliseconds(1)), milliseconds(20));
+  EXPECT_EQ(expected.Next(milliseconds(30), milliseconds(1)), milliseconds(45));
+  EXPECT_FALSE(expected.Next(milliseconds(46), milliseconds(1)).has_value());
+}
+
 class BoardTest : public ::testing::Test {
  protected:
   WakeFlag wake_;

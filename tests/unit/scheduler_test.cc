@@ -332,9 +332,9 @@ class SchedulerTest : public ::testing::Test {
                        .span_bytes = jitllm::providers::kNoCoalescing,
                        .span_segments = jitllm::providers::kMaxSegments},
         board_, storage);
-    device_lane_ = std::make_unique<DeviceService>(
-        execution_, std::span<const StreamId>(&stream_, 1), board_,
-        DeviceSettings{.queue = device, .handoff = 16, .poll_sleep = std::chrono::microseconds(0)});
+    device_lane_ =
+        std::make_unique<DeviceService>(execution_, std::span<const StreamId>(&stream_, 1), board_,
+                                        DeviceSettings{.queue = device, .handoff = 16});
     if (cpu > 0) {
       cpu_lane_ = std::make_unique<Lane<CpuCommand>>(
           LaneSettings{.name = "cpu", .capacity = 16, .reserved = 4, .workers = cpu},
@@ -990,6 +990,15 @@ TEST_F(SchedulerDeathTest, AnUnboundedTickOrPollWindowIsRefusedAtConstruction) {
   EXPECT_DEATH(build(microseconds(-1), milliseconds(100)), "poll window");
   build(hours(1), hours(1));  // the longest of each
   build(microseconds(0), milliseconds(1));
+  // The runtime wake's follow limit, bounded the same way.
+  const auto follow = [this](microseconds limit) {
+    const Scheduler scheduler(catalog_, board_, wake_, Lanes{},
+                              SchedulerSettings{.follow_limit = limit});
+  };
+  EXPECT_DEATH(follow(microseconds(-1)), "follow limit");
+  EXPECT_DEATH(follow(hours(1) + microseconds(1)), "follow limit");
+  follow(hours(1));
+  follow(microseconds(0));
 }
 
 TEST_F(SchedulerTest, AReadEndingWithoutProofQuarantinesItsExtent) {

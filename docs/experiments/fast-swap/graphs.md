@@ -190,6 +190,28 @@ steps, RE-017). Outside the job the host spends about 0.17 ms per step
 run (200 µs) measured every device span 1.8–2.1 ms longer; r2 repeated it
 after the 100 ms run and did not, so it was the run, not the poll.
 
+**With the runtime wake** (D-094, [runtime-wake](../runtime-wake/README.md);
+`spark-b`, 10:33–10:43, the same artifact and command without
+`--poll-us`, two runs, and one with the 100 ms window as a diagnostic
+in between): the node now sleeps between and through steps as the
+runtime does, instead of the harness's 100 ms of polling.
+
+| Arm (tok/s, mean of three passes) | Runtime wake (run 1; run 2) | 100 ms windows (same session) |
+| --- | ---: | ---: |
+| lease per step, launch by launch | 18.87; 18.91 | 18.77 |
+| lease per step, graphs | 19.92; 19.94 | 19.68 |
+| lease per request, launch by launch | 19.36; 19.43 | 19.33 |
+| lease per request, graphs | **20.42; 20.50** | 20.32 |
+
+Per step with a lease per request and graphs: the round trip 0.033–0.046
+ms (0.017 with the 100 ms windows), the job's host time 0.155–0.166 ms
+(0.059), the device 48.50–48.64 ms (48.93). The runtime wake costs
+0.02–0.03 ms a step against polling, within the runs' spread of the
+device's time; decode is 1.020–1.024× llama.cpp's fusion-off, graphs-on
+tg64 in the same session (20.01 ± 0.07) and 0.999–1.003× its default
+(fusion on, 20.43 ± 0.10). The "100 ms poll" figures above are
+harness-polled.
+
 **The graphs' gain is not a rounding error:** with a lease per request,
 replayed steps run 1.046–1.055× launch-by-launch ones (20.34–20.46 against
 19.39–19.44 tok/s), about 2.6 ms of device time per step: the launches'

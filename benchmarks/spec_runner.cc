@@ -13,7 +13,7 @@
 //                      --check greedy|forced|swap|sampled-plain|sampled-spec
 //                      [--tokens N] [--context N] [--graphs on|off] [--draft N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
-//                      [--seeds N] [--sampled FILE]
+//                      [--seeds N] [--sampled FILE] [--poll-us N]
 //
 // Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
 // rendered by the native DeepSeek V4 renderer and tokenized by the native
@@ -27,7 +27,8 @@
 //   generated token, and the logits it was chosen from, bit for bit; the
 //   prefill with the drafter's injection gives the plain prefill's logits
 //   bit for bit. Decode speed, acceptance (accepted ÷ drafted) and tokens
-//   per verify, per prompt, the speculative run three times.
+//   per verify, per prompt, the speculative run three times. Each
+//   generation is a request (D-093): one lease, every chunk under it.
 // - forced: rejections forced at chosen draft positions (all-reject, then
 //   each partial acceptance, and at the rows that complete a CSA or an HCA
 //   compressor block): after each verify's rollback the whole state (every
@@ -44,6 +45,11 @@
 //   --out/sampled-<mode>.json. With --sampled FILE (the other mode's), the
 //   total-variation distance over each prompt's 16 most frequent tokens
 //   plus "other" (the exit's bound: 0.1).
+//
+// The node runs the runtime's own wake (docs/experiments/runtime-wake/);
+// --poll-us, a diagnostic, instead has the scheduler and the device lane
+// poll that long after their last progress (100,000: the harness's old
+// window, longer than a step).
 //
 // Exit 1 on any failed check; spec.json in --out has every number.
 
@@ -185,6 +191,9 @@ struct Options {
   std::uint32_t seeds = 256;
   std::filesystem::path sampled;
   std::string only;  // greedy: this prompt alone
+  // A diagnostic poll window (the paged node's NodeSettings); unset, the
+  // runtime's own wake.
+  std::optional<std::uint32_t> poll_us;
 };
 
 struct Prompt {
@@ -238,7 +247,9 @@ class Harness {
                .coalesce = false,
                .copy_lane = true,
                .slot_bytes = jb::kSlabSlotBytes,
-               .observer = nullptr}),
+               .observer = nullptr,
+               .poll_window = o_.poll_us ? std::optional(std::chrono::microseconds(*o_.poll_us))
+                                         : std::nullopt}),
         dsv4_(node_, o_.dsv4, kDsv4, kDsv4),
         fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_) {}
 
@@ -685,14 +696,27 @@ Status Harness::Greedy() {
     const bool decode =
         std::ranges::any_of(decode_, [&](const Prompt& p) { return p.id == prompt.id; });
     const std::uint32_t count = decode ? o_.tokens : std::min<std::uint32_t>(o_.tokens, 32);
+    // Each generation is a request (D-093): its prefill and every step run
+    // under one lease on DeepSeek's closure, as a turn does in the runtime.
     Generation plain;
+    if (auto r = node_.BeginRequest(dsv4_.stream(), dsv4_.everything(), "a plain generation"); !r) {
+      return r;
+    }
     if (auto r = Plain(prompt, count, plain); !r) {
+      return r;
+    }
+    if (auto r = node_.EndRequest(dsv4_.stream()); !r) {
       return r;
     }
     const std::size_t repeats = decode ? 3 : 1;
     std::vector<double> rates;
     Generation spec;
     for (std::size_t k = 0; k < repeats; ++k) {
+      if (auto r =
+              node_.BeginRequest(dsv4_.stream(), dsv4_.everything(), "a speculative generation");
+          !r) {
+        return r;
+      }
       std::vector<float> first;
       if (auto r = Prefill(prompt, true, first); !r) {
         return r;
@@ -703,6 +727,9 @@ Status Harness::Greedy() {
       }
       spec = {};
       if (auto r = Speculate(prompt, count, first, {}, spec); !r) {
+        return r;
+      }
+      if (auto r = node_.EndRequest(dsv4_.stream()); !r) {
         return r;
       }
       if (auto r = Compare(plain, spec, prompt.id); !r) {
@@ -1280,6 +1307,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.fp16_expect = v;
     } else if (a == "--seeds") {
       ok = number(o.seeds) && o.seeds >= 1;
+    } else if (a == "--poll-us") {
+      std::uint32_t us = 0;
+      ok = number(us) && us <= 1000000;
+      o.poll_us = us;
     } else if (a == "--sampled") {
       o.sampled = v;
     } else if (a == "--only") {

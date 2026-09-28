@@ -221,4 +221,15 @@ if(JITLLM_CUDA)
   set_target_properties(jitllm_vmm_diag_bench PROPERTIES CUDA_ARCHITECTURES 121a-real)
   target_link_options(jitllm_vmm_diag_bench PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # The runtime wake: from a step's fence to the next step's launch, for
+  # each candidate way of waiting, and the runtime's own path on the paged
+  # node (docs/experiments/runtime-wake/). Its kernels read the GB10's
+  # global timer: sm_121a only, as the host-VMM diagnosis's.
+  add_executable(jitllm_wake_bench wake_bench.cc wake_bench_kernels.cu)
+  target_include_directories(jitllm_wake_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_wake_bench PRIVATE jitllm_paged_node jitllm_warnings)
+  set_target_properties(jitllm_wake_bench PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  target_link_options(jitllm_wake_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()

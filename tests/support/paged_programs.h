@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/wake.h"
 #include "catalog/catalog.h"
 #include "memory/materialize.h"
 #include "scheduler/commands.h"
@@ -340,6 +341,7 @@ struct RequestChannel {
   std::atomic<std::uint64_t> steps{0};   // steps ended: their fence seen, or refused
   std::atomic<bool> step_failed{false};  // the last step's outcome, set before `steps`
   std::atomic<int> step_error{-1};       // a WorkError that refused it, else -1
+  base::WakeFlag reported;               // signalled after each `steps`, for a driver asleep
 };
 
 // A request's task: materializes `closure` and holds a lease on it
@@ -444,6 +446,7 @@ class RequestProgram final : public HarnessProgram {
     channel_.step_failed.store(failed, std::memory_order_relaxed);
     channel_.step_error.store(error, std::memory_order_relaxed);
     channel_.steps.fetch_add(1, std::memory_order_release);
+    channel_.reported.Signal();
   }
 
   catalog::Closure closure_;

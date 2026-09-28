@@ -156,13 +156,17 @@ struct NodeSettings {
   // Told of each page-in's progress, on the scheduler's thread; outlives
   // the node. Optional.
   scheduler::PageInObserver* observer = nullptr;
-  // How long the scheduler (while a critical operation is in flight or a
-  // request holds its lease) and the device lane's submission thread keep
-  // polling after their last progress before they sleep (RE-017). Longer
-  // than a decode step (DeepSeek's ~50 ms), so neither sleeps between a
-  // request's steps: at the lanes' own 200 µs each step paid 0.25–0.5 ms
-  // more (docs/experiments/fast-swap/swap.md, "A lease per request").
-  std::chrono::microseconds poll_window{100000};
+  // A diagnostic only: how long the scheduler (while a critical operation
+  // is in flight or a request holds its lease) and the device lane's
+  // submission thread keep polling after their last progress before they
+  // sleep (RE-017). Unset, the node runs the runtime's own wake (its
+  // defaults, docs/experiments/runtime-wake/), which is what the harness
+  // measures. The harness once set 100 ms, longer than a decode step, so
+  // that neither slept between a request's steps; its figures are labelled
+  // harness-polled (docs/experiments/fast-swap/swap.md).
+  // Initialized so callers may designate only the fields they change.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::optional<std::chrono::microseconds> poll_window = {};
 };
 
 // What the storage lane hands io_uring (BP-P1): requests, and the pieces
@@ -303,6 +307,10 @@ class PagedNode {
   bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
   // The stream's StepTimes since the last call, which resets them.
   StepTimes TakeTimes(std::uint32_t stream);
+  // The scheduler's wake flag and the device lane, for tests of the
+  // runtime wake (whether they are told to poll ahead of a step's end).
+  const base::WakeFlag& wake() const { return wake_; }
+  const scheduler::DeviceService& device_lane() const { return *device_lane_; }
   // Runs `call` on the scheduler's thread.
   Status Call(std::function<Status()> call, std::string_view what);
   // Makes room for `closure` under the budget and materializes it
@@ -318,6 +326,7 @@ class PagedNode {
     std::uint64_t request = 0;
     Done done;
     RequestChannel channel;
+    base::Expectation walls;  // its steps' walls, for the driver's wait (Step)
   };
   // A job's times on the device lane's thread, read once it has retired.
   struct Timing {

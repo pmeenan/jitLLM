@@ -169,6 +169,39 @@ tokens, acceptance 0.72–0.92) speculate at 30.9–38.6 tok/s against
 chaining them saves under 1 ms a step, because the device is already
 busy for all but about 3 ms of it.
 
+**With a lease per request and the runtime wake** (2026-09-28). The
+figures above predate both: each chunk leased DeepSeek's whole closure
+(1.3–2.6 ms a step, D-093) and the lanes slept between steps on their
+200 µs windows; they were never harness-polled. The spec runner now runs
+each generation as a request (one lease, every chunk under it) on the
+runtime's own wake (D-094, [runtime-wake](../runtime-wake/README.md)).
+`spark-b`, 10:54–10:58, one run each, the memory gate before each (no
+other GPU process, load under 6 at the start; other agents used the host
+between runs), 256 tokens, three speculative repeats, median in bold:
+
+| Measure | Runtime wake | 100 ms windows (a diagnostic, same session) | llama.cpp (above) | Ratio (runtime wake) |
+| --- | ---: | ---: | ---: | ---: |
+| Decode, `prose`, tok/s | 28.57 / **29.67** / 29.82 | 28.71 / 29.63 / 29.74 | 30.80 | 0.96 (repeats 0.93–0.97) |
+| Decode, `code`, tok/s | 30.84 / **30.85** / 30.82 | 30.35 / 30.27 / 30.33 | 31.94 | 0.97 (repeats 0.96–0.97) |
+| Decode without speculation, `prose` / `code` | 19.13 / 20.42 | 20.13 / 20.20 | 19.90 / 19.95 | 0.96 / 1.02 |
+| A step (draft and verify), `prose` / `code`, ms | 88.15 / 88.02 | 88.38 / 89.46 | | |
+| Chat prompts, speculative, tok/s | 32.8–40.0 | 32.2–40.1 | | |
+
+Every greedy check passed in both (tokens and logits bit-identical to
+plain decoding, the injected prefill equal to the plain one); acceptance
+and tokens a verify are unchanged (0.551 / 0.579; 2.63 / 2.71); 1,309
+replays, 7 captures, none refused. Speculative decode is now 0.96× and
+0.97× llama.cpp's on the medians, inside the exit's 10%, against 0.91×
+and 0.92× before: a step's wall fell from 93.6 / 92.5 ms to 88.2 / 88.0
+(mostly the lease per request: per step it alone cost DeepSeek 1.3–2.6
+ms in graphs.md's runs, against the 0.26–0.65 ms of wakeups at the old
+200 µs windows that the wake removes; the rest of the fall is not
+isolated). The wake itself costs nothing measurable against polling (the
+step's wall is within 1.5 ms either way, in the runs' noise). The first plain generation
+(`prose`) includes the decode graphs' capture. Peak `MemAvailable` drop
+106.5–106.8 GiB against 104.7 before; not isolated (the host is shared).
+Raw outputs: `~/scratch/m3wake/models/spec-*` on `spark-b`.
+
 **The step on the device** (Nsight Systems, `prose`, chained, graphs
 replayed): the restore copy, the draft graph (7.8 ms), the drafts' copy,
 lookup and snapshot save (together 0.03 ms), the verify graph (81–85 ms),

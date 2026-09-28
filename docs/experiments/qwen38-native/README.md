@@ -579,16 +579,23 @@ itself is not changed after the fact.
   leased closures (one lease per request, D-093) with the n-gram table
   read by rows, its logits equal this harness's bit for bit on the six
   prompts' 32 steps, and from the CUTLASS-layout artifact it decodes at
-  23.71–23.81 tok/s, 0.94× the oracle's (the job's device span 40.8 ms a
-  step, and ~1.3 ms of host work outside the job: the rows read and the
-  inputs built; the lease's round trip 0.01 ms;
+  23.71–23.81 tok/s harness-polled, 0.94× the oracle's (the job's device
+  span 40.8 ms a step, and ~1.3 ms of host work outside the job: the rows
+  read and the inputs built; the lease's round trip 0.01 ms;
   [swap](../fast-swap/swap.md#a-lease-per-request); measured before the
   second prefill pass). Again with the fast form after the second pass
   (`jitllm_swap_pairs --cycles 0` against the same build's resident run,
   `spark-b`: 0 logits differ; [swap](../fast-swap/swap.md#qwen38-flash-next-on-the-paged-node)),
   and in both DeepSeek pairs (`jitllm_swap_pairs`, 8,192 context tokens,
   the review's build): every cycle `exact`, peak 96.2–96.5 GiB by
-  `MemAvailable`, as before the pass.
+  `MemAvailable`, as before the pass. With the runtime's own wake (D-094,
+  [runtime-wake](../runtime-wake/README.md)) and the second pass's fast
+  form (`spark-b`, `jitllm_swap_pairs --bench 128`, two runs): 24.09 and
+  23.85 tok/s (a step's round trip 0.029–0.033 ms, its device span
+  40.2–40.4 ms), 0.94–0.96× Mia's vLLM with speculation off, against 24.03
+  with the harness's old 100 ms windows in the same session; its 8,192
+  prefill tokens in 6.84 s, and every DeepSeek pair's cycle `exact`
+  ([swap](../fast-swap/swap.md#with-the-runtime-wake)).
 - The reference and unfused graphs are not repeatable past 2,051 attended
   cells: the QSA indexer's top-k (GGML's radix select) picks among tied
   scores nondeterministically (RE-031), so their perplexity runs, whose

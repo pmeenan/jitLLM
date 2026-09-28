@@ -258,7 +258,9 @@ restore, a copy lane for RE-029) in a harness swap runner: DeepSeek↔the
 FP16 fixture A→B→A, bit-identical after the return; DeepSeek's decode
 steps replaying as CUDA graphs at pinned places that survive swaps
 (D-090), bit-identical to launch by launch, and with a request leasing
-its closure once (D-093) decoding at 1.02× llama.cpp's unfused speed;
+its closure once (D-093) decoding at 1.02× llama.cpp's unfused speed,
+measured on the runtime's own wake (D-094: lanes that sleep through a
+step and wake just ahead of its end, not the harness's polling);
 Qwen3.8 Flash
 Next native and resident from Mia's NVFP4 checkpoint (against Mia's vLLM:
 greedy within near-ties under a bound set after the first comparison,
@@ -275,8 +277,8 @@ under ~10 s (worst LLM↔LLM 9.38 s, page-in bound), an LLM's return
 bit-identical to its saved state's continuation (RE-031 rules out a
 rerun); and DeepSeek's speculative decoding with its DSpark drafter
 (D-092): greedy bit-identical to plain greedy, exact rollback of rejected
-drafts, across swaps too, decode 0.91–0.92× llama.cpp's with the same
-drafter (a narrow pass of D-085's gate, within run-to-run spread).
+drafts, across swaps too, decode 0.96–0.97× llama.cpp's with the same
+drafter once each generation ran as a request.
 D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

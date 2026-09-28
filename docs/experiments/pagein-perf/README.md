@@ -254,7 +254,8 @@ than the window; they did not slow the steps even with more threads than
 cores. Unconfined, the runs varied more (another agent used the host
 between them) and showed the same CPU. Most of the loop's CPU was
 already the device completion lane, which yields while a fence is
-pending (0.87–0.97 of a core here; `DeviceSettings::poll_sleep`), and the
+pending (0.87–0.97 of a core here; `DeviceSettings::poll_sleep`, since
+replaced by the runtime wake, D-094), and the
 scheduler (0.19–0.33, or all of one core with the shortest steps).
 
 ## Conditions and provenance

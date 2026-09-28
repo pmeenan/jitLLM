@@ -272,9 +272,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
         *board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
-        DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
-                       .handoff = 16,
-                       .poll_sleep = std::chrono::microseconds(0)},
+        DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16},
         GetParam() ? nullptr : &memory_);  // one lane calls the provider
     if (GetParam()) {
       backing_lane_ = std::make_unique<BackingService>(
@@ -284,9 +282,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
       copy_stream_ = execution_.CreateStream().value();
       copy_lane_ = std::make_unique<DeviceService>(
           execution_, std::span<const StreamId>(&copy_stream_, 1), *board_,
-          DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
-                         .handoff = 16,
-                         .poll_sleep = std::chrono::microseconds(0)},
+          DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16},
           nullptr);
     }
     ASSERT_LE(slots, kMostSlots);
@@ -1892,7 +1888,6 @@ TEST(DeviceLanePollTest, APollingSubmissionLaneTakesEveryCommandAndStopsOnClose)
   DeviceService lane(execution, std::span<const StreamId>(&stream, 1), board,
                      DeviceSettings{.queue = {.capacity = 8, .reserved = 1, .batch = 4},
                                     .handoff = 8,
-                                    .poll_sleep = std::chrono::microseconds(0),
                                     .poll_window = SchedulerSettings::kLongest});
   std::vector<std::byte> source(kSize, std::byte{7});
   std::vector<std::byte> destination(kSize);
@@ -2015,9 +2010,24 @@ TEST(DeviceLanePollDeathTest, AnUnboundedPollWindowIsRefused) {
     settings.poll_window = window;
     const DeviceService lane(execution, std::span<const StreamId>(&stream, 1), board, settings);
   };
-  EXPECT_DEATH(build(std::chrono::microseconds(-1)), "submission poll window");
-  EXPECT_DEATH(build(std::chrono::hours(2)), "submission poll window");
+  EXPECT_DEATH(build(std::chrono::microseconds(-1)), "poll and spin windows");
+  EXPECT_DEATH(build(std::chrono::hours(2)), "poll and spin windows");
   build(std::chrono::microseconds(0));
+  // The completion lane's spin around a fence's likely end, and its
+  // backstop, which must be positive (a zero backstop would never sleep).
+  const auto spin = [&](std::chrono::microseconds ahead, std::chrono::microseconds past,
+                        std::chrono::microseconds backstop) {
+    DeviceSettings settings;
+    settings.spin_ahead = ahead;
+    settings.spin_past = past;
+    settings.backstop = backstop;
+    const DeviceService lane(execution, std::span<const StreamId>(&stream, 1), board, settings);
+  };
+  const std::chrono::microseconds ms(1000);
+  EXPECT_DEATH(spin(std::chrono::microseconds(-1), ms, ms), "poll and spin windows");
+  EXPECT_DEATH(spin(ms, std::chrono::hours(2), ms), "poll and spin windows");
+  EXPECT_DEATH(spin(ms, ms, std::chrono::microseconds(0)), "backstop positive");
+  spin(std::chrono::microseconds(0), std::chrono::microseconds(0), std::chrono::microseconds(1));
 }
 
 TEST(PageInZoneTest, ALandedSourceNeedsAZone) {

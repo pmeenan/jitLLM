@@ -13,10 +13,12 @@
 // with its operation until a later turn, and a task waits on identified
 // dependencies, never on a thread. Between turns the thread polls while a
 // critical-path operation is in flight, for at most a window after its
-// last progress (RE-017: a sleeping thread wakes slowly on the Spark), and
-// otherwise sleeps on the wake flag. It consumes the flag before it looks
-// at anything, so a publication it did not see re-signals it: no wakeup is
-// lost (base/wake.h).
+// last progress (RE-017: a sleeping thread wakes slowly on the Spark),
+// while a lane anticipates a completion, and after a step (device work)
+// for about as long as its client takes to hand over the next (the runtime
+// wake, docs/experiments/runtime-wake/), and otherwise sleeps on the wake
+// flag. It consumes the flag before it looks at anything, so a publication
+// it did not see re-signals it: no wakeup is lost (base/wake.h).
 //
 // A task is an explicit state machine (TaskProgram): each step does bounded
 // work through its TaskContext and yields, waits, or finishes. Its work:
@@ -368,13 +370,23 @@ struct SchedulerSettings {
   static constexpr std::chrono::hours kLongest{1};
   // Polling after the last progress while a critical-path operation is in
   // flight, or a request holds its lease (its next step is imminent): the
-  // window the task-lanes measurement used, not a tuned value (RE-017; M3
-  // onward tunes it against per-token latency). Zero never polls. The
-  // scheduler's thread spins (yielding) for up to this long after each
-  // progress, so a window longer than a decode step keeps a core busy for
-  // as long as a request steps; the paged harness's 100 ms does, this
-  // default does not.
+  // window the task-lanes measurement used, not a tuned value (RE-017).
+  // Zero never polls. The scheduler's thread spins (yielding) for up to
+  // this long after each progress, so a window longer than a decode step
+  // keeps a core busy for as long as a request steps; the paged harness's
+  // old 100 ms did, this default does not. The runtime wake adds to it
+  // (docs/experiments/runtime-wake/): the thread also polls while a lane
+  // anticipates a completion (CompletionBoard::Anticipate), and after a
+  // step for about as long as its client has lately taken to hand over the
+  // next (`follow_limit`).
   std::chrono::microseconds poll_window{200};
+  // The longest the scheduler polls after a step (device work submitted
+  // through a TaskContext, under a request's lease or its own) for the
+  // next, and has the device lane poll too (DeviceService::Anticipate): 1.5
+  // times the recent gap between a step's end and the next step's
+  // publication, plus `poll_window`, at most this. A gap longer than this
+  // (a client that waits on its user) is not counted. At most kLongest.
+  std::chrono::microseconds follow_limit{10000};
   // The longest sleep: a timer tick, never needed for correctness. Positive.
   std::chrono::milliseconds tick{100};
   // Where landed page-ins land; none by default (a landed source is then
@@ -719,6 +731,12 @@ class Scheduler {
   // Releases the lease (RecordUse, then the catalog's release) and wakes
   // its waiters.
   void ReleaseHeld(std::map<catalog::LeaseId, Held>::iterator held);
+  // The runtime wake's follow window (SchedulerSettings::follow_limit): a
+  // step (device work) being published notes the gap since the last
+  // step's end; a step's end starts the window, over this thread and the
+  // device lane.
+  void NoteFollow();
+  void AwaitFollow();
 
   // Page-ins (pagein.cc). With `own`, the extent's own parked eviction
   // has just ended and its kept backing is the load's.
@@ -824,6 +842,13 @@ class Scheduler {
   // Page-in cancellations the storage lane refused, to ask again.
   std::vector<OperationId> cancels_;
   std::size_t critical_ = 0;
+  // The runtime wake's follow window (SchedulerSettings::follow_limit): the
+  // last step's end, if no step has been published since; the recent gap
+  // from a step's end to the next one's publication, in nanoseconds (zero
+  // until measured); and until when to poll for it.
+  std::chrono::steady_clock::time_point step_done_;
+  std::int64_t follow_gap_ = 0;
+  std::chrono::steady_clock::time_point follow_until_;
   std::size_t quarantined_ = 0;  // quarantined operations, each keeping its mailbox
   std::optional<Fault> fault_;
   bool stopping_ = false;

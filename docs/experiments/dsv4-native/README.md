@@ -143,7 +143,12 @@ per-step round trip. With a lease per request (D-093,
 [swap](../fast-swap/swap.md#a-lease-per-request)) that is gone: the paged
 node decodes at 20.34–20.46 tok/s with graphs, 1.016–1.022× llama.cpp with
 fusion off and graphs on (20.02, the same session) and 0.990–0.996× with
-fusion on (20.54).
+fusion on (20.54). Those runs were harness-polled (every lane spinning
+through each step). With the runtime's own wake (D-094,
+[runtime-wake](../runtime-wake/README.md)) it decodes at 20.42–20.50
+tok/s, a round trip of 0.03–0.05 ms a step, against 20.32 with the 100 ms
+windows in the same session: 1.020–1.024× llama.cpp with fusion off
+(20.01, the same session) and 0.999–1.003× with fusion on (20.43).
 
 ## Judgement calls
 

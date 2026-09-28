@@ -121,9 +121,7 @@ class AcquireTest : public ::testing::Test {
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
-        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
-                           .handoff = 16,
-                           .poll_sleep = std::chrono::microseconds(0)},
+        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16},
         &memory_);
     sc::LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     const std::uint64_t zone_base = memory_.RangeOf(zone_).value().base;

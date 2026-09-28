@@ -271,9 +271,7 @@ class CudaLanes : public ::testing::Test {
         board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         *execution_, std::span<const StreamId>(&stream_, 1), board_,
-        DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
-                       .handoff = 16,
-                       .poll_sleep = std::chrono::microseconds(0)});
+        DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16});
     cpu_lane_ = std::make_unique<Lane<CpuCommand>>(
         jitllm::scheduler::LaneSettings{.name = "cpu", .capacity = 16, .reserved = 4, .workers = 1},
         jitllm::scheduler::CpuHandler(board_));

@@ -132,6 +132,10 @@ class CompletionBoard {
   // its queue without publishing anything (a cancellation it took), so a
   // command the owner kept because that queue was full is offered again.
   void Nudge() { wake_.Signal(); }
+  // Any thread: a publication is likely by `until` (a fence nearing its
+  // expected end), so the owner should poll until then rather than sleep
+  // (base::WakeFlag::Anticipate). A hint; it publishes nothing.
+  void Anticipate(base::WakeFlag::Clock::time_point until) { wake_.Anticipate(until); }
 
   std::size_t open() const { return open_count_; }
   std::size_t capacity() const { return count_; }

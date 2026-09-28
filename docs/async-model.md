@@ -270,6 +270,19 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
 - Kernel work is a job the submission lane runs on one of its streams; the
   lane fences after it, and the job's lease holds until that fence is seen
   complete.
+- How the threads wait (the runtime wake, D-094,
+  [runtime-wake](experiments/runtime-wake/README.md)): a sleeping thread
+  wakes slowly on the Spark (RE-017), and a step's path crosses four. The
+  device completion lane sleeps through most of each fence, querying at
+  least every millisecond, and spins only around its likely ends (its
+  stream's last eight fence lengths); as it starts to spin it anticipates
+  the scheduler and its submission lane (`WakeFlag::Anticipate`), which
+  poll until then. The scheduler also polls after a step for about as
+  long as its client takes to hand over the next, and has the
+  device lane do the same. An anticipation is only a hint about when to
+  poll: every publication, command and fence handed over still signals
+  its owner's flag, and only a query that sees a fence complete proves it.
+  No host function or blocking-sync event is on the step path.
 - A request may hold one lease for all its steps (M3: a full-swap model's
   closure is the whole model). The lease is the task's; each step is an
   operation under it, with its own mailbox, lifetime hold and fence, but

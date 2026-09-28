@@ -101,8 +101,10 @@ Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::Wa
                   settings_.tick <= SchedulerSettings::kLongest,
               "a scheduler tick must be positive and at most kLongest");
   base::Check(settings_.poll_window >= std::chrono::microseconds::zero() &&
-                  settings_.poll_window <= SchedulerSettings::kLongest,
-              "a scheduler poll window must be non-negative and at most kLongest");
+                  settings_.poll_window <= SchedulerSettings::kLongest &&
+                  settings_.follow_limit >= std::chrono::microseconds::zero() &&
+                  settings_.follow_limit <= SchedulerSettings::kLongest,
+              "a scheduler poll window and follow limit must be non-negative and at most kLongest");
   cancel_intents_.reserve(settings_.controls);
   base::Check(settings_.landing.slots.empty() || settings_.landing.slot_bytes > Bytes(),
               "a landing zone needs slots of a non-zero size");
@@ -465,6 +467,9 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   ++record->waiting;
   SetCritical(operation, true);
   const OperationId id = operation.id;
+  if (kind == Kind::kDevice) {
+    NoteFollow();  // the client's pace, from the last step's end to this one's publication
+  }
   Publish(operation);
   return id;
 }
@@ -573,6 +578,34 @@ void Scheduler::ConcludeHeld(catalog::LeaseId lease) {
   --found->second.operations;
   if (found->second.ending && found->second.operations == 0) {
     ReleaseHeld(found);
+  }
+}
+
+void Scheduler::NoteFollow() {
+  if (step_done_ == std::chrono::steady_clock::time_point{}) {
+    return;  // no step ended since the last one was submitted
+  }
+  const std::int64_t gap = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - step_done_)
+                               .count();
+  step_done_ = {};
+  if (gap > std::chrono::duration_cast<std::chrono::nanoseconds>(settings_.follow_limit).count()) {
+    return;  // the client waited on something else (its user): not its usual pace
+  }
+  follow_gap_ = follow_gap_ == 0 ? gap : ((3 * follow_gap_) + gap) / 4;
+}
+
+void Scheduler::AwaitFollow() {
+  const auto now = std::chrono::steady_clock::now();
+  step_done_ = now;
+  // At least the poll window, which may exceed the limit.
+  const std::chrono::nanoseconds low = settings_.poll_window;
+  const std::chrono::nanoseconds follow =
+      std::clamp(std::chrono::nanoseconds((follow_gap_ * 3) / 2) + low, low,
+                 std::max(low, std::chrono::nanoseconds(settings_.follow_limit)));
+  follow_until_ = now + follow;
+  if (lanes_.device != nullptr) {
+    lanes_.device->Anticipate(follow_until_);
   }
 }
 
@@ -836,6 +869,9 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
     if (held.valid()) {
       ConcludeHeld(held);  // the request's lease, if it is ending and this was its last
     }
+    if (kind == Kind::kDevice) {
+      AwaitFollow();  // a step (a request's, or one with its own lease): the next is likely soon
+    }
     Wake(task, outcome != Outcome::kSucceeded);
     TryRetire(task);
     return;
@@ -943,8 +979,10 @@ std::expected<void, Fault> Scheduler::Run() {
     }
     // A critical operation in flight, or a request holding its lease, whose
     // next step is imminent: poll rather than sleep, within the window
-    // (RE-017).
-    if ((critical_ > 0 || !held_.empty()) && now - progressed < settings_.poll_window) {
+    // (RE-017). So too while a lane anticipates a completion, and while the
+    // next step is likely after one ended (the runtime wake).
+    if (((critical_ > 0 || !held_.empty()) && now - progressed < settings_.poll_window) ||
+        now < follow_until_ || wake_.Anticipating(now)) {
       ++stats_.polls;
       std::this_thread::yield();
       continue;

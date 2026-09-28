@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <print>
@@ -527,6 +528,124 @@ TEST(CudaPagedNodeTest, ACopyLaneLandsPageInsWhileAJobFillsItsStream) {
   ran = second.ReadBack();
   EXPECT_TRUE(ran.has_value()) << ran.error();
   EXPECT_TRUE(second.Intact());
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  (void)cudaFreeHost(flag);
+}
+
+double ProcessCpu() {
+  timespec ts{};
+  (void)::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+  return static_cast<double>(ts.tv_sec) + (static_cast<double>(ts.tv_nsec) / 1e9);
+}
+
+// The runtime wake on the real device (docs/experiments/runtime-wake/): a
+// request's steps, each gated on a host flag the test opens when it
+// chooses, so a step ends on time, early, late or at once. Every step
+// completes and returns (no completion is lost while the lanes, the
+// scheduler and the driver sleep between and during steps); as a step
+// nears its expected end, the scheduler and the device lane are told to
+// poll ahead of it (the relay), after the completion lane slept through
+// most of it; stepping costs well under a core, where polling threads
+// took two, and nothing spins once the request has ended.
+TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = node.BeginRequest(0, first.closure(), "the gated request");
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+
+  void* flag = nullptr;
+  ASSERT_EQ(cudaHostAlloc(&flag, sizeof(std::uint32_t), cudaHostAllocMapped), cudaSuccess);
+  std::atomic_ref<std::uint32_t> gate(*static_cast<std::uint32_t*>(flag));
+  gate.store(0);
+  void* device_flag = nullptr;
+  ASSERT_EQ(cudaHostGetDevicePointer(&device_flag, flag, 0), cudaSuccess);
+  // Milliseconds from each step's launch to its gate opening; -1 opens it
+  // once the scheduler and the device lane are told to poll (the relay),
+  // looked for from 5 ms on, once the last step's relay and follow window
+  // have lapsed. Each of the stream's last eight fence lengths is a likely
+  // end, so the relay step follows six of 20 ms (and nothing shorter).
+  constexpr std::array<int, 12> kDelays = {20, 20, 20, 20, 20, 20, -1, 0, 60, 1, 20, 20};
+  std::atomic<std::uint32_t> launched{0};
+  std::vector<double> relays;  // ms from the launch to the relay, the gate's thread's
+  std::atomic<bool> unrelayed{false};
+  std::jthread opener([&](const std::stop_token& stop) {
+    for (std::uint32_t s = 0; s < kDelays.size() && !stop.stop_requested(); ++s) {
+      while (launched.load() < s + 1 && !stop.stop_requested()) {
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+      }
+      const auto at = std::chrono::steady_clock::now();
+      if (kDelays.at(s) < 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const auto give_up = at + std::chrono::seconds(5);
+        while (!(node.wake().Anticipating(std::chrono::steady_clock::now()) &&
+                 node.device_lane().Anticipating(std::chrono::steady_clock::now())) &&
+               std::chrono::steady_clock::now() < give_up) {
+          std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+        const auto relayed = std::chrono::steady_clock::now();
+        if (relayed >= give_up) {
+          unrelayed = true;
+        }
+        relays.push_back(std::chrono::duration<double, std::milli>(relayed - at).count());
+      } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kDelays.at(s)));
+      }
+      gate.store(s + 1);
+    }
+  });
+  const std::uint64_t workspace = node.activations().base;
+  const double cpu = ProcessCpu();
+  const auto start = std::chrono::steady_clock::now();
+  for (std::uint32_t s = 0; s < kDelays.size(); ++s) {
+    ran = node.Job(
+        first.closure(),
+        [&launched, device_flag, workspace, s](jitllm::providers::NativeStream native) {
+          if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
+                                  reinterpret_cast<CUdeviceptr>(device_flag), s + 1,
+                                  CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS ||
+              // NOLINTNEXTLINE(performance-no-int-to-ptr)
+              cudaMemsetAsync(reinterpret_cast<void*>(workspace), 0, 4,
+                              static_cast<cudaStream_t>(native.handle)) != cudaSuccess) {
+            return sc::JobResult::kUnknown;
+          }
+          launched.store(s + 1);
+          return sc::JobResult::kQueued;
+        },
+        "a gated step", 0);
+    ASSERT_TRUE(ran.has_value()) << "step " << s << ": " << ran.error();
+  }
+  const double stepping =
+      (ProcessCpu() - cpu) /
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  opener.join();
+  EXPECT_FALSE(unrelayed.load()) << "a step neared its expected end with no relay";
+  for (const double relay : relays) {
+    EXPECT_GE(relay, 10.0) << "relayed at once: the completion lane never slept";  // expected ~20
+  }
+  EXPECT_LT(stepping, 1.0) << "cores busy while stepping";
+  ASSERT_TRUE(node.EndRequest(0).has_value());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // past every window
+  const double idle_cpu = ProcessCpu();
+  const auto idle_start = std::chrono::steady_clock::now();
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const double idle =
+      (ProcessCpu() - idle_cpu) /
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - idle_start).count();
+  EXPECT_LT(idle, 0.2) << "cores busy with nothing to do";
+  std::println("gated steps: {:.2f} cores stepping, {:.3f} idle", stepping, idle);
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
   (void)cudaFreeHost(flag);

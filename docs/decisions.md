@@ -39,7 +39,61 @@ one Spark and on two.
 
 ---
 
-## D-093: A request may lease its closure once and run every step under that lease  (2026-09-28, status: accepted by the owner, 2026-09-28, for the M3 slice that built it, for review with it; amends D-086's "a job holds a lease on the phase's whole closure")
+## D-094: The runtime wakes by anticipation: a device lane sleeps through most of a fence's expected length, spins around its end, and has the scheduler and the next submission poll ahead of it  (2026-09-28, status: accepted by the M3 runtime-wake slice at the owner's request, for review with it; settles, for the device path, D-048's "polling policy require[s] implementation measurements"; the paged harness's 100 ms poll window (D-093's note) becomes a labelled diagnostic)
+
+**Decision.** The scheduler's and the device lanes' default way to wait
+([runtime-wake](experiments/runtime-wake/README.md)):
+- **The completion lane** takes each of its stream's last eight fence
+  lengths (recorded to seen) as a likely end. It sleeps until 1 ms before
+  the next likely end a fence has not outlasted, querying at least every
+  1 ms, spins (yielding) until 1 ms after it, and past the longest backs
+  off (50 µs doubling to 1 ms between queries); a stream with no history
+  spins its first 1 ms. With no fence it sleeps.
+- **The relay:** as it starts to spin around a likely end, it has the
+  scheduler (`CompletionBoard::Anticipate`) and its own submission lane
+  poll until 1 ms past it.
+- **The scheduler** polls while anticipated, and after a step (device
+  work, under a request's lease or its own) for 1.5 times the recent gap
+  from a step's end to the next step's publication, plus its 200 µs
+  window, at most 10 ms; the device lane polls as long. The submission lane sleeps on a wake flag of its own, signalled by
+  `Submit` and `Close`, outside its 200 µs window and any anticipation.
+- **Not on the step path:** blocking-sync events and host functions, whose
+  GPU-to-host wake took 1.0–1.7 ms at the median on the GB10, and a host
+  function holds its stream until the driver's callback thread runs it;
+  stream memory operations, which still need polling and add a queue
+  entry per fence (RE-029).
+- **Completion semantics do not change** (D-048): only a query that sees
+  a fence complete proves it; an anticipation is a hint about when to
+  poll, and every command and fence handed over still signals its lane.
+
+**Why.** Every thread on a step's path that sleeps costs a Spark wakeup
+(RE-017), and a step's path crosses four (completion lane, scheduler,
+client, submission lane). On `spark-b`, from a step's end to the next
+step's start on the GPU, less the client's host work, with synthetic
+40–45 ms steps: 234–705 µs at the median with the old defaults (200 µs
+windows, the completion lane spinning through every step: 2 cores busy
+while stepping), 8 µs with every thread polling (the harness: 4 cores),
+26–32 µs anticipated, at 0.12–0.21 cores while stepping and none while
+idle; on the paged node's own path 25.6–27.8 µs at 0.11–0.12 cores,
+against 561–667 µs before. Waking on the GPU's own signal (a blocking-sync
+event, a host function) was slower than either.
+
+**Consequences.** The harness measures what the runtime does; figures
+taken with the 100 ms window are labelled harness-polled. A step shorter
+than any of its stream's last eight (the first decode step after eight
+prefill chunks, a stream's first fences) is seen up to about 1 ms late,
+once: it is a likely end from then on. Work that alternates between a few
+lengths spins around each of them, so costs more CPU (0.33–0.35 of a core
+with 45 ms and 5 ms steps mixed, against 0.12–0.13 with 45 ms alone).
+
+**Reopen if.** Steps on one stream vary so widely from one to the next
+(mixed batches) that recent lengths no longer predict them; the
+driver's interrupt path gets fast enough to wake on; or the owner allows
+a PM QoS request (`/dev/cpu_dma_latency`, root) that keeps cores out of
+deep idle while a request runs, which would make sleeping cheap (not
+tried: a system setting).
+
+## D-093: A request may lease its closure once and run every step under that lease  (2026-09-28, status: accepted by the owner, 2026-09-28, for the M3 slice that built it, for review with it; amends D-086's "a job holds a lease on the phase's whole closure"; its note on the harness's polling is settled by D-094, the runtime's own wake)
 
 **Decision.** The owner, on 2026-09-28: for a full-swap model the closure
 is the whole model, so a request (a prompt or turn; for an image, one

@@ -271,9 +271,7 @@ class HeldLeaseTest : public ::testing::Test {
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
-        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
-                           .handoff = 16,
-                           .poll_sleep = std::chrono::microseconds(0)},
+        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16},
         &memory_);
     sc::LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     const std::uint64_t zone_base = memory_.RangeOf(zone_).value().base;
@@ -283,8 +281,10 @@ class HeldLeaseTest : public ::testing::Test {
     scheduler_ = std::make_unique<sc::Scheduler>(
         catalog_, *board_, wake_,
         sc::Lanes{.storage = storage_lane_.get(), .device = device_lane_.get(), .cpu = nullptr},
-        sc::SchedulerSettings{
-            .tasks = 16, .budget = Bytes((budget_extents + 1) * kSize), .landing = landing});
+        sc::SchedulerSettings{.tasks = 16,
+                              .budget = Bytes((budget_extents + 1) * kSize),
+                              .poll_window = poll_window_,
+                              .landing = landing});
     for (std::size_t m = 0; m < 2; ++m) {
       for (std::size_t i = 0; i < kPerModel; ++i) {
         ASSERT_TRUE(
@@ -447,6 +447,7 @@ class HeldLeaseTest : public ::testing::Test {
   StreamId stream_;
   std::size_t baseline_ = 0;
   std::uint64_t request_ = 0;
+  std::chrono::microseconds poll_window_{200};  // the scheduler's, set before Build
 };
 
 // The request pages its closure in and leases it once; its steps run under
@@ -486,6 +487,28 @@ TEST_F(HeldLeaseTest, ARequestLeasesItsClosureOnceAndEachStepRunsUnderIt) {
   EXPECT_EQ(scheduler_->stats().leases_released, 1U);
   EXPECT_EQ(scheduler_->stats().held_operations, 3U);
   EXPECT_EQ(scheduler_->tasks().size(), 0U);
+}
+
+// The runtime wake's follow window: a request's step ending has the device
+// lane poll for the request's next step (DeviceService::Anticipate), for
+// at least the scheduler's poll window (here 10 s, so the check cannot
+// race it). Paging the closure in, which runs no step, does not.
+TEST_F(HeldLeaseTest, AStepsEndHasTheDeviceLanePollForTheNext) {
+  poll_window_ = std::chrono::seconds(10);
+  Build(2 * kPerModel);
+  Request request;
+  Open(request, 0);  // pages in and leases: no step yet
+  EXPECT_FALSE(device_lane_->Anticipating(std::chrono::steady_clock::now()));
+  std::atomic<int> runs{0};
+  Step(request, Counting(runs));
+  ASSERT_EQ(runs.load(), 1);
+  EXPECT_TRUE(device_lane_->Anticipating(std::chrono::steady_clock::now()));
+  EXPECT_TRUE(
+      device_lane_->Anticipating(std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  EXPECT_FALSE(
+      device_lane_->Anticipating(std::chrono::steady_clock::now() + std::chrono::seconds(11)));
+  End(request);
+  EXPECT_TRUE(request.done.gone.load());
 }
 
 // No eviction of a held extent can begin; an evicting program waits for

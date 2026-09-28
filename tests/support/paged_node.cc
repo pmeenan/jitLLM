@@ -30,6 +30,10 @@ using catalog::ExtentId;
 using catalog::MemoryClass;
 
 constexpr auto kPatience = std::chrono::minutes(10);
+// A request's driver spins from this long before a step's expected end
+// until this long after it (the device lanes' defaults, DeviceSettings).
+constexpr auto kSpinAhead = std::chrono::microseconds(1000);
+constexpr auto kSpinPast = std::chrono::microseconds(1000);
 
 // Each device-type lane's completion handoff; a lane holds at most twice
 // that many fences unreleased (queued for its completion lane, and
@@ -306,13 +310,13 @@ Status PagedNode::Start(Bytes budget) {
           .span_bytes = settings_.coalesce ? providers::kSpanBytes : providers::kNoCoalescing,
           .span_segments = providers::kMaxSegments},
       *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32});
-  device_lane_ = std::make_unique<sc::DeviceService>(
-      *execution_, streams_, *board_,
-      sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
-                         .handoff = kLaneHandoff,
-                         .poll_sleep = std::chrono::microseconds(0),
-                         .poll_window = settings_.poll_window},
-      nullptr);
+  sc::DeviceSettings device{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
+                            .handoff = kLaneHandoff};
+  if (settings_.poll_window) {
+    device.poll_window = *settings_.poll_window;  // a diagnostic (NodeSettings)
+  }
+  device_lane_ =
+      std::make_unique<sc::DeviceService>(*execution_, streams_, *board_, device, nullptr);
   if (settings_.copy_lane) {
     // The zone's copies on their own submission and completion lanes, on
     // the copy stream alone: a model's job launching into a full stream
@@ -320,8 +324,7 @@ Status PagedNode::Start(Bytes budget) {
     copy_lane_ = std::make_unique<sc::DeviceService>(
         *execution_, std::span<const providers::StreamId>(&streams_.back(), 1), *board_,
         sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
-                           .handoff = kLaneHandoff,
-                           .poll_sleep = std::chrono::microseconds(0)},
+                           .handoff = kLaneHandoff},
         nullptr);
   }
   // Managed backing's VMM work on a lane of its own, so the zone's copies
@@ -336,18 +339,18 @@ Status PagedNode::Start(Bytes budget) {
   for (std::size_t i = 0; i < settings_.slots; ++i) {
     landing.slots.push_back(zone_.base + (i * settings_.slot_bytes));
   }
-  scheduler_ =
-      std::make_unique<sc::Scheduler>(catalog_, *board_, wake_,
-                                      sc::Lanes{.storage = storage_lane_.get(),
-                                                .device = device_lane_.get(),
-                                                .cpu = nullptr,
-                                                .backing = backing_lane_.get(),
-                                                .copy = copy_lane_.get()},
-                                      sc::SchedulerSettings{.tasks = 16,
-                                                            .budget = budget,
-                                                            .poll_window = settings_.poll_window,
-                                                            .landing = landing,
-                                                            .observer = settings_.observer});
+  sc::SchedulerSettings scheduling{
+      .tasks = 16, .budget = budget, .landing = landing, .observer = settings_.observer};
+  if (settings_.poll_window) {
+    scheduling.poll_window = *settings_.poll_window;  // a diagnostic (NodeSettings)
+  }
+  scheduler_ = std::make_unique<sc::Scheduler>(catalog_, *board_, wake_,
+                                               sc::Lanes{.storage = storage_lane_.get(),
+                                                         .device = device_lane_.get(),
+                                                         .cpu = nullptr,
+                                                         .backing = backing_lane_.get(),
+                                                         .copy = copy_lane_.get()},
+                                               scheduling);
   return {};
 }
 
@@ -662,12 +665,16 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   const std::uint64_t before = open.channel.steps.load(std::memory_order_acquire);
   const auto called = std::chrono::steady_clock::now();
   Signal(open.request);
-  // Spinning, not sleeping: the step's result is the next step's input,
-  // and a sleeping thread wakes slowly on the Spark (RE-017).
+  // The step's result is the next step's input, and a sleeping thread
+  // wakes slowly on the Spark (RE-017), so the driver waits as the
+  // runtime's lanes do (docs/experiments/runtime-wake/): asleep through
+  // most of the step, spinning around its likely ends (the last few steps'
+  // walls), woken early by the task's report whenever it sleeps.
   auto give_up = called + kPatience;
   bool cancelled = false;
   while (open.channel.steps.load(std::memory_order_acquire) == before && !open.done.gone.load()) {
-    if (std::chrono::steady_clock::now() > give_up) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now > give_up) {
       if (cancelled) {
         std::println(stderr, "{} did not finish, nor drain once cancelled: aborting", what);
         std::abort();
@@ -676,12 +683,19 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
       give_up = std::chrono::steady_clock::now() + kPatience;
       Cancel(open.request);
     }
+    const auto next = open.walls.Next(now - called, kSpinPast);
     if (threads_.empty()) {
       Round();
+    } else if (open.walls.known() && !next) {
+      (void)open.channel.reported.WaitFor(kSpinPast);  // longer than any: sleep, woken by it
+    } else if (next && now < called + *next - kSpinAhead) {
+      (void)open.channel.reported.WaitUntil(called + *next - kSpinAhead);
     } else {
-      std::this_thread::yield();
+      std::this_thread::yield();  // around a likely end, or none known yet
     }
   }
+  (void)open.channel.reported.Consume();
+  open.walls.Add(std::chrono::steady_clock::now() - called);
   if (open.channel.steps.load(std::memory_order_acquire) == before) {
     // The request's task ended (cancelled, or failed): nothing holds the
     // job, which never ran, any more.
