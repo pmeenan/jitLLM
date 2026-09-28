@@ -1595,7 +1595,9 @@ reference container.
     the cases host VMM slowed most (the output head, single-row KQV)
     were at 0.999–1.000. Launches and outputs were identical in both memory kinds
     ([comparison](experiments/backend-proof-p1/README.md#comparison-device-vmm-against-cudamalloc-bp-f1-rule-v2-gated)).
-- **BP-F2: EXL3 kernels.**
+- **BP-F2: EXL3 kernels.** *Not run: replaced on 2026-09-27 by D-085's
+  end-to-end rule (each engine at least as fast as its reference once
+  operational). The protocol below is kept as history.*
   - All 176 cases, against upstream EXL3-G with cuBLAS 13.8.0.4, the
     matched plan; EXL3-O since D-080, with the case set fixed at P3 entry
     (above).

@@ -33,7 +33,79 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
-## D-084: One check set per slice, on a Spark; the workstation tiers at milestone gates and for host-only needs  (2026-09-27, status: accepted; amends D-061's "`check` on every change" and its `check:full` for blast-radius changes, D-011's native ARM build as only a diagnostic, and the heavy path's fix/verify rounds in workflow.md)
+## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
+
+**Decision.** The owner, on 2026-09-27: any operation that takes more than
+10 minutes should run "only when actually necessary and not as part of any
+regular cadence or gate … We can always debug backwards for some things if
+they are found later but we want to maintain a rapid forward pace on
+development." An operation is one command, run, session or batch, measured
+in wall time, including any wait for a lock or an idle host. One over 10
+minutes runs only when its result is needed now for one of these:
+- a question in front of us that it decides;
+- a bug it chases;
+- a change that directly touches what it checks;
+- something that ships to users.
+
+It is never part of a per-slice check, a review round, a milestone gate
+or any other regular cadence by default. Before starting one, the agent
+states its expected wall time and why it is needed, and runs the narrowest
+form that answers the question. That means reusing existing calibrations
+and reference runs, and preferring one session to several and one target
+to a whole tier.
+
+**Context.** Several multi-hour operations were run and later unwound
+without adding value in proportion to their delay:
+- the workstation tiers, 30–60 minutes each per round (D-084);
+- calibration and holdout batches of about 24-minute timing sessions
+  (BP-F2's protocol needs 8–9);
+- the nsys census batches;
+- a 5-hour contention with the workstation's measurements.
+
+The machinery around development was holding it back.
+
+**Consequences.**
+- Milestone gates keep the Spark set and the short checks. The workstation
+  tiers (`check`, `check:full`, `check:spark`) run only for a change that
+  needs them (D-084's list), before a package ships, or to chase a
+  finding, and then only the needed target, not every tier.
+- Pre-registration (D-079) still applies to any gated measurement that
+  does run, but protocols are sized to this rule. The owner decides which
+  long gates remain.
+- A regression that a skipped long run would have caught is found later
+  and debugged backwards. The note says what did not run.
+- **Performance parity is judged end to end, once code is operational.**
+  The owner, on the same day: "We just need to make sure once we have
+  operational code that it performs at least as fast as the reference for
+  each engine."
+  - This replaces per-kernel timing gates. BP-F2 does not run; it is
+    D-052's EXL3 gate, and M2's exit criteria allow this as an
+    owner-approved tradeoff.
+  - The retained-backing comparison's timed sessions do not run either:
+    D-033 is retained on its deterministic replay.
+  - Each engine's operational path (GGML against llama.cpp, EXL3 against
+    ExLlamaV3) is measured against its reference when it serves, at least
+    as fast, in a simple comparison.
+  - BP-F1 already ran and stands.
+  - A quick A/B session is fine when it helps select an engine or
+    implementation (the owner: "You can do a quick A/B session if it
+    helps select an engine").
+  - These comparisons are coarse. The question is whether one side is
+    more than about 10% slower than the other, so a few repeats on an
+    idle host are enough, with no calibration or statistical protocol.
+    Finer performance work comes later.
+- **Memory is judged loosely too.** Each engine's peak device memory for a
+  run should be no more than about 10% above its reference's for the same
+  workload, read from ordinary counters (the driver's free memory,
+  `MemAvailable`) in a quick run. It is not byte-exact and not
+  pre-registered. The catalog's own accounting stays exact, because it is
+  code, not measurement. The census rules (v1–v3) and nsys passes stop;
+  nsys is a debugging tool for a gap found this way.
+
+**Reopen if.** A regression that a skipped long run would have caught
+costs more than the time the rule saves.
+
+## D-084: One check set per slice, on a Spark; the workstation tiers at milestone gates and for host-only needs  (2026-09-27, status: accepted; amended by D-085; amends D-061's "`check` on every change" and its `check:full` for blast-radius changes, D-011's native ARM build as only a diagnostic, and the heavy path's fix/verify rounds in workflow.md)
 
 **Decision.** The owner, on 2026-09-27: "We probably only need one set of
 checks for everything except for a milestone gate as well (spark unless
@@ -3026,7 +3098,7 @@ ExLlamaV3's wrappers are PyTorch-bound, so the EXL3 plan already rewrote them.
 - A requirement emerges to load kernels without rebuilding. That would also
   reopen D-028.
 
-## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amends D-028 and D-051)
+## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051)
 
 **Decision.** Keep the first GGML/FP16 control, and require native EXL3
 execution alongside it in M2, before settling the operation contract and
@@ -4145,7 +4217,7 @@ raw-device comparison demonstrates a material end-to-end gain worth owning
 allocation, metadata, recovery, and tooling below the filesystem. No raw
 performance advantage or production tail bound is assumed from this spike.
 
-## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; implements D-006)
+## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; retained 2026-09-27 after the retained-backing replay, D-085; implements D-006)
 
 **Decision.** Start the CUDA provider with one physical allocation handle per
 independently reclaimable extent, using the queried minimum granularity:

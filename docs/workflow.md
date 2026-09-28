@@ -81,12 +81,21 @@ downgrade a heavy-path change to the light loop on their own.
   included), plus locally the light steps the change touches (clang-format
   on changed files, the REUSE and header checks when files are added, the
   tools/ tests it affects). The workstation tiers (`check`, `check:full`,
-  `check:spark`) run at milestone gates, and for a change that needs the
-  Linux host: x86-64 or CPU-only builds, qemu, the reference container,
+  `check:spark`) take 30–60 minutes each, so under D-085 they run only
+  before a package ships, to chase a finding, or for a change that needs
+  the Linux host, and then only the needed target: x86-64 or CPU-only builds, qemu, the reference container,
   packaging, toolchain or source-lock changes, or sanitizer-only
   behaviour. Review and challenge rounds iterate on the Spark set; a round
   that finds only low-severity issues fixes them without another round.
   Never run two check tiers on one tree at once.
+- **Nothing over 10 minutes by default (D-085).** Any command, run,
+  session or batch expected to take more than 10 minutes of wall time,
+  waits included, runs only when its result is needed now: it decides a
+  question in front of us, chases a bug, directly checks what a change
+  touches, or precedes something shipping. It is never part of a regular
+  cadence, a review round or a milestone gate by default. State its
+  expected time and why it is needed before starting it. Run the
+  narrowest form, and debug backwards if something surfaces later.
 - **Say which checks ran where.** The workstation tiers' native builds and
   CPU tests run on the workstation, including AArch64 CPU tests under
   qemu-user (D-061). The per-slice set, and anything that needs a Spark

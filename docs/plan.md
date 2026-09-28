@@ -812,7 +812,7 @@ reservation policy) were recorded in M0.
       launch record, calibration, holdout, harness equivalence, then the
       sessions), after writing the native candidate's timing harness and
       its session driver; the EXL3 census with its `F` cap set first.
-- [ ] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
+- [x] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
       *Landed:* the [swap trace](experiments/retained-backing/README.md)
@@ -832,9 +832,9 @@ reservation policy) were recorded in M0.
       eviction and compaction at each slab size, size classes at 32 MiB
       and the hybrid at 32 and 256 MiB. At 53 and 40 GiB every design's
       peak waste is above D-033's. The confirmation seed stays unread.
-      Next: the criteria still owe timed sessions on `spark` for the nine
-      designs eligible at 64 GiB, whose results can only be reported to
-      the owner; then part (b), and D-033's explicit retention.
+      *D-033 is retained* (2026-09-27): no design beats it at every
+      budget on part (a). The timed sessions and part (b) do not run
+      (D-085).
 - [x] **Shape expressibility** (D-068): fake-provider scenarios for draft
       rejection and rollback, a canvas across boundaries, block output and a
       two-artifact context.
@@ -926,8 +926,10 @@ reservation policy) were recorded in M0.
   and decode that stay within the declared oracle bounds before and after
   restoration.
 - The EXL3 kernel-time and workspace gates (BP-F2) pass, or the owner has
-  approved an explicit tradeoff. A loader or an FP16 conversion is not EXL3
-  support (D-052).
+  approved an explicit tradeoff. *The owner did, on 2026-09-27 (D-085):*
+  BP-F2 is not run; each engine is instead held to at least its
+  reference's speed end to end once its code is operational. A loader
+  or an FP16 conversion is not EXL3 support (D-052).
 - D-048's lanes pass their real concurrency, lost-wakeup and task-tree
   unwind tests, including ARM memory-ordering stress in `check:spark`.
 - D-033 is explicitly retained or amended, and the operation-contract

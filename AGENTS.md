@@ -92,7 +92,8 @@ affected docs. Until then, these govern.
   jitLLM owns streams, workspace, library handles, fusion choice and
   completion; third-party backend runtimes never dispatch model work. Kernels
   from GGML (first), ExLlamaV3 (a real EXL3 companion is required in M2 before
-  settling the artifact/backend contracts, with upstream performance gates),
+  settling the artifact/backend contracts; once operational, each engine
+  runs at least as fast as its reference, end to end, D-085),
   other sources or our own (on measured need) implement operations under one
   contract; several
   coexist, and the plan selects per operation, architecture and shape, by
@@ -112,8 +113,9 @@ affected docs. Until then, these govern.
   `-march=native` or autodetection. Toolchain provisioning is declarative and
   pinned. Agents never invent compiler pins, measured numbers, supported
   model combinations, or license permissions. Each slice's check builds
-  natively on a Spark; the workstation tiers run at milestone gates.
-  (D-011, D-012, D-084)
+  natively on a Spark. Nothing that runs over 10 minutes (the
+  workstation tiers, timing batches, nsys passes) runs unless its result
+  is needed now. (D-011, D-012, D-084, D-085)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
   jitLLM's own code is Apache-2.0. Incorporated core implementation uses
   Apache-2.0 / BSD / MIT / MPL-2.0; other implementation licenses live in
@@ -248,7 +250,7 @@ scheduler now pages through that zone into device VMM and releases
 backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
 relocated) are bit-identical. Open: census rule v2 (measurement-accuracy
 allowances and an instrumented pass, at the owner's request), write-back
-and state spill, BP-F2 (pre-registered;
-its timing sessions and native timing harness to come), the EXL3 census,
-the retained-backing timed sessions, and P4–P6. Keep this
+and state spill, the EXL3 census, and P4–P6. D-033 is retained; per
+D-085, BP-F2 does not run and each engine is held to its reference's
+speed end to end once operational. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).
