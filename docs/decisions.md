@@ -195,7 +195,7 @@ whole life, as D-050's envelope already charges it.
 experts, M7: those steps take their own leases), or a request must yield
 extents mid-way without reaching a step boundary.
 
-## D-092: A speculative verify runs a row-invariant plan: each row computes what its one-row decode step computes, bit for bit  (2026-09-28, status: accepted by the M3 speculation slice under the owner's overnight delegation, for review with it; specializes D-068's numerical contract for speculation and D-053's plan selection for verify chunks)
+## D-092: A speculative verify runs a row-invariant plan: each row computes what its one-row decode step computes, bit for bit  (2026-09-28, status: accepted by the M3 speculation slice under the owner's overnight delegation, for review with it; specializes D-068's numerical contract for speculation and D-053's plan selection for verify chunks; made the optional exact mode by the owner on 2026-09-28, the batched verify the default (below))
 
 **Decision.**
 - **What a verify must compute.** Greedy speculation returns exactly the
@@ -257,6 +257,19 @@ row-invariant form before it enters a verify.
 **Reopen if.** A row-invariant verify costs more than the speed-up
 speculation brings, a kernel family with no exact row-invariant form is
 needed, or the owner relaxes the exit to D-068's bounded divergence.
+
+**The owner, 2026-09-28: the optional exact mode.** Speed matters more
+than bit exactness (D-085's note): the row-invariant verify is now the
+optional exact (reference) mode (`Dsv4Options::exact`, `--exact on`), and
+the default is a batched verify on DeepSeek's fast plan: attention over the
+verify's rows together, and each routed expert read once for every row
+that selects it (`jitllm.vecq`,
+[dsv4-decode](experiments/dsv4-decode/README.md)). Speculative greedy
+output then equals plain greedy output except near-ties, from a bound set
+by the engine's own kernel noise (the 99th percentile of the verify's rows
+against one-row decoding, recorded before the comparison); rollback stays exact in effect (every
+state byte outside the accepted rows' writes as before the verify), and
+the engine repeats itself bit for bit.
 
 ## D-091: Any permissive license may enter the core without a decision of its own; CUB is approved  (2026-09-28, status: accepted by the owner on 2026-09-28; amends D-017's core allowlist and D-002 where they require a license to be named before use; subsumes D-088's admission of Unicode-3.0)
 

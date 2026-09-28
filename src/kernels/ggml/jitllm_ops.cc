@@ -87,6 +87,13 @@ constinit std::array kTagGdnHistory = std::to_array("jitllm.gdn.history");
 constinit std::array kTagQsaPrep = std::to_array("jitllm.qsa.prep");
 constinit std::array kTagQsaGateQuantize = std::to_array("jitllm.qsa.gate_quantize");
 constinit std::array kTagQsaSelect = std::to_array("jitllm.qsa.select");
+constinit std::array kTagQuantizeQ8 = std::to_array("jitllm.q8_1");
+constinit std::array kTagVecQ = std::to_array("jitllm.vecq");
+constinit std::array kTagDsv4Route = std::to_array("jitllm.dsv4.route");
+constinit std::array kTagDsv4Combine = std::to_array("jitllm.dsv4.combine");
+constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
+constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
+constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
 constexpr std::size_t kEpsOffset = 32;
@@ -173,7 +180,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 26> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 33> fused = {{
       {kTagQsaSelect.data(), JitllmOp::kQsaSelect},
       {kTagQsaPrep.data(), JitllmOp::kQsaPrep},
       {kTagQsaGateQuantize.data(), JitllmOp::kQsaGateQuantize},
@@ -185,6 +192,13 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
       {kTagMxfp8Quantize.data(), JitllmOp::kMxfp8Quantize},
       {kTagMxfp8Swizzle.data(), JitllmOp::kMxfp8Swizzle},
       {kTagMxfp8Gemm.data(), JitllmOp::kMxfp8Gemm},
+      {kTagDsv4Compress.data(), JitllmOp::kDsv4Compress},
+      {kTagQuantizeQ8.data(), JitllmOp::kQuantizeQ8},
+      {kTagVecQ.data(), JitllmOp::kVecQ},
+      {kTagDsv4Route.data(), JitllmOp::kDsv4Route},
+      {kTagDsv4Combine.data(), JitllmOp::kDsv4Combine},
+      {kTagDsv4HcMix.data(), JitllmOp::kDsv4HcMix},
+      {kTagDsv4HcPre.data(), JitllmOp::kDsv4HcPre},
       {kTagGdnConv.data(), JitllmOp::kGdnConv},
       {kTagGdnNormGate.data(), JitllmOp::kGdnNormGate},
       {kTagHcCombine.data(), JitllmOp::kHcCombine},
@@ -1515,6 +1529,344 @@ std::expected<void, KernelFailure> CheckMoeRouter(const ggml_tensor* node) {
         "I32 blob");
   }
   return CheckDense(node, {logits, x, gate_row});
+}
+
+// ------------------------------------------------ DeepSeek V4's fast plan
+
+namespace {
+
+constexpr std::int64_t kQ8Block = 32;        // QK8_1
+constexpr std::int64_t kQ8BlockBytes = 36;   // sizeof(block_q8_1)
+constexpr std::int64_t kQ8RowPadding = 512;  // MATRIX_ROW_PADDING
+constexpr std::int64_t kDsv4HcStreams = 4;   // the kernels' hc
+constexpr std::int64_t kDsv4HcMixes = (2 + kDsv4HcStreams) * kDsv4HcStreams;
+
+std::int64_t Q8Padded(std::int64_t k) {
+  return (k + kQ8RowPadding - 1) / kQ8RowPadding * kQ8RowPadding;
+}
+
+ggml_tensor* WithFloat(ggml_tensor* node, int index, float value) {
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset +
+                  (static_cast<std::size_t>(index) * sizeof(value)),
+              &value, sizeof(value));
+  return node;
+}
+
+// A quantized weight tensor jitllm.vecq reads: rows packed, experts (or
+// groups) at a stride of whole blocks.
+bool VecQWeights(const ggml_tensor* w) {
+  if (w == nullptr || !VecQType(w->type) || !Bound(w) || AnyEmpty({w}) || !AllSane({w}) ||
+      !AllCurrent({w}) || w->ne[3] != 1) {
+    return false;
+  }
+  const auto type_size = static_cast<std::uint64_t>(ggml_type_size(w->type));
+  const std::int64_t block = ggml_blck_size(w->type);
+  return w->ne[0] % block == 0 && w->nb[0] == type_size &&
+         w->nb[1] == ggml_row_size(w->type, w->ne[0]) && w->nb[2] % type_size == 0 &&
+         w->nb[2] >= w->nb[1] * static_cast<std::uint64_t>(w->ne[1]) &&
+         std::cmp_less_equal(w->nb[2] / type_size, kInt32Max) &&
+         std::cmp_less_equal(w->ne[1] * (w->ne[0] / block), kInt32Max) &&
+         // The kernel's block offsets (expert · stride + row · row stride)
+         // are 32-bit.
+         std::cmp_less_equal(static_cast<std::uint64_t>(w->ne[2]) * (w->nb[2] / type_size),
+                             kInt32Max) &&
+         Aligned(w, 4);
+}
+
+}  // namespace
+
+bool VecQType(ggml_type type) {
+  switch (type) {
+    case GGML_TYPE_Q8_0:
+    case GGML_TYPE_MXFP4:
+    case GGML_TYPE_Q4_K:
+    case GGML_TYPE_Q5_K:
+    case GGML_TYPE_Q6_K:
+    case GGML_TYPE_IQ2_XS:
+    case GGML_TYPE_IQ3_XXS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::int64_t Q8Bytes(std::int64_t k, std::int64_t rows) {
+  return Q8Padded(k) / kQ8Block * kQ8BlockBytes * rows;
+}
+
+ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x) {
+  const std::int64_t rows = x->ne[1] * x->ne[2];
+  return WithInts(
+      Custom(context, GGML_TYPE_I8, {Q8Bytes(x->ne[0], rows), 1, 1, 1}, {x}, kTagQuantizeQ8.data()),
+      {x->ne[0], rows});
+}
+
+ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
+                  std::int64_t tokens, bool per_slot, ggml_tensor* gate, VecQGlu glu, float limit) {
+  const std::int64_t n = weights->ne[1];
+  const std::int64_t groups = weights->ne[2];
+  ggml_tensor* node = nullptr;
+  if (ids != nullptr) {
+    node = Custom(context, GGML_TYPE_F32, {n, ids->ne[0], tokens, 1}, {weights, q8, ids, gate},
+                  kTagVecQ.data());
+  } else if (groups > 1) {
+    node = Custom(context, GGML_TYPE_F32, {n, groups, tokens, 1}, {weights, q8, gate},
+                  kTagVecQ.data());
+  } else {
+    node = Custom(context, GGML_TYPE_F32, {n, tokens, 1, 1}, {weights, q8, gate}, kTagVecQ.data());
+  }
+  WithInts(node, {tokens, per_slot ? 1 : 0, static_cast<std::int64_t>(glu)});
+  return WithFloat(node, 3, limit);
+}
+
+ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
+                       ggml_tensor* table, ggml_tensor* tokens, std::int64_t used, bool norm,
+                       float clamp, float scale) {
+  ggml_tensor* node = table != nullptr
+                          ? Custom(context, GGML_TYPE_I32, {2 * used, logits->ne[1], 1, 1},
+                                   {logits, table, tokens}, kTagDsv4Route.data())
+                          : Custom(context, GGML_TYPE_I32, {2 * used, logits->ne[1], 1, 1},
+                                   {logits, bias}, kTagDsv4Route.data());
+  WithInts(node, {used, norm ? 1 : 0});
+  WithFloat(node, 2, clamp);
+  return WithFloat(node, 3, scale);
+}
+
+ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* route,
+                         ggml_tensor* shared) {
+  return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1}, {down, route, shared},
+                kTagDsv4Combine.data());
+}
+
+ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn) {
+  return Custom(context, GGML_TYPE_F32, {fn->ne[1] + 1, kDsv4HcChunks, x->ne[2], 1}, {x, fn},
+                kTagDsv4HcMix.data());
+}
+
+ggml_tensor* Dsv4HcPre(ggml_context* context, ggml_tensor* partials, ggml_tensor* x,
+                       ggml_tensor* scale, ggml_tensor* base, ggml_tensor* norm, float rms_eps,
+                       float hc_eps, std::int32_t iterations) {
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {(x->ne[0] + kDsv4HcTail) * x->ne[2], 1, 1, 1},
+                             {partials, x, scale, base, norm}, kTagDsv4HcPre.data());
+  WithFloat(node, 0, rms_eps);
+  WithFloat(node, 1, hc_eps);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 8, &iterations,
+              sizeof(iterations));
+  return node;
+}
+
+ggml_tensor* Dsv4Compress(ggml_context* context, ggml_tensor* state_kv, ggml_tensor* state_score,
+                          ggml_tensor* kv, ggml_tensor* score, ggml_tensor* read_idxs,
+                          std::int64_t ratio, bool overlap) {
+  const std::int64_t head = overlap ? state_kv->ne[0] / 2 : state_kv->ne[0];
+  const std::int64_t per_block = overlap ? 2 * ratio : ratio;
+  return WithInts(Custom(context, GGML_TYPE_F32, {head, 1, read_idxs->ne[0] / per_block, 1},
+                         {state_kv, state_score, kv, score, read_idxs}, kTagDsv4Compress.data()),
+                  {ratio, overlap ? 1 : 0});
+}
+
+std::expected<void, KernelFailure> CheckDsv4Compress(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4Compress, 5); !checked) {
+    return checked;
+  }
+  const ggml_tensor* skv = node->src[0];
+  const ggml_tensor* ssc = node->src[1];
+  const ggml_tensor* kv = node->src[2];
+  const ggml_tensor* score = node->src[3];
+  const ggml_tensor* read = node->src[4];
+  const std::int64_t ratio = JitllmOpInt(node, 0);
+  const std::int64_t overlap = JitllmOpInt(node, 1);
+  const std::int64_t channels = skv->ne[0];
+  const std::int64_t head = overlap != 0 ? channels / 2 : channels;
+  const std::int64_t per_block = overlap != 0 ? 2 * ratio : ratio;
+  const auto rows = [&](const ggml_tensor* t) {
+    return IsF32(t) && t->ne[0] == channels && t->ne[2] == 1 && t->ne[3] == 1 &&
+           t->nb[0] == sizeof(float) && t->nb[1] % sizeof(float) == 0 && Aligned(t, 4) &&
+           AllSane({t}) && !AnyEmpty({t}) && AllCurrent({t}) && Disjoint(node, t, false) &&
+           std::cmp_less_equal(t->nb[1] / sizeof(float) * static_cast<std::uint64_t>(t->ne[1]),
+                               kInt32Max);
+  };
+  if (ratio < 1 || ratio > 1024 || (overlap != 0 && overlap != 1) || channels % 2 != 0 ||
+      !rows(skv) || !rows(ssc) || !rows(kv) || !rows(score) || ssc->ne[1] != skv->ne[1] ||
+      score->ne[1] != kv->ne[1] || read->type != GGML_TYPE_I32 || !Packed(read) || !Bound(read) ||
+      read->ne[0] % per_block != 0 || !Shaped(read, read->ne[0], 1, 1) || !IsF32(node) ||
+      !Packed(node) || !Shaped(node, head, 1, read->ne[0] / per_block) ||
+      read->ne[0] / per_block > 65535 || !Disjoint(node, read, false) || !AllCurrent({node})) {
+    return Rejected(
+        "a compressor's state and rows F32 [channels, rows], its read indices I32, "
+        "into F32 [head, 1, blocks]");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckQuantizeQ8(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQuantizeQ8, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const std::int64_t k = JitllmOpInt(node, 0);
+  const std::int64_t rows = JitllmOpInt(node, 1);
+  if (!IsF32(x) || !IsBytes(node) || x->ne[3] != 1 || k != x->ne[0] ||
+      rows != x->ne[1] * x->ne[2] || k % kQ8Block != 0 || !Shaped(node, Q8Bytes(k, rows), 1, 1)) {
+    return Rejected("F32 rows of a multiple of 32 values into their Q8_1 blocks");
+  }
+  if (x->nb[0] != sizeof(float) || x->nb[1] % sizeof(float) != 0 || x->nb[2] % sizeof(float) != 0 ||
+      !Aligned(x, 4) || !Aligned(node, 4) || x->ne[1] > 65535 || x->ne[2] > 65535 ||
+      std::cmp_greater(k, kInt32Max)) {
+    return Rejected("rows of packed floats within the quantizer's grid");
+  }
+  if (AnyEmpty({x}) || !AllSane({x}) || !AllCurrent({x, node}) || !Disjoint(node, x, false)) {
+    return Rejected("a current, measurable input disjoint from the output");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node) {
+  if (node == nullptr || JitllmOpOf(node) != JitllmOp::kVecQ || !Bound(node)) {
+    return Rejected("not a bound jitllm.vecq node");
+  }
+  const ggml_tensor* w = node->src[0];
+  const ggml_tensor* q8 = node->src[1];
+  const bool routed = node->src[2] != nullptr && node->src[2]->type == GGML_TYPE_I32;
+  const ggml_tensor* ids = routed ? node->src[2] : nullptr;
+  const ggml_tensor* gate = routed ? node->src[3] : node->src[2];
+  const std::int64_t tokens = JitllmOpInt(node, 0);
+  const std::int64_t per_slot = JitllmOpInt(node, 1);
+  const std::int64_t glu = JitllmOpInt(node, 2);
+  if (!VecQWeights(w) || q8 == nullptr || JitllmOpOf(q8) != JitllmOp::kQuantizeQ8 || !Bound(q8) ||
+      !IsF32(node)) {
+    return Rejected("quantized weights jitllm.vecq reads, and a jitllm.q8_1 input");
+  }
+  if (tokens < 1 || tokens > kVecQTokens || (per_slot != 0 && per_slot != 1) || glu < 0 ||
+      glu > 2 || ((glu != 0) != (gate != nullptr))) {
+    return Rejected("1 to 8 tokens, and gate weights exactly with a GLU");
+  }
+  if (gate != nullptr && (!VecQWeights(gate) || gate->type != w->type ||
+                          !ggml_are_same_shape(gate, w) || !ggml_are_same_stride(gate, w))) {
+    return Rejected("gate weights of the weights' type, shape and strides");
+  }
+  const std::int64_t k = w->ne[0];
+  const std::int64_t n = w->ne[1];
+  std::int64_t used = 1;
+  if (routed) {
+    used = ids->ne[0];
+    if (ids->ne[1] != tokens || ids->ne[2] != 1 || ids->ne[3] != 1 ||
+        ids->nb[0] != sizeof(std::int32_t) || ids->nb[1] % sizeof(std::int32_t) != 0 || used < 1 ||
+        used * tokens > 64 || !Aligned(ids, 4) || AnyEmpty({ids}) || !AllSane({ids}) ||
+        !AllCurrent({ids}) || !Disjoint(node, ids, false) || !Shaped(node, n, used, tokens)) {
+      return Rejected("ids I32 [used, tokens] and an output [n, used, tokens]");
+    }
+  } else if (w->ne[2] == 1) {
+    if (per_slot != 0 || !Shaped(node, n, tokens, 1)) {
+      return Rejected("dense weights [k, n] into [n, tokens]");
+    }
+  } else {
+    // Grouped: matrix g over each token's input row g. The kernel packs a
+    // (token, slot) pair's slot in 8 bits.
+    used = w->ne[2];
+    if (per_slot != 1 || gate != nullptr || used > 256 || !Shaped(node, n, used, tokens)) {
+      return Rejected(
+          "grouped weights [k, n, groups] over [k, groups, tokens] into [n, groups, "
+          "tokens]");
+    }
+  }
+  const std::int64_t rows = per_slot != 0 ? used * tokens : tokens;
+  if (JitllmOpInt(q8, 0) != k || JitllmOpInt(q8, 1) != rows) {
+    return Rejected("the Q8_1 input's rows are the product's");
+  }
+  if (!Packed(node) || !Aligned(node, 4) || !AllCurrent({node, q8}) || !Disjoint(node, w, false) ||
+      !Disjoint(node, q8, false) || (gate != nullptr && !Disjoint(node, gate, false)) ||
+      std::cmp_greater(n, kInt32Max) || std::cmp_greater(k, kInt32Max)) {
+    return Rejected("a packed output disjoint from its operands, within the kernel's grid");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
+  if (node == nullptr || JitllmOpOf(node) != JitllmOp::kDsv4Route || !Bound(node)) {
+    return Rejected("not a bound jitllm.dsv4.route node");
+  }
+  const ggml_tensor* logits = node->src[0];
+  const bool hashed = node->src[2] != nullptr;
+  const std::int64_t used = JitllmOpInt(node, 0);
+  const std::int64_t tokens = logits == nullptr ? 0 : logits->ne[1];
+  if (!IsF32(logits) || !Bound(logits) || logits->ne[0] != 256 || logits->ne[2] != 1 ||
+      logits->ne[3] != 1 || !Packed(logits) || tokens < 1 || tokens > 65535 || used < 1 ||
+      used > 32 || node->type != GGML_TYPE_I32 || !Shaped(node, 2 * used, tokens, 1) ||
+      !Packed(node)) {
+    return Rejected("F32 logits [256, tokens] into I32 [2 · used, tokens], at most 32 used");
+  }
+  if (hashed) {
+    const ggml_tensor* table = node->src[1];
+    const ggml_tensor* ids = node->src[2];
+    if (table == nullptr || table->type != GGML_TYPE_I32 || !Bound(table) || !Packed(table) ||
+        table->ne[0] != used || table->ne[2] != 1 || ids->type != GGML_TYPE_I32 || !Bound(ids) ||
+        !Packed(ids) || !Shaped(ids, tokens, 1, 1) || !Disjoint(node, table, false) ||
+        !Disjoint(node, ids, false) || std::cmp_greater(table->ne[1], kInt32Max)) {
+      return Rejected("a hash table I32 [used, vocab] and the tokens I32 [tokens]");
+    }
+  } else if (!Vector(node->src[1], 256) || !Bound(node->src[1]) ||
+             !Disjoint(node, node->src[1], false)) {
+    return Rejected("a bias F32 [256]");
+  }
+  if (!AllCurrent({node, logits}) || !Disjoint(node, logits, false) || AnyEmpty({logits}) ||
+      !AllSane({logits, node})) {
+    return Rejected("current operands disjoint from the output");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckDsv4Combine(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4Combine, 3); !checked) {
+    return checked;
+  }
+  const ggml_tensor* down = node->src[0];
+  const ggml_tensor* route = node->src[1];
+  const ggml_tensor* shared = node->src[2];
+  const std::int64_t n = down->ne[0];
+  const std::int64_t used = down->ne[1];
+  const std::int64_t tokens = down->ne[2];
+  if (!IsF32(down) || JitllmOpOf(route) != JitllmOp::kDsv4Route || JitllmOpInt(route, 0) != used ||
+      !Shaped(route, 2 * used, tokens, 1) || !IsF32(shared) || !Shaped(shared, n, tokens, 1) ||
+      !IsF32(node) || !Shaped(node, n, tokens, 1) || n % 4 != 0 || !Aligned(down, 16) ||
+      !Aligned(shared, 16) || !Aligned(node, 16) || tokens > 65535) {
+    return Rejected("down F32 [n, used, tokens], its routing, shared F32 [n, tokens]");
+  }
+  return CheckDense(node, {down, route, shared});
+}
+
+std::expected<void, KernelFailure> CheckDsv4HcMix(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4HcMix, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* fn = node->src[1];
+  const std::int64_t flat = x->ne[0] * x->ne[1];
+  if (!IsF32(x) || !IsF32(fn) || x->ne[1] != kDsv4HcStreams || fn->ne[0] != flat ||
+      fn->ne[1] != kDsv4HcMixes || !Shaped(node, kDsv4HcMixes + 1, kDsv4HcChunks, x->ne[2]) ||
+      flat % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 || std::cmp_greater(flat, kInt32Max) ||
+      x->ne[2] > 65535 || !Aligned(x, 16) || !Aligned(fn, 16)) {
+    return Rejected("streams F32 [width, 4, tokens] and mixing weights F32 [4 · width, 24]");
+  }
+  return CheckDense(node, {x, fn});
+}
+
+std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4HcPre, 5); !checked) {
+    return checked;
+  }
+  const ggml_tensor* partials = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const std::int64_t width = x->ne[0];
+  const std::int64_t tokens = x->ne[2];
+  if (JitllmOpOf(partials) != JitllmOp::kDsv4HcMix || partials->src[0] != x || !IsF32(x) ||
+      x->ne[1] != kDsv4HcStreams || !Vector(node->src[2], 3) ||
+      !Vector(node->src[3], kDsv4HcMixes) || !Vector(node->src[4], width) ||
+      !Shaped(node, (width + kDsv4HcTail) * tokens, 1, 1) || width % 1024 != 0 || width > 8192 ||
+      JitllmOpInt(node, 2) < 1 || JitllmOpInt(node, 2) > 100 || tokens > 65535) {
+    return Rejected("a jitllm.dsv4.hc_mix of the streams, their scales, bases and norm weight");
+  }
+  return CheckDense(node, {partials, x, node->src[2], node->src[3], node->src[4]});
 }
 
 }  // namespace jitllm::kernels::ggml

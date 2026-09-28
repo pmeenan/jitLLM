@@ -135,6 +135,9 @@ struct Dsv4Options {
   std::uint32_t max_verify = 4;
   // The rows of a draft block (the drafts it proposes).
   std::uint32_t draft_rows = 3;
+  // The reference mode (dsv4_common.h Dsv4Model::exact): llama.cpp's
+  // unfused graph and D-092's row-invariant verify; off, the fast plan.
+  bool exact = false;
 };
 
 // What a chunk computes beside its target rows' own work.
@@ -265,6 +268,25 @@ class Dsv4Runner final : public test_support::PagedModel {
   std::expected<std::uint64_t, std::string> CheckDeviceEmbedding();
   // The target's state and the drafter's ring, read to the host (a job).
   Status ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter);
+  // The last verify's writes (model/dsv4.h Dsv4ChunkWrites, model/dspark.h
+  // DsparkWrites): each range's offset in the target's state, or with
+  // `ring` in the drafter's ring (as ReadState reads them), its bytes and
+  // its row (-1: the chunk's scratch rows). Nothing else of either is
+  // written by a verify.
+  struct VerifyWrite {
+    bool ring = false;
+    std::uint64_t offset = 0;
+    std::uint64_t bytes = 0;
+    std::int64_t row = 0;
+  };
+  std::vector<VerifyWrite> last_verify_writes() const;
+  // The reference mode on or off for the next chunks (Dsv4Options::exact):
+  // every plan and graph dropped.
+  void set_exact(bool on) {
+    model_.exact = on;
+    dmodel_.exact = on;
+    DropPlans();
+  }
   // Runs of the drafter's block: how they ran, and its last job's host time.
   const Dsv4GraphStats& draft_stats() const { return draft_stats_; }
   const model::DsparkProfile& dspark_profile() const { return dprofile_; }

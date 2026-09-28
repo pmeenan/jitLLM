@@ -10,6 +10,7 @@
 #include <expected>
 #include <format>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -150,7 +151,10 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     switch (node->op) {
       case GGML_OP_RMS_NORM: {
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
-        if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {
+        if (const auto f =
+                !fusion && device.fuse_norms ? RmsNormMulFusionAt(graph, i) : std::nullopt) {
+          add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
+        } else if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {
           add(Operation::kRmsNormMul, kRmsNormMulUnfused, i, {node, next}, 2);
         } else {
           add(Operation::kRmsNorm, kRmsNormName, i, {node}, 1);
@@ -190,6 +194,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           }
           add(Operation::kMatMul, *path == QuantMulMatPath::kVector ? kMulMatVecQ : kMulMatQ, i,
               {node}, 1);
+          break;
+        }
+        if (device.vector_floats && node->src[1] != nullptr &&
+            node->src[1]->ne[1] <= kRowInvariantColumns &&
+            (node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_F16 ||
+             node->src[0]->type == GGML_TYPE_BF16)) {
+          add(Operation::kMatMul, kMulMatVecFRows, i, {node}, 1);
           break;
         }
         const auto path = device.mul_mat(node);
@@ -424,6 +435,27 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case JitllmOp::kQsaSelect:
             add(Operation::kTopK, kQsaSelectName, i, {node}, 1);
+            break;
+          case JitllmOp::kQuantizeQ8:
+            add(Operation::kQuantize, kQuantizeQ8Name, i, {node}, 1);
+            break;
+          case JitllmOp::kVecQ:
+            add(Operation::kMatMul, kVecQName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4Route:
+            add(Operation::kMoeRoute, kDsv4RouteName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4Combine:
+            add(Operation::kMoeCombine, kDsv4CombineName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4HcMix:
+            add(Operation::kHcMix, kDsv4HcMixName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4HcPre:
+            add(Operation::kHcPre, kDsv4HcPreName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4Compress:
+            add(Operation::kSoftMax, kDsv4CompressName, i, {node}, 1);
             break;
           case JitllmOp::kNone:
             return Rejected(

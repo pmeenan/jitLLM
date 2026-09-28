@@ -69,6 +69,15 @@ if(JITLLM_CUDA)
                                                  jitllm_warnings)
   target_link_options(jitllm_fp16_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # jitllm.vecq's launch configurations on DeepSeek V4 Flash's product shapes
+  # (kernels/ggml/dsv4_fast.h; docs/experiments/dsv4-decode/).
+  add_executable(jitllm_vecq_bench vecq_bench.cc)
+  target_include_directories(jitllm_vecq_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_vecq_bench PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                  jitllm_warnings)
+  target_link_options(jitllm_vecq_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # M3's first model slice: DeepSeek V4 Flash, native and resident, from its
   # v0 prepared artifact (docs/experiments/dsv4-native/).
   add_executable(jitllm_dsv4_exec dsv4_exec.cc)

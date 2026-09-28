@@ -564,6 +564,32 @@ it appears.
       spread. Prefill (8,192 tokens: DeepSeek 27.37–27.45 s, Qwen3.8
       6.84 s) and the DeepSeek ↔ Qwen3.8 swaps (7.1–8.8 s, page-in
       13.3–14.1 GB/s) did not move with the wake; every check stays exact.
+- [x] **DeepSeek decode past llama.cpp** (the owner, 2026-09-28: speed
+      before bit exactness, D-085's and D-092's notes;
+      [dsv4-decode](experiments/dsv4-decode/README.md)): DeepSeek's fast
+      plan is the default for decode, verify and draft chunks. One
+      quantized vector kernel (`jitllm.vecq`) serves every product and
+      reads each routed expert once for all the rows that select it (the
+      batched verify), with fused routing, combine, hyper-connection
+      pre-mix and compressor kernels, and PDL. A decode step drops from
+      5,575 kernels to 2,558. With the runtime wake it decodes at
+      21.90–22.21 tok/s against llama.cpp's 20.41 in the same session
+      (1.07–1.09×; 1.10–1.11× its fusion-off arm), and DSpark at 31.6–31.7
+      / 34.3–34.4 on `prose` / `code` (1.03× / 1.07–1.08× the recorded
+      30.80 / 31.94). Correctness is coarse against llama.cpp: greedy
+      244/256 and 250/256 equal, the rest near-ties (oracle margins under
+      1.0); perplexity within 0.5%; speculation and forced rejections
+      with no stale state byte; sampled speculation's total variation
+      0.004–0.038 (bound 0.1). Swap, restore and repeat stay
+      bit-identical. The exact plan and D-092's verify remain as
+      `--exact on`. The recorded near-tie bound (6.11, twice the largest
+      fast-against-reference move) is too loose to be a test; later
+      slices take the 99th percentile of noise between two of jitLLM's
+      own paths ([dsv4-decode](experiments/dsv4-decode/README.md#the-bound-going-forward)),
+      under which one forced-run speculative token (a 3.62-nat
+      disagreement) is flagged. Open: that token's diagnosis; "decisive"
+      (about 1.1×) is not reached on any target; the products run at
+      about 200–210 GB/s in the model against 230–245 alone, unexplained.
 - [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
@@ -609,14 +635,25 @@ it appears.
   model's same-format oracle (table above), with small logit differences
   allowed, and perplexity on a fixed text is within a few percent of the
   oracle's. Greedy decoding with speculation gives the same tokens as
-  without.
+  without, except near-ties (the bound: the 99th percentile of the
+  engine's own kernel noise between two of its paths, neither the
+  oracle, recorded before the comparison).
+  *Amended 2026-09-28 (the owner: speed before bit exactness, D-085's
+  note): was "the same tokens as without"; the bit-for-bit form is the
+  optional reference mode's check.*
 - **Speculation correctness** (moved from M9, D-068), per drafter:
   - forced draft rejections at varied positions, all-reject and partial
     accept among them, leave no stale KV, recurrent (Gated DeltaNet or
-    linear-attention), drafter or MTP, or indexer state, checked against a
-    control that drafted only the accepted tokens;
+    linear-attention), drafter or MTP, or indexer state: rollback stays
+    exact in effect, checked against a control that drafted only the
+    accepted tokens (the reference mode, bit for bit) or, on the default
+    fast path, by every state byte outside the accepted rows' writes
+    being as it was before the verify;
   - after each rejection, the output equals non-speculative greedy
-    decoding's bit for bit, in the same engine with the same kernels;
+    decoding's except near-ties (the same bound, from the verify's rows
+    against one-row decoding); bit for bit, in the same engine with the same kernels, is an
+    optional reference-mode check. *Amended 2026-09-28 (the owner, D-085's
+    note): was "bit for bit" on the default path.*
   - rollback composes with swap: after rejected drafts, A is swapped out
     mid-conversation and restored, and continues exactly as the unswapped
     control;

@@ -7,6 +7,12 @@ M3's first model slice ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-
 DeepSeek V4 Flash 0731 UD-Q2_K_XL run by jitLLM natively and resident on one
 Spark from its D-056 prepared artifact, against llama.cpp on the same GGUF.
 
+*Since 2026-09-28 (the owner: speed before bit exactness, D-085's note):
+the node-for-node graph planned unfused, which this slice measured, is
+the optional reference mode (`jitllm_dsv4_exec --exact on`); the default
+is DeepSeek's fast plan, judged coarsely against llama.cpp
+([dsv4-decode](../dsv4-decode/README.md)).*
+
 ## Pre-registration (fixed before jitLLM's first run on the model)
 
 Inputs, fixed in the repository (D-087's entry rule):

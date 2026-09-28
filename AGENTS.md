@@ -278,7 +278,12 @@ bit-identical to its saved state's continuation (RE-031 rules out a
 rerun); and DeepSeek's speculative decoding with its DSpark drafter
 (D-092): greedy bit-identical to plain greedy, exact rollback of rejected
 drafts, across swaps too, decode 0.96–0.97× llama.cpp's with the same
-drafter once each generation ran as a request.
+drafter once each generation ran as a request; then DeepSeek's fast
+plan as the default (speed before bit exactness: one vector kernel that
+reads each routed expert once per verify, fused routing and
+hyper-connections; greedy within near-ties of llama.cpp, the exact plan
+kept as `--exact on`): plain decode 1.07–1.09× llama.cpp's, DSpark
+1.03× / 1.07–1.08× on prose / code, short of a decisive ~1.1×.
 D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

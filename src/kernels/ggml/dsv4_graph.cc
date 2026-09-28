@@ -18,6 +18,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -135,6 +136,10 @@ class Builder {
                                std::int64_t ratio, std::int64_t head);
   ggml_tensor* HcaCompress(ggml_tensor* kv_state, ggml_tensor* score_state, ggml_tensor* read_idxs,
                            ggml_tensor* comp_pos, ggml_tensor* norm, std::int64_t head);
+  ggml_tensor* CompressFused(ggml_tensor* state_kv, ggml_tensor* state_score, ggml_tensor* kv,
+                             ggml_tensor* score, ggml_tensor* read_idxs, ggml_tensor* comp_pos,
+                             ggml_tensor* norm, std::int64_t ratio, std::int64_t head,
+                             bool overlap);
   ggml_tensor* AppendZeroRow(ggml_tensor* t, bool neg_inf);
   ggml_tensor* LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_tensor* cur, int il);
   ggml_tensor* TopKMask(ggml_tensor* kq_mask, ggml_tensor* top_k);
@@ -149,6 +154,21 @@ class Builder {
   ggml_tensor* GetK(ggml_tensor* cache, std::int64_t n_kv);
   ggml_tensor* Attention(std::uint32_t il, ggml_tensor* cur);
   ggml_tensor* Moe(std::uint32_t il, ggml_tensor* cur);
+  // The fast plan's forms (Dsv4GraphOptions::fused), where Fused() holds.
+  bool Fused(std::uint32_t il) const;
+  // HcPre then Norm(·, norm): the normed row, and post and comb as views.
+  ggml_tensor* HcPreFused(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale, ggml_tensor* base,
+                          ggml_tensor* norm, ggml_tensor** post, ggml_tensor** comb);
+  ggml_tensor* MoeFused(std::uint32_t il, ggml_tensor* cur);
+  // HcPre and Norm, fused or not.
+  ggml_tensor* PreNorm(std::uint32_t il, ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
+                       ggml_tensor* base, ggml_tensor* norm, ggml_tensor** post,
+                       ggml_tensor** comb) {
+    if (Fused(il)) {
+      return HcPreFused(x, fn, scale, base, norm, post, comb);
+    }
+    return Norm(HcPre(x, fn, scale, base, post, comb, static_cast<int>(il)), norm);
+  }
 
   ggml_context* c_;
   const model::Dsv4Profile& p_;
@@ -157,6 +177,34 @@ class Builder {
   Dsv4Graph& g_;
   const Dsv4GraphOptions& o_;
   std::vector<ggml_tensor*> expanded_;
+  // The fast plan's activations quantized once (Q8Of), by input.
+  std::unordered_map<const ggml_tensor*, ggml_tensor*> q8_;
+
+  ggml_tensor* Q8Of(ggml_tensor* x) {
+    if (const auto found = q8_.find(x); found != q8_.end()) {
+      return found->second;
+    }
+    ggml_tensor* q = QuantizeQ8(c_, x);
+    q8_.emplace(x, q);
+    return q;
+  }
+  // A product: in the fast plan, a quantized 2D weight over at most
+  // kVecQTokens rows of F32 activations is jitllm.vecq over the input's one
+  // quantization; anything else GGML's mul_mat.
+  bool VecQInput(const ggml_tensor* x) const {
+    return o_.fused && x->type == GGML_TYPE_F32 && x->ne[1] <= kVecQTokens && x->ne[2] == 1 &&
+           x->ne[3] == 1 && x->nb[0] == sizeof(float) && x->ne[0] % 32 == 0;
+  }
+  static bool VecQWeight(const ggml_tensor* w, const ggml_tensor* x) {
+    return w != nullptr && w->ne[2] == 1 && w->ne[3] == 1 && VecQType(w->type) &&
+           w->ne[0] == x->ne[0];
+  }
+  ggml_tensor* Mm(ggml_tensor* w, ggml_tensor* x) {
+    if (!VecQInput(x) || !VecQWeight(w, x)) {
+      return ggml_mul_mat(c_, w, x);
+    }
+    return VecQ(c_, w, Q8Of(x), nullptr, x->ne[1], false);
+  }
 };
 
 std::expected<ggml_tensor*, KernelFailure> Leaf(ggml_context* c, const model::Dsv4Tensor& t,
@@ -459,6 +507,19 @@ ggml_tensor* Builder::OverlapCompress(ggml_tensor* kv_state, ggml_tensor* score_
   return ggml_rope_set_offset(comp, static_cast<int>(head - p_.rope_dims));
 }
 
+// The fast plan's compressor (jitllm.dsv4.compress over the state and the
+// chunk's rows, no source copy), then the norm and RoPE as above.
+ggml_tensor* Builder::CompressFused(ggml_tensor* state_kv, ggml_tensor* state_score,
+                                    ggml_tensor* kv, ggml_tensor* score, ggml_tensor* read_idxs,
+                                    ggml_tensor* comp_pos, ggml_tensor* norm, std::int64_t ratio,
+                                    std::int64_t head, bool overlap) {
+  ggml_tensor* comp = Dsv4Compress(c_, state_kv, state_score, kv, score, read_idxs, ratio, overlap);
+  comp = Norm(comp, norm);
+  const Rope r = CompressedRope(p_);
+  comp = RopeExt(comp, comp_pos, r, r.n_ctx_orig);
+  return ggml_rope_set_offset(comp, static_cast<int>(head - p_.rope_dims));
+}
+
 // build_hca_compressed_kv_from_state (deepseek4.cpp:471-516).
 ggml_tensor* Builder::HcaCompress(ggml_tensor* kv_state, ggml_tensor* score_state,
                                   ggml_tensor* read_idxs, ggml_tensor* comp_pos, ggml_tensor* norm,
@@ -541,13 +602,13 @@ ggml_tensor* Builder::LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_t
   const std::int64_t ih = p_.indexer_head_dim;
   const std::int64_t heads = p_.indexer_heads;
   const std::int64_t nt = cur->ne[1];
-  ggml_tensor* q = ggml_mul_mat(c_, l.idx_q_b, qr);
+  ggml_tensor* q = Mm(l.idx_q_b, qr);
   q = ggml_reshape_3d(c_, q, ih, heads, nt);
   const Rope r = CompressedRope(p_);
   q = RopeExt(q, g_.positions, r, r.n_ctx_orig);
   q = ggml_rope_set_offset(q, static_cast<int>(ih - p_.rope_dims));
   q = Hadamard(q, g_.lid_rot);
-  ggml_tensor* weights = ggml_mul_mat(c_, l.idx_proj, cur);
+  ggml_tensor* weights = Mm(l.idx_proj, cur);
   weights = ggml_scale(c_, weights, 1.0f / sqrtf(static_cast<float>(ih * heads)));
   ggml_tensor* k = GetK(l.lid_k, s_.csa_n_kv);
   q = ggml_view_4d(c_, q, q->ne[0], q->ne[1], q->ne[2], 1, q->nb[1], q->nb[2], q->nb[3], 0);
@@ -586,16 +647,16 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   const std::int64_t nt = cur->ne[1];
   const Rope rl = LayerRope(p_, ratio);
 
-  ggml_tensor* qr = ggml_mul_mat(c_, l.q_a, cur);
+  ggml_tensor* qr = Mm(l.q_a, cur);
   qr = Norm(qr, l.q_a_norm);
-  ggml_tensor* q = ggml_mul_mat(c_, l.q_b, qr);
+  ggml_tensor* q = Mm(l.q_b, qr);
   q = ggml_reshape_3d(c_, q, head, heads, nt);
   q = ggml_rms_norm(c_, q, p_.rms_eps);
   q = RopeExt(q, g_.positions, rl, rl.n_ctx_orig);
   q = ggml_rope_set_offset(q, static_cast<int>(nope));
   Name(q, "q", il);
 
-  ggml_tensor* kv = ggml_mul_mat(c_, l.kv, cur);
+  ggml_tensor* kv = Mm(l.kv, cur);
   kv = Norm(kv, l.kv_norm);
   kv = ggml_reshape_3d(c_, kv, head, 1, nt);
   kv = RopeExt(kv, g_.positions, rl, rl.n_ctx_orig);
@@ -605,14 +666,14 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   ggml_tensor* hca_state_kv = nullptr;
   ggml_tensor* hca_state_score = nullptr;
   if (ratio == model::kDsv4HcaRatio) {
-    hca_state_kv = ggml_mul_mat(c_, l.comp_kv, cur);
-    hca_state_score = ggml_mul_mat(c_, l.comp_gate, cur);
+    hca_state_kv = Mm(l.comp_kv, cur);
+    hca_state_score = Mm(l.comp_gate, cur);
     ggml_tensor* ape_rows = ggml_get_rows(c_, l.comp_ape, g_.hca.state_pos);
     hca_state_score = ggml_add(c_, hca_state_score, ape_rows);
   }
   if (ratio == model::kDsv4CsaRatio) {
-    ggml_tensor* csa_kv = ggml_mul_mat(c_, l.comp_kv, cur);
-    ggml_tensor* csa_score = ggml_mul_mat(c_, l.comp_gate, cur);
+    ggml_tensor* csa_kv = Mm(l.comp_kv, cur);
+    ggml_tensor* csa_score = Mm(l.comp_gate, cur);
     ggml_tensor* ape_rows = ggml_get_rows(c_, l.comp_ape, g_.csa.state_pos);
     csa_score = ggml_add(c_, csa_score, ape_rows);
     // The ring state, read in place (no rollback planes to restore from).
@@ -620,10 +681,16 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
                                         s_.csa_state_rows, l.csa_state_kv->nb[1], 0);
     ggml_tensor* base_score = ggml_view_2d(c_, l.csa_state_score, l.csa_state_score->ne[0],
                                            s_.csa_state_rows, l.csa_state_score->nb[1], 0);
-    ggml_tensor* source_kv = ggml_concat(c_, base_kv, csa_kv, 1);
-    ggml_tensor* source_score = ggml_concat(c_, base_score, csa_score, 1);
-    ggml_tensor* comp = OverlapCompress(source_kv, source_score, g_.csa.read_idxs, g_.csa.write_pos,
-                                        l.comp_norm, model::kDsv4CsaRatio, head);
+    ggml_tensor* comp = nullptr;
+    if (o_.fused) {
+      comp = CompressFused(base_kv, base_score, csa_kv, csa_score, g_.csa.read_idxs,
+                           g_.csa.write_pos, l.comp_norm, model::kDsv4CsaRatio, head, true);
+    } else {
+      ggml_tensor* source_kv = ggml_concat(c_, base_kv, csa_kv, 1);
+      ggml_tensor* source_score = ggml_concat(c_, base_score, csa_score, 1);
+      comp = OverlapCompress(source_kv, source_score, g_.csa.read_idxs, g_.csa.write_pos,
+                             l.comp_norm, model::kDsv4CsaRatio, head);
+    }
     Name(comp, "csa_state_compress", il);
     Expand(CpyK(l.csa_k, comp, g_.csa.write_idxs));
     ggml_tensor* persist_kv = ggml_get_rows(c_, csa_kv, g_.csa.persist_src);
@@ -632,19 +699,24 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
     Expand(ggml_set_rows(c_, l.csa_state_score, persist_score, g_.csa.persist_dst));
 
     const std::int64_t ih = p_.indexer_head_dim;
-    ggml_tensor* lid_kv = ggml_mul_mat(c_, l.idx_comp_kv, cur);
-    ggml_tensor* lid_score = ggml_mul_mat(c_, l.idx_comp_gate, cur);
+    ggml_tensor* lid_kv = Mm(l.idx_comp_kv, cur);
+    ggml_tensor* lid_score = Mm(l.idx_comp_gate, cur);
     ggml_tensor* lid_ape_rows = ggml_get_rows(c_, l.idx_comp_ape, g_.lid.state_pos);
     lid_score = ggml_add(c_, lid_score, lid_ape_rows);
     ggml_tensor* lid_base_kv = ggml_view_2d(c_, l.lid_state_kv, l.lid_state_kv->ne[0],
                                             s_.csa_state_rows, l.lid_state_kv->nb[1], 0);
     ggml_tensor* lid_base_score = ggml_view_2d(c_, l.lid_state_score, l.lid_state_score->ne[0],
                                                s_.csa_state_rows, l.lid_state_score->nb[1], 0);
-    ggml_tensor* lid_source_kv = ggml_concat(c_, lid_base_kv, lid_kv, 1);
-    ggml_tensor* lid_source_score = ggml_concat(c_, lid_base_score, lid_score, 1);
-    ggml_tensor* lid_comp =
-        OverlapCompress(lid_source_kv, lid_source_score, g_.lid.read_idxs, g_.lid.write_pos,
-                        l.idx_comp_norm, model::kDsv4CsaRatio, ih);
+    ggml_tensor* lid_comp = nullptr;
+    if (o_.fused) {
+      lid_comp = CompressFused(lid_base_kv, lid_base_score, lid_kv, lid_score, g_.lid.read_idxs,
+                               g_.lid.write_pos, l.idx_comp_norm, model::kDsv4CsaRatio, ih, true);
+    } else {
+      ggml_tensor* lid_source_kv = ggml_concat(c_, lid_base_kv, lid_kv, 1);
+      ggml_tensor* lid_source_score = ggml_concat(c_, lid_base_score, lid_score, 1);
+      lid_comp = OverlapCompress(lid_source_kv, lid_source_score, g_.lid.read_idxs,
+                                 g_.lid.write_pos, l.idx_comp_norm, model::kDsv4CsaRatio, ih);
+    }
     lid_comp = Hadamard(lid_comp, g_.lid_rot);
     Name(lid_comp, "lid_state_compress_rot", il);
     Expand(CpyK(l.lid_k, lid_comp, g_.lid.write_idxs));
@@ -658,10 +730,16 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
                                         s_.hca_state_rows, l.hca_state_kv->nb[1], 0);
     ggml_tensor* base_score = ggml_view_2d(c_, l.hca_state_score, l.hca_state_score->ne[0],
                                            s_.hca_state_rows, l.hca_state_score->nb[1], 0);
-    ggml_tensor* source_kv = ggml_concat(c_, base_kv, hca_state_kv, 1);
-    ggml_tensor* source_score = ggml_concat(c_, base_score, hca_state_score, 1);
-    ggml_tensor* comp =
-        HcaCompress(source_kv, source_score, g_.hca.read_idxs, g_.hca.write_pos, l.comp_norm, head);
+    ggml_tensor* comp = nullptr;
+    if (o_.fused) {
+      comp = CompressFused(base_kv, base_score, hca_state_kv, hca_state_score, g_.hca.read_idxs,
+                           g_.hca.write_pos, l.comp_norm, model::kDsv4HcaRatio, head, false);
+    } else {
+      ggml_tensor* source_kv = ggml_concat(c_, base_kv, hca_state_kv, 1);
+      ggml_tensor* source_score = ggml_concat(c_, base_score, hca_state_score, 1);
+      comp = HcaCompress(source_kv, source_score, g_.hca.read_idxs, g_.hca.write_pos, l.comp_norm,
+                         head);
+    }
     Name(comp, "hca_state_compress", il);
     Expand(CpyK(l.hca_k, comp, g_.hca.write_idxs));
     ggml_tensor* persist_kv = ggml_get_rows(c_, hca_state_kv, g_.hca.persist_src);
@@ -711,11 +789,20 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
                            rl.beta_fast, rl.beta_slow);
   out = ggml_rope_set_offset(out, static_cast<int>(nope));
   out = ggml_reshape_3d(c_, out, (heads / groups) * head, groups, nt);
-  out = ggml_permute(c_, out, 0, 2, 1, 3);
-  ggml_tensor* oa = ggml_mul_mat(c_, l.out_a, out);
-  oa = ggml_permute(c_, oa, 0, 2, 1, 3);
-  oa = ggml_cont_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
-  out = ggml_mul_mat(c_, l.out_b, oa);
+  ggml_tensor* oa = nullptr;
+  if (o_.fused && nt <= kVecQTokens && VecQType(l.out_a->type) && ggml_is_contiguous(out) &&
+      out->ne[0] % 32 == 0) {
+    // The fast plan: each group's matrix over its rows, straight into the
+    // [o_lora, groups, tokens] layout the permuted copy would give.
+    oa = VecQ(c_, l.out_a, Q8Of(out), nullptr, nt, true);
+    oa = ggml_reshape_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
+  } else {
+    out = ggml_permute(c_, out, 0, 2, 1, 3);
+    oa = ggml_mul_mat(c_, l.out_a, out);
+    oa = ggml_permute(c_, oa, 0, 2, 1, 3);
+    oa = ggml_cont_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
+  }
+  out = Mm(l.out_b, oa);
   Name(out, "attn_out", il);
   return out;
 }
@@ -802,6 +889,73 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
   return out;
 }
 
+bool Builder::Fused(std::uint32_t il) const {
+  if (!o_.fused || s_.rows > kVecQTokens || p_.hc != 4 ||
+      (std::int64_t{p_.width} * p_.hc) % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 ||
+      p_.width % 1024 != 0 || p_.width > 8192 || p_.experts != 256) {
+    return false;
+  }
+  const Dsv4LayerTensors& l = g_.layers[il];
+  return VecQType(l.up_exps->type) && l.gate_exps->type == l.up_exps->type &&
+         VecQType(l.down_exps->type) && VecQType(l.up_shexp->type) &&
+         l.gate_shexp->type == l.up_shexp->type && VecQType(l.down_shexp->type) &&
+         ggml_are_same_shape(l.up_exps, l.gate_exps) &&
+         ggml_are_same_stride(l.up_exps, l.gate_exps) &&
+         ggml_are_same_shape(l.up_shexp, l.gate_shexp) && l.hc_attn_fn->type == GGML_TYPE_F32 &&
+         l.hc_ffn_fn->type == GGML_TYPE_F32;
+}
+
+ggml_tensor* Builder::HcPreFused(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
+                                 ggml_tensor* base, ggml_tensor* norm, ggml_tensor** post,
+                                 ggml_tensor** comb) {
+  const std::int64_t hc = p_.hc;
+  const std::int64_t width = p_.width;
+  const std::int64_t nt = x->ne[2];
+  ggml_tensor* partials = Dsv4HcMix(c_, x, fn);
+  ggml_tensor* pre = Dsv4HcPre(c_, partials, x, scale, base, norm, p_.rms_eps, p_.hc_eps,
+                               static_cast<std::int32_t>(p_.sinkhorn_iterations));
+  const std::size_t f = sizeof(float);
+  const auto tails = static_cast<std::size_t>(width * nt) * f;
+  *post = ggml_view_2d(c_, pre, hc, nt, kDsv4HcTail * f, tails);
+  *comb = ggml_view_3d(c_, pre, hc, hc, nt, static_cast<std::size_t>(hc) * f, kDsv4HcTail * f,
+                       tails + (static_cast<std::size_t>(hc) * f));
+  return ggml_view_2d(c_, pre, width, nt, static_cast<std::size_t>(width) * f, 0);
+}
+
+// Moe's routing, experts and shared expert in the fast plan's operations.
+ggml_tensor* Builder::MoeFused(std::uint32_t il_u, ggml_tensor* cur) {
+  const int il = static_cast<int>(il_u);
+  const Dsv4LayerTensors& l = g_.layers[il_u];
+  const std::int64_t nt = cur->ne[1];
+  const std::int64_t used = p_.experts_used;
+  ggml_tensor* logits = ggml_mul_mat(c_, l.router, cur);
+  ggml_prec_set_acc(logits, GGML_PREC_F32);
+  const float scale = p_.expert_weights_scale != 0.0f && p_.expert_weights_scale != 1.0f
+                          ? p_.expert_weights_scale
+                          : 1.0f;
+  constexpr float kClamp = 6.103515625e-5f;
+  ggml_tensor* route = l.tid2eid != nullptr
+                           ? Dsv4Route(c_, logits, nullptr, l.tid2eid, g_.tokens, used,
+                                       p_.expert_weights_norm, kClamp, scale)
+                           : Dsv4Route(c_, logits, l.router_bias, nullptr, nullptr, used,
+                                       p_.expert_weights_norm, kClamp, scale);
+  ggml_tensor* ids = ggml_view_2d(c_, route, used, nt, route->nb[1], 0);
+  ggml_tensor* q = Q8Of(cur);
+  const auto glu = [](float limit) {
+    return limit > 1e-6f ? VecQGlu::kSwigluClamp : VecQGlu::kSwiglu;
+  };
+  ggml_tensor* act =
+      VecQ(c_, l.up_exps, q, ids, nt, false, l.gate_exps, glu(p_.swiglu_limit), p_.swiglu_limit);
+  ggml_tensor* down = VecQ(c_, l.down_exps, QuantizeQ8(c_, act), ids, nt, true);
+  ggml_tensor* sh = VecQ(c_, l.up_shexp, q, nullptr, nt, false, l.gate_shexp,
+                         glu(p_.swiglu_limit_shared), p_.swiglu_limit_shared);
+  sh = VecQ(c_, l.down_shexp, QuantizeQ8(c_, sh), nullptr, nt, false);
+  Name(sh, "ffn_shexp", il);
+  ggml_tensor* out = Dsv4Combine(c_, down, route, sh);
+  Name(out, "ffn_out", il);
+  return out;
+}
+
 ggml_tensor* Builder::HcMean(ggml_tensor* x) {
   const std::int64_t hc = x->ne[1];
   ggml_tensor* acc = ggml_view_2d(c_, x, x->ne[0], x->ne[2], x->nb[2], 0);
@@ -868,6 +1022,23 @@ void Builder::Build() {
     ggml_tensor* residual = inpl;
     ggml_tensor* post = nullptr;
     ggml_tensor* comb = nullptr;
+    if (Fused(il_u)) {
+      ggml_tensor* cur = PreNorm(il_u, inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base,
+                                 l.attn_norm, &post, &comb);
+      Name(cur, "attn_norm", il);
+      cur = Attention(il_u, cur);
+      inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
+      Name(inpl, "hc_attn_post", il);
+      residual = inpl;
+      cur =
+          PreNorm(il_u, inpl, l.hc_ffn_fn, l.hc_ffn_scale, l.hc_ffn_base, l.ffn_norm, &post, &comb);
+      Expand(residual);
+      Name(cur, "ffn_norm", il);
+      cur = MoeFused(il_u, cur);
+      inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
+      Name(inpl, "l_last", il);
+      continue;
+    }
     ggml_tensor* cur = HcPre(inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base, &post, &comb, il);
     Name(cur, "hc_attn_pre", il);
     cur = Norm(cur, l.attn_norm);
@@ -896,7 +1067,7 @@ void Builder::Build() {
   Name(cur, "hc_head", -1);
   cur = Norm(cur, g_.output_norm);
   Name(cur, "result_norm", -1);
-  g_.logits = ggml_mul_mat(c_, g_.output, cur);
+  g_.logits = Mm(g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
   // The drafter's part after the target's own, so the target's nodes keep
@@ -949,23 +1120,30 @@ void Builder::BuildDraft(DsparkGraph& d) {
     ggml_tensor* residual = inpl;
     ggml_tensor* post = nullptr;
     ggml_tensor* comb = nullptr;
-    ggml_tensor* cur = HcPre(inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base, &post, &comb, il);
-    cur = Norm(cur, l.attn_norm);
+    ggml_tensor* cur = PreNorm(il_u, inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base,
+                               l.attn_norm, &post, &comb);
     cur = Attention(il_u, cur);
     inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
     residual = inpl;
-    cur = HcPre(inpl, l.hc_ffn_fn, l.hc_ffn_scale, l.hc_ffn_base, &post, &comb, il);
-    Expand(residual);
-    Expand(post);
-    Expand(comb);
-    cur = Norm(cur, l.ffn_norm);
-    cur = Moe(il_u, cur);
+    if (Fused(il_u)) {
+      cur =
+          PreNorm(il_u, inpl, l.hc_ffn_fn, l.hc_ffn_scale, l.hc_ffn_base, l.ffn_norm, &post, &comb);
+      Expand(residual);
+      cur = MoeFused(il_u, cur);
+    } else {
+      cur = HcPre(inpl, l.hc_ffn_fn, l.hc_ffn_scale, l.hc_ffn_base, &post, &comb, il);
+      Expand(residual);
+      Expand(post);
+      Expand(comb);
+      cur = Norm(cur, l.ffn_norm);
+      cur = Moe(il_u, cur);
+    }
     inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
     Name(inpl, "l_out", il);
   }
   ggml_tensor* cur = HcHead(inpl);
   cur = Norm(cur, g_.output_norm);
-  g_.logits = ggml_mul_mat(c_, g_.output, cur);  // [vocab, rows]
+  g_.logits = Mm(g_.output, cur);  // [vocab, rows]
   Expand(g_.logits);
   // The Markov head: each slot's logits biased by the slot before it, the
   // anchor before slot 0.

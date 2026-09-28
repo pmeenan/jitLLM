@@ -306,7 +306,8 @@ Status Dsv4Runner::Setup() {
                                 .array = placeless,
                                 .stride = target_.stride,
                                 .state = std::uint64_t{1} << 45U},
-                     .rot = kg::HadamardMatrix(profile_.indexer_head_dim)};
+                     .rot = kg::HadamardMatrix(profile_.indexer_head_dim),
+                     .exact = o_.exact};
   if (speculative()) {
     dmodel_ = DsparkModel{.artifact = dartifact_.get(),
                           .profile = &dprofile_,
@@ -316,7 +317,8 @@ Status Dsv4Runner::Setup() {
                                      .array = placeless,
                                      .stride = drafter_.stride,
                                      .state = std::uint64_t{1} << 45U},
-                          .target_resource = placeless};
+                          .target_resource = placeless,
+                          .exact = o_.exact};
   }
   std::uint64_t most_activations = 0;
   std::uint64_t most_scratch = 0;
@@ -1116,6 +1118,19 @@ Status Dsv4Runner::PlanSnapshot(const md::Dsv4ChunkInputs& in) {
     }
   }
   return {};
+}
+
+std::vector<Dsv4Runner::VerifyWrite> Dsv4Runner::last_verify_writes() const {
+  std::vector<VerifyWrite> out;
+  out.reserve(saved_.size());
+  for (const Saved& s : saved_) {
+    const bool ring = s.address >= dstate_.base && s.address < dstate_.base + dstate_.bytes;
+    out.push_back({.ring = ring,
+                   .offset = s.address - (ring ? dstate_.base : state_.base),
+                   .bytes = s.bytes,
+                   .row = s.row});
+  }
+  return out;
 }
 
 Status Dsv4Runner::Accept(std::uint32_t keep) {

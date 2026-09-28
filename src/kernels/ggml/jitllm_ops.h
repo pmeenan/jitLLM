@@ -121,6 +121,13 @@ enum class JitllmOp : std::uint8_t {
   kQsaPrep,
   kQsaGateQuantize,
   kQsaSelect,
+  kQuantizeQ8,
+  kVecQ,
+  kDsv4Route,
+  kDsv4Combine,
+  kDsv4HcMix,
+  kDsv4HcPre,
+  kDsv4Compress,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
@@ -570,6 +577,116 @@ struct RangeCopy {
 inline constexpr std::uint32_t kMaxRangeCopies = 65535;
 std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
                                               std::uint32_t count);
+
+// DeepSeek V4's fast decode plan (the owner's policy, 2026-09-28: speed
+// before bit-exactness; dsv4_graph.h Dsv4GraphOptions::fused), jitLLM's own
+// kernels (dsv4_fast.cu), none of them GGML's arithmetic bit for bit:
+//
+//   jitllm.q8_1         F32 rows quantized once to GGML's Q8_1 blocks
+//                       (quantize_row_q8_1_cuda), each row padded to 512
+//                       values, for every product that reads them;
+//   jitllm.vecq         a quantized vector product over Q8_1 activations,
+//                       up to kVecQTokens tokens: dense (each weight row
+//                       read once for every token), or routed experts
+//                       (ids), each distinct expert of the chunk read once
+//                       for every token that selected it; with gate weights
+//                       its SwiGLU (clamped) in the same kernel. Under one
+//                       launch configuration a token's sums take the same
+//                       arithmetic however many tokens share the read; the
+//                       default configuration follows the token count, so
+//                       a verify's rows need not equal their one-row
+//                       steps' bit for bit (D-092's exact mode does);
+//   jitllm.dsv4.route   the routing: sqrt(softplus(logits)), the top
+//                       experts by it plus the bias (or the hash layers'
+//                       table's), their weights normalized and scaled: I32
+//                       [2 · used, tokens], the ids then the weights' bits;
+//   jitllm.dsv4.combine the routed experts' weighted sum plus the shared
+//                       expert's output;
+//   jitllm.dsv4.hc_mix  the hyper-connection mixes' partial sums (each
+//                       stream group's dot products with the mixing
+//                       weights, and its sum of squares), over chunks of
+//                       the flattened streams;
+//   jitllm.dsv4.hc_pre  the mixes, pre and post weights and the Sinkhorn
+//                       combination, the streams' weighted sum and its
+//                       RMSNorm times the layer's norm weight: F32
+//                       [(width + 32) · tokens], the normed rows packed,
+//                       then each token's 32: post (4) and comb (16,
+//                       dst-major as dsv4_hc_comb writes it).
+//
+// `q8` of a vecq node is a jitllm.q8_1 node. Routed products read `ids`
+// (I32 [used, tokens], rows may be strided, as a jitllm.dsv4.route node's
+// first columns); an id is not checked on the device against the experts
+// (the routing and the hash table's check bound it, as for mul_mat_id).
+inline constexpr std::int64_t kVecQTokens = 8;
+inline constexpr std::int64_t kDsv4HcChunks = 256;
+inline constexpr std::int64_t kDsv4HcChunkThreads = 64;  // a hc_mix block's threads
+enum class VecQGlu : std::int32_t { kNone = 0, kSwiglu = 1, kSwigluClamp = 2 };
+// `x` F32 [k, rows, planes]: I8, the Q8_1 blocks of rows · planes rows.
+ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x);
+// Dense: `weights` [k, n], `q8` of [k, tokens]: F32 [n, tokens]. Grouped
+// (`weights` [k, n, groups] and no ids, `per_slot`): matrix g over row g of
+// `q8` of [k, groups, tokens]: F32 [n, groups, tokens]. Routed:
+// `weights` [k, n, experts] at their stride, `ids` I32 [used, tokens]; `q8`
+// of [k, tokens] (each token's row serves its slots) or, with `per_slot`,
+// of [k, used, tokens]: F32 [n, used, tokens]. `gate` (optional): weights of
+// `weights`' type, shape and strides; the result is glu(gate · x, weights · x).
+ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
+                  std::int64_t tokens, bool per_slot, ggml_tensor* gate = nullptr,
+                  VecQGlu glu = VecQGlu::kNone, float limit = 0.0f);
+// `logits` F32 [experts, tokens]; `bias` F32 [experts] or null; `table`
+// I32 [used, vocab] and `tokens` I32 [tokens], or both null.
+ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
+                       ggml_tensor* table, ggml_tensor* tokens, std::int64_t used, bool norm,
+                       float clamp, float scale);
+// `down` F32 [n, used, tokens], `route` a jitllm.dsv4.route node, `shared`
+// F32 [n, tokens]: F32 [n, tokens].
+ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* route,
+                         ggml_tensor* shared);
+// `x` F32 [width, hc, tokens] packed, `fn` F32 [width · hc, mixes]: F32
+// [mixes + 1, kDsv4HcChunks, tokens].
+ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn);
+// `partials` a jitllm.dsv4.hc_mix node over `x`; `scale` F32 [3], `base`
+// F32 [(2 + hc) · hc], `norm` F32 [width].
+ggml_tensor* Dsv4HcPre(ggml_context* context, ggml_tensor* partials, ggml_tensor* x,
+                       ggml_tensor* scale, ggml_tensor* base, ggml_tensor* norm, float rms_eps,
+                       float hc_eps, std::int32_t iterations);
+inline constexpr std::int64_t kDsv4HcTail = 32;  // hc_pre's floats after the normed row
+// jitllm.dsv4.compress: a compressor's blocks before their norm, as
+// deepseek4.cpp's build_overlap_compressed_kv_from_state (overlap) or
+// build_hca_compressed_kv_from_state computes them from the state ring and
+// the chunk's rows: each block's `ratio` (overlap: twice `ratio`, the
+// previous block's first half and this one's second) rows named by
+// `read_idxs`, softmax-weighted by their scores per channel and summed.
+// `state_kv` and `state_score` F32 [c, S], `kv` and `score` F32 [c, tokens]
+// (rows may be strided): row s < S of the source is the state's, S + i the
+// chunk's row i, and with overlap S + tokens a zero row whose score is
+// -inf. c is the head (overlap: twice the head). F32 [head, 1, blocks]; a
+// block whose rows' scores are all -inf gives zeros.
+ggml_tensor* Dsv4Compress(ggml_context* context, ggml_tensor* state_kv, ggml_tensor* state_score,
+                          ggml_tensor* kv, ggml_tensor* score, ggml_tensor* read_idxs,
+                          std::int64_t ratio, bool overlap);
+
+std::expected<void, KernelFailure> CheckQuantizeQ8(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckDsv4Combine(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckDsv4HcMix(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node);
+// The read indices are not checked on the host: an index outside the
+// source reads as the zero row (a score of -inf), never out of bounds.
+std::expected<void, KernelFailure> CheckDsv4Compress(const ggml_tensor* node);
+// The Q8_1 blocks a jitllm.q8_1 node of `k` values by `rows` rows takes.
+std::int64_t Q8Bytes(std::int64_t k, std::int64_t rows);
+// Whether jitllm.vecq has a kernel for a weight type.
+bool VecQType(ggml_type type);
+
+std::expected<void, KernelFailure> RunQuantizeQ8(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4Route(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4Combine(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4HcMix(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4HcPre(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4Compress(LaunchContext& launch, ggml_tensor* node);
 
 }  // namespace jitllm::kernels::ggml
 

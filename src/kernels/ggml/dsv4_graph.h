@@ -181,6 +181,15 @@ struct Dsv4GraphOptions {
   std::vector<std::uint32_t> features = {};
   // With `features`, the drafter's KV injection in the same graph.
   std::optional<Dsv4Injection> inject = std::nullopt;
+  // The fast plan (jitllm_ops.h, "DeepSeek V4's fast plan"; the owner's
+  // policy, 2026-09-28): for chunks of at most kVecQTokens rows, each
+  // hyper-connection pre-mix and the norm after it as jitllm.dsv4.hc_mix
+  // and hc_pre, and each MoE block as the routing, one activation
+  // quantization, the routed and shared experts' products with their SwiGLU
+  // in the kernel (each distinct expert read once for the chunk) and the
+  // combination. Not llama.cpp's arithmetic: its logits differ in the last
+  // bits and beyond. Off: the graph node for node as llama.cpp builds it.
+  bool fused = false;
 };
 
 struct Dsv4Graph {

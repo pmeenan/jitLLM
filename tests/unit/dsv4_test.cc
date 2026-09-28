@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -33,6 +34,7 @@
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 
 namespace {
@@ -450,6 +452,83 @@ TEST(Dsv4Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_GT(placed->extent, 0U);
     EXPECT_NE(graph->Named("l_last-42"), nullptr);
     EXPECT_NE(graph->Named("result_output"), nullptr);
+  }
+}
+
+// The fast plan (Dsv4GraphOptions::fused, DeviceChoices::fuse_norms and
+// vector_floats; D-085's note): chunks of up to 8 rows run the hyper-
+// connections, the MoE blocks and the quantized products as jitLLM's fused
+// operations, wider chunks keep GGML's products and hyper-connections, and
+// every chunk's compressors are fused; far fewer steps than the reference.
+TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Dsv4State(p, 4096, 512);
+  ASSERT_TRUE(state.has_value());
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;
+  kg::DeviceChoices device = ModelDevice();
+  device.fuse_norms = true;
+  device.vector_floats = true;
+  for (const auto& [n_past, rows] : {std::pair{37U, 1U}, {40U, 4U}, {0U, 37U}, {3000U, 512U}}) {
+    auto chunk = md::Dsv4Chunk(p, *state, n_past, rows);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    const kg::Dsv4ChunkShape shape = kg::Dsv4ShapeOf(*state, *chunk);
+    std::array<std::size_t, 2> steps = {0, 0};
+    std::set<std::string_view> used;
+    for (const bool fused : {false, true}) {
+      auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      ASSERT_TRUE(arena.has_value());
+      auto graph = kg::BuildDsv4Graph(*arena, p, *binding, shape,
+                                      {.expert_stride = strides, .fused = fused});
+      ASSERT_TRUE(graph.has_value()) << Why(graph);
+      std::uint64_t next = std::uint64_t{1} << 40U;
+      const auto bind_leaf = [&](ggml_tensor* t) {
+        if (t != nullptr && t->data == nullptr) {
+          kg::TensorArena::Bind(t, next);
+          next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+        }
+      };
+      for (ggml_tensor* t : graph->inputs()) {
+        bind_leaf(t);
+      }
+      for (ggml_tensor* node : graph->nodes) {
+        for (ggml_tensor* src : node->src) {
+          if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr) {
+            bind_leaf(src);
+          }
+        }
+      }
+      kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+      auto plan = kg::PlanGraph(graph->nodes, false, fused ? device : ModelDevice());
+      ASSERT_TRUE(plan.has_value()) << rows << " at " << n_past << ": " << Why(plan);
+      steps[fused ? 1 : 0] = plan->steps.size();
+      if (fused) {
+        for (const auto& step : plan->steps) {
+          used.insert(step.implementation);
+        }
+        auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
+        ASSERT_TRUE(placed.has_value()) << Why(placed);
+        EXPECT_NE(graph->Named("l_last-42"), nullptr);
+        EXPECT_NE(graph->Named("result_output"), nullptr);
+      }
+    }
+    EXPECT_LT(steps[1], steps[0]) << rows << " rows";
+    EXPECT_TRUE(used.contains(kg::kDsv4CompressName));
+    EXPECT_TRUE(used.contains(kg::kRmsNormMulFused));
+    const bool decode = rows <= kg::kVecQTokens;
+    for (const std::string_view name :
+         {kg::kVecQName, kg::kQuantizeQ8Name, kg::kDsv4RouteName, kg::kDsv4CombineName,
+          kg::kDsv4HcMixName, kg::kDsv4HcPreName}) {
+      EXPECT_EQ(used.contains(name), decode) << name << " at " << rows << " rows";
+    }
+    for (const std::string_view name :
+         {kg::kMulMatIdQ, kg::kHcCombName, kg::kHcPreName, kg::kArgsortName}) {
+      EXPECT_EQ(used.contains(name), !decode) << name << " at " << rows << " rows";
+    }
+    EXPECT_FALSE(used.contains(kg::kMulMatIdVecQ)) << rows << " rows";
   }
 }
 

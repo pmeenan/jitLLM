@@ -11,6 +11,13 @@ DeepSeek V4 Flash 0731 (UD-Q2_K_XL) with its DSpark drafter
 ([swap](../fast-swap/swap.md)) with decode graphs (D-090). The verify's
 numerical rule is D-092. Qwen3.8's MTP layer is not part of this slice.
 
+*Since 2026-09-28 (the owner: speed before bit exactness, D-092's note):
+the row-invariant verify described here is the optional exact mode
+(`--exact on`); the default verifies on DeepSeek's fast plan, each routed
+expert read once for all the rows that select it, with the checks coarse
+where the kernels differ ([dsv4-decode](../dsv4-decode/README.md)). The
+numbers below are the exact mode's, as measured then.*
+
 ## Design
 
 **The drafter.** llama.cpp's DSpark (`dflash.cpp` `graph_dsv4` and

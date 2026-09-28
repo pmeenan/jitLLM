@@ -9,8 +9,12 @@
 //   jitllm_dsv4_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                    [--prompts FILE --generate N [--force FILE]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
-//                    [--bench-prefill N --bench-decode N]
+//                    [--bench-prefill N --bench-decode N] [--exact on|off]
 //
+// - --exact on: the reference mode, the graph node for node as llama.cpp
+//   builds it and planned unfused (its logits llama.cpp's with fusion off,
+//   bit for bit); off (the default), jitLLM's fast plan (dsv4_graph.h
+//   Dsv4GraphOptions::fused), judged coarsely against llama.cpp.
 // - Weights: the artifact is opened as untrusted input (artifact.h), its
 //   resources and expert arrays bound to the compiled-in DeepSeek V4 profile
 //   (model/dsv4.h), and every chunk read with direct I/O, one coalesced read
@@ -502,6 +506,9 @@ struct Model {
   const md::Dsv4StateLayout* state = nullptr;
   std::uint64_t state_base = 0;
   std::vector<float> rot;  // the indexer's Hadamard matrix
+  // The reference mode (--exact on): llama.cpp's graph planned unfused;
+  // off, the fast plan (dsv4_graph.h Dsv4GraphOptions::fused).
+  bool exact = false;
 };
 
 void BindWeights(const Model& m, kg::Dsv4Graph& g) {
@@ -580,7 +587,7 @@ void BindWeights(const Model& m, kg::Dsv4Graph& g) {
 // Builds, binds, plans and places one chunk shape's graph; `activations` is
 // the region its computed tensors and inputs live in (0 to measure).
 std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
-    const Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
+    const Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices_in,
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes) {
   auto out = std::make_unique<Planned>();
@@ -590,13 +597,17 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   }
   out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape,
-                                  {.expert_stride = m.weights->stride});
+                                  {.expert_stride = m.weights->stride, .fused = !m.exact});
   if (!graph) {
     return Error(graph.error().detail);
   }
   out->graph = std::move(*graph);
   kg::Dsv4Graph& g = out->graph;
   BindWeights(m, g);
+  kg::DeviceChoices device = choices_in;
+  device.fuse_norms = !m.exact;
+  device.vector_floats = !m.exact;
+  const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
   for (const std::string& name : keep_names) {
     if (ggml_tensor* t = g.Named(name); t != nullptr) {
@@ -1091,6 +1102,7 @@ struct Options {
   bool layout_proof = false;
   std::uint32_t bench_prefill = 0;
   std::uint32_t bench_decode = 0;
+  bool exact = false;  // --exact on: the reference mode (Model::exact)
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -1155,6 +1167,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.bench_decode);
     } else if (a == "--layout-proof") {
       o.layout_proof = true;
+    } else if (a == "--exact") {
+      auto v = value();
+      if (!v || (*v != "on" && *v != "off")) {
+        return Error("--exact takes on or off");
+      }
+      o.exact = *v == "on";
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -1229,7 +1247,8 @@ Status Run(const Options& o) {
               .weights = &weights,
               .state = &*state,
               .state_base = Address(state_region),
-              .rot = kg::HadamardMatrix(profile.indexer_head_dim)};
+              .rot = kg::HadamardMatrix(profile.indexer_head_dim),
+              .exact = o.exact};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
   // products run there at prefill widths.

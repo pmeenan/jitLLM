@@ -54,6 +54,12 @@ struct Dsv4Model {
   const model::Dsv4StateLayout* state = nullptr;
   Dsv4Places places;
   std::vector<float> rot;  // the indexer's Hadamard matrix
+  // The reference mode (the owner's policy, 2026-09-28: speed first): the
+  // graph node for node as llama.cpp builds it, planned unfused, so its
+  // logits equal llama.cpp's with fusion off bit for bit, and a verify's
+  // row-invariant plan (D-092). Off (the default): jitLLM's fused plan and
+  // a batched verify, judged coarsely against llama.cpp.
+  bool exact = false;
 };
 
 // DeepSeek's DSpark drafter beside its target (model/dspark.h): its places
@@ -66,12 +72,15 @@ struct DsparkModel {
   const model::DsparkStateLayout* state = nullptr;
   Dsv4Places places;
   std::function<std::uint64_t(std::uint32_t resource)> target_resource;
+  bool exact = false;  // the reference mode, as Dsv4Model::exact
 };
 
 // How a target chunk runs beside a drafter.
 struct Dsv4Speculation {
-  // A speculative verify (D-092): the row-invariant plan (graph_plan.h
-  // DeviceChoices::row_invariant, dsv4_graph.h Dsv4GraphOptions).
+  // A speculative verify: every row's logits; in the exact mode
+  // (Dsv4Model::exact) the row-invariant plan (D-092; graph_plan.h
+  // DeviceChoices::row_invariant, dsv4_graph.h Dsv4GraphOptions), else the
+  // batched plan, each routed expert read once for every row that selects it.
   bool verify = false;
   // With a drafter: the chunk's features and its last `inject_rows` rows'
   // KV injection into the drafter's ring (dsv4_graph.h Dsv4Injection).

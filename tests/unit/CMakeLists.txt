@@ -394,6 +394,16 @@ if(JITLLM_CUDA)
   target_link_libraries(spec_rows_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(spec_rows_test)
 
+  # DeepSeek V4's fast plan (kernels/ggml/jitllm_ops.h, dsv4_fast.cu; D-085's
+  # note): the vector products against GGML's MMVQ, every launch
+  # configuration, the routing, combination, hyper-connection pre-mix and
+  # compressor against FP64, and what their checks refuse.
+  add_executable(dsv4_fast_test dsv4_fast_test.cc)
+  target_include_directories(dsv4_fast_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_fast_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_fast_test)
+
   # jitLLM's Qwen-Image kernels (kernels/image) against host references.
   add_executable(image_kernels_test image_kernels_test.cc)
   target_include_directories(image_kernels_test SYSTEM PRIVATE

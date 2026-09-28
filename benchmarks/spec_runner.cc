@@ -14,6 +14,13 @@
 //                      [--tokens N] [--context N] [--graphs on|off] [--draft N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //                      [--seeds N] [--sampled FILE] [--poll-us N]
+//                      [--exact on|off] [--margin B]
+//
+// Two modes (docs/experiments/dsv4-decode/): by default DeepSeek's fast
+// plan, a batched verify, and the checks coarse where the kernels differ
+// (below); --exact on, the reference mode, D-092's row-invariant verify
+// and the checks bit for bit as described. --margin is the fast plan's
+// near-tie bound, from the engine's own kernel noise.
 //
 // Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
 // rendered by the native DeepSeek V4 renderer and tokenized by the native
@@ -28,13 +35,20 @@
 //   prefill with the drafter's injection gives the plain prefill's logits
 //   bit for bit. Decode speed, acceptance (accepted ÷ drafted) and tokens
 //   per verify, per prompt, the speculative run three times. Each
-//   generation is a request (D-093): one lease, every chunk under it.
+//   generation is a request (D-093): one lease, every chunk under it. Fast
+//   plan: the three speculative runs repeat each other bit for bit, and
+//   every speculative token is the plain engine's argmax on its own prefix
+//   (teacher-forced) or within --margin of it.
 // - forced: rejections forced at chosen draft positions (all-reject, then
 //   each partial acceptance, and at the rows that complete a CSA or an HCA
 //   compressor block): after each verify's rollback the whole state (every
 //   state tensor, and the drafter's ring) is hashed, and a control that
 //   drafted exactly the accepted tokens must hash the same at every step;
-//   the tokens and logits equal plain greedy decoding's.
+//   the tokens and logits equal plain greedy decoding's. Fast plan: no
+//   control (a verify's rows need not equal a shorter verify's); the whole
+//   state is read before each verify and after its rollback and must be
+//   unchanged but for the accepted rows' writes, and the tokens are held to
+//   the near-tie rule.
 // - swap: forced rejections, then A swapped out (the FP16 fixture as B)
 //   and back with its state spilled and restored, and speculation
 //   continued: tokens, logits and the state's hashes equal the unswapped
@@ -194,6 +208,10 @@ struct Options {
   // A diagnostic poll window (the paged node's NodeSettings); unset, the
   // runtime's own wake.
   std::optional<std::uint32_t> poll_us;
+  // The fast plan's near-tie bound (docs/experiments/dsv4-decode/): a
+  // speculative token may differ from the plain engine's argmax only where
+  // that argmax leads it by less than this.
+  double margin = 0.0;
 };
 
 struct Prompt {
@@ -209,6 +227,11 @@ struct Step {
   std::int32_t forced = -1;  // the draft position forced wrong, or -1
   std::vector<std::int32_t> drafts;
   std::vector<std::uint64_t> state;  // fingerprints after the rollback (forced checks)
+  // Forcing::untouched: state bytes outside the accepted rows' writes that
+  // differ from before the verify (0 if the rollback left nothing stale),
+  // and the bytes compared.
+  std::uint64_t stale = 0;
+  std::uint64_t compared = 0;
 };
 
 // A generation: the tokens after the prompt (the first from the prefill)
@@ -235,6 +258,10 @@ struct Forcing {
   bool fingerprint = false;
   // Stop after this many steps, whatever the tokens left.
   std::size_t max_steps = SIZE_MAX;
+  // The fast plan's rollback check: the whole state read before each
+  // verify and after its rollback, which may differ only in the accepted
+  // rows' writes (Untouched).
+  bool untouched = false;
 };
 
 class Harness {
@@ -267,6 +294,9 @@ class Harness {
   Status Tokenize();
   Status Prefill(const Prompt& prompt, bool inject, std::vector<float>& last);
   Status Plain(const Prompt& prompt, std::uint32_t count, Generation& out);
+  // `body` as one request (M3's lease per request, D-093): the model's
+  // closure leased once, every job of `body` a step under it.
+  Status InRequest(std::string_view what, const std::function<Status()>& body);
   // Speculation from a prefilled prompt, until `count` tokens.
   Status Speculate(const Prompt& prompt, std::uint32_t count, const std::vector<float>& first,
                    const Forcing& forcing, Generation& out,
@@ -275,11 +305,23 @@ class Harness {
                std::int32_t& anchor, const ex::SamplingParams* sampling, std::uint64_t seed,
                std::vector<ex::SamplingCandidate>& scratch, Generation& out);
   Status Fingerprints(std::vector<std::uint64_t>& out);
+  // After a verify's Accept: its rollback run, the state read again and
+  // compared with `pre_*` (read before the verify) everywhere but the
+  // accepted rows' writes; the step's stale and compared bytes.
+  Status Untouched(const std::vector<std::byte>& pre_target, const std::vector<std::byte>& pre_ring,
+                   Step& step);
   Status Greedy();
   Status Forced();
   Status Swap();
   Status Sampled(bool speculative);
   Status Compare(const Generation& plain, const Generation& spec, std::string_view what);
+  // Plain one-token decoding fed `tokens` (teacher-forced): each step's
+  // logits, the first the prefill's.
+  Status Teacher(const Prompt& prompt, std::span<const std::int32_t> tokens, Generation& out);
+  // The fast plan's rule (--margin): every token of `spec` is the plain
+  // engine's argmax on `spec`'s own prefix, or within the margin of it (a
+  // near-tie). Teacher-forces the plain engine on `spec`'s tokens.
+  Status NearTies(const Prompt& prompt, const Generation& plain, const Generation& spec);
   Status SwapOut();
   Status SwapIn();
   Status Write();
@@ -446,6 +488,15 @@ Status Harness::Prefill(const Prompt& prompt, bool inject, std::vector<float>& l
   return {};
 }
 
+Status Harness::InRequest(std::string_view what, const std::function<Status()>& body) {
+  if (auto r = node_.BeginRequest(kDsv4, dsv4_.everything(), what); !r) {
+    return r;
+  }
+  Status ran = body();
+  Status ended = node_.EndRequest(kDsv4);
+  return !ran ? ran : ended;
+}
+
 Status Harness::Plain(const Prompt& prompt, std::uint32_t count, Generation& out) {
   std::vector<float> last;
   if (auto r = Prefill(prompt, false, last); !r) {
@@ -466,6 +517,155 @@ Status Harness::Plain(const Prompt& prompt, std::uint32_t count, Generation& out
     out.logits.push_back(std::move(row));
   }
   out.decode_seconds = Seconds(Clock::now() - start);
+  return {};
+}
+
+Status Harness::Teacher(const Prompt& prompt, std::span<const std::int32_t> tokens,
+                        Generation& out) {
+  std::vector<float> last;
+  if (auto r = Prefill(prompt, false, last); !r) {
+    return r;
+  }
+  out.tokens.assign(tokens.begin(), tokens.end());
+  out.logits = {last};
+  auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+  for (std::size_t i = 1; i < tokens.size(); ++i) {
+    std::vector<float> row;
+    if (auto r = dsv4_.Chunk(pos, tokens.subspan(i - 1, 1), row); !r) {
+      return r;
+    }
+    ++pos;
+    out.logits.push_back(std::move(row));
+  }
+  return {};
+}
+
+Status Harness::NearTies(const Prompt& prompt, const Generation& plain, const Generation& spec) {
+  Generation forced;
+  if (auto r = InRequest(prompt.id, [&] { return Teacher(prompt, spec.tokens, forced); }); !r) {
+    return r;
+  }
+  std::size_t equal = 0;
+  std::size_t violations = 0;
+  std::string ties;
+  // The verify's own noise: at each step, how far the verify row that gave
+  // the token moves the plain engine's top-two margin (its logit difference
+  // between the plain row's two best tokens, against the plain row's).
+  std::vector<double> moves;
+  for (std::size_t i = 0; i < spec.tokens.size(); ++i) {
+    const std::span<const float> row = forced.logits[i];
+    const std::int32_t best = jb::Argmax(row);
+    const std::int32_t got = spec.tokens[i];
+    const auto at = [](std::int32_t t) { return static_cast<std::size_t>(t); };
+    const bool comparable = i < spec.logits.size() && spec.logits[i].size() == row.size();
+    if (comparable && i > 0) {
+      std::size_t second = best == 0 ? 1 : 0;
+      for (std::size_t j = 0; j < row.size(); ++j) {
+        if (std::cmp_not_equal(j, best) && row[j] > row[second]) {
+          second = j;
+        }
+      }
+      const std::vector<float>& v = spec.logits[i];
+      moves.push_back(std::abs((static_cast<double>(v[at(best)]) - v[second]) -
+                               (static_cast<double>(row[at(best)]) - row[second])));
+    }
+    if (best == got) {
+      ++equal;
+      continue;
+    }
+    const double margin = static_cast<double>(row[at(best)]) - static_cast<double>(row[at(got)]);
+    // How far the verify's row preferred its token over the plain argmax.
+    const double verify_margin =
+        comparable ? static_cast<double>(spec.logits[i][at(got)]) - spec.logits[i][at(best)] : 0.0;
+    const bool tie = margin < o_.margin;
+    violations += tie ? 0 : 1;
+    ties += std::format(
+        R"({}{{"step":{},"plain":{},"spec":{},"margin":{:.4f},"verify_margin":{:.4f},)"
+        R"("near_tie":{}}})",
+        ties.empty() ? "" : ",", i, best, got, margin, verify_margin, tie ? "true" : "false");
+  }
+  std::ranges::sort(moves);
+  const auto quantile = [&](double q) {
+    return moves.empty()
+               ? 0.0
+               : moves[std::min(moves.size() - 1,
+                                static_cast<std::size_t>(
+                                    std::ceil(q * static_cast<double>(moves.size())) - 1.0))];
+  };
+  const std::string noise =
+      std::format(R"("verify_noise":{{"steps":{},"median":{:.4f},"p99":{:.4f},"max":{:.4f}}})",
+                  moves.size(), quantile(0.5), quantile(0.99), moves.empty() ? 0.0 : moves.back());
+  // Free-running: how long plain greedy decoding and speculation agree.
+  std::size_t prefix = 0;
+  while (prefix < plain.tokens.size() && prefix < spec.tokens.size() &&
+         plain.tokens[prefix] == spec.tokens[prefix]) {
+    ++prefix;
+  }
+  if (violations != 0) {
+    problems_.push_back(
+        std::format("{}: {} speculative tokens are not the plain engine's argmax "
+                    "on their prefix, nor within {} of it",
+                    prompt.id, violations, o_.margin));
+  }
+  std::println(
+      "{}: {} of {} speculative tokens the plain engine's argmax on their prefix, {} "
+      "near-ties, {} violations (margin {}); free-running prefix {} of {}; verify noise {}",
+      prompt.id, equal, spec.tokens.size(), spec.tokens.size() - equal - violations, violations,
+      o_.margin, prefix, plain.tokens.size(), noise);
+  results_.push_back(std::format(
+      R"({{"check":"near_ties","prompt":"{}","tokens":{},"equal":{},"violations":{},)"
+      R"("margin":{},"free_running_prefix":{},{},"differing":[{}]}})",
+      prompt.id, spec.tokens.size(), equal, violations, o_.margin, prefix, noise, ties));
+  return {};
+}
+
+Status Harness::Untouched(const std::vector<std::byte>& pre_target,
+                          const std::vector<std::byte>& pre_ring, Step& step) {
+  if (auto r = dsv4_.Rollback(); !r) {
+    return r;
+  }
+  std::vector<std::byte> target;
+  std::vector<std::byte> ring;
+  if (auto r = dsv4_.ReadState(target, ring); !r) {
+    return r;
+  }
+  if (target.size() != pre_target.size() || ring.size() != pre_ring.size()) {
+    return Error("the state's size changed across a verify");
+  }
+  // The accepted rows' writes, which may differ; everything else must not.
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> allowed_target;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> allowed_ring;
+  for (const jb::Dsv4Runner::VerifyWrite& w : dsv4_.last_verify_writes()) {
+    if (w.row >= 0 && std::cmp_less(w.row, step.kept)) {
+      (w.ring ? allowed_ring : allowed_target).emplace_back(w.offset, w.offset + w.bytes);
+    }
+  }
+  const auto compare = [&](const std::vector<std::byte>& before,
+                           const std::vector<std::byte>& after,
+                           std::vector<std::pair<std::uint64_t, std::uint64_t>>& allowed) {
+    std::ranges::sort(allowed);
+    std::uint64_t at = 0;
+    const auto span = [&](std::uint64_t from, std::uint64_t to) {
+      to = std::min<std::uint64_t>(to, before.size());
+      if (from >= to) {
+        return;
+      }
+      step.compared += to - from;
+      if (std::memcmp(before.data() + from, after.data() + from, to - from) == 0) {
+        return;
+      }
+      for (std::uint64_t i = from; i < to; ++i) {
+        step.stale += before[i] != after[i] ? 1 : 0;
+      }
+    };
+    for (const auto& [from, to] : allowed) {
+      span(at, from);
+      at = std::max(at, to);
+    }
+    span(at, before.size());
+  };
+  compare(pre_target, target, allowed_target);
+  compare(pre_ring, ring, allowed_ring);
   return {};
 }
 
@@ -627,6 +827,16 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     }
     std::vector<std::int32_t> input = {anchor};
     input.insert(input.end(), step.drafts.begin(), step.drafts.end());
+    std::vector<std::byte> pre_target;
+    std::vector<std::byte> pre_ring;
+    if (forcing.untouched) {
+      if (auto r = dsv4_.Rollback(); !r) {
+        return r;
+      }
+      if (auto r = dsv4_.ReadState(pre_target, pre_ring); !r) {
+        return r;
+      }
+    }
     std::vector<float> logits;
     const auto verifying = Clock::now();
     if (auto r = dsv4_.Chunk(pos, input, logits, {}, jb::Dsv4ChunkKind::kVerify); !r) {
@@ -635,6 +845,11 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     out.verify_seconds += Seconds(Clock::now() - verifying);
     if (auto r = Judge(step, logits, pos, anchor, sampling, seed, scratch, out); !r) {
       return r;
+    }
+    if (forcing.untouched) {
+      if (auto r = Untouched(pre_target, pre_ring, step); !r) {
+        return r;
+      }
     }
     if (forcing.fingerprint) {
       if (auto r = Fingerprints(step.state); !r) {
@@ -699,43 +914,57 @@ Status Harness::Greedy() {
     // Each generation is a request (D-093): its prefill and every step run
     // under one lease on DeepSeek's closure, as a turn does in the runtime.
     Generation plain;
-    if (auto r = node_.BeginRequest(dsv4_.stream(), dsv4_.everything(), "a plain generation"); !r) {
-      return r;
-    }
-    if (auto r = Plain(prompt, count, plain); !r) {
-      return r;
-    }
-    if (auto r = node_.EndRequest(dsv4_.stream()); !r) {
+    if (auto r = InRequest("a plain generation", [&] { return Plain(prompt, count, plain); }); !r) {
       return r;
     }
     const std::size_t repeats = decode ? 3 : 1;
     std::vector<double> rates;
     Generation spec;
+    Generation first_run;
     for (std::size_t k = 0; k < repeats; ++k) {
-      if (auto r =
-              node_.BeginRequest(dsv4_.stream(), dsv4_.everything(), "a speculative generation");
-          !r) {
-        return r;
-      }
       std::vector<float> first;
-      if (auto r = Prefill(prompt, true, first); !r) {
+      if (k == 1) {
+        first_run = std::move(spec);
+      }
+      spec = {};
+      if (auto r = InRequest("a speculative generation",
+                             [&]() -> Status {
+                               if (auto p = Prefill(prompt, true, first); !p) {
+                                 return p;
+                               }
+                               return Speculate(prompt, count, first, {}, spec);
+                             });
+          !r) {
         return r;
       }
       if (!SameBits(first, plain.logits.front())) {
         problems_.push_back(std::format(
             "{}: the prefill with the injection differs from the plain prefill", prompt.id));
       }
-      spec = {};
-      if (auto r = Speculate(prompt, count, first, {}, spec); !r) {
-        return r;
-      }
-      if (auto r = node_.EndRequest(dsv4_.stream()); !r) {
-        return r;
-      }
-      if (auto r = Compare(plain, spec, prompt.id); !r) {
-        return r;
+      // The reference mode's rule: bit for bit (D-092). The fast plan's: the
+      // same engine repeats itself bit for bit, and its tokens are the plain
+      // engine's up to near-ties (NearTies, below).
+      if (o_.dsv4.exact) {
+        if (auto r = Compare(plain, spec, prompt.id); !r) {
+          return r;
+        }
+      } else if (k > 0) {
+        bool same =
+            first_run.tokens == spec.tokens && first_run.logits.size() == spec.logits.size();
+        for (std::size_t i = 0; same && i < spec.logits.size(); ++i) {
+          same = SameBits(first_run.logits[i], spec.logits[i]);
+        }
+        if (!same) {
+          problems_.push_back(std::format(
+              "{}: speculative run {} does not repeat the first bit for bit", prompt.id, k + 1));
+        }
       }
       rates.push_back(static_cast<double>(count - 1) / spec.decode_seconds);
+    }
+    if (!o_.dsv4.exact) {
+      if (auto r = NearTies(prompt, plain, spec); !r) {
+        return r;
+      }
     }
     std::string text;
     if (auto decoded = tokenizer_->Decode(
@@ -829,6 +1058,46 @@ Status Harness::Forced() {
     return r;
   }
   Generation spec;
+  if (!o_.dsv4.exact) {
+    // The fast plan: a verify's rows need not equal a shorter verify's bit
+    // for bit, so no control; instead every step's rollback must leave the
+    // state exactly as before the verify but for the accepted rows' writes,
+    // and the tokens are the plain engine's up to near-ties.
+    if (auto r = Speculate(prompt, count, first, {.wrong = wrong, .untouched = true}, spec); !r) {
+      return r;
+    }
+    if (auto r = NearTies(prompt, plain, spec); !r) {
+      return r;
+    }
+    std::uint64_t stale = 0;
+    std::uint64_t compared = 0;
+    std::size_t rejected = 0;
+    std::size_t stale_steps = 0;
+    for (const Step& s : spec.steps) {
+      stale += s.stale;
+      compared += s.compared;
+      rejected += s.kept < s.rows ? 1 : 0;
+      stale_steps += s.stale != 0 ? 1 : 0;
+    }
+    if (stale != 0) {
+      problems_.push_back(std::format(
+          "forced: {} steps' rollbacks left {} state bytes differing from before their verify",
+          stale_steps, stale));
+    }
+    std::string covered_json;
+    for (const auto& [what, n] : covered) {
+      covered_json += std::format("{}\"{}\":{}", covered_json.empty() ? "" : ",", what, n);
+    }
+    std::println(
+        "forced: {} steps, {} with rejected rows; {} stale bytes after rollbacks in {} compared; "
+        "covered {}",
+        spec.steps.size(), rejected, stale, compared, covered_json);
+    results_.push_back(std::format(
+        R"({{"check":"forced","prompt":"{}","generated":{},"steps":{},"rejected_steps":{},)"
+        R"("stale_bytes":{},"compared_bytes":{},"covered":{{{}}}}})",
+        prompt.id, count, spec.steps.size(), rejected, stale, compared, covered_json));
+    return {};
+  }
   if (auto r = Speculate(prompt, count, first, {.wrong = wrong, .fingerprint = true}, spec); !r) {
     return r;
   }
@@ -1296,6 +1565,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--graphs") {
       o.dsv4.graphs = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--exact") {
+      o.dsv4.exact = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--margin") {
+      const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), o.margin);
+      ok = ec == std::errc() && end == v.data() + v.size() && o.margin >= 0.0;
     } else if (a == "--draft") {
       ok = number(o.dsv4.draft_rows) && o.dsv4.draft_rows >= 1;
       o.dsv4.max_verify = o.dsv4.draft_rows + 1;
@@ -1327,7 +1602,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
         "--check greedy|forced|swap|sampled-plain|sampled-spec [--tokens N] [--context N] "
-        "[--graphs on|off] [--draft N] [--fp16-artifact DIR --fp16-tokens FILE "
+        "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] [--fp16-artifact DIR "
+        "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE]");
   }
   std::filesystem::create_directories(o.out);

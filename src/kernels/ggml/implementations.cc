@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 80> kKernels = {{
+constexpr std::array<Kernel::Entry, 87> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -655,6 +655,52 @@ constexpr std::array<Kernel::Entry, 80> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaSelect(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaSelect(launch, n[0]); }},
+    // DeepSeek V4's fast plan (jitllm_ops.h; dsv4_fast.cu).
+    {.name = "jitllm.q8_1",
+     .operation = execution::Operation::kQuantize,
+     .variant = "quantize_row_q8_1_cuda: rows padded to 512 values, once for every product",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQuantizeQ8(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQuantizeQ8(launch, n[0]); }},
+    {.name = "jitllm.vecq",
+     .operation = execution::Operation::kMatMul,
+     .variant = "VecQKernel<type, rows, warps, glu>: GGML's vec_dot_*_q8_1 over up to 8 tokens a "
+                "weight read, one block per distinct expert and row block; SwiGLU in the kernel",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckVecQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunVecQ(launch, n[0]); }},
+    {.name = "jitllm.dsv4.route",
+     .operation = execution::Operation::kMoeRoute,
+     .variant = "RouteKernel: a warp a token, sqrt(softplus), top-k by argmax rounds, normalized",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4Route(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Route(launch, n[0]); }},
+    {.name = "jitllm.dsv4.combine",
+     .operation = execution::Operation::kMoeCombine,
+     .variant = "CombineKernel: four columns a thread, experts in order, then the shared expert",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4Combine(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Combine(launch, n[0]); }},
+    {.name = "jitllm.dsv4.hc_mix",
+     .operation = execution::Operation::kHcMix,
+     .variant = "HcMixKernel: 64 chunks of a token, 24 dot products and the sum of squares",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4HcMix(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcMix(launch, n[0]); }},
+    {.name = "jitllm.dsv4.hc_pre",
+     .operation = execution::Operation::kHcPre,
+     .variant = "HcPreKernel: a 1,024-thread block a token; mixes, Sinkhorn, weighted sum, "
+                "RMSNorm times the weight",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4HcPre(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcPre(launch, n[0]); }},
+    {.name = "jitllm.dsv4.compress",
+     .operation = execution::Operation::kSoftMax,
+     .variant = "CompressKernel: a block a compressed block, a thread a channel; the rows' "
+                "online softmax and weighted sum",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4Compress(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Compress(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,

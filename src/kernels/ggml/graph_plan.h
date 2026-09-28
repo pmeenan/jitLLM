@@ -64,6 +64,15 @@ struct DeviceChoices {
   // one-row plan's; a wider product is refused. Everything else as
   // upstream.
   bool row_invariant = false;
+  // Planned without upstream's fusion, an RMSNorm and the mul that scales
+  // it (RmsNormMulFusionAt's structural conditions) still run as the fused
+  // RMSNorm-mul: jitLLM's fast plans (DeepSeek V4's, the owner's policy of
+  // 2026-09-28), which do not reproduce upstream's unfused arithmetic.
+  bool fuse_norms = false;
+  // And float products of at most kRowInvariantColumns columns run GGML's
+  // vector kernel (MMVF) whatever upstream would route them to (MMF past
+  // one BF16 column): a verify's router and head mixes.
+  bool vector_floats = false;
 };
 
 // One implementation's run over its nodes, in the order implementations.h
@@ -160,6 +169,14 @@ inline constexpr std::string_view kGdnHistoryName = "jitllm.gdn.history";
 inline constexpr std::string_view kQsaPrepName = "jitllm.qsa.prep";
 inline constexpr std::string_view kQsaGateQuantizeName = "jitllm.qsa.gate_quantize";
 inline constexpr std::string_view kQsaSelectName = "jitllm.qsa.select";
+// DeepSeek V4's fast plan (jitllm_ops.h).
+inline constexpr std::string_view kQuantizeQ8Name = "jitllm.q8_1";
+inline constexpr std::string_view kVecQName = "jitllm.vecq";
+inline constexpr std::string_view kDsv4RouteName = "jitllm.dsv4.route";
+inline constexpr std::string_view kDsv4CombineName = "jitllm.dsv4.combine";
+inline constexpr std::string_view kDsv4HcMixName = "jitllm.dsv4.hc_mix";
+inline constexpr std::string_view kDsv4HcPreName = "jitllm.dsv4.hc_pre";
+inline constexpr std::string_view kDsv4CompressName = "jitllm.dsv4.compress";
 // A speculative verify's row-invariant products (D-092; ops_ext.h).
 inline constexpr std::string_view kMulMatVecQRows = "jitllm.mul_mat.mmvq_rows";
 inline constexpr std::string_view kMulMatIdVecQRows = "jitllm.mul_mat_id.mmvq_rows";

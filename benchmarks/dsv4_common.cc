@@ -166,7 +166,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   }
   out->arena.emplace(std::move(*arena));
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
-                               .row_invariant = speculation.verify};
+                               .row_invariant = speculation.verify && m.exact,
+                               .fused = !m.exact};
   if (const DsparkModel* d = speculation.drafter; d != nullptr) {
     options.features = d->profile->target_layers;
     options.inject = kg::Dsv4Injection{.profile = d->profile,
@@ -194,7 +195,9 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     }
   }
   kg::DeviceChoices device = choices;
-  device.row_invariant = speculation.verify;
+  device.row_invariant = speculation.verify && m.exact;
+  device.fuse_norms = !m.exact;
+  device.vector_floats = !m.exact;
   const auto inputs = g.inputs();
   if (auto placed =
           PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes);
@@ -229,7 +232,7 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
   }
   out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildDsparkGraph(*out->arena, *d.profile, *d.binding, rows, d.state->ring,
-                                    {.expert_stride = d.places.stride});
+                                    {.expert_stride = d.places.stride, .fused = !d.exact});
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -281,8 +284,11 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
   bind(g.markov_w2, d.places.resource(b.markov_w2.index));
   const std::vector<ggml_tensor*> keep = {g.logits, g.drafts};
   const auto inputs = g.inputs();
+  kg::DeviceChoices device = choices;
+  device.fuse_norms = !d.exact;
+  device.vector_floats = !d.exact;
   if (auto placed =
-          PlaceAndPlan(*out, g.core.nodes, inputs, keep, choices, activations, activation_bytes);
+          PlaceAndPlan(*out, g.core.nodes, inputs, keep, device, activations, activation_bytes);
       !placed) {
     return std::unexpected(placed.error());
   }
