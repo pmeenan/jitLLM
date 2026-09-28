@@ -164,6 +164,16 @@ if(JITLLM_CUDA)
   target_link_libraries(slab_layout_test PRIVATE jitllm_paged_runners jitllm_launch_recorder)
   jitllm_gpu_gtest(slab_layout_test)
 
+  # Qwen3.8's n-gram rows read on demand (benchmarks/ple_rows.h): the read
+  # plan on the host, and the reads and the gather kernel on a GB10.
+  add_executable(ple_rows_test ple_rows_test.cc)
+  target_include_directories(ple_rows_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ple_rows_test PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                              jitllm_fake_providers)
+  jitllm_gpu_gtest(ple_rows_test
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)
   target_link_libraries(cuda_device_memory_test PRIVATE jitllm_cuda_device_memory jitllm_storage)
   jitllm_gpu_gtest(cuda_device_memory_test DISCRETE ALL

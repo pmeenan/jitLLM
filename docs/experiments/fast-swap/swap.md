@@ -1,17 +1,279 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# The swap path: DeepSeek V4 Flash on the paged node, full swaps A→B→A (M3)
+# The swap path: the M3 models on the paged node, full swaps A→B→A (M3)
 
 M3's swap path and swap runner ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress)):
-DeepSeek V4 Flash 0731 runs as device jobs over leased closures on the
-paged node (D-086), paged into device VMM through the landing zone
-(D-081); a full swap evicts the outgoing model, spilling its conversation
-state, and hands its backing to the incoming one (D-033); the zone's
-copies have a lane of their own (RE-029). The swap runner drives A→B→A in
-one process and times each part.
+DeepSeek V4 Flash 0731, Qwen3.8 Flash Next and the Qwen-Image-2.1
+pipeline run as device jobs over leased closures on the paged node
+(D-086), paged into device VMM through the landing zone (D-081); a full
+swap evicts the outgoing model, spilling its conversation state, and hands
+its backing to the incoming one (D-033); the zone's copies have a lane of
+their own (RE-029). The swap runners drive A→B→A in one process and time
+each part: [M3's swap pairs](#m3s-swap-pairs) between the three models
+(`jitllm_swap_pairs`), and [DeepSeek with the FP16 stand-in](#what-was-built-deepseek-and-the-fp16-stand-in)
+(`jitllm_swap_runner`), where the path was first built.
 
-## What was built
+## M3's swap pairs
+
+### Qwen3.8 Flash Next on the paged node
+
+`benchmarks/qwen38_runner.h`: the resident harness's graph, plan and
+kernels (`qwen38_common.h`, a copy of `qwen38_exec.cc`'s planning, as
+`dsv4_common.h` is of DeepSeek's) over catalog extents, in DeepSeek's
+layout, now one helper (`paged_weights.h`):
+- **Dense groups:** every group but the n-gram table's, a 2 MiB-aligned
+  region each, a chunk an extent, landed from its shard.
+- **Expert slabs:** each layer's 512 experts at the resident layout's
+  stride (2,768,976 bytes), an extent a 2 MiB page of the slab landed in
+  pieces (`LayOutSlab`). The gap between groups is 80 bytes, too small to
+  hold DeepSeek's 256-byte alignment of the slab where a layer's experts
+  change shard, so the slab's offset in its first page is a multiple of
+  16, the stride's own alignment (`LayOutSlab` takes it as a parameter
+  now; the resident harness's odd experts are 16-aligned too).
+  35,873 extents, 75,235,266,560 bytes read per load (the table's
+  28,800,138,240 not among them).
+- **The state** (`Qwen38StateLayout`: the QSA layers' K, V and indexer
+  caches, the linear-attention layers' recurrent and convolution state,
+  the n-gram layer's convolution history): kPreserve live state with a
+  write-back place in an unnamed direct-I/O spill file, first in the
+  closure, as DeepSeek's. 184 extents at the runs' 8,704-token context.
+- **Setup after each full load:** the n-gram hash's constants read back
+  and checked (`CheckQwen38PleHash`), as DeepSeek's hash-routing tables
+  are.
+- **A chunk:** its host-built inputs over the whole history (the n-gram
+  hash reads each token's predecessors), its n-gram rows read (below),
+  the graph planned for its shape, and one job that copies the inputs,
+  gathers the rows, runs the bound plan and copies the last row's logits
+  out; BP-A1's check on the first chunk of each shape.
+
+### The n-gram table by rows (D-035)
+
+`benchmarks/ple_rows.h`. The table (28.8 GB of 90-byte NVFP4 rows) is
+never resident. Before each chunk's job the runner computes the chunk's
+rows (16 a token, `Qwen38Chunk`'s hash), deduplicates them, reads them from
+the artifact on a ring of its own (32 in flight) into a pinned landing,
+and the job gathers each into a row slot on the device with a small kernel
+(the GPU copies; no CPU payload copy). The graph is built over a copy of
+the binding whose table has the slots' rows (512 × 16 = 8,192 slots,
+737,280 bytes), and the chunk's row indices are the slots'.
+- **Granularity: 4 KiB-aligned direct reads, smaller than a chunk.** A
+  row's 90 bytes are covered by the one or two 4 KiB blocks around them;
+  rows whose blocks touch or overlap share a read, up to 64 KiB. Every read
+  lies within the table group's stored range, inside one chunk or across
+  two consecutive chunks of the table's one shard (checked at setup). This
+  is the only path that reads below a chunk; artifact-format.md keeps
+  row-granular reads out of the runtime reader's scope and now records
+  this runner's path and why the format needs no change
+  ([page-in contract](../../artifact-format.md#page-in-contract)).
+- **Why not whole chunks (D-035's default):** a token's 16 rows are
+  hashed across the table, so almost every lookup lands in a different
+  2 MiB chunk. Over the six chat prompts (192 chunks, 9,184 lookups, 8,880
+  distinct rows a chunk summed), the row reads took 8,880 requests and
+  37.4 MB; whole chunks would have read 18.2 GB (486×), and the useful
+  bytes were 0.80 MB. An 8,192-token context touches nearly every chunk
+  of the table.
+- **Validity and accounting:** the rows belong to the chunk that read
+  them. The landing (64 MiB, the bound for 8,192 lookups of two blocks)
+  and the slots are fixed, cataloged and charged whole (staging and
+  scratch); nothing carries from one chunk to the next, so no row has a
+  residency to track, evict or restore across a swap. Every row index is
+  checked against the table before a read is planned (whatever the hash
+  gave), every read against the group's stored range, and the plan is
+  refused, never split, past the landing's bytes or the slots. The rows
+  are read to completion before the job that gathers them is posted: a
+  short or failed read refuses the chunk after the rest drain, an unknown
+  submission is in flight and waited for (the storage lane's rules), and
+  reads that stall stop the rows for good, their ring and landing never
+  reused or freed under them. The ring reads only the table's group, which
+  is no extent, into the cataloged landing.
+
+### Qwen-Image-2.1 on the paged node
+
+`benchmarks/qwen_image_runner.h`: the three component artifacts, joined by
+their composition (D-089), each a set of extents (`paged_weights.h`,
+only the groups its phase reads: the text encoder's table and language
+layers, 15.14 GB; the denoiser, 14.23 GB; the VAE's decoder, 1.35 GB of
+F32), with the resident harness's kernels in its call order (copied from
+`qwen_image_exec.cc`, whose comparison with diffusers then needs no rerun).
+- **Phases lease only their component:** encode (one job over the text
+  encoder's closure), denoise (a job per step over the denoiser's; the
+  first also projects the text rows and fills the prefix K/V cache),
+  decode (one job over the VAE's), each with the image's own memory, the
+  shared workspace, the cuBLAS workspace and the staging. The VAE's F32
+  weights are paged as stored and rounded to BF16 by the decode job into
+  its workspace (the resident harness rounds them on the host, as
+  diffusers' `torch_dtype=bfloat16` load does; same rounding).
+- **The image's own memory** (16.7 MB, mapped at setup): what lives from
+  one job to the next within a generation (the prompt embeddings, the text
+  rows, the prefix cache, the rotary tables, the latents and the noise
+  prediction). Nothing outlives a generation, so a swap has no image state
+  to spill; every per-job buffer (3.02 GB at most, the decoder's) is the
+  node's shared workspace.
+- **Endpoint:** the prompt encoded and the first denoising step's output
+  produced (M3's image endpoint). The rest of the generation and the
+  decoder follow when the image is A.
+
+### The swap pairs runner
+
+`benchmarks/swap_pairs.cc` (`jitllm_swap_pairs`, a harness binary until
+it moves into `jitllm-runtime`): two of the three models on one node, one process per
+ordered pair, A→B→A as `jitllm_swap_runner` does it (see its header for
+the protocol): a control, a first-use cycle (B never ran in the process;
+A's plans dropped before it returns), a prepared cycle, and for an LLM A a
+0-context pair. An LLM A holds 8,192 tokens of `docs/decisions.md` at
+`4655685` (SHA-256 `6b159ff2…`), each model's own tokenization, context
+8,704; an LLM B answers the first prompt of its correctness set from a
+cleared state (DeepSeek: `capital`, 6 tokens, BOS first, no template;
+Qwen3.8: `capital`, 64 tokens, the chat template rendered); the image is
+the teapot prompt at 1,024², 40 steps, from diffusers' seed-42 latents.
+The budget is the fixed memory plus the larger model's weights: the two
+never fit together.
+- **Swap correctness for an LLM A** is checked against the same state,
+  not a rerun: after each cycle's prefill the state is saved to the host
+  and hashed, the unswapped continuation run from it (the reference) and
+  the state put back; after the swap back the restored state must hash
+  the same (outside the timed parts) and the continuation's every logit
+  equal the reference's. Qwen3.8 past 2,051 attended cells is not
+  repeatable (RE-031: GGML's radix top-k picks among tied indexer scores
+  nondeterministically), so a rerun of the prefill is no reference for it;
+  each cycle's prefill is still compared with the control's, and noted.
+  The substitution is sound one way only: the state digest is exact, and
+  a continuation equal to the reference's shows the weights came back
+  whole (wrong weights cannot give equal logits), but each continued step
+  attends past 2,051 cells too, so RE-031 could make a continuation
+  differ with nothing wrong in the swap. None did (below); a difference
+  would need a rerun of the same state to tell the two apart.
+- **An image A** has nothing to spill: its control is one full generation,
+  and after the swap back the generation runs again from the prompt, its
+  pixels equal to the control's.
+- **Places (D-090):** every model pins its weights' and state's places
+  when it registers them, graphs or not; after each swap the incoming
+  model's are checked still pinned, DeepSeek's also against the sources
+  its graphs name.
+
+## Results: M3's swap pairs (`spark-b`, 2026-09-28)
+
+GB10, kernel 7.0.0-1019-nvidia, driver 580.178.04, the `spark-native`
+build, `CUDA_DISABLE_PTX_JIT=1`, the node as above (8 landing slots of
+2 MiB + 8 KiB, four reads in flight, copy lane, handoff on). DeepSeek
+`8a355bfb…` and Qwen3.8 `67617f87…` as imported on `spark-b`; the image's
+composition `eca21baa…` and its three components copied from `spark` over
+the direct link (10.100.208.x, rsync, 05:02–05:04, 84 s for 33 GB). File
+ages at the final runs, from their change times (RE-027): DeepSeek's
+shards 4.7–5.2 h, Qwen3.8's 3.2–3.8 h (both at rest), the image's 1.7–2.0 h
+(written by the copy, and still reading at 14.2–14.8 GB/s, RE-027's
+recent-write rate). Each pair started once `spark-b` had no GPU process,
+more than 110 GB `MemAvailable` and a 1-minute load average under 6;
+other agents' work shared the host between and during runs (load
+averages up to 10 at a run's end). One process per ordered pair, one run
+each (`pairs-final`, 06:25–07:02); raw outputs in
+`~/scratch/m3pairs/` on `spark-b` (`pairs-final`, the earlier `pairs-try1`
+with the same swap path, `q38-*`, `img-paged-1`, the probes).
+
+**Correctness** (every check of the final runs passed; `exact` in every
+row below):
+
+| Check | Result |
+| --- | --- |
+| Paged Qwen3.8 against the resident harness (context 4,096, the six qwen38-native prompts, prefill + 31 greedy steps, same build) | 0 of 6 × 32 × 248,320 logits differ |
+| Paged image against the resident harness (teapot, 1,024², 40 steps, seed 42's latents) | pixels `95fbcbc5…`, the resident harness's, in every generation: 2 controls, 4 after swaps, 1 alone |
+| An LLM A's state after the swap back against the state it left with (SHA-256 of the whole region) | identical in all 12 returns at 8K context (DeepSeek 462,635,008 bytes, Qwen3.8 385,425,408) |
+| An LLM A's 16 continued steps against the same state's unswapped continuation | every logit and token identical, all 12 returns |
+| B's first output across its cycles and the 0-context pair (logits, or the image's first noise prediction) | identical, every pair |
+| BP-A1: bound tensors in cataloged extents of their class | 0 outside (DeepSeek and Qwen3.8, every shape planned) |
+| Qwen3.8's cycle prefill against the process's control (a rerun, not a swap check) | differs in 3 of 4 cycles from the 11th–14th chunk on (RE-031); DeepSeek's always equal |
+
+**Swap times** (seconds, each part from the end of the one before, adding
+up to the total from the swap request to the first output; LLM B: its
+first token for its short prompt from a cleared state; LLM A: the next
+token after its 8,192-token context, or at 0 context a 16-token prompt's;
+image: the prompt encoded and the first denoising step's output). Page-in
+counts the incoming weights and, returning to an LLM A, its state. Peak:
+in use at the swap's lowest `MemAvailable` against the process's start.
+
+| A ↔ B | Swap | Total | Evict and spill | Restore | Page-in (GB at GB/s) | First output (planning) | Peak GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DeepSeek ↔ Qwen3.8 | A→B, first use | 8.789 | 1.746 | — | 6.539 (75.24 at 11.5) | 0.501 (0.087) | 94.6 |
+| | B→A, first use | **9.040** | 1.263 | 0.099 | 7.556 (97.46 at 12.7) | 0.119 (0.053) | 94.8 |
+| | A→B, prepared | 7.673 | 1.701 | — | 5.599 (75.24 at 13.4) | 0.370 | 96.0 |
+| | B→A, prepared | **8.763** | 1.287 | 0.096 | 7.312 (97.46 at 13.2) | 0.064 | 94.9 |
+| | A→B, 0 context | 7.773 | 1.755 | — | 5.643 (75.24 at 13.3) | 0.373 | 94.9 |
+| | B→A, 0 context | 8.849 | 1.329 | — | 7.296 (97.00 at 13.3) | 0.221 (0.054) | 94.4 |
+| Qwen3.8 ↔ DeepSeek | A→B, first use | 8.729 | 1.275 | — | 7.261 (97.00 at 13.4) | 0.189 (0.079) | 96.3 |
+| | B→A, first use | 7.372 | 1.593 | 0.059 | 5.602 (75.62 at 13.4) | 0.115 (0.057) | 96.2 |
+| | A→B, prepared | 8.635 | 1.266 | — | 7.262 (97.00 at 13.4) | 0.104 | 95.6 |
+| | B→A, prepared | 7.423 | 1.635 | 0.059 | 5.677 (75.62 at 13.2) | 0.049 | 95.6 |
+| | A→B, 0 context | **9.378** | 1.295 | — | 7.975 (97.00 at 12.2) | 0.105 | 96.2 |
+| | B→A, 0 context | 7.495 | 1.598 | — | 5.603 (75.24 at 13.4) | 0.292 (0.086) | 96.2 |
+| DeepSeek ↔ image | A→B, first use | 5.609 | 1.747 | — | 2.083 (30.72 at 14.7) | 1.777 | 98.1 |
+| | B→A, first use | 7.938 | 0.532 | 0.092 | 7.195 (97.46 at 13.4) | 0.116 (0.053) | 98.3 |
+| | A→B, prepared | 5.512 | 1.709 | — | 2.083 (30.72 at 14.7) | 1.718 | 98.4 |
+| | B→A, prepared | 8.278 | 0.514 | 0.086 | 7.610 (97.46 at 12.7) | 0.063 | 100.1 |
+| | A→B, 0 context | 5.457 | 1.665 | — | 2.083 (30.72 at 14.7) | 1.708 | 100.0 |
+| | B→A, 0 context | 8.148 | 0.529 | — | 7.364 (97.00 at 13.2) | 0.251 (0.084) | 99.2 |
+| image ↔ DeepSeek | A→B, first use | 9.094 | 0.536 | — | 8.217 (97.00 at 11.8) | 0.336 (0.096) | 103.9 |
+| | B→A, first use | 6.280 | 2.530 | — | 2.132 (30.72 at 14.4) | 1.615 | 104.0 |
+| | A→B, prepared | 8.350 | 0.540 | — | 7.699 (97.00 at 12.6) | 0.106 | 100.0 |
+| | B→A, prepared | 5.620 | 1.656 | — | 2.255 (30.72 at 13.6) | 1.708 | 100.0 |
+| Qwen3.8 ↔ image | A→B, first use | 5.060 | 1.310 | — | 2.078 (30.72 at 14.8) | 1.671 | 77.1 |
+| | B→A, first use | 6.277 | 0.524 | 0.044 | 5.593 (75.62 at 13.4) | 0.115 (0.056) | 77.3 |
+| | A→B, prepared | 5.025 | 1.303 | — | 2.090 (30.72 at 14.7) | 1.631 | 77.3 |
+| | B→A, prepared | 6.234 | 0.538 | 0.044 | 5.600 (75.62 at 13.4) | 0.050 | 77.3 |
+| | A→B, 0 context | 5.047 | 1.308 | — | 2.086 (30.72 at 14.7) | 1.652 | 77.3 |
+| | B→A, 0 context | 6.425 | 0.546 | — | 5.641 (75.24 at 13.3) | 0.235 (0.082) | 77.2 |
+| image ↔ Qwen3.8 | A→B, first use | 6.503 | 0.516 | — | 5.623 (75.24 at 13.4) | 0.363 (0.081) | 76.6 |
+| | B→A, first use | 5.002 | 1.261 | — | 2.099 (30.72 at 14.6) | 1.641 | 76.6 |
+| | A→B, prepared | 6.591 | 0.535 | — | 5.787 (75.24 at 13.0) | 0.266 | 79.4 |
+| | B→A, prepared | 5.045 | 1.265 | — | 2.168 (30.72 at 14.2) | 1.610 | 79.5 |
+
+Setup (DeepSeek's hash-routing check, Qwen3.8's n-gram hash; the image
+has none) took 1–5 ms every time and is not shown. Qwen3.8's row reads
+within its first output took at most 10 ms. Every swap handed off the
+outgoing backing the incoming model could take (35,873 extents between
+the LLMs, 14,719 with the image), and released the rest after the swap.
+Bytes read per swap are the page-in column's; the n-gram rows added at
+most 0.2 MB.
+
+**Against M3's targets** (plan.md's swap table): every swap is under the
+~10 s goal and so under the ~20 s bound, first use included (its own
+target is ~40 s). **The worst LLM↔LLM swap is 9.38 s** (Qwen3.8 →
+DeepSeek, prepared, 0 context); at 8K saved context the worst prepared
+one is 8.76 s and the worst first-use one 9.04 s (both DeepSeek's
+return). An earlier run of the same swap path (`pairs-try1`, before the
+state-digest check was added) measured 7.24–9.66 s for the LLM↔LLM swaps,
+its worst 9.66 s a Qwen3.8 → DeepSeek at 12.3 GB/s: the margin to 10 s is
+the SSD's rate for DeepSeek's 97 GB. The swaps into an LLM are page-in
+bound (75–97 GB at 11.5–13.4 GB/s is 5.6–8.2 s; the eviction before it
+0.5 s of the image's 14,719 extents, 1.3–1.8 s of an LLM's 36,057–46,453;
+the first token 0.05–0.5 s); into the image they take 5.0–6.3 s, 2.1 s of
+it the 30.7 GB page-in and 1.6–1.8 s the encode and first step, whose step
+runs at about 1.5 s against 0.90 s alone while the backing no load took is
+released beside it (judgement calls). These runs had no CUDA graphs:
+they predate the decode-graphs slice (D-090).
+
+**After the rebase onto the decode graphs** (one run, `pairs-review1`,
+07:29–07:32, DeepSeek → Qwen3.8 only, the same protocol): DeepSeek's
+decode steps ran as graphs (4 captured, 72 replayed, none refused), every
+model's places pinned at registration and found pinned after every swap
+(DeepSeek's also at their registered sources). Every check exact: A's
+state digest in both returns, every continued step, B's output, DeepSeek's
+cycle prefills equal to the control's. Totals A→B 7.80, 7.84 and 7.66 s (0
+context), B→A 8.65, 8.66 and 8.96 s (0 context), page-in 13.1–13.4 GB/s,
+the shards 5.7–5.8 h (DeepSeek) and 4.2 h (Qwen3.8) old; the prepared
+return's first token 0.059 s (a replayed graph) against 0.064 s before.
+Peak memory 96.1–97.0 GiB in five swaps and 107.6 GiB in the first
+(94.4–96.0 GiB before); not investigated (one sample, `spark-b` shared).
+
+Beside the baselines ([baselines.md](baselines.md), cold page cache, one
+run each): llama.cpp's DeepSeek 0731 → Qwen3.8 (UD-IQ3_XXS) swap took
+76.6 s and the return with 8K state restored 104.4 s; jitLLM's
+DeepSeek → Qwen3.8 took 7.7–8.8 s and the return 8.8–9.0 s. Mia's vLLM
+reaches Qwen3.8's first token 13 min 13 s from start and TensorFold
+141 s; diffusers reaches Qwen-Image's first denoising step 212 s from
+process start, jitLLM 5.0–6.3 s from the swap request.
+
+## What was built (DeepSeek and the FP16 stand-in)
 
 **DeepSeek on the paged node** (`benchmarks/dsv4_runner.h`). The resident
 harness's graph, plan and kernels (`dsv4_common.h`, from `dsv4_exec.cc`),
@@ -117,7 +379,7 @@ protocol. In short:
   load took is released after the swap, off the critical path: *released
   by* is when the last of it was (observed after the first token).
 
-## Results (`spark-b`, 2026-09-28)
+## Results with the FP16 stand-in (`spark-b`, 2026-09-28)
 
 GB10, kernel 7.0.0-1019-nvidia, driver 580.178.04, the `spark-native`
 build, `CUDA_DISABLE_PTX_JIT=1`, lanes on their own threads, 8 landing
@@ -164,8 +426,8 @@ Beside M3's targets (D-087), from the swap request to the first token:
 every swap here is under the ~10 s goal (worst 7.52 s among the A↔B swaps,
 9.07 s for the DeepSeek reload), and first use is within 0.08 s of
 prepared. This is not M3's exit measurement: B is a 0.5B stand-in, so
-A→B pages in 1.26 GB where Qwen3.8 would page in its whole weights, and
-the Qwen3.8 and Qwen-Image pairs are not yet measured. The baselines' numbers stand beside them:
+A→B pages in 1.26 GB where Qwen3.8 pages in 75 GB; M3's pairs are
+[above](#results-m3s-swap-pairs-spark-b-2026-09-28). The baselines' numbers stand beside them:
 the pinned llama.cpp switched between DeepSeek V4 and Qwen3.8 in 75–93 s
 to the first token (measured, one run, M0), TensorFold loads Qwen3.8 in
 about 90 s and Mia's vLLM in 11–14 min (both creator-reported). B→A is
@@ -238,7 +500,26 @@ page-in beside the chunk takes 0.07 s more than alone.
   fencing makes and destroys no event once the pool is made.
 - `unit.SlabLayoutTest.*`: every stored byte of every group lands once, at
   its place, from its place in one file; a shard change falls on a page
-  boundary in a gap; the layouts the runner cannot page are refused.
+  boundary in a gap; the layouts the runner cannot page are refused; at
+  Qwen3.8's 80-byte gap, a shard change the default 256-byte alignment
+  cannot place lays out at 16, and alignments that are not a power of two
+  from 16 to 4,096 are refused.
+- `unit.PleRowsTest.*` (host): each lookup's slot holds its row's bytes
+  once the planned reads land, duplicates and rows crossing a block or a
+  chunk included; reads are 4 KiB-aligned, packed in the landing,
+  ascending, inside the table's stored range and at most 64 KiB, and rows
+  whose blocks touch share one; the whole-chunk count is the chunks the
+  rows touch; rows outside the table, a landing too small, too many
+  distinct rows and a table past its range are refused; on the storage
+  fake, an unknown submission is waited for and its row used, and a short
+  or failed read refuses the chunk's rows only after every read has
+  drained.
+  `unit.CudaPleRowsTest.*` (GB10): the reads through io_uring from a real
+  file and the gather kernel put every row in its slot.
+- Not unit-tested, checked by the runs above instead: the paged Qwen3.8
+  and image runners and the pairs runner (the bit-identity and pixel
+  checks against the resident harnesses, the state digests and
+  continuations), and `PagedWeights`, whose layout is DeepSeek's.
 
 ## Judgement calls
 
@@ -273,6 +554,59 @@ page-in beside the chunk takes 0.07 s more than alone.
   above shows the two equal bit for bit.
 - **0 context keeps A's state resident** rather than spilling a cleared
   one: a real 0-context model has nothing to save.
+- **The n-gram table by 4 KiB-aligned row reads, per chunk, no cache**
+  (D-035 asks for evidence before a smaller-read path; above): whole
+  chunks would read 486× the bytes on the correctness prompts and nearly
+  the whole table at 8K context. A row cache across chunks would save the
+  repeated rows of nearby tokens but needs a residency contract; the reads
+  cost 0.3 ms a chunk on those prompts (0.056 s over 192 chunks). They run
+  on the runner's own ring on the caller's thread, not the scheduler's
+  storage lane, whose sources are whole extents.
+- **Qwen3.8's slab offset aligned to 16, not 256** (the resident layout's
+  odd experts are 16-aligned too); the logits equal the resident
+  harness's.
+- **The weights' unwritten bytes are left as the backing had them.** A
+  page-in writes neither a slab page's bytes between groups nor a dense
+  chunk's tail past its stored length, so after a handoff they hold the
+  outgoing model's bytes (weights, or spilled state: an LLM's KV), where
+  the resident harness has zeros. No kernel reads them, from the code:
+  every tensor a plan binds is a resource or an expert slice, and a
+  quantized product reads past a row only into the slice's readable
+  bytes (`CheckMulMatQ` refuses short rows otherwise, and the Qwen3.8
+  graph marks them readable only inside the stride); the reader refuses
+  an artifact whose readable range leaves its group's stored bytes
+  (`CheckPlacement`: offset + readable ≤ stored, the last ending at
+  `used_bytes`), and the artifact writes that padding as zeros inside the
+  group; each page-in writes a group's whole stored range (a dense chunk
+  its stored length, a slab page its groups' stored pieces). So what a
+  kernel reads, the page-in wrote from the file, whatever the backing
+  held. Probed too, when a first rerun differed (`--scrub-probe`, 4,096
+  tokens): filling them with 0xFF (NaN in every float format, and NVFP4's
+  scales, which the padding's zero activations would turn into NaN)
+  changed none of Qwen3.8's logits, nor did filling the shared workspace
+  so before each chunk (`--poison-probe`, Qwen3.8 and DeepSeek). The
+  difference was RE-031. Nothing zeroes them: one process serves one
+  user (D-019), and nothing reads or exports those bytes; a multi-tenant
+  runtime would zero handed-off backing's unwritten bytes (D-014).
+- **BP-A1's check skips a fill's source:** QSA's selection mask fills a
+  shape-only tensor that is never bound (and never read), which the
+  check first counted as 312 tensors outside the catalog.
+- **One process per ordered pair,** so that every pair has a genuine first
+  use of B; the image A's return has no plans to drop (its "first use"
+  labels B only).
+- **Copies, not shared code,** of the resident harnesses' planning
+  (Qwen3.8) and phases (the image), as DeepSeek's: the validated resident
+  comparisons need no rerun, and equality is checked instead.
+- **The swaps' check for an LLM A compares against the same state**
+  (above), since Qwen3.8 is not repeatable past 2,051 cells (RE-031); the
+  fix belongs to the Qwen3.8 work, not the swap path.
+- **Backing no load took is released while B makes its first output,**
+  not before: with the image as B, waiting for the release first
+  (`--release-first on`, DeepSeek → image, `try3rf`) took 1.00–1.01 s and
+  the first output then 0.98–1.07 s, 5.73–5.83 s in all, against
+  1.67–1.79 s overlapped and 5.40–5.56 s in all (the release's ~31,000
+  `cuMemRelease` calls slow the first denoising step from 0.90 s alone to
+  about 1.5–1.6 s, but less than they take).
 
 ## Reproduction
 
@@ -294,13 +628,46 @@ above started only once `spark-b` had no GPU process and more than 110 GB
 check, and a first attempt started beside another 99 GB process was
 killed by the kernel's OOM killer (no number here comes from it).
 
+M3's pairs, each ordered pair one process (3–4 minutes each), with the
+image's component artifacts and the reference's initial latents
+installed as qwen-image-native's are (copied to `spark-b` for these runs):
+
+    jitllm_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR \
+      --dsv4-artifact DSV4 --qwen38-artifact QWEN38 --image-store STORE \
+      --image-composition eca21baa… --image-noise ref1/latents_init.bf16 \
+      --text decisions.md --qwen38-tokenizer tokenizer.json \
+      --dsv4-prompt dsv4-native/oracle/unfused/prompts.tokens \
+      --qwen38-prompt qwen38-native/prompts.tsv [--image-expect 95fbcbc5…]
+    jitllm_swap_pairs --a qwen38 --b dsv4 ... --cycles 0 --context 4096 \
+      --prompts qwen38-native/prompts.tsv --expect RESIDENT --generate 32
+    jitllm_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 95fbcbc5…
+
+where RESIDENT is `jitllm_qwen38_exec --context 4096 --max-rows 512
+--prompts qwen38-native/prompts.tsv --generate 32`'s output from the same
+build. The runs used a wrapper that also waits for the 1-minute load
+average to fall below 6, and checks twice 20–40 s apart: another agent's
+run started beside one of these in the same second once (its logs are
+not used).
+
 ## Limits
 
 - One process, one run per configuration; timings are single samples on
   `spark-b` (D-085's coarse comparison), not distributions.
-- B is the 0.5B FP16 fixture, a stand-in until Qwen3.8 runs: B's own
-  page-in is 1.26 GB. The Qwen3.8 and Qwen-Image pairs, M3's actual
-  swaps, are not measured here.
+- In the FP16 stand-in's runs, B's own page-in is 1.26 GB; M3's pairs
+  are measured with `jitllm_swap_pairs` above.
+- The pairs' table has no CUDA graphs: "prepared" means A's plans exist
+  and B ran before in the process. Since the rebase DeepSeek's decode
+  steps run as graphs (`--graphs on`, the default) and one pair was rerun
+  with them (above); Qwen3.8 and the image run launch by launch, their
+  places pinned all the same.
+- The n-gram rows are read on the caller's thread before each chunk's
+  job, synchronously: a decode step waits for its 16 reads (0.3 ms). No
+  row cache, no overlap with the previous chunk's job.
+- The image's phases run their kernels directly, not as registry-bound
+  plans (D-053), and are not checked by BP-A1's coverage check; the image
+  runner's memory is cataloged but its tensors are not.
+- The pairs' pinned state snapshot (the harness's check, up to 0.46 GB)
+  is outside the catalog and inside the peak memory figures.
 - The spill file is unnamed (`O_TMPFILE`, mode 0600, gone when the
   process exits) and a restore must read every byte back, but nothing
   checks the bytes it reads: silent corruption on the SSD would come back

@@ -343,8 +343,17 @@ it appears.
       restore of it is bit-identical. Decode 0.99× the oracle's; prefill
       0.37×, which fails D-085's 10% gate; peak memory 0.97× at a 4,096-token
       context against vLLM's 262,144
-      ([qwen38-native](experiments/qwen38-native/README.md)). Open: prefill
-      speed, device jobs over leased closures.
+      ([qwen38-native](experiments/qwen38-native/README.md)).
+      *On the paged node* (`benchmarks/qwen38_runner.h`): chunks as device
+      jobs over leased closures, the expert slabs as DeepSeek's pages, the
+      28.8 GB n-gram table never resident but read by rows before each
+      chunk (4 KiB-aligned direct reads, D-035's evidence recorded: 486×
+      fewer bytes than whole chunks), the state spilled and restored
+      through the swap path; the six prompts' 32 steps bit-identical to the
+      resident harness's logits ([swap](experiments/fast-swap/swap.md)).
+      Past 2,051 attended cells the QSA indexer's top-k is not repeatable
+      (RE-031: GGML's radix select picks among ties by timing).
+      Open: prefill speed; a deterministic top-k.
       *Qwen-Image-2.1, native* (`model/qwen_image.h`,
       `jitllm_qwen_image_exec`): the text encoder (Qwen3-VL's text path, the
       system turn dropped), the block-causal DiT with its text K/V prefix
@@ -358,10 +367,12 @@ it appears.
       diffusers' 52.6 s, 0.89 s per step against 1.26 s, peak memory 31.2
       GiB against 43.4 GiB resident and 15.9 GiB released
       ([qwen-image-native](experiments/qwen-image-native/README.md)).
-      Open: running each phase as a device job over leased closures on the
-      paged node (D-086; the harness is resident on `cudaMalloc` memory,
-      like the backend proof's rung 3), and the image path's operations in
-      the registry and a bound plan (D-053).
+      *On the paged node* (`benchmarks/qwen_image_runner.h`): each component
+      a set of extents, each phase a device job leasing only its own
+      component's closure; the image pixel for pixel the resident
+      harness's, generated before and after swaps
+      ([swap](experiments/fast-swap/swap.md)). Open: the image path's
+      operations in the registry and a bound plan (D-053).
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
@@ -417,9 +428,21 @@ it appears.
       prepared, 7.44 s first use, A→B 1.79–1.86 s, DeepSeek evict-all
       reload 9.07 s, all from the request to the first token; page-in at
       13.4 GB/s; A resumed after B bit-identical to A never swapped. The
-      handoff saves 1.3–1.4 s of a 46k-extent eviction. Open: the
-      Qwen3.8 and image pairs, and overlapping eviction with page-in.
+      handoff saves 1.3–1.4 s of a 46k-extent eviction.
       Graph restore: DeepSeek's decode graphs survive swaps (D-090).
+      *M3's pairs* ([swap](experiments/fast-swap/swap.md#results-m3s-swap-pairs-spark-b-2026-09-28)):
+      every ordered pair of DeepSeek, Qwen3.8 (its n-gram table paged by
+      rows, D-035) and Qwen-Image (each phase leasing only its component),
+      A→B→A with 8K and 0 context, first use and prepared, on `spark-b`:
+      all 32 swaps under the ~10 s goal, the worst LLM↔LLM swap 9.38 s
+      (8.76 s prepared and 9.04 s first use at 8K context; an earlier run
+      of the same path reached 9.66 s; the margin is the SSD's at-rest
+      rate for 75–97 GB), the image's first step 5.0–6.3 s after a swap
+      from an LLM; an LLM A's restored state byte-identical
+      and its continuation bit-identical to the same state's, the image
+      regenerated pixel for pixel. Open: overlapping eviction with page-in,
+      Qwen3.8's and the image's graphs, and a deterministic top-k for
+      Qwen3.8 (RE-031).
 - [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
@@ -441,8 +464,9 @@ it appears.
       and graphs on, 20.04 with fusion off; the step's device time alone is
       48.3–48.6 ms, and the rest is the paged node's per-step round trip.
       The job's host time per token fell from ~41.5 ms (launches waiting on
-      a full stream) to 0.13–0.16 ms. Open: Qwen3.8's graphs, once it runs
-      on the paged node, and the per-step round trip. The owner
+      a full stream) to 0.13–0.16 ms. Open: Qwen3.8's graphs (it runs on
+      the paged node now, its places pinned; its n-gram rows' gather reads
+      pinned staging a graph would name too), and the per-step round trip. The owner
       (2026-09-28) questioned whether graphs are worth their complexity at
       1.04–1.05×: re-measure them once leases are held per request rather
       than per step, and remove capture and caching if the gain is a
@@ -465,8 +489,10 @@ it appears.
       *As a harness binary for now* (`jitllm_swap_runner`, on the test
       harness's paged node): DeepSeek with the FP16 fixture as B,
       first-use and prepared cycles, 0 context, evict-all reloads and the
-      RE-029 overlap probe. Open: moving it into `jitllm-runtime` (D-088
-      no longer holds the tokenizer back), and the three M3 models.
+      RE-029 overlap probe; and for the three M3 models `jitllm_swap_pairs`,
+      one process per ordered pair, each part of each swap, bytes, rates
+      and peak memory recorded. Open: moving it into `jitllm-runtime` (D-088
+      no longer holds the tokenizer back).
 - [ ] Start the model support matrix (moved from M5), recording template
       hashes.
 - [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible

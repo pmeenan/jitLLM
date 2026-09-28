@@ -28,6 +28,35 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells  (2026-09-28, status: open)
+
+`spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
+`top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
+`top_k_radix_cuda` compacts the elements above the threshold and those
+equal to it with `atomicAdd` on per-row counters (`top-k.cu:170-173`), up
+to 64 blocks a row: which of several equal values land in the first k
+depends on thread timing. Qwen3.8's QSA indexer selects the top
+`budget + ratio − 1` = 2,051 cells from scores that are per block of 4
+cells (every score appears four times) and ReLU'd (many exact zeros), so
+wherever the k-th value is tied the selected cells, and with them the
+attention, change between runs. Observed with M3's swap runner
+(`jitllm_swap_pairs`, [swap.md](experiments/fast-swap/swap.md)): the same
+8,192-token prefill (16 chunks of 512) in one process, weights and state
+identical, gave logits that differ from the 11th to the 16th chunk on
+(positions past 5,120) in seven of twelve reruns; two processes'
+greedy continuations of the same context diverged at the 10th token. The
+first 8 chunks (n_kv ≤ 4,096) matched in a repeat, and short prompts
+(n_kv ≤ 2,051, no selection) always do, which is why qwen38-native's
+repeats were identical. Mia's vLLM is not repeatable by default either,
+and its deterministic mode, the oracle's, sets `VLLM_QSA_DET_TOPK=1`
+(baselines.md). DeepSeek V4's top-k
+(the lightning indexer's) has shown no such difference in any run.
+Impact: jitLLM's Qwen3.8 is not repeatable past 2,051 cells; any
+bit-identity check there must compare against the same state, not a rerun
+(the swap runner snapshots the state and runs the unswapped continuation
+from it). Fix: a top-k that breaks ties by index (a patch to GGML's radix
+select, or jitLLM's own), part of the Qwen3.8 work.
+
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 
 Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s

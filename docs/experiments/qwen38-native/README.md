@@ -257,7 +257,15 @@ NVFP4 GEMM above, and an MXFP8 tensor-core GEMM. Decode launches each of its
 - One sequence; contexts to 8,704 run; prompts of 60–72 tokens, so QSA's
   selection is exercised only by the perplexity text.
 - The oracle's tokens stand in for the native tokenizer's.
-- Resident on `cudaMalloc`, not yet as device jobs over leased closures on
-  the paged node (as DeepSeek V4's).
+- Resident on `cudaMalloc` here. On the paged node, as device jobs over
+  leased closures with the n-gram table read by rows, its logits equal this
+  harness's bit for bit on the six prompts' 32 steps
+  ([swap](../fast-swap/swap.md#qwen38-flash-next-on-the-paged-node)).
+- Not repeatable past 2,051 attended cells: the QSA indexer's top-k (GGML's
+  radix select) picks among tied scores nondeterministically (RE-031), so
+  the perplexity run, whose positions pass 2,048, need not repeat bit for
+  bit (at 8,192 tokens, reruns differed from the 11th to the 16th chunk of
+  512 on); the
+  prompts, below that, do.
 - The state's spill and restore is the harness's copy of one region; the
   swap path's spill format is M4's (D-086).

@@ -264,6 +264,10 @@ perplexity −1.5%; prefill 0.37× its speed, failing D-085's gate); and
 Qwen-Image-2.1 imported as component artifacts joined by a composition
 (D-089) and run natively (within its pre-registered bounds of diffusers
 BF16; 0.70× its generation time with weights resident, one prompt at
-1024², 40 steps). D-087 moved the
+1024², 40 steps); and all six ordered swap pairs of the three on the
+paged node (Qwen3.8's n-gram table read by rows, D-035), every swap
+under ~10 s (worst LLM↔LLM 9.38 s, page-in bound), an LLM's return
+bit-identical to its saved state's continuation (RE-031 rules out a
+rerun). D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

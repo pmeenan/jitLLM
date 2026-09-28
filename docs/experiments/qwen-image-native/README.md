@@ -210,10 +210,13 @@ admit) nor a cuBLAS formulation was needed.
   run from seeded noise of jitLLM's own (not diffusers') gave a coherent
   image, and the attention kernel's tests cover that size's sequence
   lengths.
-- The phases run on `cudaMalloc` memory in a harness, not as device jobs
-  over leased closures on the paged node, and their kernels are called
-  directly: the image path's operations are not yet declared in the
-  registry or dispatched through a bound plan (D-053, D-086).
+- The phases here run on `cudaMalloc` memory. On the paged node each phase
+  is a device job over its own component's leased closure, and the image is
+  this harness's pixel for pixel (RGBA SHA-256 `95fbcbc5…`,
+  [swap](../fast-swap/swap.md#qwen-image-21-on-the-paged-node)). In both,
+  the kernels are called directly: the image path's operations are not yet
+  declared in the registry or dispatched through a bound plan (D-053,
+  D-086).
 - The VAE's convolutions use im2col (0.47 s of the 1.07 s decode).
 - Load times are with a warm page cache.
 

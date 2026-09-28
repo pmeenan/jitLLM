@@ -105,16 +105,25 @@ if(JITLLM_CUDA)
   # model on a paged node (tests/support/paged_node.h), so one process can
   # hold either or both (BP-S3). Their binaries link the launch recorder
   # themselves (an object library, whose wrappers must be in the link).
+  # M3's Qwen3.8 runner (its n-gram table paged by rows, ple_rows.h) and the
+  # weights-as-extents helper it shares with the image runner.
   add_library(jitllm_paged_runners STATIC fp16_runner.cc fp16_common.cc exl3_runner.cc
-                                          exl3_common.cc dsv4_common.cc dsv4_runner.cc)
+                                          exl3_common.cc dsv4_common.cc dsv4_runner.cc
+                                          paged_weights.cc paged_weights.cu qwen38_common.cc
+                                          qwen38_runner.cc
+                                          ple_rows.cc ple_rows.cu)
   target_include_directories(jitllm_paged_runners SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_include_directories(jitllm_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(jitllm_paged_runners PUBLIC jitllm_paged_node jitllm_exl3_qwen2
                                                     jitllm_ggml_kernels jitllm_scheduler
                                                     jitllm_cuda_device_memory jitllm_artifact
-                                                    jitllm_model jitllm_plan_record
+                                                    jitllm_model jitllm_plan_record jitllm_storage
                                              PRIVATE jitllm_warnings)
+  # The n-gram rows' gather kernel: sm_121a, as the GGML module's units
+  # build, and the profile's discrete GPUs (D-082).
+  set_target_properties(jitllm_paged_runners PROPERTIES
+                        CUDA_ARCHITECTURES "121a-real;${JITLLM_CUDA_DISCRETE_SASS}")
 
   # Backend-proof P2, rungs 4 and 5: the same fixture paged into device VMM
   # through the landing zone by the scheduler and its lanes, executed as
@@ -144,6 +153,19 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_swap_runner PRIVATE jitllm_paged_runners jitllm_launch_recorder
                                                    jitllm_tokenizer jitllm_warnings)
   target_link_options(jitllm_swap_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # M3's swap pairs: two of DeepSeek V4 Flash, Qwen3.8 Flash Next and the
+  # Qwen-Image-2.1 pipeline on one paged node, full swaps A→B→A with each
+  # part timed (docs/experiments/fast-swap/swap.md). A harness for now; it
+  # links the native tokenizer and the prompt renderer (the image's prompt),
+  # which D-088 clears for production binaries.
+  add_executable(jitllm_swap_pairs swap_pairs.cc qwen_image_runner.cc)
+  target_include_directories(jitllm_swap_pairs SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_swap_pairs PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                                  jitllm_image_kernels jitllm_tokenizer
+                                                  jitllm_chat jitllm_warnings)
+  target_link_options(jitllm_swap_pairs PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through jitLLM's launchers at upstream's forced plans,

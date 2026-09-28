@@ -71,11 +71,15 @@ double Seconds(std::chrono::steady_clock::duration d) {
 
 std::expected<SlabLayout, std::string> LayOutSlab(std::span<const std::uint32_t> shard,
                                                   std::span<const std::uint64_t> file,
-                                                  std::uint64_t stored, std::uint64_t stride) {
+                                                  std::uint64_t stored, std::uint64_t stride,
+                                                  std::uint64_t alignment) {
   const std::size_t n = file.size();
   if (n == 0 || shard.size() != n || stored == 0 || stride < stored ||
       stored % kFileAlignment != 0) {
     return Error("not a slab: no groups, or a stride below the groups' stored bytes");
+  }
+  if (alignment < 16 || alignment > kFileAlignment || (alignment & (alignment - 1)) != 0) {
+    return Error("a slab's alignment is a power of two from 16 to 4,096");
   }
   // Consecutive in the file within a shard, changing shard at most once.
   std::optional<std::size_t> change;
@@ -96,10 +100,11 @@ std::expected<SlabLayout, std::string> LayOutSlab(std::span<const std::uint32_t>
   const std::uint64_t gap = stride - stored;
   if (change) {
     // A page boundary in the gap before the group that starts the second
-    // shard: δ ≡ -e·S (mod 2 MiB), rounded up to 256 within the gap.
+    // shard: δ ≡ -e·S (mod 2 MiB), rounded up to the alignment within the
+    // gap.
     const std::uint64_t at = (*change * stride) % kExtent;
     const std::uint64_t r = (kExtent - at) % kExtent;
-    const std::uint64_t delta = Round(r, 256);
+    const std::uint64_t delta = Round(r, alignment);
     if (delta - r > gap) {
       return Error("the gap between groups is too small to align a shard change with a page");
     }

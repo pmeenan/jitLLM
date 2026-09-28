@@ -27,6 +27,25 @@ A→B and **104.4 s** B→A to the first token, the return restoring A's state
 with 11 prompt tokens processed. M0's run of the older DeepSeek revision
 measured 75–93 s per switch.
 
+**jitLLM's swaps beside these** (measured on `spark-b`, 2026-09-28, one
+process per ordered pair, from the swap request to the first token or
+the image's first denoising step; [swap.md](swap.md#results-m3s-swap-pairs-spark-b-2026-09-28)):
+
+| Swap | jitLLM | Baseline |
+| --- | ---: | ---: |
+| DeepSeek 0731 (8K context) → Qwen3.8 | 7.7–8.8 s | 76.6 s (llama.cpp, Qwen3.8's UD-IQ3_XXS GGUF: cross-quantization, speed only) |
+| Qwen3.8 → DeepSeek 0731, A's 8K state restored | 8.8–9.0 s | 104.4 s (llama.cpp, the same) |
+| Qwen3.8 (NVFP4) to its first token | 6.2–8.8 s from another model | 13 min 13 s (Mia's vLLM, from start); 141 s (TensorFold, MLX 4-bit, cross-quantization) |
+| Qwen-Image-2.1 to its first step's output | 5.0–6.3 s from an LLM | 212.2 s (diffusers BF16, from process start) |
+| Worst LLM↔LLM swap | 9.38 s | — |
+
+Not like for like: the baselines start processes and load from a cold
+page cache; jitLLM swaps in one running process with direct reads (no
+page cache), the LLMs' artifacts at rest (3–5 h old) and the image's
+recently written (2 h, RE-027's faster rate). Swaps into an LLM are
+page-in bound, so the margin under 10 s is the SSD's at-rest rate for
+75–97 GB (11.5–13.4 GB/s in these runs).
+
 Correctness reference data, saved beside this file: greedy tokens and top-5
 log-probabilities for the six chat prompts, 32 tokens each, from
 [Mia's vLLM](reference-qwen3.8-nvfp4-vllm.json) (deterministic mode, MTP

@@ -144,9 +144,10 @@ inline constexpr std::uint64_t kSlabSlotBytes =
 
 // One layer's slab: where its experts' groups are in the file (group e:
 // `shard[e]`, `file[e]`, each `stored` bytes), its stride and the slab's
-// offset δ in its first page. Computes δ and the pages; refused if the
-// groups are not consecutive in each shard, change shard more than once,
-// or a stride is below the stored bytes.
+// offset δ in its first page, a multiple of `alignment` (a power of two,
+// 16 to 4,096). Computes δ and the pages; refused if the groups are not
+// consecutive in each shard, change shard more than once, or a stride is
+// below the stored bytes.
 struct SlabLayout {
   std::uint64_t stride = 0;
   std::uint64_t delta = 0;
@@ -155,7 +156,8 @@ struct SlabLayout {
 };
 std::expected<SlabLayout, std::string> LayOutSlab(std::span<const std::uint32_t> shard,
                                                   std::span<const std::uint64_t> file,
-                                                  std::uint64_t stored, std::uint64_t stride);
+                                                  std::uint64_t stored, std::uint64_t stride,
+                                                  std::uint64_t alignment = 256);
 
 class Dsv4Runner final : public test_support::PagedModel {
  public:
@@ -226,6 +228,7 @@ class Dsv4Runner final : public test_support::PagedModel {
   const std::vector<catalog::ExtentId>& state() const { return state_.extents; }
   std::uint64_t weight_read_bytes() const { return read_bytes_; }
   std::uint64_t state_bytes() const { return layout_.bytes; }
+  std::uint64_t state_base() const { return state_.base; }
   std::uint64_t slab_padding() const { return slab_padding_; }
   std::uint64_t coverage_tensors() const { return coverage_tensors_; }
   std::uint64_t coverage_violations() const { return coverage_violations_; }

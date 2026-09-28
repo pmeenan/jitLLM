@@ -346,6 +346,20 @@ converter identity is the record. Resources are named as llama.cpp's
   2.12 GB/s per Cortex-A725 core, so hashing every read would take about 6
   cores at D-034's ~15 GB/s. Chunk hashes exist so a verify can locate a
   corrupt chunk and so replication can resume.
+- **Row reads below a chunk (a runner's path, not the format's).** A plain
+  row table may be read by rows instead of whole chunks: M3's Qwen3.8
+  runner reads the n-gram table's rows on demand
+  ([swap](experiments/fast-swap/swap.md#qwen38-flash-next-on-the-paged-node)).
+  The format needs nothing new for it: a row's bytes are its resource's
+  offset plus the row index times the row size, the group's chunks are
+  consecutive in one shard (the runner refuses a table otherwise), and each
+  read is 4 KiB-aligned inside the group's stored range, so it reads only
+  bytes the chunks store. What changes is the reader's contract, which
+  D-035 asks to be explicit: rows are fetched per chunk of tokens into
+  fixed, charged buffers, used by that chunk's job alone and never
+  resident as extents, so there is no row residency to validate or evict;
+  there is no hashing, as for chunks. The runtime's own reader stays
+  chunk-granular (D-056).
 
 ## Executable views
 
@@ -667,7 +681,9 @@ one and removes it. The source must remain available (D-018).
   device splits (`max_sectors_kb`) are measured with native asynchronous I/O
   in M2 and M3.
 - **Out of scope:** mutable spill (D-055/M6), alternative layouts per resource
-  (deferred to M9), row-granular reads, packed-sign EXL3 derivation, a
+  (deferred to M9), row-granular reads in the runtime's reader (a runner
+  reads Qwen3.8's n-gram rows so, [above](#page-in-contract), with no
+  format change), packed-sign EXL3 derivation, a
   binary index. The largest planned index is Qwen3.8's at 6.33 MB, which
   the prototype's strict Python parser loads in 0.048–0.050 s (3 runs). The
   C++ parser cost is not measured.

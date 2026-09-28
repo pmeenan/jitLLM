@@ -132,4 +132,38 @@ TEST(SlabLayoutTest, AShardChangeTheGapCannotAlignIsRefused) {
   CheckCovers(*whole, one, consecutive, stored);
 }
 
+// Qwen3.8's slabs (benchmarks/qwen38_runner.h): 512 groups of 2,768,896
+// stored bytes at a stride of 2,768,976, an 80-byte gap. Where the change
+// of shard needs δ ≡ r (mod 256) with r's remainder leaving more than 80
+// bytes to the next 256, the default alignment is refused; at the stride's
+// own 16 every change lays out.
+TEST(SlabLayoutTest, AnAlignmentOfSixteenPutsAnyShardChangeInAnEightyByteGap) {
+  const std::uint64_t stored = 2768896;
+  const std::uint64_t stride = 2768976;
+  std::size_t change = 0;
+  for (std::size_t e = 1; e < 512 && change == 0; ++e) {
+    const std::uint64_t r = (kPagedExtent - ((e * stride) % kPagedExtent)) % kPagedExtent;
+    if (r % 256 != 0 && 256 - (r % 256) > stride - stored) {
+      change = e;
+    }
+  }
+  ASSERT_NE(change, 0U);
+  std::vector<std::uint32_t> shard(512);
+  std::vector<std::uint64_t> file(shard.size());
+  for (std::size_t e = 0; e < file.size(); ++e) {
+    shard[e] = e < change ? 3 : 4;
+    file[e] = 4096 + ((e < change ? e : e - change) * stored);
+  }
+  EXPECT_FALSE(LayOutSlab(shard, file, stored, stride).has_value());
+  const auto slab = LayOutSlab(shard, file, stored, stride, 16);
+  ASSERT_TRUE(slab.has_value()) << slab.error();
+  EXPECT_EQ(slab->delta % 16, 0U);
+  EXPECT_EQ((slab->delta + (change * stride)) % kPagedExtent, 0U);
+  CheckCovers(*slab, shard, file, stored);
+  // Alignments that are not a power of two from 16 to 4,096 are refused.
+  EXPECT_FALSE(LayOutSlab(shard, file, stored, stride, 8).has_value());
+  EXPECT_FALSE(LayOutSlab(shard, file, stored, stride, 48).has_value());
+  EXPECT_FALSE(LayOutSlab(shard, file, stored, stride, 8192).has_value());
+}
+
 }  // namespace

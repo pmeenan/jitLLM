@@ -1,0 +1,128 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The Qwen-Image-2.1 pipeline as a model on a paged node
+// (tests/support/paged_node.h; M3's swap path,
+// docs/experiments/fast-swap/swap.md): its three component artifacts,
+// joined by their composition (D-089), paged into device VMM through the
+// node's landing zone, and each phase run as device jobs over the closure
+// of its own component (D-086), with the kernels and the call order of the
+// resident harness (qwen_image_exec.cc, whose phases this copies, as
+// dsv4_common.h copies DeepSeek's: the resident harness and its comparison
+// with diffusers need no rerun; the pixels are checked equal to its image's
+// instead).
+//
+// - Weights: each component a set of extents (paged_weights.h), only the
+//   groups its phase reads (the text encoder's table and language layers,
+//   the denoiser, the VAE's decoder), a dense region per group, landed from
+//   its shards (D-081). The VAE's weights are F32 in the artifact and paged
+//   as they are; the decode job rounds each to BF16 (as
+//   from_pretrained(torch_dtype=bfloat16) casts them, and the resident
+//   harness does on the host) into its working memory before the decoder.
+//   Their places are pinned in the scheduler when registered (D-090).
+// - Phases, each a device job leasing only its component, the image's own
+//   memory, the shared workspace (every per-job buffer), the cuBLAS
+//   workspace and the staging: encode (one job), denoise (a job per step;
+//   the first also projects the text rows and fills the prefix K/V cache),
+//   decode (one job). A component a phase does not lease can be evicted
+//   and paged back meanwhile.
+// - The image's own memory (device VMM, mapped at setup, pinned): what
+//   lives from one job to the next within a generation — the prompt
+//   embeddings, the text rows, the prefix K/V cache, the rotary tables, the
+//   latents and the noise prediction. Nothing survives a generation, so a
+//   swap has no image state to spill.
+// - The endpoint (M3's swap table): FirstOutput encodes the prompt and runs
+//   the first denoising step; Finish runs the rest and the decoder, and
+//   hashes the image's RGBA pixels.
+
+#ifndef JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
+#define JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
+
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "artifact/artifact.h"
+#include "catalog/catalog.h"
+#include "kernels/ggml/cublas.h"
+#include "model/qwen_image.h"
+#include "paged_node.h"
+#include "paged_weights.h"
+
+namespace jitllm::benchmarks {
+
+struct QwenImageOptions {
+  std::filesystem::path store;  // the installed artifacts
+  std::string composition;      // its ID
+  std::filesystem::path noise;  // the initial latents (BF16, diffusers' for the seed)
+  std::filesystem::path out;
+  std::string prompt = "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
+  std::uint32_t size = 1024;
+  std::uint32_t steps = 40;
+};
+
+class QwenImageRunner final : public test_support::PagedModel {
+ public:
+  using Status = test_support::Status;
+
+  QwenImageRunner(test_support::PagedNode& node, const QwenImageOptions& options, int owner,
+                  std::uint32_t stream);
+  ~QwenImageRunner() override;
+  QwenImageRunner(const QwenImageRunner&) = delete;
+  QwenImageRunner& operator=(const QwenImageRunner&) = delete;
+  QwenImageRunner(QwenImageRunner&&) = delete;
+  QwenImageRunner& operator=(QwenImageRunner&&) = delete;
+
+  // Before the scheduler exists: the composition and components, bound;
+  // the prompt's tokens; the phases' working memory measured; the image's
+  // own memory, the cuBLAS workspace and staging mapped; the weights'
+  // places reserved and cataloged.
+  Status Setup();
+  std::uint64_t activations_needed() const { return work_bytes_; }
+  // The image runs no GGML plan, so needs no GGML pool: one extent.
+  static std::uint64_t pool_needed() { return test_support::kPagedExtent; }
+  Status Register();
+  Status Bind();
+
+  // Encode, then the first denoising step; `sha` the step's noise
+  // prediction's SHA-256.
+  Status FirstOutput(std::string& sha);
+  // The remaining steps and the decoder; `sha` the RGBA pixels' SHA-256.
+  Status Finish(std::string& sha);
+  // Timings and sizes, JSON.
+  std::string Report() const;
+  // Each component artifact's data directory (after Setup).
+  std::vector<std::filesystem::path> data() const;
+
+  std::vector<catalog::ExtentId> weights() const;
+  const catalog::Closure& everything() const { return everything_; }
+  std::uint64_t weight_read_bytes() const;
+
+  std::uint32_t stream() const override { return stream_; }
+  const catalog::Closure& fence_closure() const override { return fence_; }
+  std::vector<catalog::ExtentId> managed_extents() const override { return weights(); }
+  Status Release() override;
+
+ private:
+  struct State;
+  Status Encode();
+  Status Step(std::uint32_t index, bool hash, std::string* sha);
+  Status Decode(std::string& sha);
+
+  test_support::PagedNode& node_;
+  const QwenImageOptions& o_;
+  int owner_;
+  std::uint32_t stream_;
+  std::unique_ptr<State> s_;
+  std::uint64_t work_bytes_ = 0;
+  catalog::Closure everything_;
+  catalog::Closure fence_;
+};
+
+}  // namespace jitllm::benchmarks
+
+#endif  // JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
