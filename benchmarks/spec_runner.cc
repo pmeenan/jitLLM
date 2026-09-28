@@ -10,8 +10,9 @@
 // may not until D-088 is accepted.
 //
 //   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
-//                      --check greedy|forced|swap|sampled-plain|sampled-spec
+//                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe
 //                      [--tokens N] [--context N] [--graphs on|off] [--draft N]
+//                      [--probe-step N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //                      [--seeds N] [--sampled FILE] [--poll-us N]
 //                      [--exact on|off] [--margin B]
@@ -59,6 +60,8 @@
 //   --out/sampled-<mode>.json. With --sampled FILE (the other mode's), the
 //   total-variation distance over each prompt's 16 most frequent tokens
 //   plus "other" (the exit's bound: 0.1).
+// - probe (fast plan): a diagnostic of one forced-run token (--probe-step);
+//   see Probe below and docs/experiments/dsv4-decode/probe.py.
 //
 // The node runs the runtime's own wake (docs/experiments/runtime-wake/);
 // --poll-us, a diagnostic, instead has the scheduler and the device lane
@@ -83,6 +86,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -104,6 +108,7 @@
 #include "dsv4_runner.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
+#include "ggml.h"
 #include "model/dsv4.h"
 #include "paged_node.h"
 #include "paged_programs.h"
@@ -212,6 +217,8 @@ struct Options {
   // speculative token may differ from the plain engine's argmax only where
   // that argmax leads it by less than this.
   double margin = 0.0;
+  // probe: the generated token whose verify is replayed and dumped.
+  std::uint32_t probe_step = 0;
 };
 
 struct Prompt {
@@ -311,7 +318,11 @@ class Harness {
   Status Untouched(const std::vector<std::byte>& pre_target, const std::vector<std::byte>& pre_ring,
                    Step& step);
   Status Greedy();
+  // The forced check's rejections, per step (Forced); counts what each covers.
+  static std::function<std::int32_t(std::size_t, std::uint32_t, std::uint32_t)> ForcedWrong(
+      std::map<std::string, std::uint64_t>& covered);
   Status Forced();
+  Status Probe();
   Status Swap();
   Status Sampled(bool speculative);
   Status Compare(const Generation& plain, const Generation& spec, std::string_view what);
@@ -1010,15 +1021,9 @@ Status Harness::Greedy() {
 // verify's rows reach the row completing a compressor block (a CSA block
 // every 4 positions, an HCA block every 128), the rejection placed on that
 // row or before it, so that its compressed row is written and restored.
-Status Harness::Forced() {
-  const Prompt& prompt = chat_.front();
-  const std::uint32_t count = o_.tokens;
-  Generation plain;
-  if (auto r = Plain(prompt, count, plain); !r) {
-    return r;
-  }
-  std::map<std::string, std::uint64_t> covered;
-  const auto wrong = [&](std::size_t step, std::uint32_t pos, std::uint32_t rows) -> std::int32_t {
+std::function<std::int32_t(std::size_t, std::uint32_t, std::uint32_t)> Harness::ForcedWrong(
+    std::map<std::string, std::uint64_t>& covered) {
+  return [&covered](std::size_t step, std::uint32_t pos, std::uint32_t rows) -> std::int32_t {
     if (rows < 2) {
       return -1;
     }
@@ -1053,6 +1058,17 @@ Status Harness::Forced() {
       }
     }
   };
+}
+
+Status Harness::Forced() {
+  const Prompt& prompt = chat_.front();
+  const std::uint32_t count = o_.tokens;
+  Generation plain;
+  if (auto r = Plain(prompt, count, plain); !r) {
+    return r;
+  }
+  std::map<std::string, std::uint64_t> covered;
+  const auto wrong = ForcedWrong(covered);
   std::vector<float> first;
   if (auto r = Prefill(prompt, true, first); !r) {
     return r;
@@ -1161,6 +1177,248 @@ Status Harness::Forced() {
       R"({{"check":"forced","prompt":"{}","generated":{},"steps":{},"rejected_steps":{},)"
       R"("state_differs":{},"covered":{{{}}},"pos_rows_kept_forced":[{}]}})",
       prompt.id, count, spec.steps.size(), rejected, differing, covered_json, steps_json));
+  return {};
+}
+
+// A diagnostic (--check probe --probe-step N; docs/experiments/dsv4-decode/):
+// the fast plan's forced run as Forced runs it, then from the state before
+// the verify that gave token N (the same run repeated to that step) that
+// verify again with every named intermediate kept, plain one-row decoding
+// of the same rows, and the reference mode's verify and one-row decoding;
+// and both plans teacher-forced from the prompt on the run's tokens. Each
+// variant's dump and logits row go to --out/probe/VARIANT/ (index.json
+// names each tensor's type, shape and offset in dump.bin).
+Status Harness::Probe() {
+  if (o_.dsv4.exact || o_.probe_step == 0 || o_.probe_step >= o_.tokens) {
+    return Error(
+        "the probe starts from the fast plan (no --exact on) at a --probe-step below --tokens");
+  }
+  const Prompt& prompt = chat_.front();
+  const std::uint32_t count = o_.tokens;
+  const std::uint32_t n = o_.probe_step;
+  Generation plain;
+  if (auto r = Plain(prompt, count, plain); !r) {
+    return r;
+  }
+  std::map<std::string, std::uint64_t> covered;
+  const auto wrong = ForcedWrong(covered);
+  std::vector<float> first;
+  if (auto r = Prefill(prompt, true, first); !r) {
+    return r;
+  }
+  Generation spec;
+  if (auto r = Speculate(prompt, count, first, {.wrong = wrong, .untouched = true}, spec); !r) {
+    return r;
+  }
+  if (auto r = NearTies(prompt, plain, spec); !r) {
+    return r;
+  }
+  // The step whose verify gave token n, and its row.
+  std::size_t base = 1;
+  std::size_t k = 0;
+  for (; k < spec.steps.size() && n >= base + spec.steps[k].kept; ++k) {
+    base += spec.steps[k].kept;
+  }
+  if (n >= spec.tokens.size() || k == spec.steps.size()) {
+    return Error(std::format("no step gave token {}", n));
+  }
+  const Step& step = spec.steps[k];
+  const auto r = static_cast<std::uint32_t>(n - base);
+  std::vector<std::int32_t> input = {spec.tokens[base - 1]};
+  input.insert(input.end(), step.drafts.begin(), step.drafts.end());
+  std::string inputs;
+  for (const std::int32_t t : input) {
+    inputs += std::format(" {}", t);
+  }
+  std::println(
+      "probe: token {} from step {} (pos {}, rows {}, kept {}, forced {}), row {}; input [{}]", n,
+      k, step.pos, step.rows, step.kept, step.forced, r, inputs);
+  // The plain engine's argmax on the run's prefix (the fast teacher's, set
+  // by its variant, which runs first) and the run's token.
+  std::int32_t plain_best = -1;
+  const std::int32_t spec_token = spec.tokens[n];
+  const std::filesystem::path root = o_.out / "probe";
+  // Back to the state before step k: the same run repeated to it, which
+  // must repeat the first run's tokens and logits bit for bit.
+  const auto restore = [&]() -> Status {
+    std::vector<float> f;
+    if (auto p = Prefill(prompt, true, f); !p) {
+      return p;
+    }
+    Generation g;
+    if (auto s =
+            Speculate(prompt, count, f, {.wrong = wrong, .max_steps = k, .untouched = true}, g);
+        !s) {
+      return s;
+    }
+    bool same = g.tokens.size() == base;
+    for (std::size_t i = 0; same && i < base; ++i) {
+      same = g.tokens[i] == spec.tokens[i] && SameBits(g.logits[i], spec.logits[i]);
+    }
+    if (!same) {
+      return Error("the repeated run does not repeat the first to the probed step");
+    }
+    return {};
+  };
+  const auto record = [&](std::string_view variant, std::span<const float> row,
+                          std::uint32_t rows) -> Status {
+    std::vector<jb::Dsv4Runner::Dumped> dumped;
+    if (auto d = dsv4_.DumpLast(dumped); !d) {
+      return d;
+    }
+    const std::filesystem::path dir = root / variant;
+    std::filesystem::create_directories(dir);
+    std::ofstream bin(dir / "dump.bin", std::ios::binary);
+    std::string index;
+    std::uint64_t at = 0;
+    for (const jb::Dsv4Runner::Dumped& d : dumped) {
+      bin.write(reinterpret_cast<const char*>(d.bytes.data()),
+                static_cast<std::streamsize>(d.bytes.size()));
+      index += std::format(R"({}{{"name":"{}","type":"{}","ne":[{},{},{},{}],"at":{},"bytes":{}}})",
+                           index.empty() ? "" : ",", d.name, ggml_type_name(d.type), d.ne[0],
+                           d.ne[1], d.ne[2], d.ne[3], at, d.bytes.size());
+      at += d.bytes.size();
+    }
+    std::ofstream(dir / "index.json")
+        << std::format(R"({{"variant":"{}","rows":{},"row":{},"tensors":[{}]}})", variant, rows,
+                       rows > 1 ? r : 0, index)
+        << '\n';
+    if (auto w = jb::WriteFloats(dir / "logits.f32", row); !w) {
+      return w;
+    }
+    if (plain_best < 0) {
+      plain_best = jb::Argmax(row);
+    }
+    const auto at_token = [&](std::int32_t t) { return row[static_cast<std::size_t>(t)]; };
+    std::println(
+        "probe {}: argmax {}; logit[{}] {:.4f}, logit[{}] {:.4f}: the plain argmax leads by {:.4f}",
+        variant, jb::Argmax(row), plain_best, at_token(plain_best), spec_token,
+        at_token(spec_token), at_token(plain_best) - at_token(spec_token));
+    results_.push_back(std::format(
+        R"({{"check":"probe","variant":"{}","argmax":{},"lead":{:.4f},"tensors":{}}})", variant,
+        jb::Argmax(row), at_token(plain_best) - at_token(spec_token), dumped.size()));
+    return {};
+  };
+  // The target's state (before the probed chunk) to --out/probe/state-WHAT.bin,
+  // its layout and the run's steps to state.json.
+  std::filesystem::create_directories(root);
+  {
+    std::string tensors;
+    for (const md::Dsv4StateTensor& t : dsv4_.state_layout().tensors) {
+      tensors += std::format(
+          R"({}{{"kind":{},"layer":{},"f16":{},"ne0":{},"ne1":{},"offset":{},"bytes":{}}})",
+          tensors.empty() ? "" : ",", static_cast<int>(t.kind), t.layer, t.f16 ? "true" : "false",
+          t.ne0, t.ne1, t.offset, t.bytes);
+    }
+    std::string steps;
+    for (const Step& s : spec.steps) {
+      steps +=
+          std::format("{}[{},{},{},{}]", steps.empty() ? "" : ",", s.pos, s.rows, s.kept, s.forced);
+    }
+    std::ofstream(root / "state.json")
+        << std::format(R"({{"prompt_tokens":{},"probe_step":{},"tensors":[{}],"steps":[{}]}})",
+                       prompt.ids.size(), n, tensors, steps)
+        << '\n';
+  }
+  const auto save_state = [&](std::string_view what) -> Status {
+    std::vector<std::byte> target;
+    std::vector<std::byte> ring;
+    if (auto s = dsv4_.ReadState(target, ring); !s) {
+      return s;
+    }
+    std::ofstream(root / std::format("state-{}.bin", what), std::ios::binary)
+        .write(reinterpret_cast<const char*>(target.data()),
+               static_cast<std::streamsize>(target.size()));
+    return {};
+  };
+  // P and E: each plan's one-row decoding teacher-forced from the prompt.
+  for (const bool exact : {false, true}) {
+    dsv4_.set_exact(exact);
+    std::vector<float> row;
+    if (auto p = Prefill(prompt, false, row); !p) {
+      return p;
+    }
+    auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+    for (std::size_t i = 1; i <= n; ++i, ++pos) {
+      if (i == n) {
+        if (auto s = save_state(exact ? "exact-teacher" : "fast-teacher"); !s) {
+          return s;
+        }
+        dsv4_.set_graphs(false);
+        dsv4_.set_dump({"*"});
+      }
+      if (auto c = dsv4_.Chunk(pos, std::span(spec.tokens).subspan(i - 1, 1), row); !c) {
+        return c;
+      }
+    }
+    if (auto rec = record(exact ? "exact-teacher" : "fast-teacher", row, 1); !rec) {
+      return rec;
+    }
+    dsv4_.set_dump({});
+    dsv4_.set_exact(false);
+    dsv4_.set_graphs(o_.dsv4.graphs);
+  }
+  const std::uint32_t vocab = dsv4_.vocab();
+  const auto verify_row = [&](const std::vector<float>& logits) {
+    return std::span<const float>(logits).subspan(std::size_t{r} * vocab, vocab);
+  };
+  // V and X: the fast plan's verify and the reference mode's, from the state.
+  for (const bool exact : {false, true}) {
+    if (auto s = restore(); !s) {
+      return s;
+    }
+    if (!exact) {
+      if (auto s = save_state("spec"); !s) {
+        return s;
+      }
+    }
+    dsv4_.set_graphs(false);
+    dsv4_.set_exact(exact);
+    dsv4_.set_dump({"*"});
+    std::vector<float> logits;
+    if (auto c = dsv4_.Chunk(step.pos, input, logits, {}, jb::Dsv4ChunkKind::kVerify); !c) {
+      return c;
+    }
+    if (auto rec = record(exact ? "exact-verify" : "fast-verify", verify_row(logits), step.rows);
+        !rec) {
+      return rec;
+    }
+    if (!exact && !SameBits(verify_row(logits), spec.logits[n])) {
+      problems_.emplace_back("probe: the replayed verify's row differs from the run's");
+    }
+    if (auto a = dsv4_.Accept(step.rows); !a) {
+      return a;
+    }
+    if (auto rb = dsv4_.Rollback(); !rb) {
+      return rb;
+    }
+    dsv4_.set_dump({});
+    dsv4_.set_exact(false);
+    dsv4_.set_graphs(o_.dsv4.graphs);
+  }
+  // D and XD: one-row decoding of the verify's rows from the state.
+  for (const bool exact : {false, true}) {
+    if (auto s = restore(); !s) {
+      return s;
+    }
+    dsv4_.set_exact(exact);
+    std::vector<float> row;
+    for (std::uint32_t i = 0; i <= r; ++i) {
+      if (i == r) {
+        dsv4_.set_graphs(false);
+        dsv4_.set_dump({"*"});
+      }
+      if (auto c = dsv4_.Chunk(step.pos + i, std::span(input).subspan(i, 1), row); !c) {
+        return c;
+      }
+    }
+    if (auto rec = record(exact ? "exact-decode" : "fast-decode", row, 1); !rec) {
+      return rec;
+    }
+    dsv4_.set_dump({});
+    dsv4_.set_exact(false);
+    dsv4_.set_graphs(o_.dsv4.graphs);
+  }
   return {};
 }
 
@@ -1479,6 +1737,8 @@ Status Harness::Run() {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
+  } else if (o_.check == "probe") {
+    checked = Probe();
   } else if (o_.check == "swap") {
     checked = Swap();
   } else if (o_.check == "sampled-plain") {
@@ -1590,6 +1850,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.sampled = v;
     } else if (a == "--only") {
       o.only = v;
+    } else if (a == "--probe-step") {
+      ok = number(o.probe_step) && o.probe_step >= 1;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -1601,10 +1863,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty())) {
     return Error(
         "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
-        "--check greedy|forced|swap|sampled-plain|sampled-spec [--tokens N] [--context N] "
+        "--check greedy|forced|swap|sampled-plain|sampled-spec|probe [--tokens N] [--context N] "
         "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
-        "--fp16-expect SHA256] [--seeds N] [--sampled FILE]");
+        "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N]");
   }
   std::filesystem::create_directories(o.out);
   o.dsv4.out = o.out / "dsv4";

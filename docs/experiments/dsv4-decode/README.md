@@ -102,9 +102,98 @@ at most 3.94. With B at about 2.5 every greedy exception passes (the
 largest is 0.96), and every speculative exception but one: `capital`'s
 forced run at step 93, where plain decoding prefers the end of sequence
 by 3.62 nats and the verify's row prefers its token by 0.32 (a move of
-3.94, the largest seen). It repeats bit for bit across runs; whether it
-is kernel noise (the verify's attention and routing on four rows) or a
-defect is not settled, and it passes only under 6.11.
+3.94, the largest seen). It repeats bit for bit across runs and passes
+only under 6.11. It is noise amplified by near-tied expert routing, not
+a defect ("Step 93, diagnosed", below).
+
+### Step 93, diagnosed
+
+`jitllm_spec_runner --check probe --probe-step 93` (`spark-b`,
+2026-09-28, 3 minutes) reruns the forced check, which repeats the
+review's numbers exactly (verify noise median 0.2505, p99 2.3536, max
+3.9398; step 93 at 3.6201 and 0.3197). Token 93 is row 0 (the anchor,
+token 72, at position 108) of a four-row verify whose first draft was
+forced wrong (the drafter's end of sequence made token 2), so every row
+was rejected. The probe repeats the run to the state before that verify,
+reruns it with every named intermediate kept, and compares, on the same
+tokens (`probe.py`):
+
+| Path | State before position 108 | End of sequence leads token 94 by |
+| --- | --- | --- |
+| Fast plan, one-row decoding from the prompt | one-row decoding's | 3.62 |
+| Reference mode, one-row decoding from the prompt | the reference's | 3.35 |
+| Reference mode, its verify or one-row decoding (bit-identical) | the speculative run's | 2.03 |
+| Fast plan, one-row decoding of the verify's rows | the speculative run's | 0.31 |
+| Fast plan, the verify's row 0 | the speculative run's | −0.32 |
+
+- **Most of the move is the state, not the verify's row.** Of the 3.94,
+  3.31 comes from decoding on the speculative run's state instead of one-row
+  decoding's (the same one-row fast plan on both), and 0.63 from the
+  verify's arithmetic on that state. On that state the fast plan's one-row
+  decoding and the reference differ by 1.72, more than the verify and
+  one-row decoding do.
+- **The first divergence is continuous.** Against one-row decoding on the
+  same state, the verify's row is bit-identical up to layer 0's attention
+  inputs; the first tensor that differs is layer 0's attention output
+  (1.9e-5 relative: flash attention over four query rows instead of one),
+  then the output projection (6.8e-4) and the experts (5.5e-3: the vector
+  kernel's four-row reduction and the Q8_1 activations quantized from
+  them). The residual streams differ by 0.3% after layer 0 and 1.2% by
+  layer 23, the size of the fast plan's own difference from the reference
+  on that state (0.9% by layer 9).
+- **The first discrete flip is layer 24's routing.** The verify's row
+  selects expert 6 as its sixth, one-row decoding expert 71: selection
+  scores 12.416 against 12.414 in the verify (a gap of 0.0021), 12.419
+  against 12.414 in decoding (0.0052); the sixth expert carries 5% of
+  the routed weight. The MoE output's difference jumps from 2% to 13%
+  and the residual streams' from 1.2% to 3.0%. Four more layers flip (31,
+  32, 39, 42), and the logits differ by 9.9% relative (at most 3.1). The
+  fast plan's one-row decoding against the reference on the same state
+  flips 12 layers from layer 17, and its logits differ by 13.0% (at most
+  4.1). At this token 10 to 17 of the 40 routed layers have a gap below
+  0.01 between the sixth and seventh selection scores (scores about 12 to
+  29), in every path.
+- **Nothing points at a defect.** Every attention mask (the window's and
+  the CSA's with the indexer's selection) and every indexer selection of
+  the verify's row equals one-row decoding's (at position 108 the indexer
+  selects all 27 compressed rows, so it makes no choice). In the layers
+  where both select the same experts in the same order (0 to 11, 14 to
+  23), each slot's expert output differs by 0.5–2.6%, noise, not another
+  row's data. The speculative run's state against one-row decoding's on
+  the same tokens: every state tensor differs per row by no more than the
+  fast plan's state does from the reference's (the window cache median
+  2.6% against 3.2%, the compressed and ring rows likewise); the prompt's
+  cells are bit-identical; at the positions each verify row (0 to 3)
+  wrote, the window cache differs by medians of 3.1–5.3%, against
+  3.3–5.6% between the fast plan's and the reference's states at the same
+  positions; no position stands out; and the forced check's rollbacks
+  left 0 stale bytes.
+
+**Verdict:** kernel noise (the verify's four-row attention and products,
+and the state its accepted rows wrote) amplified by near-tied MoE routing
+at a sensitive token; the reference arithmetic moves the same token by 1.3
+on that state alone. Not a defect; nothing changes in the engine.
+
+**For the bound (recommendations; B stays as recorded):**
+
+- Do not exempt steps with a near-tied discrete choice: at this token
+  every path has 10 or more routed layers within 0.01, and any two of
+  jitLLM's paths whose arithmetic or state differ select other experts in
+  5 to 15 layers, so the exemption would cover almost every token.
+- Keep the bound a percentile of the path noise, recorded first, and
+  triage a step above it with the probe: it is a defect if, on the same
+  state, the verify's row differs from one-row decoding by more than the
+  fast plan differs from the reference there, if a mask or indexer
+  selection differs, if the difference appears in a layer where nothing
+  flipped and does not shrink back to the noise, or if a state cell or
+  the verify row that wrote it stands out beyond the plan-to-plan noise.
+  Otherwise it is noise and is listed as a passing exception.
+- `verify_noise` measures the whole speculative path (the state that the
+  run's verifies wrote, and each verify's row): 3.31 of this step's 3.94
+  is that state. That is the right quantity for judging what speculation
+  returns, but its 99th percentile over 255 steps rests on two or three
+  steps; later slices should pool every prompt's steps (the decode and
+  chat prompts and the forced run, about 1,000) before taking it.
 
 ## The fast plan
 
@@ -228,8 +317,9 @@ step because it reads the ~19–20 distinct experts of 24 selections.
   median 0.15, p95 0.69, p99 1.18, at most 1.55 (the rule would give
   B = 3.10; the recorded 6.11 was kept). The greedy and perplexity
   verdicts below hold under 3.10; the speculation verdict does not: one
-  forced-run token (`capital`, step 93, 3.62) passes only under 6.11 (see
-  "The bound, going forward").
+  forced-run token (`capital`, step 93, 3.62) passes only under 6.11,
+  diagnosed as routing-amplified noise, not a defect (see "Step 93,
+  diagnosed").
 - Greedy agreement: 244 of 256 with the unfused arm and 250 of 256 with
   the fused arm; every exception a near-tie (the arm's own margin
   0.005–0.49 unfused, 0.02–0.96 fused), 0 violations.
@@ -280,7 +370,8 @@ step because it reads the ~19–20 distinct experts of 24 selections.
   too loose to be a test (circular on the unfused arm, twice an outlier):
   every greedy exception is under 1.0, but one speculative exception is
   3.62 and passes only under it. Later slices use the rule in "The
-  bound, going forward"; that exception is open until diagnosed.
+  bound, going forward"; that exception is noise amplified by near-tied
+  routing, not a defect ("Step 93, diagnosed").
 - **Speed from the default wake** as the final number; the polled
   numbers are reported beside it.
 
@@ -298,8 +389,10 @@ oracle, DSpark's drafter and the FP16 fixture:
     jitllm_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts prompts.json \
       --out DIR --check greedy|forced|swap|sampled-plain|sampled-spec \
       --margin 6.11 [--exact on]
+    jitllm_spec_runner ... --out DIR --check probe --probe-step 93 --margin 6.11
+    probe.py DIR/probe
     jitllm_swap_pairs --a dsv4 --b qwen38 --cycles 0 --bench 64 ...
     jitllm_vecq_bench [--only NAME] [--launches N] [--vmm on]
 
 `judge.py` runs under the pinned llama.cpp image's Python (it needs
-NumPy).
+NumPy); `probe.py` needs only the standard library.

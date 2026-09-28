@@ -312,7 +312,24 @@ class Dsv4Runner final : public test_support::PagedModel {
   void DropPlans() {
     plans_.clear();
     dplans_.clear();
+    last_planned_ = nullptr;
   }
+  // A diagnostic: the next chunks' plans keep these llama.cpp callback
+  // names alive ("*": every named tensor; empty: none), every plan dropped;
+  // DumpLast then reads the last chunk's kept tensors. Turn decode graphs
+  // off (set_graphs) while dumping: a replayed graph keeps nothing.
+  void set_dump(std::vector<std::string> names) {
+    dump_ = std::move(names);
+    DropPlans();
+  }
+  struct Dumped {
+    std::string name;
+    ggml_type type = GGML_TYPE_F32;
+    std::array<std::int64_t, 4> ne{};
+    std::vector<std::byte> bytes;
+  };
+  // The last chunk's kept, contiguous named tensors, read to the host (a job).
+  Status DumpLast(std::vector<Dumped>& out);
   std::size_t plans() const { return plans_.size(); }
   std::size_t graphs() const;
   double plan_seconds() const { return plan_seconds_; }  // spent planning, in all
@@ -494,7 +511,9 @@ class Dsv4Runner final : public test_support::PagedModel {
   catalog::Closure draft_closure_;
   void* hash_tables_ = nullptr;  // pinned: the hash-routed layers' tables, read back
 
-  std::vector<ShapePlan> plans_;  // destroyed before the launch context (Release)
+  std::vector<ShapePlan> plans_;               // destroyed before the launch context (Release)
+  std::vector<std::string> dump_;              // set_dump
+  const Dsv4Planned* last_planned_ = nullptr;  // the last chunk's plan (DumpLast)
   bool graphs_ = true;
   Dsv4GraphStats graph_stats_;
   Dsv4Path last_path_ = Dsv4Path::kEager;

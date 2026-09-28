@@ -216,7 +216,9 @@ struct Dsv4Graph {
   std::optional<DsparkInjectTensors> inject;
   std::vector<ggml_tensor*> nodes;  // GGML's order, views included
   // Intermediate tensors under llama.cpp's callback names ("l_last-7",
-  // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...), for comparisons.
+  // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...) and a few of jitLLM's
+  // ("kq_mask-7", "lid_topk-7", the fast plan's "ffn_moe_route-7"), for
+  // comparisons.
   std::vector<std::pair<std::string, ggml_tensor*>> named;
 
   // The host-built inputs, in the order they are copied.

@@ -105,7 +105,8 @@ void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
 // Builds, binds, plans and places one chunk shape's graph: every computed
 // tensor first at its own address, then placed in `activations` (0 to
 // measure only), planned again, which must give the same plan. `keep`
-// names llama.cpp callback tensors to keep alive. Not bound to the registry.
+// names llama.cpp callback tensors to keep alive ("*": every named one).
+// Not bound to the registry.
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::span<const std::string> keep,

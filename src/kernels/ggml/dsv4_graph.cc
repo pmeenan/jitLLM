@@ -617,7 +617,9 @@ ggml_tensor* Builder::LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_t
   ggml_tensor* score = ggml_lightning_indexer(c_, q, k, weights, g_.lid.mask);
   Name(score, "lid_score_masked", il);
   const std::int64_t top = std::min<std::int64_t>(score->ne[0], p_.indexer_top_k);
-  return ggml_cont(c_, ggml_top_k(c_, score, static_cast<int>(top)));
+  ggml_tensor* top_k = ggml_cont(c_, ggml_top_k(c_, score, static_cast<int>(top)));
+  Name(top_k, "lid_topk", il);
+  return top_k;
 }
 
 // build_top_k_mask (deepseek4.cpp:679-706).
@@ -760,6 +762,7 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
     ggml_tensor* k_all = ggml_concat(c_, raw_k, csa_k, 2);
     ggml_tensor* csa_mask = TopKMask(g_.csa.mask, top_k);
     ggml_tensor* kq_mask = ggml_concat(c_, g_.raw_mask, csa_mask, 0);
+    Name(kq_mask, "kq_mask", il);
     const std::int64_t n_kv_max =
         std::min<std::int64_t>(g_.raw_mask->ne[0], p_.window) + top_k->ne[0];
     out = AttnMha(q, k_all, kq_mask, l.attn_sinks, n_kv_max);
@@ -824,11 +827,13 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
   }
   ggml_tensor* logits = ggml_mul_mat(c_, l.router, cur);
   ggml_prec_set_acc(logits, GGML_PREC_F32);
+  Name(logits, "ffn_moe_logits", il);
   ggml_tensor* probs = ggml_sqrt(c_, ggml_softplus(c_, logits));
   Name(probs, "ffn_moe_probs", il);
   ggml_tensor* selection = probs;
   if (bias != nullptr) {
     selection = ggml_add(c_, probs, bias);
+    Name(selection, "ffn_moe_selection", il);
   }
   if (selected == nullptr) {
     selected = ggml_argsort_top_k(c_, selection, static_cast<int>(used));
@@ -930,6 +935,7 @@ ggml_tensor* Builder::MoeFused(std::uint32_t il_u, ggml_tensor* cur) {
   const std::int64_t used = p_.experts_used;
   ggml_tensor* logits = ggml_mul_mat(c_, l.router, cur);
   ggml_prec_set_acc(logits, GGML_PREC_F32);
+  Name(logits, "ffn_moe_logits", il);
   const float scale = p_.expert_weights_scale != 0.0f && p_.expert_weights_scale != 1.0f
                           ? p_.expert_weights_scale
                           : 1.0f;
@@ -939,6 +945,7 @@ ggml_tensor* Builder::MoeFused(std::uint32_t il_u, ggml_tensor* cur) {
                                        p_.expert_weights_norm, kClamp, scale)
                            : Dsv4Route(c_, logits, l.router_bias, nullptr, nullptr, used,
                                        p_.expert_weights_norm, kClamp, scale);
+  Name(route, "ffn_moe_route", il);
   ggml_tensor* ids = ggml_view_2d(c_, route, used, nt, route->nb[1], 0);
   ggml_tensor* q = Q8Of(cur);
   const auto glu = [](float limit) {
@@ -946,7 +953,9 @@ ggml_tensor* Builder::MoeFused(std::uint32_t il_u, ggml_tensor* cur) {
   };
   ggml_tensor* act =
       VecQ(c_, l.up_exps, q, ids, nt, false, l.gate_exps, glu(p_.swiglu_limit), p_.swiglu_limit);
+  Name(act, "ffn_moe_act", il);
   ggml_tensor* down = VecQ(c_, l.down_exps, QuantizeQ8(c_, act), ids, nt, true);
+  Name(down, "ffn_moe_down", il);
   ggml_tensor* sh = VecQ(c_, l.up_shexp, q, nullptr, nt, false, l.gate_shexp,
                          glu(p_.swiglu_limit_shared), p_.swiglu_limit_shared);
   sh = VecQ(c_, l.down_shexp, QuantizeQ8(c_, sh), nullptr, nt, false);

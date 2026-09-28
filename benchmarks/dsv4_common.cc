@@ -188,7 +188,11 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   // The logits are read after the run whatever node comes last.
   std::vector<ggml_tensor*> keep = {g.logits};
   for (const std::string& name : keep_names) {
-    if (ggml_tensor* t = g.Named(name); t != nullptr) {
+    if (name == "*") {
+      for (const auto& [n, t] : g.named) {
+        keep.push_back(t);
+      }
+    } else if (ggml_tensor* t = g.Named(name); t != nullptr) {
       keep.push_back(t);
     } else {
       return Error(std::format("the graph names no {}", name));

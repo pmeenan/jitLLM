@@ -933,7 +933,7 @@ std::expected<Dsv4Runner::ShapePlan*, std::string> Dsv4Runner::Planned(
     speculation = {
         .verify = kind == Dsv4ChunkKind::kVerify, .drafter = &dmodel_, .inject_rows = inject_rows};
   }
-  auto planned = PlanDsv4Chunk(model_, shape, kg::DeviceChoicesOf(*launch_), {},
+  auto planned = PlanDsv4Chunk(model_, shape, kg::DeviceChoicesOf(*launch_), dump_,
                                node_.activations().base, node_.activations().bytes, speculation);
   if (!planned) {
     return std::unexpected(planned.error());
@@ -1322,6 +1322,7 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
         std::format("chunk at {}: {}", n_past, !posted ? posted.error() : alongside.error()));
   }
   last_path_ = path;
+  last_planned_ = p;
   switch (path) {
     case Dsv4Path::kEager:
       ++graph_stats_.eager;
@@ -1868,6 +1869,56 @@ Status Dsv4Runner::ReadState(std::vector<std::byte>& target, std::vector<std::by
   target.assign(bytes, bytes + target_bytes);
   drafter.assign(bytes + target_bytes, bytes + target_bytes + ring);
   return {};
+}
+
+Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
+  out.clear();
+  if (last_planned_ == nullptr || dump_.empty()) {
+    return Error("no chunk has run with a dump since the plans were dropped");
+  }
+  struct Read {
+    const void* from = nullptr;
+    std::uint64_t at = 0;
+    std::uint64_t bytes = 0;
+  };
+  std::vector<Read> reads;
+  std::uint64_t total = 0;
+  for (const auto& [name, t] : last_planned_->graph.named) {
+    if (t->data == nullptr || !ggml_is_contiguous(t)) {
+      continue;
+    }
+    Dumped& d = out.emplace_back();
+    d.name = name;
+    d.type = t->type;
+    d.ne = {t->ne[0], t->ne[1], t->ne[2], t->ne[3]};
+    reads.push_back({.from = t->data, .at = total, .bytes = ggml_nbytes(t)});
+    total += Round(ggml_nbytes(t), 256);
+  }
+  void* host = nullptr;
+  if (cudaMallocHost(&host, std::max<std::uint64_t>(total, 256)) != cudaSuccess) {
+    return Error("pinned host memory for a dump");
+  }
+  auto posted = node_.Job(
+      everything_,
+      [&](providers::NativeStream stream) {
+        auto* s = static_cast<cudaStream_t>(stream.handle);
+        for (const Read& r : reads) {
+          if (cudaMemcpyAsync(static_cast<std::byte*>(host) + r.at, r.from, r.bytes,
+                              cudaMemcpyDeviceToHost, s) != cudaSuccess) {
+            return sc::JobResult::kUnknown;
+          }
+        }
+        return sc::JobResult::kQueued;
+      },
+      "reading a DeepSeek chunk's dump", stream_);
+  if (posted) {
+    for (std::size_t i = 0; i < reads.size(); ++i) {
+      const auto* bytes = static_cast<const std::byte*>(host) + reads[i].at;
+      out[i].bytes.assign(bytes, bytes + reads[i].bytes);
+    }
+  }
+  cudaFreeHost(host);
+  return posted;
 }
 
 std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past, std::int32_t token,
