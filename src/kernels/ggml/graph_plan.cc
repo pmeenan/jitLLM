@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <limits>
@@ -20,6 +21,8 @@
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate.h"
+#include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -62,6 +65,13 @@ std::string_view MulMatName(MulMatPath path) {
 
 std::uint64_t Rounded(std::uint64_t bytes, std::uint64_t alignment) {
   return (bytes + alignment - 1) / alignment * alignment;
+}
+
+// ggml_mul_mat_set_hint's hint (op_params[1]).
+std::int32_t MulMatHint(const ggml_tensor* node) {
+  std::int32_t hint = 0;
+  std::memcpy(&hint, &node->op_params[1], sizeof(hint));
+  return hint;
 }
 
 }  // namespace
@@ -148,6 +158,22 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kAdd, kAddName, i, {node}, 1);
         break;
       case GGML_OP_MUL_MAT: {
+        if (MulMatHint(node) == GGML_HINT_SRC0_IS_HADAMARD) {
+          add(Operation::kMatMul, kMulMatHadamard, i, {node}, 1);
+          break;
+        }
+        if (IsQuantizedWeightType(node->src[0]->type)) {
+          if (!device.quant) {
+            return Rejected(std::format("{}: no quantized product here", Where(graph, i)));
+          }
+          const auto path = device.quant(node);
+          if (!path) {
+            return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
+          }
+          add(Operation::kMatMul, *path == QuantMulMatPath::kVector ? kMulMatVecQ : kMulMatQ, i,
+              {node}, 1);
+          break;
+        }
         const auto path = device.mul_mat(node);
         if (!path) {
           return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
@@ -155,17 +181,53 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kMatMul, MulMatName(*path), i, {node}, 1);
         break;
       }
-      case GGML_OP_ROPE:
-        if (node->op_params[2] != GGML_ROPE_TYPE_NEOX) {
-          return Rejected(std::format("{}: only NEOX RoPE is implemented", Where(graph, i)));
+      case GGML_OP_MUL_MAT_ID: {
+        if (!device.quant) {
+          return Rejected(std::format("{}: no quantized product here", Where(graph, i)));
         }
-        add(Operation::kRope, kRopeName, i, {node}, 1);
+        const auto path = device.quant(node);
+        if (!path) {
+          return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
+        }
+        add(Operation::kMulMatId, *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : kMulMatIdQ, i,
+            {node}, 1);
+        break;
+      }
+      case GGML_OP_ROPE:
+        // The backend proof's RoPE for NEOX without frequency factors or an
+        // offset (op_params[15]); any other mode or offset through the
+        // extended implementation. The choice is structural, never a
+        // check's verdict, so that a plan
+        // names the same implementation whatever the addresses.
+        if (node->op_params[2] == GGML_ROPE_TYPE_NEOX && node->src[2] == nullptr &&
+            node->op_params[15] == 0) {
+          add(Operation::kRope, kRopeName, i, {node}, 1);
+        } else {
+          add(Operation::kRope, kRopeExtName, i, {node}, 1);
+        }
+        break;
+      case GGML_OP_ROPE_BACK:
+        add(Operation::kRope, kRopeExtName, i, {node}, 1);
         break;
       case GGML_OP_SET_ROWS:
-        add(Operation::kSetRows, kSetRowsName, i, {node}, 1);
+        // The backend proof's KV write takes F32 rows into F16 at I64 row
+        // indices; everything else the extended implementation. (A
+        // set_rows node's sources are the rows, the indices and then the
+        // destination, ggml.c:4021-4023.)
+        add(Operation::kSetRows,
+            node->type == GGML_TYPE_F16 && node->src[0] != nullptr &&
+                    node->src[0]->type == GGML_TYPE_F32 && node->src[1] != nullptr &&
+                    node->src[1]->type == GGML_TYPE_I64
+                ? kSetRowsName
+                : kSetRowsExtName,
+            i, {node}, 1);
         break;
       case GGML_OP_GET_ROWS:
-        add(Operation::kGetRows, kGetRowsName, i, {node}, 1);
+        add(Operation::kGetRows,
+            node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_BF16
+                ? kGetRowsName
+                : kGetRowsExtName,
+            i, {node}, 1);
         break;
       case GGML_OP_SOFT_MAX:
         add(Operation::kSoftMax, kSoftMaxName, i, {node}, 1);
@@ -174,10 +236,69 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kCont, kContName, i, {node}, 1);
         break;
       case GGML_OP_GLU:
+        if (ggml_get_glu_op(node) == GGML_GLU_OP_SWIGLU_CLAMP) {
+          add(Operation::kSwiGluClamp, kSwiGluClampName, i, {node}, 1);
+          break;
+        }
         if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU || node->src[1] == nullptr) {
           return Rejected(std::format("{}: only a split SwiGLU is implemented", Where(graph, i)));
         }
         add(Operation::kSwiGlu, kSwiGluName, i, {node}, 1);
+        break;
+      case GGML_OP_SUB:
+        add(Operation::kSub, kSubName, i, {node}, 1);
+        break;
+      case GGML_OP_DIV:
+        add(Operation::kDiv, kDivName, i, {node}, 1);
+        break;
+      case GGML_OP_SCALE:
+        add(Operation::kScale, kScaleName, i, {node}, 1);
+        break;
+      case GGML_OP_UNARY:
+      case GGML_OP_SQRT:
+        add(Operation::kUnary, kUnaryName, i, {node}, 1);
+        break;
+      case GGML_OP_CLAMP:
+        add(Operation::kClamp, kClampName, i, {node}, 1);
+        break;
+      case GGML_OP_FILL:
+        add(Operation::kFill, kFillName, i, {node}, 1);
+        break;
+      case GGML_OP_REPEAT:
+        add(Operation::kRepeat, kRepeatName, i, {node}, 1);
+        break;
+      case GGML_OP_CONCAT:
+        add(Operation::kConcat, kConcatName, i, {node}, 1);
+        break;
+      case GGML_OP_SUM_ROWS:
+        add(Operation::kSumRows, kSumRowsName, i, {node}, 1);
+        break;
+      case GGML_OP_ARGSORT:
+        add(Operation::kArgsort, kArgsortName, i, {node}, 1);
+        break;
+      case GGML_OP_TOP_K:
+        add(Operation::kTopK, kTopKName, i, {node}, 1);
+        break;
+      case GGML_OP_LIGHTNING_INDEXER:
+        add(Operation::kLightningIndexer, kLightningIndexerName, i, {node}, 1);
+        break;
+      case GGML_OP_DSV4_HC_COMB:
+        add(Operation::kHcComb, kHcCombName, i, {node}, 1);
+        break;
+      case GGML_OP_DSV4_HC_PRE:
+        add(Operation::kHcPre, kHcPreName, i, {node}, 1);
+        break;
+      case GGML_OP_DSV4_HC_POST:
+        add(Operation::kHcPost, kHcPostName, i, {node}, 1);
+        break;
+      case GGML_OP_FLASH_ATTN_EXT:
+        if (node->src[0] == nullptr || (node->src[0]->ne[0] != 256 && node->src[0]->ne[0] != 512)) {
+          return Rejected(
+              std::format("{}: flash attention is planned at head dimensions 256 and "
+                          "512 only",
+                          Where(graph, i)));
+        }
+        add(Operation::kFlashAttn, kFlashAttnMmaName, i, {node}, 1);
         break;
       default:
         return Rejected(std::format("{}: no implementation of this operation", Where(graph, i)));
@@ -194,7 +315,8 @@ bool SamePlan(const GraphPlan& a, const GraphPlan& b) {
 
 std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const GraphPlan& plan,
                                                          std::span<ggml_tensor* const> inputs,
-                                                         std::uint64_t alignment) {
+                                                         std::uint64_t alignment,
+                                                         std::span<ggml_tensor* const> keep) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Rejected("the alignment is not a power of two");
   }
@@ -250,6 +372,14 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
   // The graph's output lives to the end, in whatever tensor it views.
   if (!graph.empty()) {
     if (const auto found = index.find(Storage(graph.back())); found != index.end()) {
+      lives[found->second].last = static_cast<std::int64_t>(plan.steps.size());
+    }
+  }
+  for (const ggml_tensor* kept : keep) {
+    if (kept == nullptr) {
+      continue;
+    }
+    if (const auto found = index.find(Storage(kept)); found != index.end()) {
       lives[found->second].last = static_cast<std::int64_t>(plan.steps.size());
     }
   }

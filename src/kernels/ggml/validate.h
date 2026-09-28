@@ -35,7 +35,11 @@ std::expected<void, KernelFailure> CheckRmsNormMul(const ggml_tensor* norm, cons
 // launcher leaves them.
 std::expected<void, KernelFailure> CheckRmsNormThenMul(const ggml_tensor* norm,
                                                        const ggml_tensor* mul);
-// A ggml_add or ggml_mul node (op), all F32, with broadcasting.
+// A ggml_add, ggml_mul, ggml_sub or ggml_div node (op), all F32 or all F16,
+// with broadcasting: a packed output of src0's shape, over operands packed
+// through their last dimension of more than one element or strided views
+// with contiguous rows that GGML does not deem contiguous (the launcher
+// merges dimensions assuming packed strides only for contiguous operands).
 std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op op);
 // A ggml_mul_mat node, F16, BF16 or F32 weights and F32 activations and
 // output: what both MMVF and MMF need.
@@ -88,14 +92,14 @@ std::expected<void, KernelFailure> CheckSoftMax(const ggml_tensor* node);
 // worth for the reductions.
 std::uint64_t SoftMaxSharedBytes(const ggml_tensor* node);
 
-// A ggml_cont node copying F32 into a packed F32 tensor (ggml_cuda_dup,
-// cpy.cu:429-617), and how upstream's launcher copies it. The tiled
-// transpose it would use for a source whose rows are transposed columns
-// (cpy.cu:461-463, 480-482) is refused.
+// A ggml_cont node copying F32 into a packed F32 tensor, or contiguous I32
+// into I32 (ggml_cuda_dup, cpy.cu:429-617), and how upstream's launcher
+// copies it.
 enum class ContCopy : std::uint8_t {
-  kMemcpy,    // both contiguous: one cudaMemcpyAsync (cpy.cu:467-475)
-  kMemcpy2d,  // a contiguous prefix at a fixed pitch: cudaMemcpy2DAsync
-  kScalar,    // cpy_scalar<cpy_1_scalar<float, float>>, one thread per element
+  kMemcpy,     // both contiguous: one cudaMemcpyAsync (cpy.cu:467-475)
+  kMemcpy2d,   // a contiguous prefix at a fixed pitch: cudaMemcpy2DAsync
+  kScalar,     // cpy_scalar<cpy_1_scalar<float, float>>, one thread per element
+  kTranspose,  // rows that are transposed columns: cpy_scalar_transpose's tiles
 };
 std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node);
 

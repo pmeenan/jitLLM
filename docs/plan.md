@@ -213,6 +213,11 @@ it appears.
 - [ ] **Import:** M0's Python prototype importer writes the D-056 artifacts
       for the three models, including NVFP4 and MXFP8 tensors and the image
       pipeline's BF16 components. The C++ importer and verifier stay in M5.
+      *DeepSeek V4 Flash 0731:* `import_m3.py` (the pinned prototype, its
+      sources checked against the M3 pins) wrote artifact `8a355bfb…`,
+      96.84 GB, 11,053 groups, the plan of the D-056 worked example, in
+      11 min 16 s on `spark-b`
+      ([dsv4-native](experiments/dsv4-native/README.md)).
 - [ ] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
       llama.cpp has much of what the models need (quantized matmul and
       `mul_mat_id`, MoE routing, the lightning indexer, `dsv4-hc`, gated
@@ -247,6 +252,23 @@ it appears.
       component outside its phases. Each model's KV, indexer and recurrent
       state has a state adapter with spill and restore coverage (RE-004,
       RE-007).
+      *DeepSeek V4 Flash, native and resident* (`model/dsv4.h`,
+      `kernels/ggml/dsv4_graph.h`, `jitllm_dsv4_exec`): llama.cpp's
+      `deepseek4.cpp` graph (CSA with the lightning indexer and top-k, HCA,
+      the window, sinks, q/o LoRA and output groups, mHC with its Sinkhorn
+      comb, 256 experts top-6 plus the shared one with sqrtsoftplus and
+      noaux_tc routing, the hash-routed layers, and the head) planned
+      unfused through the registry, from the artifact on `spark-b`. Against
+      llama.cpp on the same 0731 GGUF with its fusion off, every logit of
+      the 8 prompts' 256 greedy steps and every token's perplexity NLL is
+      bit-identical, and the free-running continuations are identical
+      ([dsv4-native](experiments/dsv4-native/README.md)). The KV, indexer
+      and compressor state is explicit and bounded (`Dsv4StateLayout`, three
+      D-068 representations); its spill and restore are the swap path's.
+      Open: running each chunk as a device job over leased closures on the
+      paged node (D-086; the harness is resident on `cudaMalloc` memory, like
+      the backend proof's rung 3), the executed-plan record against
+      llama.cpp's, and the other models.
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
@@ -254,6 +276,12 @@ it appears.
       quick A/B where both are viable (D-085), and proven by one MoE layer
       whose output is bit-identical to the reference layout's. Compaction
       and demand-paged dispatch stay in M7.
+      *GGML, DeepSeek V4:* uniform stride over a per-layer slab with stock
+      kernels ([artifact-format.md](artifact-format.md#executable-views));
+      no A/B, since the pointer table needs a kernel patch and gives a
+      resident model nothing. All 43 layers' routed products (387 cases,
+      MMVQ and MMQ) equal the reference layout's bit for bit. Open: the
+      NVFP4 path's.
 - [x] **Tokenizer and chat templates** (pulled from M5; D-067): the native
       tokenizer, renderers for each model's pinned template (DeepSeek's
       upstream ships Python encoding scripts, not a template), stop rules,

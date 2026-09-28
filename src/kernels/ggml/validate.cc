@@ -37,6 +37,7 @@ using detail::IsF32;
 using detail::kInt32Max;
 using detail::Overlap;
 using detail::Packed;
+using detail::PackedThroughLastDim;
 using detail::ParamF32;
 using detail::Product;
 using detail::Rejected;
@@ -79,16 +80,32 @@ std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op 
       !Bound(node->src[1])) {
     return Rejected("not a bound node of the operation");
   }
-  if (!IsF32(node) || !IsF32(node->src[0]) || !IsF32(node->src[1])) {
-    return Rejected("this implementation is F32 only");
+  // All F32, or (the attention masks' sums) all F16: two of the type
+  // combinations ggml_cuda_op_bin_bcast dispatches (binbcast.cu:412-431).
+  const bool f16 = node->type == GGML_TYPE_F16 && node->src[0]->type == GGML_TYPE_F16 &&
+                   node->src[1]->type == GGML_TYPE_F16;
+  if ((!IsF32(node) || !IsF32(node->src[0]) || !IsF32(node->src[1])) && !f16) {
+    return Rejected("this implementation is F32 only, or F16 only");
   }
+  const std::uint64_t element = f16 ? sizeof(ggml_fp16_t) : sizeof(float);
   if (AnyEmpty({node, node->src[0], node->src[1]}) ||
       !AllSane({node, node->src[0], node->src[1]})) {
     return Rejected("a binary operation on an empty or unmeasurable tensor");
   }
-  if (!ggml_are_same_shape(node, node->src[0]) || !Packed(node) || !Packed(node->src[0]) ||
-      !Packed(node->src[1])) {
-    return Rejected("a binary operation over packed operands, the output of src0's shape");
+  // The kernels index each operand by its own strides (s01..s03, s11..s13)
+  // and write the output densely; the launcher merges dimensions, assuming
+  // packed strides, only when GGML deems both operands contiguous. So the
+  // output is packed, and an operand is packed through its last dimension
+  // of more than one element (validate_util.h), or a strided view that GGML
+  // does not deem contiguous, with contiguous rows.
+  const auto operand = [](const ggml_tensor* t) {
+    return PackedThroughLastDim(t) ||
+           (!ggml_is_contiguous(t) && t->nb[0] == ggml_type_size(t->type));
+  };
+  if (!ggml_are_same_shape(node, node->src[0]) || !Packed(node) || !operand(node->src[0]) ||
+      !operand(node->src[1])) {
+    return Rejected(
+        "a binary operation over packed operands or strided rows, the output of src0's shape");
   }
   // The launcher collapses contiguous dimensions and may launch one thread
   // per element, asserting that each collapsed extent, stride and the
@@ -99,14 +116,14 @@ std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op 
       std::cmp_greater(ggml_nelements(node), std::numeric_limits<std::uint32_t>::max() - 127)) {
     return Rejected("operands that do not broadcast or exceed 32-bit extents");
   }
-  if (!Aligned(node, sizeof(float)) || !Aligned(node->src[0], sizeof(float)) ||
-      !Aligned(node->src[1], sizeof(float))) {
-    return Rejected("F32 operands at misaligned addresses");
+  if (!Aligned(node, element) || !Aligned(node->src[0], element) ||
+      !Aligned(node->src[1], element)) {
+    return Rejected("operands at misaligned addresses");
   }
   // The kernel steps through rows one element at a time, whatever the
   // first stride says, and writes the output densely.
-  if (!ggml_is_contiguous(node) || node->src[0]->nb[0] != sizeof(float) ||
-      node->src[1]->nb[0] != sizeof(float)) {
+  if (!ggml_is_contiguous(node) || node->src[0]->nb[0] != element ||
+      node->src[1]->nb[0] != element) {
     return Rejected("a contiguous output over operands with contiguous rows");
   }
   if (!AllCurrent({node, node->src[0], node->src[1]}) ||
@@ -755,8 +772,12 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
     return Rejected("not a bound cont node");
   }
   const ggml_tensor* src = node->src[0];
-  if (!IsF32(src) || !IsF32(node)) {
-    return Rejected("cont copies F32 into F32");
+  // F32 into F32; or I32 into I32 (the indexer's top-k), which upstream
+  // copies with one cudaMemcpyAsync when both are contiguous (cpy.cu:465-475)
+  // and which this implementation takes only then.
+  const bool i32 = src->type == GGML_TYPE_I32 && node->type == GGML_TYPE_I32;
+  if ((!IsF32(src) || !IsF32(node)) && !i32) {
+    return Rejected("cont copies F32 into F32, or contiguous I32 into I32");
   }
   if (AnyEmpty({node, src}) || !AllSane({node, src})) {
     return Rejected("cont on an empty or unmeasurable tensor");
@@ -764,6 +785,9 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   if (ggml_nelements(node) != ggml_nelements(src) || !Packed(node) || !ElementStrides(src) ||
       !Aligned(src, sizeof(float)) || !Aligned(node, sizeof(float))) {
     return Rejected("cont into a packed tensor of as many elements, from whole elements");
+  }
+  if (i32 && (!ggml_is_contiguous(src) || ggml_nbytes(src) != ggml_nbytes(node))) {
+    return Rejected("cont of I32 only between contiguous tensors");
   }
   // The scalar kernel's blocks of 64 are counted in an int (cpy.cu:212-213).
   if (ggml_nelements(src) / 64 >= static_cast<std::int64_t>(kInt32Max)) {
@@ -779,9 +803,24 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   if (CopiesAsMemcpy2d(src, node)) {
     return ContCopy::kMemcpy2d;
   }
+  // A source whose rows are transposed columns: upstream's tiled transpose
+  // (cpy.cu:461-463, 480-482; ggml_cpy_scalar_cuda<float, float, true>),
+  // which asserts that the source is its first three dimensions and writes
+  // the packed output; its grid falls back to the scalar kernel past 65,535
+  // tiles in y or z, which upstream decides alike. The tile kernel reads
+  // element (i0, i1) of matrix i2 at (i2·ne0·ne1 + i0·ne1 + i1) elements,
+  // whatever nb[0] says (cpy.cu:74-78): only a packed matrix's transpose,
+  // nb[0] = ne1 elements, is addressed correctly. Upstream's condition does
+  // not test nb[0], so any other source it would tile is refused.
   if (src->nb[1] == sizeof(float) && src->ne[3] == 1 &&
       src->nb[2] == static_cast<std::size_t>(src->ne[0] * src->ne[1]) * sizeof(float)) {
-    return Rejected("cont of transposed rows, which upstream copies in tiles");
+    if (!ggml_is_contiguous(node) || ggml_nelements(src) != src->ne[0] * src->ne[1] * src->ne[2]) {
+      return Rejected("a transposed cont into a non-contiguous tensor");
+    }
+    if (src->ne[0] > 1 && src->nb[0] != static_cast<std::size_t>(src->ne[1]) * sizeof(float)) {
+      return Rejected("a transposed cont of anything but a packed matrix's transpose");
+    }
+    return ContCopy::kTranspose;
   }
   return ContCopy::kScalar;
 }

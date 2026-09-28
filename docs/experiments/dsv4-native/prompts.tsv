@@ -1,0 +1,8 @@
+capital	The capital of France is
+fibonacci	def fibonacci(n):\n    """Return the n-th Fibonacci number."""\n
+german	Translate to German: The weather is nice today.\nGerman:
+arithmetic	Q: What is 17 times 23?\nA:
+story	Once upon a time, in a small village by the sea,
+colors	The three primary colors of light are
+apollo	In July 1969, the Apollo 11 mission
+paging	A language model runtime keeps the weights of several large models on a fast solid-state drive and pages them into memory on demand. Only the parts of a model that are active at a time need to be resident, so the runtime tracks which extents each request touches, keeps the most useful ones in memory, and reclaims the least valuable extents across all models when it needs room. Routing in a mixture-of-experts model decides which experts a token needs; the runtime then acquires exactly those experts, runs them, and releases them, and it never substitutes a resident expert for a selected one. Conversation state, such as the attention cache, is spilled to disk when a user switches to another model and restored when they come back, so the conversation continues without recomputing the prompt. Explain, in two sentences, why a runtime like this must never substitute one expert for another.

@@ -20,6 +20,7 @@ artifacts and raw outputs stay outside Git in
 | File | Purpose |
 | --- | --- |
 | `layout.py` | Planner, writer, verifier, closure/coalescing model, `loadcheck`, `coldload` |
+| `import_m3.py` | M3's importer: `layout.py`, unchanged and checked against its pinned SHA-256, run on GGUF sources checked against the M3 pins, with its own converter identity ([dsv4-native](../dsv4-native/README.md)) |
 | `test_layout.py` | 104 unit tests with synthetic GGUF/safetensors inputs (`python3 -m unittest test_layout`) |
 | `conform.py` | Upstream-reader conformance, run in the pinned `jitllm-exl3-reference:20260922` image |
 | `io_align.py` | A/B direct-read throughput for 2 MiB- versus 4 KiB-aligned file offsets |

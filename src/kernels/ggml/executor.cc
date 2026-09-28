@@ -20,6 +20,7 @@
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 
 namespace jitllm::kernels::ggml {
@@ -35,21 +36,38 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
   return {.mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
           .vector_fusible =
-              [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); }};
+              [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
+          .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); }};
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
                                                         const GraphPlan& plan) {
   std::uint64_t most = 0;
   for (const PlanStep& step : plan.steps) {
-    if (step.implementation != kMulMatCublas) {
-      continue;
+    std::expected<std::uint64_t, KernelFailure> planned = 0;
+    if (step.implementation == kMulMatCublas) {
+      auto cublas = PlanMulMatCublas(launch, step.nodes.front());
+      if (!cublas) {
+        return std::unexpected(cublas.error());
+      }
+      planned = cublas->scratch;
+    } else if (step.implementation == kMulMatVecQ || step.implementation == kMulMatIdVecQ) {
+      planned = PlanMulMatVecQ(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
+      planned = PlanMulMatQ(launch, step.nodes.front());
+    } else if (step.implementation == kTopKName) {
+      planned = PlanTopK(launch, step.nodes.front());
+    } else if (step.implementation == kFlashAttnMmaName) {
+      auto attention = PlanFlashAttnMma(launch, step.nodes.front());
+      if (!attention) {
+        return std::unexpected(attention.error());
+      }
+      planned = attention->scratch;
     }
-    const auto planned = PlanMulMatCublas(launch, step.nodes.front());
     if (!planned) {
       return std::unexpected(planned.error());
     }
-    most = std::max(most, planned->scratch);
+    most = std::max(most, *planned);
   }
   return most;
 }

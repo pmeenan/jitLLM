@@ -338,6 +338,21 @@ Addresses are rebuilt at load and never serialized.
 
   The artifact supports both: slices sit at the same group offset in every
   expert group, and expert groups are uniform per layer.
+
+  **M3's resident GGML layout** (every expert resident, copied into device
+  memory through the landing zone, D-081): uniform stride over a slab,
+  stock kernels. Each layer's expert groups are placed in one device
+  allocation at `slab + e·S`, `S` the group's stored bytes rounded up to a
+  multiple of every expert projection's block size and 16 bytes; the three
+  `mul_mat_id` weights are views at `slab + group_offset` with `nb[2] = S`.
+  Because the groups are copied, not mapped, `S` need not be a multiple of
+  2 MiB: DeepSeek V4 Flash's `S` is 8,064,224 bytes (IQ2_XS and IQ3_XXS
+  blocks, 3,296 bytes over the group) on 41 layers, 10,888,976 and
+  9,309,200 on the two MXFP4 layers, 37.9 MB (0.04%) over the groups in
+  all. The pointer table would need a kernel patch and gives a resident
+  model nothing, so it waits for demand-paged dispatch (M7); every layer's
+  routed products over the slab equal the reference layout's bit for bit
+  ([dsv4-native](experiments/dsv4-native/README.md)).
 - **Row tables:** rows keep their source stride, so a `get_rows` view is
   unchanged. Some rows straddle two chunks (below); their lookups need both.
 

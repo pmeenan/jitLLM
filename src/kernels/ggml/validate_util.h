@@ -131,6 +131,29 @@ inline bool Packed(const ggml_tensor* tensor) {
   return true;
 }
 
+// Packed through its last dimension of more than one element: every stride
+// an index can multiply is a dense tensor's, so code that merges
+// dimensions assuming packed strides (the broadcast launcher,
+// binbcast.cu:196-214) addresses it correctly. A view of one row of a wider
+// matrix, [n, 1] at a longer row stride, is one; GGML deems it contiguous.
+inline bool PackedThroughLastDim(const ggml_tensor* tensor) {
+  if (tensor->nb[0] != ggml_type_size(tensor->type) || ggml_blck_size(tensor->type) != 1) {
+    return false;
+  }
+  int last = 0;
+  for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+    if (tensor->ne[i] > 1) {
+      last = i;
+    }
+  }
+  for (int i = 1; i <= last; ++i) {
+    if (tensor->nb[i] != tensor->nb[i - 1] * static_cast<std::uint64_t>(tensor->ne[i - 1])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Whether a's bytes and b's overlap (both bound); an unmeasurable tensor
 // counts as overlapping.
 inline bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {

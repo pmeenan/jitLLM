@@ -8,8 +8,9 @@
 #                        (tensors.h), the implementations' operand checks
 #                        (validate.h), upstream's fusion gates (fusion.h),
 #                        graph planning and activation placement
-#                        (graph_plan.h) and the Qwen2 chunk graph
-#                        (qwen2_graph.h). Every profile.
+#                        (graph_plan.h), the Qwen2 chunk graph
+#                        (qwen2_graph.h) and the DeepSeek V4 chunk graph
+#                        (dsv4_graph.h). Every profile.
 #   jitllm_ggml_kernels  the K-C launch context (launch.h), jitLLM's cuBLAS
 #                        handle (cublas.h), the operation implementations
 #                        (ops.h, mul_mat_cublas.cu, fattn.cu) and jitLLM's definitions
@@ -22,8 +23,8 @@
 #                        (validate_ext.h) here and their implementations
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC fusion.cc graph_plan.cc qwen2_graph.cc tensors.cc
-                                       validate.cc validate_ext.cc)
+add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc qwen2_graph.cc
+                                       tensors.cc validate.cc validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model PRIVATE jitllm_warnings)
@@ -101,7 +102,8 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fattn.cu fattn_mma.cu
+  set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_graph.cc dsv4_graph.h executor.cc
+                   executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h launch.cu launch.h module_digest.cmake mul_mat_cublas.cu

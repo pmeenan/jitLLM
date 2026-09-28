@@ -69,6 +69,15 @@ if(JITLLM_CUDA)
                                                  jitllm_warnings)
   target_link_options(jitllm_fp16_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # M3's first model slice: DeepSeek V4 Flash, native and resident, from its
+  # v0 prepared artifact (docs/experiments/dsv4-native/).
+  add_executable(jitllm_dsv4_exec dsv4_exec.cc)
+  target_include_directories(jitllm_dsv4_exec SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_dsv4_exec PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
+                                                 jitllm_artifact jitllm_model jitllm_warnings)
+  target_link_options(jitllm_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # The paged model runners: the FP16 fixture and an EXL3 fixture, each a
   # model on a paged node (tests/support/paged_node.h), so one process can
   # hold either or both (BP-S3). Their binaries link the launch recorder

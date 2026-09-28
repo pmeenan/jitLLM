@@ -243,6 +243,12 @@ add_executable(ggml_graph_test ggml_graph_test.cc)
 target_link_libraries(ggml_graph_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The DeepSeek V4 adapter: binding, state, chunk inputs, and its chunk graph's
+# plan and placement (model/dsv4.h, kernels/ggml/dsv4_graph.h).
+add_executable(dsv4_test dsv4_test.cc)
+target_link_libraries(dsv4_test PRIVATE jitllm_ggml_tensors jitllm_model)
+jitllm_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(ggml_validate_test ggml_validate_test.cc)
 target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)

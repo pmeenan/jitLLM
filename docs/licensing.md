@@ -63,7 +63,10 @@ flash-attention case and copies `launch_fattn`'s host arithmetic, keep
 GGML's notice in their headers, as do the M3 units that instantiate or
 copy from GGML (`fattn_mma.cu` with `fattn.cu`'s sparse-mask kernel,
 `fattn_mma_d256.cu`, `fattn_mma_d512.cu`, `fattn_mma_shape.cuh`,
-`mul_mat_q.cu`, `ops_ext.cu`). The M3 widening compiles more of the kept
+`mul_mat_q.cu`, `ops_ext.cu`), and the ports of llama.cpp's DeepSeek V4
+graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
+`src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
+copyright). The M3 widening compiles more of the kept
 tree (the lock's `license.scope` lists it); every added file is under the
 root MIT license with no header of its own (checked 2026-09-28). Upstream's
 `argsort.cu` and `top-k.cu` would include CUB directly, which the rule

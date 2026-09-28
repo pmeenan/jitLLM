@@ -150,6 +150,47 @@ TEST_F(GgmlValidateTest, EmptyMisalignedUnpackedAndWrappedOperandsAreRefused) {
   Rejected(CheckMulMat(Bound(ggml_mul_mat(context(), m, channels))));
 }
 
+// DeepSeek V4's hyper-connection weights are views into a wider product:
+// [4, tokens] at a 24-element row stride. The broadcast launcher indexes
+// each operand by its own strides, and merges dimensions only for operands
+// GGML deems contiguous, which a one-token view is: it is packed through
+// its last dimension of more than one element, so merging addresses it
+// correctly. The output stays packed.
+TEST_F(GgmlValidateTest, StridedRowsBroadcastWhereMergingCannotMisaddressThem) {
+  ggml_tensor* mixes = F32(24, 5);
+  ggml_tensor* scale = F32(1);
+  ggml_tensor* rows = ggml_view_2d(context(), mixes, 4, 5, mixes->nb[1], 0);
+  EXPECT_TRUE(CheckBinary(Bound(ggml_mul(context(), rows, scale)), GGML_OP_MUL).has_value());
+  ggml_tensor* one = F32(24, 1);
+  ggml_tensor* row = ggml_view_2d(context(), one, 4, 1, one->nb[1], sizeof(float) * 4);
+  EXPECT_TRUE(CheckBinary(Bound(ggml_mul(context(), row, scale)), GGML_OP_MUL).has_value());
+  // F16 masks sum as F16.
+  ggml_tensor* a = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F16, 256, 3));
+  ggml_tensor* b = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F16, 256, 3));
+  EXPECT_TRUE(CheckBinary(Bound(ggml_add(context(), a, b)), GGML_OP_ADD).has_value());
+  // Mixed F16 and F32 is not taken.
+  Rejected(CheckBinary(Bound(ggml_add(context(), a, F32(256, 3))), GGML_OP_ADD));
+  // GGML deems [4, 1, 3] contiguous whatever its middle stride, and the
+  // launcher, merging the first two dimensions of same-shaped operands,
+  // would step the third by nb[1]·1 instead of nb[2]: refused.
+  ggml_tensor* planes = F32(64, 12);
+  ggml_tensor* skewed =
+      ggml_view_3d(context(), planes, 4, 1, 3, 16 * sizeof(float), 4 * sizeof(float), 0);
+  ASSERT_TRUE(ggml_is_contiguous(skewed));
+  ggml_tensor* same = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, 4, 1, 3));
+  for (ggml_tensor* sum :
+       {Bound(ggml_add(context(), skewed, same)), Bound(ggml_add(context(), same, skewed))}) {
+    const auto refused = CheckBinary(sum, GGML_OP_ADD);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().detail.find("strided rows"), std::string::npos)
+        << refused.error().detail;
+  }
+  // A strided output is never taken.
+  ggml_tensor* wide = F32(24, 5);
+  ggml_tensor* into = ggml_view_2d(context(), wide, 4, 5, wide->nb[1], 0);
+  Rejected(CheckBinary(ggml_add_inplace(context(), into, F32(4, 5)), GGML_OP_ADD));
+}
+
 TEST_F(GgmlValidateTest, ShapesMustFollowFromTheOperands) {
   ggml_tensor* x = F32(kWidth, 2);
   ggml_tensor* m = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F16, kWidth, 1024));
@@ -604,16 +645,42 @@ TEST_F(GgmlOpsValidateTest, SoftMaxTakesAnF32MaskAndNoAlibi) {
   Rejected(CheckSoftMax(over));
 }
 
-TEST_F(GgmlOpsValidateTest, ContCopiesAsUpstreamChoosesAndNeverTiles) {
+TEST_F(GgmlOpsValidateTest, ContCopiesAsUpstreamChooses) {
   // A pitched block of the same shape: one two-dimensional copy.
   ggml_tensor* wide = F32(kWidth + 16, 4);
   ggml_tensor* block = ggml_view_2d(context(), wide, kWidth, 4, wide->nb[1], 0);
   const auto pitched = CheckCont(Bound(ggml_cont(context(), block)));
   ASSERT_TRUE(pitched.has_value()) << pitched.error().detail;
   EXPECT_EQ(*pitched, ContCopy::kMemcpy2d);
-  // Transposed rows: upstream's tiled transpose, which is not taken.
+  // Transposed rows: upstream's tiled transpose (DeepSeek V4's compressor
+  // transposes its windows so).
   ggml_tensor* square = F32(64, 32);
-  Rejected(CheckCont(Bound(ggml_cont(context(), ggml_transpose(context(), square)))));
+  const auto tiled = CheckCont(Bound(ggml_cont(context(), ggml_transpose(context(), square))));
+  ASSERT_TRUE(tiled.has_value()) << tiled.error().detail;
+  EXPECT_EQ(*tiled, ContCopy::kTranspose);
+  ggml_tensor* windows = Typed(GGML_TYPE_F32, 512, 8, 3);
+  const auto permuted =
+      CheckCont(Bound(ggml_cont(context(), ggml_permute(context(), windows, 1, 0, 2, 3))));
+  ASSERT_TRUE(permuted.has_value()) << permuted.error().detail;
+  EXPECT_EQ(*permuted, ContCopy::kTranspose);
+  // Upstream would tile this transpose of a narrowed matrix too (its rows
+  // are columns, and its one matrix's stride, free since ne2 is 1, is
+  // ne0·ne1 elements), but the tile kernel reads column i0 at i0·ne1
+  // elements, not at nb[0]: refused.
+  ggml_tensor* narrow = ggml_transpose(
+      context(),
+      ggml_view_3d(context(), F32(8, 4), 2, 4, 1, 8 * sizeof(float), 8 * sizeof(float), 0));
+  ASSERT_EQ(narrow->nb[0], 8 * sizeof(float));
+  ASSERT_EQ(narrow->nb[1], sizeof(float));
+  ASSERT_EQ(narrow->nb[2], static_cast<std::size_t>(narrow->ne[0] * narrow->ne[1]) * sizeof(float));
+  Rejected(CheckCont(Bound(ggml_cont(context(), narrow))));
+  // Contiguous I32 (the indexer's top-k) copies whole; strided I32 does not.
+  const auto ids = CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_I32, 64, 2))));
+  ASSERT_TRUE(ids.has_value()) << ids.error().detail;
+  EXPECT_EQ(*ids, ContCopy::kMemcpy);
+  ggml_tensor* id_rows = Typed(GGML_TYPE_I32, 64, 2);
+  Rejected(CheckCont(
+      Bound(ggml_cont(context(), ggml_view_2d(context(), id_rows, 32, 2, id_rows->nb[1], 0)))));
   // F16, and an output over its input.
   Rejected(CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_F16, 64, 2)))));
   ggml_tensor* heads = Typed(GGML_TYPE_F32, kHead, 4, kHeads);

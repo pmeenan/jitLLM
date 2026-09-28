@@ -56,7 +56,8 @@ kg::DeviceChoices ModelDevice() {
             }
             return columns <= 16 ? MulMatPath::kTensorCore : MulMatPath::kCublas;
           },
-          .vector_fusible = [](const ggml_tensor* node) { return node->src[1]->ne[1] == 1; }};
+          .vector_fusible = [](const ggml_tensor* node) { return node->src[1]->ne[1] == 1; },
+          .quant = nullptr};
 }
 
 struct Chunk {

@@ -35,6 +35,13 @@ namespace jitllm::kernels::ggml {
 std::span<const ggml_type> QuantizedWeightTypes();
 bool IsQuantizedWeightType(ggml_type type);
 
+// GGML's two kernel families for the quantized products, which the plan
+// names as upstream would route them (ops_ext.h SelectMulMatQ).
+enum class QuantMulMatPath : std::uint8_t {
+  kVector,  // MMVQ, mul_mat_vec_q: up to 8 activation columns (tokens)
+  kTile,    // MMQ, mul_mat_q: tensor-core tiles over quantized activations
+};
+
 // Quantized matrix products (mmq.cu, mmvq.cu): a ggml_mul_mat node with
 // weights of a type above, F32 activations and output, and no routing hint.
 // Both kernel families quantize the activations to Q8_1 blocks and read each

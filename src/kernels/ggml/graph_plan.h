@@ -43,6 +43,7 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
+#include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::kernels::ggml {
 
@@ -53,6 +54,9 @@ struct DeviceChoices {
   std::function<std::expected<MulMatPath, KernelFailure>(const ggml_tensor*)> mul_mat;
   // ops.h MulMatVecFusible: the MMVF fusion gates' device condition.
   std::function<bool(const ggml_tensor*)> vector_fusible;
+  // ops_ext.h SelectMulMatQ: the family upstream routes a quantized
+  // mul_mat or mul_mat_id to. Without it, quantized products are refused.
+  std::function<std::expected<QuantMulMatPath, KernelFailure>(const ggml_tensor*)> quant;
 };
 
 // One implementation's run over its nodes, in the order implementations.h
@@ -88,6 +92,32 @@ inline constexpr std::string_view kContName = "ggml.cont";
 inline constexpr std::string_view kSwiGluName = "ggml.swiglu";
 inline constexpr std::string_view kMulMatAddFused = "ggml.mul_mat_add.mmvf_fused";
 inline constexpr std::string_view kMulMatGluFused = "ggml.mul_mat_glu.mmvf_fused";
+// M3's (ops_ext.h), planned with fusion off only.
+inline constexpr std::string_view kMulMatVecQ = "ggml.mul_mat.mmvq";
+inline constexpr std::string_view kMulMatQ = "ggml.mul_mat.mmq";
+inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";
+inline constexpr std::string_view kMulMatIdVecQ = "ggml.mul_mat_id.mmvq";
+inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
+inline constexpr std::string_view kSubName = "ggml.sub";
+inline constexpr std::string_view kDivName = "ggml.div";
+inline constexpr std::string_view kScaleName = "ggml.scale";
+inline constexpr std::string_view kUnaryName = "ggml.unary";
+inline constexpr std::string_view kClampName = "ggml.clamp";
+inline constexpr std::string_view kFillName = "ggml.fill";
+inline constexpr std::string_view kRepeatName = "ggml.repeat";
+inline constexpr std::string_view kConcatName = "ggml.concat";
+inline constexpr std::string_view kSumRowsName = "ggml.sum_rows";
+inline constexpr std::string_view kArgsortName = "ggml.argsort.bitonic";
+inline constexpr std::string_view kTopKName = "ggml.top_k.radix";
+inline constexpr std::string_view kSwiGluClampName = "ggml.swiglu_clamp";
+inline constexpr std::string_view kRopeExtName = "ggml.rope.ext";
+inline constexpr std::string_view kGetRowsExtName = "ggml.get_rows.ext";
+inline constexpr std::string_view kSetRowsExtName = "ggml.set_rows.ext";
+inline constexpr std::string_view kLightningIndexerName = "ggml.lightning_indexer.wmma";
+inline constexpr std::string_view kHcCombName = "ggml.dsv4_hc_comb";
+inline constexpr std::string_view kHcPreName = "ggml.dsv4_hc_pre";
+inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
+inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
 
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);
@@ -110,12 +140,15 @@ struct Placement {
 // aligned to `alignment`, each rounded up to it (ggml-alloc's rule). A
 // tensor lives from the step that computes it (inputs from the start) to
 // the last step reading it or a view of it; the graph's last node, or the
-// tensor it views, lives to the end. Tensors whose lifetimes meet never
-// share bytes, so a step's outputs share none with its inputs. Placed
-// largest first, each at the lowest offset free for its whole lifetime.
+// tensor it views, lives to the end, as do the tensors `keep` names (or
+// the tensors they view), which a caller reads after the run. Tensors whose
+// lifetimes meet never share bytes, so a step's outputs share none with its
+// inputs. Placed largest first, each at the lowest offset free for its
+// whole lifetime.
 std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const GraphPlan& plan,
                                                          std::span<ggml_tensor* const> inputs,
-                                                         std::uint64_t alignment);
+                                                         std::uint64_t alignment,
+                                                         std::span<ggml_tensor* const> keep = {});
 
 // Points every view among `nodes` into its source's memory (the source's
 // address plus the view's offset), once the sources are bound.

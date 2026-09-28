@@ -33,8 +33,9 @@ namespace jitllm::kernels::ggml {
 DeviceChoices DeviceChoicesOf(const LaunchContext& launch);
 
 // The most GGML pool scratch any step of `plan` draws at once on the
-// context's device: its cuBLAS products' plans (ops.h PlanMulMatCublas).
-// The other implementations draw none.
+// context's device: its cuBLAS products' plans (ops.h PlanMulMatCublas),
+// and the quantized products', top-k's and tensor-core attention's
+// (ops_ext.h). The other implementations draw none.
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
                                                         const GraphPlan& plan);
 

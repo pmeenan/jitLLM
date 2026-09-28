@@ -361,7 +361,7 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
       std::vector<std::int32_t> ids;
       for (std::int64_t t = 0; t < tokens; ++t) {
         std::vector<std::int32_t> experts(kExperts);
-        std::iota(experts.begin(), experts.end(), 0);
+        std::ranges::iota(experts, 0);
         std::shuffle(experts.begin(), experts.end(), random);
         ids.insert(ids.end(), experts.begin(), experts.begin() + kUsed);
       }
@@ -391,6 +391,94 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
       ExpectNmse(Download(product), want, QuantizedBound(test.type, *path, cc), what);
     }
   }
+}
+
+// The resident expert layout (M3; docs/artifact-format.md#executable-views):
+// the repacked expert groups laid out at a uniform stride S, a whole number
+// of blocks, with other bytes between the slices, give mul_mat_id's stock
+// kernels exactly what the GGUF's packed [k, n, experts] tensor gives them,
+// on both kernel families.
+TEST_F(GgmlExtOpsTest, ExpertsAtAUniformStrideComputeWhatThePackedLayoutComputes) {
+  constexpr std::int64_t kExperts = 16;
+  constexpr std::int64_t kUsed = 6;
+  constexpr std::int64_t kOut = 64;
+  struct Case {
+    ggml_type type;
+    std::int64_t k;
+    bool broadcast;
+  };
+  const std::array<Case, 3> cases = {{{GGML_TYPE_IQ2_XS, 4096, true},
+                                      {GGML_TYPE_IQ3_XXS, 2048, false},
+                                      {GGML_TYPE_MXFP4, 2048, false}}};
+  for (const Case& test : cases) {
+    const Quantized weights = Quantize(test.type, test.k, kOut * kExperts, 41);
+    const std::size_t slice = ggml_row_size(test.type, test.k) * kOut;
+    // The smallest multiple of the block size and 16 bytes past the slice
+    // and a 3,000-byte gap (the other projections of a group).
+    const std::size_t unit = std::lcm(ggml_type_size(test.type), std::size_t{16});
+    ASSERT_GT(unit, 0U);
+    const std::size_t stride = (slice + 3000 + unit - 1) / unit * unit;
+    std::vector<std::uint8_t> slab(stride * kExperts, 0xAB);
+    for (std::int64_t e = 0; e < kExperts; ++e) {
+      std::memcpy(slab.data() + (static_cast<std::size_t>(e) * stride),
+                  weights.bytes.data() + (static_cast<std::size_t>(e) * slice), slice);
+    }
+    for (const std::int64_t tokens : {1, 3, 40}) {
+      const std::string what = std::string(ggml_type_name(test.type)) + " x " +
+                               std::to_string(tokens) + " at stride " + std::to_string(stride);
+      ggml_tensor* packed =
+          Place(ggml_new_tensor_3d(c(), test.type, test.k, kOut, kExperts), weights.bytes);
+      ggml_tensor* strided = ggml_new_tensor_3d(c(), test.type, test.k, kOut, kExperts);
+      strided->nb[2] = stride;
+      strided->nb[3] = stride * kExperts;
+      ASSERT_EQ(ggml_nbytes(strided), (stride * (kExperts - 1)) + slice);
+      TensorArena::Bind(strided, Allocate(slab.size()));
+      ASSERT_EQ(cudaMemcpy(strided->data, slab.data(), slab.size(), cudaMemcpyHostToDevice),
+                cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      const std::int64_t rows_in = test.broadcast ? 1 : kUsed;
+      const std::vector<float> x = Normal(42, static_cast<std::size_t>(test.k * rows_in * tokens));
+      ggml_tensor* input =
+          Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, test.k, rows_in, tokens), x);
+      std::mt19937 random(static_cast<unsigned>(43 + tokens));
+      std::vector<std::int32_t> ids;
+      for (std::int64_t t = 0; t < tokens; ++t) {
+        std::vector<std::int32_t> experts(kExperts);
+        std::ranges::iota(experts, 0);
+        std::shuffle(experts.begin(), experts.end(), random);
+        ids.insert(ids.end(), experts.begin(), experts.begin() + kUsed);
+      }
+      ggml_tensor* id_tensor = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, tokens), ids);
+      ggml_tensor* reference = Place(ggml_mul_mat_id(c(), packed, input, id_tensor));
+      ggml_tensor* product = Place(ggml_mul_mat_id(c(), strided, input, id_tensor));
+      auto path = kg::SelectMulMatQ(launch(), product);
+      ASSERT_TRUE(path.has_value()) << what;
+      auto reference_path = kg::SelectMulMatQ(launch(), reference);
+      ASSERT_TRUE(reference_path.has_value()) << what;
+      EXPECT_EQ(*path, *reference_path) << what;
+      const auto run = [&](ggml_tensor* node) {
+        return *path == QuantMulMatPath::kVector ? kg::MulMatVecQ(launch(), node)
+                                                 : kg::MulMatQ(launch(), node);
+      };
+      Launched(run(reference), what + " (packed)");
+      Launched(run(product), what + " (strided)");
+      const std::vector<std::uint32_t> want = Download<std::uint32_t>(reference);
+      const std::vector<std::uint32_t> got = Download<std::uint32_t>(product);
+      ASSERT_EQ(got.size(), want.size());
+      EXPECT_TRUE(got == want) << what << ": the strided layout's output differs";
+    }
+  }
+  // A stride that is not a whole number of blocks is refused, never
+  // truncated to one.
+  ggml_tensor* torn = ggml_new_tensor_3d(c(), GGML_TYPE_IQ2_XS, 4096, kOut, kExperts);
+  torn->nb[2] = (ggml_row_size(GGML_TYPE_IQ2_XS, 4096) * kOut) + 1;
+  torn->nb[3] = torn->nb[2] * kExperts;
+  TensorArena::Bind(torn, Allocate(torn->nb[3]));
+  ggml_tensor* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 4096, 1, 1), Normal(44, 4096));
+  ggml_tensor* one = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, 1),
+                           std::vector<std::int32_t>{0, 1, 2, 3, 4, 5});
+  ggml_tensor* bad = Place(ggml_mul_mat_id(c(), torn, x, one));
+  EXPECT_EQ(FailedCode(kg::MulMatVecQ(launch(), bad)), KernelError::kRejected);
 }
 
 TEST_F(GgmlExtOpsTest, QuantizedChecksRefuseWhatTheLaunchersWouldNotTake) {

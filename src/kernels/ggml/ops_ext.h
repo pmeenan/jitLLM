@@ -37,11 +37,7 @@ namespace jitllm::kernels::ggml {
 
 // Quantized matrix products: a ggml_mul_mat or ggml_mul_mat_id node with
 // weights of a compiled quantized type (validate_ext.h CheckMulMatQ,
-// CheckMulMatIdQ).
-enum class QuantMulMatPath : std::uint8_t {
-  kVector,  // MMVQ, mul_mat_vec_q: up to 8 activation columns (tokens)
-  kTile,    // MMQ, mul_mat_q: tensor-core tiles over quantized activations
-};
+// CheckMulMatIdQ, QuantMulMatPath).
 // What upstream's routing chooses on the context's device
 // (ggml-cuda.cu:1864-1871 for mul_mat, 1924-1942 for mul_mat_id), refused
 // where it would take neither family.
