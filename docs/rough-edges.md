@@ -545,8 +545,18 @@ the gap from a step's end to the next step's start fell from 0.56–0.67 ms
 a core while stepping and none while idle; every thread polling (the
 harness's 100 ms) took 9 µs and 4 cores. The idle states themselves are
 unchanged: a thread that sleeps when it was not anticipated still pays
-this, and a PM QoS request (`/dev/cpu_dma_latency`, root) that might
-avoid it was not tried.
+this.
+
+**Cause confirmed 2026-09-28: the cores' power-down states (D-095,
+[runtime-wake](experiments/runtime-wake/README.md#a-latency-hold)).** A
+PM QoS request of 0 µs (`/dev/cpu_dma_latency`, only LPI-0, WFI) cut each
+sleeping hop on `spark-b` to ~5 µs, D-094's gap from 28–31 to 8–9 µs,
+the paged node's to ~10 µs, and a blocking-sync event's wake from 1.0–1.5
+ms to 5–35 µs; a request of 50 µs, which still allows LPI-1 (42 µs exit
+latency), changed nothing. DeepSeek's decode was no faster for it (the
+~0.03 ms a step it saves is under the device's spread), so the runtime
+does not hold one (D-095, not adopted); revisit for short-step
+workloads.
 
 ## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
 

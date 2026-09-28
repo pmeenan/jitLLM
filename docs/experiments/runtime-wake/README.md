@@ -251,6 +251,180 @@ measurable. Every check stayed
 exact: every bench pass equal to its warm-up, every DSpark greedy check,
 every swap's state digest and continued steps.
 
+## A latency hold
+
+The owner, on 2026-09-28, approved testing what D-094 left untried: a PM
+QoS CPU latency request, which keeps idle CPUs out of the idle states
+whose exit latency exceeds its value while its descriptor is open
+(`/dev/cpu_dma_latency`: write an int32, keep the descriptor; root-only,
+0600).
+
+**The platform** (`spark-b`, read-only): cpuidle driver `acpi_idle`,
+governor `menu` (`ladder` and `teo` available), the same four states on
+all 20 CPUs, none disabled:
+
+| State | Description | Exit latency | Target residency |
+| --- | --- | ---: | ---: |
+| LPI-0 | core idle, WFI | 0 µs | 0 µs |
+| LPI-1 | core off | 42 µs | 1,930 µs |
+| LPI-2 | core off, DSU off | 231 µs | 2,542 µs |
+| LPI-3 | core off, DSU off, platform | 433 µs | 2,542 µs |
+
+So a request of 0 to 41 µs allows only LPI-0, and 42 to 230 µs adds
+LPI-1. The request's own cost (a root Python loop, 200 samples, 5 ms
+apart): engaging an open descriptor (writing 0) 32 µs at the median,
+49 µs p99 (the kernel wakes every idle CPU to apply it); releasing
+(writing -1, the kernel's default, no constraint) 8 µs, 15 µs p99;
+opening, writing and closing 71 µs, 88 µs p99. Opening alone constrains
+nothing.
+
+**Method.** The chain and node modes above, with a root holder process
+(`sudo -n`, a few lines of Python that open the device, write the value
+and sleep; killed after each run, and the effective value read back from
+the device before and after). Configurations interleaved
+(no hold, hold, no hold, ...), each run once no GPU process ran and the
+1-minute load was under 6 (other agents used the host between runs; load
+0.1–3.6 at the starts). `--spin-ahead-us` (new, a diagnostic) sets how
+long before a likely end the completion lane and the client start to
+spin, D-094's 1 ms by default. The tree of this slice (main `00aaa97`
+plus the harness's new options), `spark-native`, 12:12–12:39 on
+2026-09-28; raw outputs in `~/scratch/dmalat/` on `spark-b`. One run
+(45 ms steps, 200 µs margin, no hold, the second) is left out: a 2 s
+hold of this slice's own ran during it by mistake. The device read back
+2,000,000,000 (the default: no constraint) and no holder remained after
+every one of the 68 runs with a holder or without.
+
+**Every mechanism, 45 ms steps, 0.2 ms host work** (µs, two runs each of
+99 hops, p50 / p99; cores while stepping; idle was 0.00 in every run):
+
+| Configuration | No hold | Hold at 0 µs | Hold at 50 µs | Cores (no hold / 0 µs) |
+| --- | ---: | ---: | ---: | ---: |
+| Harness-polled (100 ms windows) | 8 / 9 | 8 / 8–9 | 8 / 9 | 3.99 / 4.00 |
+| Runtime before D-094 (200 µs windows) | 229–232 / 560–693 | **20–21 / 23–42** | 234–267 / 489–522 | 2.00 / 2.01 |
+| C queries, spinning; D adaptive | 293–723 / 834–974 | 22–23 / 25–53 | 51–503 / 617–1,396 | 1.03 / 1.04 |
+| (a) blocking-sync event | 1,461–1,748 / 2,345–2,833 | **59–60** / 86–140 | 245–1,207 / 559–1,520 | 0.06 / 0.05 |
+| (b) host function + futex | 1,521–1,952 / 2,313–2,779 | 58–66 / 70–129 | 905–1,061 / 1,022–1,501 | 0.05 / 0.05 |
+| (c) memop flag, yield | 707–736 / 993–1,013 | 27–29 / 34–36 | 516–585 / 640–924 | 1.03 / 1.04 |
+| (c) memop flag, 50 µs futex poll | 281–798 / 374–914 | 44–81 / 123–133 | 251–279 / 575–591 | 0.06 / 0.07 |
+| (c) memop flag, WFE | 483–724 / 826–1,004 | 28–29 / 32–36 | 389–506 / 622–656 | 1.03 / 1.04 |
+| (d) adaptive spin, C only | 223–709 / 719–1,324 | **22** / 27–84 | 220–227 / 254–394 | 0.07 / 0.07 |
+| **(e) the runtime wake (D-094)** | **29–31** / 42–672 | **9** / 65–75 | 27 / 122–389 | 0.12 / 0.14 |
+| (e) with a host function as backstop | 34–96 / 187–1,393 | 9 / 17–18 | 34–162 / 378–465 | 0.11–0.13 / 0.14 |
+
+With the hold at 0 µs, each sleeping hop (the scheduler, the client, the
+submission lane) took ~5 µs to run instead of 100–600, and the step's
+launch after S took the command (S to GPU start) 6–7 µs instead of
+26–28: the "~20 µs left over" above was S's core leaving a deep state.
+The GPU's own signal became usable (a blocking-sync event's wait returned
+5–35 µs after the step's end at the median, against 1.0–1.5 ms), but not
+faster than D-094's wake. At 50 µs, which still allows LPI-1, nothing
+improved: the cost is the cores' power-down (LPI-1 on), not only the
+platform's states. 20 µs behaved as 0 (one run each at 1 ms and 0 µs
+margins: 8 and 267 µs), as the table of states predicts.
+
+**The margin under the hold** (D-094's wake, µs, p50 / p99, cores):
+
+| Scenario (runs) | Spin ahead | No hold | Hold at 0 µs |
+| --- | --- | ---: | ---: |
+| 45 ms, 0.2 ms host (3) | 1 ms (default) | 28–29 / 44–1,395, 0.11–0.12 | **8 / 14–83, 0.14** |
+| | 200 µs | 375–578 / 402–1,279, 0.06 (2) | 8 / 18–328, 0.07 |
+| | 50 µs | 625–941 / 698–1,367, 0.04–0.05 | 59–261 / 81–268, 0.04 |
+| | 0 | 997–1,050 / 1,120–1,378, 0.05 | 269–322 / 304–371, 0.04 |
+| 40 ms, 1.3 ms host (2) | 1 ms | 29–30 / 122–347, 0.20 | **8 / 10–25, 0.22** |
+| | 200 µs | 288–291 / 637–799, 0.15 | 8 / 616–620, 0.14–0.15 |
+| 5 ms, 0.2 ms host (2) | 1 ms | 28 / 48–68, 0.92–0.95 | **8–9 / 9–20, 1.15** |
+| | 200 µs | 382–384 / 551–1,149, 0.41 | 8 / 138–144, 0.54 |
+| 45 and 5 ms mixed (2) | 1 ms | 30 / 1,131–1,906, 0.29–0.31 | **8 / 292–294, 0.37** |
+| | 200 µs | 358–566 / 881–1,147, 0.15–0.18 | 8 / 294–296, 0.20 |
+| Node, the runtime's path (2) | 1 ms | 27.6–28.9 / 62–161, 0.11–0.12 | **9.7–10.0 / 14–15, 0.14** |
+| | 200 µs | 308–559 / 610–968, 0.05–0.06 | 9.8–10.1 / 18–273, 0.07 |
+
+(The p99s over 99 steps include the first, which no history predicts.)
+
+1. **The hold removes ~20 µs a step at the median in every scenario**,
+   and on the runtime's own path (node) 28 µs becomes 10: what polling
+   every thread bought at four cores, at 0.14 of one. The tail improved
+   too where the margin was kept.
+2. **The margin cannot go.** At 0 or 50 µs the completion lane wakes
+   late: a timed sleep overshoots by the thread's timer slack (50 µs by
+   default), and a late wake records a longer length, which the next
+   step's prediction starts from, so the prediction ratchets late until
+   the 1 ms backstop bounds it (detection 210–310 µs late at the median).
+3. **200 µs keeps the median and halves the CPU, but not the tail:**
+   p99 138–620 µs, where 1 ms gave 9–83. On a 45 ms step that is about
+   0.07 of a core saved against a few steps in a hundred paying a few
+   hundred microseconds; D-094's 1 ms would stay even with a hold.
+4. **CPU while stepping rose slightly with the hold** (0.12 → 0.14 cores
+   at 45 ms, 0.92–0.95 → 1.15 at 5 ms): not isolated; the threads that
+   spin now run on cores that wake at once. Idle stayed at 0.00.
+
+**DeepSeek decode** (`jitllm_swap_pairs --a dsv4 --b qwen38 --cycles 0
+--bench 64`, the artifacts and driver of the re-benchmark above, the
+memory gate before each process, 12:31–12:38, alternating; the hold from
+outside, at 0 µs, for the whole process):
+
+| Run | Request lease, graphs: tok/s (mean of 3) | Round trip a step | Job's host time | Device a step |
+| --- | ---: | ---: | ---: | ---: |
+| No hold | 20.42; 20.42 | 0.041; 0.042 ms | 0.156; 0.161 ms | 48.64; 48.71 ms |
+| Hold at 0 µs | 20.48; 20.33 | **0.010; 0.013 ms** | 0.056; 0.080 ms | 48.55; 48.92 ms |
+
+The hold took ~0.03 ms a step off the round trip (and ~0.08 ms off the
+job's host time, a graph's replay), now within ~0.002 ms of every thread
+polling; decode is not measurably faster, because the device's own
+run-to-run spread (48.5–48.9 ms a step) is ten times the gain. The
+per-step-lease arms (M7's path) stayed at 1.3–2.0 ms of round trip:
+their cost is the lease's walk, not a wakeup. Every pass of all four runs
+equalled its warm-up (0 steps differ, 16 of 16 each).
+
+**The scheduler's own hold** (a prototype, since removed: the node with
+the scheduler engaging the hold itself, run as root so that it could
+open the device; two runs each, alternating, 12:38–12:39): 9.8–10.5 µs
+at the median (8.5 and 10.5; p99 15–17), 0.14 cores, against 25.5–26.5
+µs (p99 55) without. Sampled every 0.5 s, the host's effective value was
+0 from the first step to about 1 s after the last (its linger), and the
+default again before the process exited.
+
+**Not kept (D-095).** The owner, on 2026-09-28: "D-095 is accepted -
+host-wide effect is fine but if there's no meaningful impact it's not
+worth keeping and our own scheduler is much more efficient." About 17 µs
+a step against 40–48 ms steps changed no decode throughput beyond the
+device's spread, so the prototype was removed; it is worth rebuilding
+for short-step workloads (M7's per-step routed experts), where ~17 µs a
+step matters. What it would take:
+
+- **Only while active.** The prototype's scheduler engaged the hold once
+  an operation was in flight (not counting quarantined ones) and
+  released it once none had been for a linger of 1 s: longer than a
+  client's gap between steps or a conversation's quick turns, so they do
+  not re-engage it (32 µs each time); and when it stopped. A hold the
+  host refused was asked once, and the scheduler carried on without it.
+- **One descriptor, kept:** engaging writes the limit (0 µs), releasing
+  writes -1. Closing also ends the request, but opening and closing
+  costs more, and an unprivileged service cannot reopen a root-only
+  device.
+- **Permissions, least privilege:** systemd's `OpenFile=` in
+  `jitllm.service` (`OpenFile=/dev/cpu_dma_latency:cpu-latency:graceful`,
+  systemd 253+; `spark-b` runs 255) has the service manager open the
+  device and pass the descriptor. The runtime finds it by name
+  (`LISTEN_FDS`, `LISTEN_FDNAMES`), marks it close-on-exec so its jobs do
+  not inherit it, and needs no capability, no device access
+  (`DevicePolicy=closed` stays) and no change to the device node. The
+  alternatives give more: a udev rule granting the `jitllm` group `rw`
+  (plus `DeviceAllow=`) lets every process of that group, and every job
+  in the unit's cgroup, open a host-wide knob, and changes the node for
+  the host's life; a root helper service is a second process and an IPC
+  channel. `graceful` starts the service on a host without the device,
+  and an older systemd ignores the line; either way the runtime would run
+  without the hold, as would a development run whose user may not open
+  the device.
+- **Checked on `spark-b`** with a transient unit (`systemd-run`, as
+  `nobody`, `DevicePolicy=closed`, no capabilities,
+  `ProtectSystem=strict`): the service received `LISTEN_FDS=1`,
+  `LISTEN_FDNAMES=cpu-latency`; its own open of the device was refused
+  (EACCES); a write of 0 through the descriptor set the host's effective
+  value to 0, a write of -1 returned it to the default, and nothing
+  remained after the unit exited.
+
 ## Tests
 
 - `unit.WakeFlag.*`, `unit.Expectation.*` (`lanes_test`): an
@@ -293,11 +467,18 @@ every swap's state digest and continued steps.
 - Short steps cost more CPU: the spins around each likely end are fixed
   at 1 ms, so 5 ms steps keep about a core busy in all (idle is still
   zero).
-- The ~20 µs left over the harness's polling is S's launch after a spin
-  that began only 1 ms before; not isolated.
-- Not tried: a PM QoS request (`/dev/cpu_dma_latency`, root) that would
-  keep cores out of deep idle while a request runs, making sleep cheap;
-  it is a system setting, the owner's call.
+- The ~20 µs left over the harness's polling was S's core leaving a deep
+  idle state: a latency hold removes it ([above](#a-latency-hold)), but
+  it is not kept (D-095).
+- The latency hold's measurements: two or three runs per configuration,
+  interleaved. The idle power it costs was not measured: the GB10 has no
+  CPU power reading that is cheap to take, and `nvidia-smi`'s power draw
+  (the GPU's) read 4.46–4.47 W idle with and without it. What it changes
+  is where idle time goes: over 10 s of an idle host, the 20 CPUs spent
+  201.6 s in LPI-3 and 1.5 s in LPI-0 without it, and 196.8 s in LPI-0
+  with it. A per-CPU request (`power/pm_qos_resume_latency_us`, only the
+  runtime's CPUs) and a shorter timer slack (`PR_SET_TIMERSLACK`, which
+  might let the margin shrink) were not tried.
 
 ## Reproduce
 
@@ -312,4 +493,12 @@ build/spark-native/benchmarks/jitllm_wake_bench node --steps 100 --repeats 3 [--
 ```
 
 `--mix` mixes in 1/9-length steps; `--only PREFIX,...` picks
-configurations by name.
+configurations by name; `--spin-ahead-us US` sets the margin (both
+modes). A latency hold held from outside for one run (root; always kill
+it after, and check the device reads 2000000000 again):
+
+```bash
+sudo -n python3 -c 'import os,struct,time; fd=os.open("/dev/cpu_dma_latency",os.O_WRONLY); os.write(fd,struct.pack("i",0)); time.sleep(600)' &
+build/spark-native/benchmarks/jitllm_wake_bench node --steps 100 --repeats 1
+sudo -n pkill -f 'struct.pack\("i",0\)'; sudo -n od -An -td4 /dev/cpu_dma_latency
+```

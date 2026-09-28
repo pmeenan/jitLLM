@@ -7,8 +7,9 @@
 //
 //   jitllm_wake_bench chain [--steps N] [--step-us US] [--host-us US]
 //                           [--repeats N] [--mix] [--only NAME,...]
+//                           [--spin-ahead-us US]
 //   jitllm_wake_bench node [--steps N] [--step-us US] [--host-us US]
-//                          [--repeats N] [--poll-us US]
+//                          [--repeats N] [--poll-us US] [--spin-ahead-us US]
 //
 // chain: four threads in the roles of the runtime's, over raw CUDA: a
 // submission lane (S) launches a step (a kernel that keeps the GPU busy
@@ -35,6 +36,10 @@
 // process's CPU. --poll-us overrides the scheduler's and the device lane's
 // poll windows (the harness's old 100 ms, a diagnostic); without it the
 // runtime's own defaults apply.
+//
+// --spin-ahead-us (a diagnostic, both modes): how long before a likely end
+// the completion lane and the client start to spin, instead of 1 ms
+// (docs/experiments/runtime-wake/#a-latency-hold measured shorter ones).
 //
 // Output: Markdown rows. Round trip = the GPU's idle gap between a step's
 // end and the next step's start, less the client's host work. Hops are
@@ -200,6 +205,7 @@ constexpr std::array<Config, 11> kConfigs{{
 // The prediction's settings (the ones the runtime took, DeviceSettings),
 // over the runtime's expectation: the shortest of the last eight.
 constexpr auto kMargin = microseconds(1000);    // spin from this long before the expected end
+                                                // (--spin-ahead-us overrides it)
 constexpr auto kSlack = microseconds(1000);     // and until this long after it
 constexpr auto kBackstop = microseconds(1000);  // sleeping, query at least this often
 constexpr auto kBackoffMax =
@@ -224,6 +230,7 @@ struct ChainOptions {
   int repeats = 3;
   bool mix = false;
   std::vector<std::string> only;
+  microseconds spin_ahead = kMargin;
 };
 
 // The GPU's global timer against the host's steady clock: host minus GPU,
@@ -312,6 +319,7 @@ bool RunChain(const Config& config, const ChainOptions& o) {
   alignas(64) std::uint32_t hostfn_word = 0;  // host functions bump it, C waits on it
   std::atomic<bool> stop{false};
   std::atomic<bool> failed{false};
+  const microseconds margin = o.spin_ahead;
   const bool relay = config.owner == Owner::kRelay;
   const bool hostfn = config.detect == Detect::kHostFn || config.detect == Detect::kPredictHostFn;
   const bool memop = config.detect == Detect::kMemopSpin || config.detect == Detect::kMemopFutex ||
@@ -479,7 +487,7 @@ bool RunChain(const Config& config, const ChainOptions& o) {
         // The next likely end (one of the stream's last eight lengths) not
         // yet outlasted, as the runtime's completion lane does.
         const auto next = expected.Next(now - from, kSlack);
-        if (!expected.known() || (next && now >= from + *next - kMargin)) {
+        if (!expected.known() || (next && now >= from + *next - margin)) {
           if (relay && next && relayed < from + *next + kSlack) {
             relayed = from + *next + kSlack;
             k_wake.Anticipate(relayed);
@@ -499,7 +507,7 @@ bool RunChain(const Config& config, const ChainOptions& o) {
           continue;
         }
         // Asleep until the spin, querying at least every kBackstop.
-        const auto until = std::min(from + *next - kMargin, now + kBackstop);
+        const auto until = std::min(from + *next - margin, now + kBackstop);
         if (config.detect == Detect::kPredictHostFn) {
           const std::uint32_t word = Load(&hostfn_word);
           if (word < target) {
@@ -538,8 +546,8 @@ bool RunChain(const Config& config, const ChainOptions& o) {
       const auto next = step_wall.Next(now - asked, kSlack);
       if (step_wall.known() && !next) {
         (void)d_wake.WaitFor(kSlack);  // longer than every recent one
-      } else if (next && now < asked + *next - kMargin) {
-        (void)d_wake.WaitUntil(asked + *next - kMargin);
+      } else if (next && now < asked + *next - margin) {
+        (void)d_wake.WaitUntil(asked + *next - margin);
       } else {
         std::this_thread::yield();
       }
@@ -608,7 +616,8 @@ struct NodeOptions {
   std::uint64_t step_us = 45000;
   std::uint64_t host_us = 200;
   int repeats = 3;
-  std::int64_t poll_us = -1;  // the runtime's defaults
+  std::int64_t poll_us = -1;     // the runtime's defaults
+  std::int64_t spin_ahead = -1;  // the runtime's default (DeviceSettings::spin_ahead)
 };
 
 namespace ts = jitllm::test_support;
@@ -619,6 +628,9 @@ bool RunNode(const NodeOptions& o) {
   settings.compute_streams = 1;
   if (o.poll_us >= 0) {
     settings.poll_window = microseconds(o.poll_us);
+  }
+  if (o.spin_ahead >= 0) {
+    settings.spin_ahead = microseconds(o.spin_ahead);
   }
   ts::PagedNode node(settings);
   auto fail = [](std::string_view what, const std::string& why) {
@@ -708,8 +720,11 @@ bool RunNode(const NodeOptions& o) {
     const double idle_wall = std::chrono::duration<double>(Clock::now() - idle_start).count();
     std::println(
         "| node, {} | {} | {:.1f} / {:.1f} / {:.1f} | {} | {} | {} | {:.2f} | {:.2f} | {:.2f} |",
-        o.poll_us < 0 ? std::string("runtime defaults")
-                      : std::format("poll windows {} us", o.poll_us),
+        std::format(
+            "{}{}",
+            o.poll_us < 0 ? std::string("runtime defaults")
+                          : std::format("poll windows {} us", o.poll_us),
+            o.spin_ahead < 0 ? std::string() : std::format(", spin ahead {} us", o.spin_ahead)),
         round_trip.size(), Percentile(round_trip, 0.5), Percentile(round_trip, 0.99),
         Percentile(round_trip, 1.0), Pair(to_job), Pair(to_gpu), Pair(from_gpu),
         device * 1e3 / static_cast<double>(std::max<std::size_t>(round_trip.size(), 1)),
@@ -762,6 +777,11 @@ int main(int argc, char** argv) {
       node.repeats = chain.repeats;
     } else if (a == "--poll-us") {
       ok = Number(value(), node.poll_us);
+    } else if (a == "--spin-ahead-us") {
+      std::uint32_t us = 0;
+      ok = Number(value(), us) && us <= 10000;
+      chain.spin_ahead = microseconds(us);
+      node.spin_ahead = us;
     } else if (a == "--mix") {
       chain.mix = true;
     } else if (a == "--only") {
@@ -795,8 +815,8 @@ int main(int argc, char** argv) {
     std::println(stderr, "unknown mode {}", mode);
     return 2;
   }
-  std::println("steps {} x {} us{}, host work {} us", chain.steps, chain.step_us,
-               chain.mix ? " (mixed with 1/9)" : "", chain.host_us);
+  std::println("steps {} x {} us{}, host work {} us, spin ahead {} us", chain.steps, chain.step_us,
+               chain.mix ? " (mixed with 1/9)" : "", chain.host_us, chain.spin_ahead.count());
   PrintHeader();
   for (int repeat = 0; repeat < chain.repeats; ++repeat) {
     for (const Config& config : kConfigs) {

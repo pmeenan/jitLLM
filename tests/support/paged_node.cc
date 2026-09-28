@@ -315,6 +315,9 @@ Status PagedNode::Start(Bytes budget) {
   if (settings_.poll_window) {
     device.poll_window = *settings_.poll_window;  // a diagnostic (NodeSettings)
   }
+  if (settings_.spin_ahead) {
+    device.spin_ahead = *settings_.spin_ahead;  // a diagnostic (NodeSettings)
+  }
   device_lane_ =
       std::make_unique<sc::DeviceService>(*execution_, streams_, *board_, device, nullptr);
   if (settings_.copy_lane) {
@@ -671,6 +674,7 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   // most of the step, spinning around its likely ends (the last few steps'
   // walls), woken early by the task's report whenever it sleeps.
   auto give_up = called + kPatience;
+  const auto spin_ahead = settings_.spin_ahead.value_or(kSpinAhead);
   bool cancelled = false;
   while (open.channel.steps.load(std::memory_order_acquire) == before && !open.done.gone.load()) {
     const auto now = std::chrono::steady_clock::now();
@@ -688,8 +692,8 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
       Round();
     } else if (open.walls.known() && !next) {
       (void)open.channel.reported.WaitFor(kSpinPast);  // longer than any: sleep, woken by it
-    } else if (next && now < called + *next - kSpinAhead) {
-      (void)open.channel.reported.WaitUntil(called + *next - kSpinAhead);
+    } else if (next && now < called + *next - spin_ahead) {
+      (void)open.channel.reported.WaitUntil(called + *next - spin_ahead);
     } else {
       std::this_thread::yield();  // around a likely end, or none known yet
     }

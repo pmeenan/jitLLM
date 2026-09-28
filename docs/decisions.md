@@ -39,7 +39,57 @@ one Spark and on two.
 
 ---
 
-## D-094: The runtime wakes by anticipation: a device lane sleeps through most of a fence's expected length, spins around its end, and has the scheduler and the next submission poll ahead of it  (2026-09-28, status: accepted by the M3 runtime-wake slice at the owner's request, for review with it; settles, for the device path, D-048's "polling policy require[s] implementation measurements"; the paged harness's 100 ms poll window (D-093's note) becomes a labelled diagnostic)
+## D-095: No CPU latency hold: a PM QoS request cut the wake's round trip but not decode's time, so the runtime does not keep one  (2026-09-28, status: not adopted, by the owner, 2026-09-28; D-094's wake and its margins stay as they are)
+
+**Decision.** The runtime does not hold a PM QoS CPU latency request
+(`/dev/cpu_dma_latency`). The latency-hold slice measured one and built it
+(the scheduler engaging a 0 µs request while work was in flight, through
+a descriptor systemd passed), and the owner decided, on 2026-09-28:
+"D-095 is accepted - host-wide effect is fine but if there's no
+meaningful impact it's not worth keeping and our own scheduler is much
+more efficient." So the code was removed and the evidence kept
+([runtime-wake](experiments/runtime-wake/README.md#a-latency-hold)):
+- **The host-wide effect is acceptable** to the owner; that is not why it
+  is not kept.
+- **If it is ever built,** the least-privilege way to grant it is
+  systemd's `OpenFile=/dev/cpu_dma_latency:cpu-latency:graceful`
+  (systemd 253 or later): the service manager opens the root-only device
+  and passes the descriptor, found by name (sd_listen_fds' protocol) and
+  kept close-on-exec; the runtime needs no privilege, no `DeviceAllow=`
+  and no udev rule or group grant (which would give every process of the
+  group, or every job in the unit's cgroup, a host-wide knob). Verified
+  on `spark-b` with a transient unit as `nobody` under `DevicePolicy=closed`.
+  One descriptor for the process's life: writing 0 engages it (~32 µs),
+  writing -1 releases it (~8 µs); opening alone constrains nothing.
+- **D-094's 1 ms margins would stay** even with it: with the hold, 200 µs
+  kept the median but not the tail, and 0–50 µs lost the median.
+
+**Why.** On `spark-b` the median gap from a synthetic 45 ms step's end
+to the next step's start fell from 28–31 µs to 8–9 µs with D-094's wake
+(0.12–0.14 cores while stepping either way), matching every thread
+polling (8 µs at 4 cores); every sleeping hop fell from ~100–600 µs to
+~5 µs, and a blocking-sync event's wake from 1.0–1.5 ms to 5–35 µs. On
+the paged node's path, 25.5–28.9 µs became 8.5–10.5 (the scheduler
+engaging the hold itself, or one held from outside); DeepSeek's decode
+round trip 0.041–0.042 ms a step became 0.010–0.013, its tok/s the same
+within the device's spread (20.33–20.48 against 20.42). A request at
+50 µs, which allows LPI-1 (exit latency 42 µs), gained nothing, so the
+cost is the cores' power-down states. About 17 µs a step against 40–48
+ms steps is under 0.05%, less than the device's run-to-run spread: no
+meaningful impact on throughput at today's step lengths, while D-094's
+own wake already runs at 0.12–0.14 of a core.
+
+**Consequences.** No code, unit line, doctor section or configuration
+for it. The wake keeps paying ~20 µs a step for a core's exit from deep
+idle (RE-017's cause, now confirmed). The benches keep
+`--spin-ahead-us`, a diagnostic, for tuning the margin.
+
+**Reopen if.** Short-step workloads where ~17 µs a step matters: M7's
+per-step routed experts (a lease and a wake per step), steps of a few
+milliseconds or less, or a path with many sleeping hops per token; then
+rebuild it from the design above and re-measure on that workload.
+
+## D-094: The runtime wakes by anticipation: a device lane sleeps through most of a fence's expected length, spins around its end, and has the scheduler and the next submission poll ahead of it  (2026-09-28, status: accepted by the M3 runtime-wake slice at the owner's request, for review with it; settles, for the device path, D-048's "polling policy require[s] implementation measurements"; the paged harness's 100 ms poll window (D-093's note) becomes a labelled diagnostic; its "Reopen if" PM QoS request was tried on 2026-09-28 and not adopted, D-095; this wake and its margins stay)
 
 **Decision.** The scheduler's and the device lanes' default way to wait
 ([runtime-wake](experiments/runtime-wake/README.md)):

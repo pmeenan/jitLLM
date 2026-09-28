@@ -20,6 +20,7 @@
 //                     [--prompts FILE --expect DIR --generate N]
 //                     [--poison-probe on|off] [--scrub-probe on|off]
 //                     [--graphs on|off] [--bench N] [--poll-us N]
+//                     [--spin-ahead-us N]
 //
 // - An LLM A holds --context-tokens tokens (8,192) of --text, tokenized by
 //   the native tokenizer (DeepSeek's from its artifact's GGUF metadata,
@@ -474,6 +475,9 @@ struct Options {
   std::uint32_t generate = 32;
   std::uint32_t bench = 0;
   std::optional<std::uint32_t> poll_us;  // a diagnostic poll window (RE-017); unset: the runtime's
+  // A diagnostic: how long before a likely end the device lane and the
+  // driver spin (DeviceSettings::spin_ahead); unset: the runtime's.
+  std::optional<std::uint32_t> spin_ahead_us;
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -552,6 +556,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       std::uint32_t us = 0;
       ok = number(us) && us <= 1000000;
       o.poll_us = us;
+    } else if (a == "--spin-ahead-us") {
+      std::uint32_t us = 0;
+      ok = number(us) && us <= 10000;
+      o.spin_ahead_us = us;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -577,7 +585,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "[--dsv4-prompt FILE] [--qwen38-prompt FILE] [--context-tokens N] [--continue N] "
         "[--cycles N] [--zero-context on|off] [--handoff on|off] [--context N] "
         "[--image-expect SHA256] [--prompts FILE --expect DIR --generate N] "
-        "[--graphs on|off] [--bench N] [--poll-us N]");
+        "[--graphs on|off] [--bench N] [--poll-us N] [--spin-ahead-us N]");
   }
   const bool a_llm = o.a != "image";
   if (a_llm && (o.cycles > 0 || o.bench > 0) &&
@@ -693,7 +701,10 @@ class Swapper {
                .observer = &times_,
                .poll_window = options.poll_us
                                   ? std::optional(std::chrono::microseconds(*options.poll_us))
-                                  : std::nullopt}) {
+                                  : std::nullopt,
+               .spin_ahead = options.spin_ahead_us
+                                 ? std::optional(std::chrono::microseconds(*options.spin_ahead_us))
+                                 : std::nullopt}) {
     a_ = Make(o_.a, kA);
     b_ = Make(o_.b, kB);
   }

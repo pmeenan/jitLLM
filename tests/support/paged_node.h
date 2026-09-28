@@ -167,6 +167,11 @@ struct NodeSettings {
   // Initialized so callers may designate only the fields they change.
   // NOLINTNEXTLINE(readability-redundant-member-init)
   std::optional<std::chrono::microseconds> poll_window = {};
+  // A diagnostic only: how long before a step's likely end the device lane
+  // (DeviceSettings::spin_ahead) and a request's driver start to spin.
+  // Unset, the runtime's default (1 ms).
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::optional<std::chrono::microseconds> spin_ahead = {};
 };
 
 // What the storage lane hands io_uring (BP-P1): requests, and the pieces
