@@ -38,7 +38,9 @@ separate step ([below](#proposed-use)).
   - The format is 4-bit affine group quantization: groups of 64, eight
     values packed per 32-bit word, and a bf16 scale and bias per group
     (`families/qwen3_5/cuda/qmm.py`). That is close to GGUF `Q4_1` or
-    asymmetric GPTQ.
+    asymmetric GPTQ. That file is the dense Qwen3.8-27B family's; Qwen3.8
+    Flash Next's checkpoint and family use groups of 32 (checked at
+    `beddbb7b`, [licensing.md](licensing.md#tensorfold)).
   - Its Triton matmul computes
     `Σ_g (scale·(x·q) + bias·Σx)`, over the groups in order, after
     regrouping the packed words at load.

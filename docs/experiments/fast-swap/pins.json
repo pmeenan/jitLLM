@@ -1,0 +1,747 @@
+{
+  "checked": "2026-09-28",
+  "note": "M3 (D-087) checkpoints, recipes and reference engines. Weight licenses are informational (D-087); code licenses are recorded in docs/licensing.md.",
+  "models": [
+    {
+      "repository": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "revision": "fbbb5b93fb787c21338159b0af3318bb3f4d9768",
+      "id": "deepseek-v4-flash-0731",
+      "quant": "UD-Q2_K_XL, plus the DSpark drafter (Q8_0)",
+      "card_license": "mit",
+      "base_repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "base_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+      "base_license_sha256": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040",
+      "base_license_name": "MIT",
+      "bytes": 107728580777,
+      "files": [
+        {
+          "path": "README.md",
+          "bytes": 5826,
+          "sha256": "d13dfe707df555365fcec8cae7a51cf172437187c2929f478fa2c6606de2a6ff",
+          "git_blob": "44826d2f881805f6a498dc1596a21b2b634f54f9"
+        },
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+          "bytes": 5257664,
+          "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+        },
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+          "bytes": 49437013568,
+          "sha256": "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327"
+        },
+        {
+          "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+          "bytes": 47390237120,
+          "sha256": "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4"
+        },
+        {
+          "path": "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+          "bytes": 10896057440,
+          "sha256": "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249"
+        },
+        {
+          "path": "dspark/README.md",
+          "bytes": 9159,
+          "sha256": "d09f20d45c2e30d6548c430c6314972804ae59a3e8f9e0774614b5f54e7ccdfd",
+          "git_blob": "1df6ea08cf98c1d93e699412fdfad57f7cf26cf7"
+        }
+      ]
+    },
+    {
+      "repository": "Mia-AiLab/Qwen3.8-Flash-Next-NVFP4",
+      "revision": "925d7be6c14c6c9442ef83e8f05b5a3c39304f69",
+      "id": "qwen3.8-flash-next-nvfp4",
+      "quant": "ModelOpt mixed: NVFP4 routed experts, MXFP8 attention and shared expert, packed NVFP4 PLE",
+      "card_license": "apache-2.0",
+      "mirror_of": "local-inference-lab/Qwen3.8-Flash-Next-NVFP4",
+      "mirror_of_revision_at_check": "7c4f1bc1a2d6847e0cbc01ac6b823f00251de8dd",
+      "mirror_of_card_license": "other",
+      "base_repository": "Qwen/Qwen3.8-Flash-Next",
+      "base_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+      "base_license_sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
+      "base_license_name": "Qwen Community License 1.0",
+      "bytes": 105935742983,
+      "files": [
+        {
+          "path": "README.md",
+          "bytes": 599,
+          "sha256": "88aa02fb581958b987c78ce8536e5913a1522156b7657a19ecdafbf8cf3be4ab",
+          "git_blob": "4bba8f4334deba1800f8c58258cffdde90c210ba"
+        },
+        {
+          "path": "amax.safetensors",
+          "bytes": 20003400,
+          "sha256": "d2c9c496023f255246e4da5ec2d06e23570e8c361461159f494a1018965e6631"
+        },
+        {
+          "path": "amax_checkpoint.json",
+          "bytes": 1003,
+          "sha256": "fa77bb5fcd4cf99cd57294752ebfe25d8ec316f9289dc2b27a2c55eeb606362f",
+          "git_blob": "56a624da597b15513977a3406dedda3fd2aa1935"
+        },
+        {
+          "path": "amax_checkpoint.safetensors",
+          "bytes": 20001100,
+          "sha256": "683be5968daa0451dbffb7c9fd2968803ec298adaf09d03a7825bec9295aa781"
+        },
+        {
+          "path": "chat_template.jinja",
+          "bytes": 8952,
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "git_blob": "c0c686f9c38d70d179fb7b5f5aa7530bc913dda3"
+        },
+        {
+          "path": "config.json",
+          "bytes": 109897,
+          "sha256": "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e",
+          "git_blob": "090236c1994326cfb2bb08d28762e5458d9d8601"
+        },
+        {
+          "path": "generation_config.json",
+          "bytes": 2097,
+          "sha256": "735ec63e625c2086fbec18327233a03a7b060fddabfd7915af4e6fdcec3187a2",
+          "git_blob": "23a56fd982323596a15128c34c0fd7687689426c"
+        },
+        {
+          "path": "hf_quant_config.json",
+          "bytes": 99088,
+          "sha256": "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7",
+          "git_blob": "01eda361b1e4c360aaf6216d31568cef90b00903"
+        },
+        {
+          "path": "merges.txt",
+          "bytes": 3353259,
+          "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+          "git_blob": "a494e019ca1502219fd0128658b979e5f05ae8e8"
+        },
+        {
+          "path": "model-00001-of-00034.safetensors",
+          "bytes": 2841505880,
+          "sha256": "3f870511a20ad170c997517765f03d475bcd364ae1a6011491085cab620d3c39"
+        },
+        {
+          "path": "model-00002-of-00034.safetensors",
+          "bytes": 1575009800,
+          "sha256": "fe8f4bdbce28f4911f10460b75581b6c88a8ade9b836d2f1ec22c6bee6f976a8"
+        },
+        {
+          "path": "model-00003-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "2b7d1312a660cf17bb05c34e1ac79570820f86fb1e1115108ee40562e48acb5e"
+        },
+        {
+          "path": "model-00004-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "25ba4508c209a5cc54c04edb1edb8d0a0b5efa80e5f99637e2263fa78d6a25e8"
+        },
+        {
+          "path": "model-00005-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "a9848067bb49f44b8339bcdca9d60ca74d801a6df874c979c6f901c8da6ff545"
+        },
+        {
+          "path": "model-00006-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "66fc496b58675a90b94d9f36765fe67692dd8a4c966ec0692e076d751f835c8d"
+        },
+        {
+          "path": "model-00007-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "68f89e84be13069bd9f2928b44a9f9638d628fd62be5abb6a4fc956c1af25ea9"
+        },
+        {
+          "path": "model-00008-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "b8bdaa0a7b027dc0fa38c2e43bb31e8ddf9ba9288d3d0f28c422e6947241d96e"
+        },
+        {
+          "path": "model-00009-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "6c5a85990b16a93f0e7e28fb76f56713d5cbc05bef494bb15360188f575746e9"
+        },
+        {
+          "path": "model-00010-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "8734a1fc3b5857391fbf2252d4305391a9f77894b70577949f472fc75386582f"
+        },
+        {
+          "path": "model-00011-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "29792378d43c9f70d9f3fbdd07d0ee24b38f81fe27aff25a02ba0d3cde8df13c"
+        },
+        {
+          "path": "model-00012-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "b23e615ebefff4753d982d9ec6a8be6ad57353a8900146a3ec4e217f81c10e61"
+        },
+        {
+          "path": "model-00013-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "9da7b4570fc3f13cb781e5aca5e79d0edfc10be5555a18bc7bda8f47459d5acf"
+        },
+        {
+          "path": "model-00014-of-00034.safetensors",
+          "bytes": 1575009808,
+          "sha256": "53e770d0bdf6261e30abaae2477aa0b50f6686511e0240514ded0fd65edbfeba"
+        },
+        {
+          "path": "model-00015-of-00034.safetensors",
+          "bytes": 1575009816,
+          "sha256": "03440de56d127ff58e72963aafd0de0574b825667330c50b4441bb300dae9f06"
+        },
+        {
+          "path": "model-00016-of-00034.safetensors",
+          "bytes": 1575009824,
+          "sha256": "ce2e0474ccb34c56003a61608b46d3a8f668c218a9993c1f861239df83afe77b"
+        },
+        {
+          "path": "model-00017-of-00034.safetensors",
+          "bytes": 1575009824,
+          "sha256": "57f84845e0b8bcab738e70f0f880e941f1baa8da14663293d7d40481288c73a0"
+        },
+        {
+          "path": "model-00018-of-00034.safetensors",
+          "bytes": 1575009824,
+          "sha256": "3477df0be60910576fc5a1f8159d8dbbf7847a03872b9cb53664808e1d5dfac8"
+        },
+        {
+          "path": "model-00019-of-00034.safetensors",
+          "bytes": 2438722732,
+          "sha256": "43c22213b2fe0990c7fc2aa54c0ea65062eb93253b4ea419914d1a655e64b23a"
+        },
+        {
+          "path": "model-00020-of-00034.safetensors",
+          "bytes": 5133924592,
+          "sha256": "b7143694bf8698c5b704ae9b3d492a0e9b8ef57bdda8ae6f3f29f264c183ad17"
+        },
+        {
+          "path": "model-00021-of-00034.safetensors",
+          "bytes": 5194891408,
+          "sha256": "522bbbc894183865726e06ca44021d275d03cc0e8dcd60a2c7074d870e811d37"
+        },
+        {
+          "path": "model-00022-of-00034.safetensors",
+          "bytes": 5133933936,
+          "sha256": "5a4789f6da6b386b09cb9093b0315fe12a816142958e4d8a4ae83e4fbaa066e7"
+        },
+        {
+          "path": "model-00023-of-00034.safetensors",
+          "bytes": 5194908864,
+          "sha256": "cd0aaef1c8688cb4e35b488048ede2a6b653e1d558b20d4657567df24dc8be13"
+        },
+        {
+          "path": "model-00024-of-00034.safetensors",
+          "bytes": 5188755712,
+          "sha256": "d07198edd38ae8740d556487729ae87be1e21e31a88cf6624c1b3f9d0fc6de76"
+        },
+        {
+          "path": "model-00025-of-00034.safetensors",
+          "bytes": 5133940040,
+          "sha256": "c7d5e642968679ca14d07bdb1e8c2187c59898611d05a6909c209738642c9519"
+        },
+        {
+          "path": "model-00026-of-00034.safetensors",
+          "bytes": 5194907416,
+          "sha256": "47a7c7a70188cb3dc318071a5278260c4b05d7ce1b69c3b99e7bf1c0e42c353b"
+        },
+        {
+          "path": "model-00027-of-00034.safetensors",
+          "bytes": 5133940216,
+          "sha256": "a81fedf160434806e81f36731c853fe4e3f973dea2f0817043987f32b4915a54"
+        },
+        {
+          "path": "model-00028-of-00034.safetensors",
+          "bytes": 5194907672,
+          "sha256": "91c5d479fe4de1035c430ad7fd3de9d15214a46fd786ca7909d1f2fa40ef603a"
+        },
+        {
+          "path": "model-00029-of-00034.safetensors",
+          "bytes": 5133939992,
+          "sha256": "f31c6f61968f6f9e85d469f31c55c82ab6c5f2bc54c1d7a0cd6b23ac45f0ce15"
+        },
+        {
+          "path": "model-00030-of-00034.safetensors",
+          "bytes": 5194908960,
+          "sha256": "df8627f5b8b0711b2ebf415c1f2549ef0b50f964e0babb560469b191b33c6a14"
+        },
+        {
+          "path": "model-00031-of-00034.safetensors",
+          "bytes": 5188755536,
+          "sha256": "654c8f9ae1ab5de393cbcdd46a13bd0d3d1c1005e575879e0e660d40ad9ef425"
+        },
+        {
+          "path": "model-00032-of-00034.safetensors",
+          "bytes": 5133940208,
+          "sha256": "7de2e680802ad92a0e019f875ebc07f2d5d82c8bca1c64b0f817d547bc3c9de7"
+        },
+        {
+          "path": "model-00033-of-00034.safetensors",
+          "bytes": 5021547836,
+          "sha256": "0fbcdf16c13cd830447efdcd3be19b82ec0e76b7f57f0e96952c1f2b62002b11"
+        },
+        {
+          "path": "model-00034-of-00034.safetensors",
+          "bytes": 1597270800,
+          "sha256": "fe0a0a227e39c4d02dc66c726d3e1ad87ef082e90a6b023ac90b2bb301672203"
+        },
+        {
+          "path": "model-inputscales.safetensors",
+          "bytes": 9669936,
+          "sha256": "49c7d04606ff7c8f103b4d1fc9742b44649a2937b25ecc896a5450ab1020f308"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "bytes": 33074286,
+          "sha256": "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "bytes": 390,
+          "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+          "git_blob": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64"
+        },
+        {
+          "path": "tokenizer.json",
+          "bytes": 12809320,
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "bytes": 17928,
+          "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+          "git_blob": "5de744b3fca2129d7186979ae47c06be33903243"
+        },
+        {
+          "path": "video_preprocessor_config.json",
+          "bytes": 385,
+          "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+          "git_blob": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe"
+        },
+        {
+          "path": "vocab.json",
+          "bytes": 6722759,
+          "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+          "git_blob": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176"
+        }
+      ]
+    },
+    {
+      "repository": "Qwen/Qwen-Image-2.1",
+      "revision": "790c92633540aa0cb11d9abf19eb46d861714758",
+      "id": "qwen-image-2.1",
+      "quant": "BF16 diffusers pipeline (text encoder, transformer, VAE)",
+      "card_license": "other (qwen-research)",
+      "license_sha256": "8dc973f024ff95966bea25866efa443fd16776dcb1001e681e3d467ea572b28d",
+      "license_name": "Qwen Research License",
+      "bytes": 33131614782,
+      "files": [
+        {
+          "path": "LICENSE",
+          "bytes": 7831,
+          "sha256": "8dc973f024ff95966bea25866efa443fd16776dcb1001e681e3d467ea572b28d",
+          "git_blob": "13ae08d5a5828f508cf0e852b1b316c0c0bbb9b3"
+        },
+        {
+          "path": "README.md",
+          "bytes": 5358,
+          "sha256": "ee79e9dccc074f71fed40bf1cd74f35928b2f4e03a992ec193c437907308289f",
+          "git_blob": "df7f635aeb0358a45427d74610535dd1dc0b992d"
+        },
+        {
+          "path": "model_index.json",
+          "bytes": 447,
+          "sha256": "cf1ecd104ea090855d60d8cec0895c1e9d6ee41b2f87e231b678beecd1cf7809",
+          "git_blob": "85d02d05f150cbe24a8fd3542062b565767bbe7b"
+        },
+        {
+          "path": "processor/added_tokens.json",
+          "bytes": 707,
+          "sha256": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680",
+          "git_blob": "b54f9135e44c1e81047e8d05cb027af8bc039eed"
+        },
+        {
+          "path": "processor/chat_template.jinja",
+          "bytes": 5292,
+          "sha256": "3636d0f0bd6bef02654cdffdc447b79cb2cef8ab02cc75267345946291a489e4",
+          "git_blob": "124386803f142761528f710e77ae483f5f8c4fc4"
+        },
+        {
+          "path": "processor/merges.txt",
+          "bytes": 1671853,
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+          "git_blob": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+        },
+        {
+          "path": "processor/preprocessor_config.json",
+          "bytes": 782,
+          "sha256": "93585062a80db5e8ca038efc7726a3e6411d9db948472d81d63c6303993be8c5",
+          "git_blob": "2fa6553554f69b4e3a6b742a75264ff9dff90ad0"
+        },
+        {
+          "path": "processor/special_tokens_map.json",
+          "bytes": 613,
+          "sha256": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+          "git_blob": "ac23c0aaa2434523c494330aeb79c58395378103"
+        },
+        {
+          "path": "processor/tokenizer.json",
+          "bytes": 11422654,
+          "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+        },
+        {
+          "path": "processor/tokenizer_config.json",
+          "bytes": 5445,
+          "sha256": "81ec7bb9530159b326c0bef1d0b6c33d392090524014ea3f0123a3c1eb9c2af5",
+          "git_blob": "fec7f182135c384a08ea2fc9635566ca79c45afc"
+        },
+        {
+          "path": "processor/video_preprocessor_config.json",
+          "bytes": 817,
+          "sha256": "59c5c9eb52182eb14c06ffb10ca9effd29adce5f238a95de23ca14a38dbd2cb1",
+          "git_blob": "e32b1d90356f74457edbfca27aa1e121dab7cdc7"
+        },
+        {
+          "path": "processor/vocab.json",
+          "bytes": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "git_blob": "4783fe10ac3adce15ac8f358ef5462739852c569"
+        },
+        {
+          "path": "scheduler/scheduler_config.json",
+          "bytes": 485,
+          "sha256": "5895f3a167c14a967fe9ac70c64924ae5acc79799e0679fd12907e594a713cd1",
+          "git_blob": "45cd05b021892b1cafbd16d61ce692637e88bedd"
+        },
+        {
+          "path": "text_encoder/config.json",
+          "bytes": 1517,
+          "sha256": "6001331949f7f86ab6d791a80b12246d4f8da5159fa08c3e62368a39f36d63a9",
+          "git_blob": "581ce4655dde5272e577065dd08b1fda7e97d6e8"
+        },
+        {
+          "path": "text_encoder/generation_config.json",
+          "bytes": 213,
+          "sha256": "4d9818c3d27895c0058828a5f68bc7a4de80c3ae1bcdac90936ce24178063f59",
+          "git_blob": "bdb4e0372b04220c80df250f2b3354d1c81c97cb"
+        },
+        {
+          "path": "text_encoder/model-00001-of-00004.safetensors",
+          "bytes": 4998056552,
+          "sha256": "dde00291b5f7fb92013895310a3da0ddba78674df9f10d505d375243dc01fc6f"
+        },
+        {
+          "path": "text_encoder/model-00002-of-00004.safetensors",
+          "bytes": 4915962464,
+          "sha256": "9047faccc0a6d98496a52d55f27be1c94a9c259d1e283fbea0128d054a948d42"
+        },
+        {
+          "path": "text_encoder/model-00003-of-00004.safetensors",
+          "bytes": 4915962496,
+          "sha256": "8c54187654c0176b73ae73785bf791dc9a14c9df7fb4310083a09d42048cb57e"
+        },
+        {
+          "path": "text_encoder/model-00004-of-00004.safetensors",
+          "bytes": 2704357976,
+          "sha256": "5311532aaaeae3259eb6a7b2c600636be1159adf7ded35f53579f7d0e7d43cdd"
+        },
+        {
+          "path": "text_encoder/model.safetensors.index.json",
+          "bytes": 67795,
+          "sha256": "859146bff8db1d617fca8b457a5223edff963bb70076b3645f2189fe0540a147",
+          "git_blob": "6d4d74c934b05b8addb0744305eef3674650cd8b"
+        },
+        {
+          "path": "transformer/config.json",
+          "bytes": 370,
+          "sha256": "56ae3281c4e6c2d1aa3658252d187488071815fd79bef15808bb0205fc1a2241",
+          "git_blob": "706df60672976086089e99f6595037f917d7602e"
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+          "bytes": 9968332504,
+          "sha256": "9e6bc2d641e67bf277895ea8777141044a38f3edb7101bc469b2961dd7c36b4b"
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+          "bytes": 4261951904,
+          "sha256": "3aaf234dcbe128530479735854a346b5e3e66283b7c11db56f836bbd1c13ebaa"
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model.safetensors.index.json",
+          "bytes": 30283,
+          "sha256": "17987f6623b1c814d0ef55a137d99142b7b3b040eb1bf241b5575dd35af803a2",
+          "git_blob": "bd64579cfd093a6a4ea8fb492217790018c53c0d"
+        },
+        {
+          "path": "vae/config.json",
+          "bytes": 2079,
+          "sha256": "9785d527b278cb8b210e9f48a8028d92a4190968ce7e24c8fc85d9d1b82f6ba2",
+          "git_blob": "ac6fe795d898a5eff16e4527256c2d039f5b0d4b"
+        },
+        {
+          "path": "vae/diffusion_pytorch_model.safetensors",
+          "bytes": 1350989512,
+          "sha256": "a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417"
+        }
+      ]
+    },
+    {
+      "repository": "Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+      "revision": "dadefa8066e3be900a0d148d0f5a2f4eb1cf6534",
+      "id": "qwen3.8-flash-next-mlx4",
+      "quant": "MLX affine 4-bit, group size 32 (config.json), with the MTP layer",
+      "card_license": "other",
+      "license_sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
+      "license_name": "Qwen Community License 1.0 (same bytes as the base's LICENSE)",
+      "hosts": "spark only",
+      "bytes": 113233046214,
+      "files": [
+        {
+          "path": "LICENSE",
+          "bytes": 3235,
+          "sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
+          "git_blob": "9557a8961782792814714b7488346732c043793d"
+        },
+        {
+          "path": "README.md",
+          "bytes": 10057,
+          "sha256": "235f260dd21b6d66adb77722ca5533552e0c831346b1534ab00efc970a496e95",
+          "git_blob": "ab474a49b9f69999ed41e7e2605be72e75b5459d"
+        },
+        {
+          "path": "chat_template.jinja",
+          "bytes": 8952,
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "git_blob": "c0c686f9c38d70d179fb7b5f5aa7530bc913dda3"
+        },
+        {
+          "path": "config.json",
+          "bytes": 5361,
+          "sha256": "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2",
+          "git_blob": "4922175c0f2ad9165d9f42984118dc463017f034"
+        },
+        {
+          "path": "generation_config.json",
+          "bytes": 202,
+          "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+          "git_blob": "023756cfadf88e5bf69eefeee3e172f38c448d64"
+        },
+        {
+          "path": "merges.txt",
+          "bytes": 3353259,
+          "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+          "git_blob": "a494e019ca1502219fd0128658b979e5f05ae8e8"
+        },
+        {
+          "path": "model-00001-of-00022.safetensors",
+          "bytes": 5283195887,
+          "sha256": "308f20b7e35a3e525f36eca0df286f6d1043cfeb621e7bbcf372a834c99cd66d"
+        },
+        {
+          "path": "model-00002-of-00022.safetensors",
+          "bytes": 5250035137,
+          "sha256": "8af1a616f2f39dbfe6ee92e959afb2414623fcb299aff1ced55984bfe810d608"
+        },
+        {
+          "path": "model-00003-of-00022.safetensors",
+          "bytes": 5250035154,
+          "sha256": "519a0472252ac9a51af020686f462aa6be82ce655f948fd5f054d70949de17a6"
+        },
+        {
+          "path": "model-00004-of-00022.safetensors",
+          "bytes": 5250035160,
+          "sha256": "b1ad7e951969eb8dc4e92762dc2e50bd47353c95990ae207db5da393d441400f"
+        },
+        {
+          "path": "model-00005-of-00022.safetensors",
+          "bytes": 5250035164,
+          "sha256": "9ca797304c563bb65f2356b67d444511b11744bc5b5c8ec8345ae7d97d3e251c"
+        },
+        {
+          "path": "model-00006-of-00022.safetensors",
+          "bytes": 5250035184,
+          "sha256": "8aab4c1dce7d8a0af645426b66d1caf30245d422d4c6b7029583959d675a1827"
+        },
+        {
+          "path": "model-00007-of-00022.safetensors",
+          "bytes": 5067850140,
+          "sha256": "7908da37b2e3fa7f0de8b9734dad0759be7dc445716f3acd59c20c4842638db9"
+        },
+        {
+          "path": "model-00008-of-00022.safetensors",
+          "bytes": 5337131618,
+          "sha256": "85beff20f250bfe63e95f12c0460512aab92bcde8f7408fe9c20e3de0321bc1d"
+        },
+        {
+          "path": "model-00009-of-00022.safetensors",
+          "bytes": 5337131558,
+          "sha256": "f7c03ae640e9bf0f7813ef2b2980afa83a883c02b3988e814e9921055fc08a28"
+        },
+        {
+          "path": "model-00010-of-00022.safetensors",
+          "bytes": 4970130103,
+          "sha256": "6897f52227533e720b243d6aef24c1293ad1eb02a1bb2ec6a6e4dc48d56d0c8f"
+        },
+        {
+          "path": "model-00011-of-00022.safetensors",
+          "bytes": 5341257482,
+          "sha256": "905d27f9db887284289a043f9638020258c5f90d52122cdce2e7aef941a431f2"
+        },
+        {
+          "path": "model-00012-of-00022.safetensors",
+          "bytes": 4967968541,
+          "sha256": "c4d2bb76fa4613f7386ddaa7045608c320f9736623211a814aa28fb370530dec"
+        },
+        {
+          "path": "model-00013-of-00022.safetensors",
+          "bytes": 5337131651,
+          "sha256": "1f20a5e1f2256b2fb6a78fef52f9e66daa970f4318ab1be3abb32a1effedbbf3"
+        },
+        {
+          "path": "model-00014-of-00022.safetensors",
+          "bytes": 5337131799,
+          "sha256": "860d12691792df5f08c9dfe245dc356773741f1edcc1fd430672ef06ac387635"
+        },
+        {
+          "path": "model-00015-of-00022.safetensors",
+          "bytes": 4970130195,
+          "sha256": "259fb7577b8248f6dcbe6a932fe5d2f1c8869eda761ef3394fe6ad06065f216c"
+        },
+        {
+          "path": "model-00016-of-00022.safetensors",
+          "bytes": 5341257440,
+          "sha256": "e931785f9ff4e0a567bf8c06df37639be46b4dae156e0f8b39b9d32a03d75792"
+        },
+        {
+          "path": "model-00017-of-00022.safetensors",
+          "bytes": 4967968481,
+          "sha256": "4f4610dc4a862bf9d93d70cfd0ec037e8e7943a734794d34eb5c0d748b74747a"
+        },
+        {
+          "path": "model-00018-of-00022.safetensors",
+          "bytes": 5337131695,
+          "sha256": "afdb4828920186600f9d61537d1465979fb36692f4eddb8c5a961a6b72964b77"
+        },
+        {
+          "path": "model-00019-of-00022.safetensors",
+          "bytes": 5337131801,
+          "sha256": "869d34c6e8f7db79bd4e54b9833d5b0db45eefac860c9bd64fbd312bf862a667"
+        },
+        {
+          "path": "model-00020-of-00022.safetensors",
+          "bytes": 4970130135,
+          "sha256": "5ca2f994fec1aa06fefef6646b9f072cf70f7f73aa8dab4c7c1a9a424afb4a52"
+        },
+        {
+          "path": "model-00021-of-00022.safetensors",
+          "bytes": 5341257436,
+          "sha256": "58def6762f29cc798437e5649a56ee75d053faca69138a2454dbdb34bb8a37c3"
+        },
+        {
+          "path": "model-00022-of-00022.safetensors",
+          "bytes": 3715570974,
+          "sha256": "30a3c82b573d813a1d2349f1c05c308c0d415f3ca1bb67caa0bfaad8a6afa7a3"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "bytes": 420813,
+          "sha256": "8848503860c7da8619fdc8d5e65201868f8f1d21d69d2e21166c95522379ff77",
+          "git_blob": "b6e0c44edc3e4640fc18e38295819c0e0002a08f"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "bytes": 390,
+          "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+          "git_blob": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64"
+        },
+        {
+          "path": "qwen-logo.png",
+          "bytes": 11203,
+          "sha256": "e56f3a62991f1d7475f0fd51b742bb293d9a228cd9dcbc1131b118d745e47cf3",
+          "git_blob": "559e037931bded333328cb920e297700a0c06a22"
+        },
+        {
+          "path": "tokenizer.json",
+          "bytes": 12809320,
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "bytes": 17928,
+          "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+          "git_blob": "5de744b3fca2129d7186979ae47c06be33903243"
+        },
+        {
+          "path": "vocab.json",
+          "bytes": 6722759,
+          "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+          "git_blob": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176"
+        }
+      ]
+    }
+  ],
+  "recipes_and_engines": [
+    {
+      "id": "mia-single",
+      "repository": "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark",
+      "revision": "b8439110eec0230facbe4ddf0dffe01b8f769be0",
+      "tracked_files": 70,
+      "license": "AGPL-3.0-or-later (README); root LICENSE is the AGPL-3.0 text",
+      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    {
+      "id": "vllm-image-default",
+      "image": "vllm/vllm-openai:qwen38-flash-next",
+      "index_digest": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+      "arm64_digest": "sha256:3b0e188ffceb3d07e09c3cb5215433a0020eacf02d7f882ed3a8bfd15454477e",
+      "created": "2026-08-26T09:14:37Z",
+      "vllm_commit": "unknown (image labels: local build)",
+      "flashinfer": "0.6.17 (flashinfer-jit-cache)",
+      "cuda": "13.0.1",
+      "nccl": "2.30.7"
+    },
+    {
+      "id": "vllm-image-v030",
+      "image": "vllm/vllm-openai:v0.30.0",
+      "index_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
+      "arm64_digest": "sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56",
+      "created": "2026-09-21T23:15:58Z",
+      "vllm_commit": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+      "flashinfer": "0.6.18.post1",
+      "cuda": "13.0.2",
+      "nccl": "2.30.7",
+      "cutlass": "v4.7.1 (cb4247394dd82148787aed73e5dc7cef33cbf862)",
+      "nvidia_cutlass_dsl": "4.7.1",
+      "humming_kernels": "0.1.12"
+    },
+    {
+      "id": "flashinfer",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "tags": {
+        "v0.6.17": "a0a6b019b9b27d49d209f85d028a1ae5a9b347d7",
+        "v0.6.18.post1": "8bc3b578027791336c6ae87db5c9d76f82cef8bc"
+      },
+      "cutlass_submodule_at_v0.6.17": "b46b16d003484063bca4ed365e44095c4c6ed633"
+    },
+    {
+      "id": "tensorfold",
+      "repository": "https://github.com/ashhart/TensorFold",
+      "revision": "beddbb7bc818b432163c30500aea256e2b46ff8a",
+      "version": "0.3.5.1",
+      "tracked_files": 371,
+      "license": "MIT",
+      "license_sha256": "be6a9ee4462784a762b21790954b8e76c4dcacc9fb6da2a40d03a8a9bddec93e",
+      "container": "nvcr.io/nvidia/pytorch:26.07-py3",
+      "container_index_digest": "sha256:2140e699b3beaf7f96a0081fd9c9406bc3832b435cdb60dfa2d261f7d2f34a1c",
+      "container_arm64_digest": "sha256:7531d90bcbe0e43e1f7363029c7e145ce90eebeb494a7b4695fdba0329d7c3c3"
+    },
+    {
+      "id": "llama.cpp",
+      "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+      "revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+      "build": 10964,
+      "note": "the source lock's pin and M0's reference image; has deepseek4, dflash (DSpark) and qwen4exp; the DSpark card needs b10269 or newer"
+    }
+  ]
+}

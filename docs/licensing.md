@@ -510,11 +510,16 @@ documentation; none of its code or patches ran or entered this repository.
 No weights are redistributed, and neither study clears a container's full
 component closure or approves any of these for jitLLM's core.
 
-## Fast-swap models and baselines (M3, M4): owed
+## Fast-swap models and baselines (M3, M4)
 
-D-087's models and baselines. No code below is cleared; each code item is
-to do before its first use, and the found terms come from a read-only
-survey on 2026-09-27.
+D-087's models and baselines. M3's are pinned and audited below (checked
+**2026-09-28**); M4's rows [at the end](#still-owed) are still owed.
+"Cleared" means confirmed from the license texts themselves; a declared
+license is recorded as declared, and D-080's rule separates a project's
+own code from included files that state a different license for
+themselves. Nothing here is incorporated into jitLLM: running a recipe
+or engine as a baseline incorporates nothing, and any reuse of code is a
+later decision with its own per-file record.
 
 **Model weights are informational (owner, 2026-09-28; D-087).** jitLLM
 never distributes model weights: users supply checkpoints, and artifacts
@@ -524,13 +529,102 @@ and the support matrix may note it for users. Code licenses (kernels,
 runtimes, and scripts or recipes we incorporate or run) still follow
 D-002, D-017 and D-080.
 
+### M3 pins
+
+Every file's size and SHA-256 (the LFS digest, or the hash of the bytes
+for small files, with their Git blob) and the engines' digests are in
+[experiments/fast-swap/pins.json](experiments/fast-swap/pins.json),
+resolved from the Hugging Face, GitHub and registry APIs on 2026-09-28.
+
+| Item | Pin | License (weights: informational) |
+| --- | --- | --- |
+| DeepSeek V4 Flash 0731 GGUF, UD-Q2_K_XL, 3 shards (96,832,508,352 B) and the DSpark drafter `dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf` (10,896,057,440 B) | `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93fb787c21338159b0af3318bb3f4d9768`; base `deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b` | Card MIT; the base's `LICENSE` is the MIT text, SHA-256 `f2c6c602…`, the same bytes as V4 Flash's in `full-pins.json`. Replaces `e3aa0d6a`, which stays on the Sparks |
+| Qwen3.8 Flash Next NVFP4, 34 shards plus index, scales and tokenizer (105,935,742,983 B) | `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6c14c6c9442ef83e8f05b5a3c39304f69` | Card `apache-2.0`. Its README says it is a mirror of `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` (card `other`; head `7c4f1bc1` on 2026-09-28), not Mia's quantization. The base `Qwen/Qwen3.8-Flash-Next@de4b8e4d` is under the Qwen Community License 1.0 (`a0dc4225…`); the base's terms are expected to govern (not a legal finding). The repo has no license file |
+| Qwen-Image-2.1, BF16 diffusers pipeline (33,131,614,782 B) | `Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758`, the revision the [BF16 study](experiments/image-reference/README.md) pinned and still the head | Qwen Research License (`LICENSE`, `8dc973f0…`), non-commercial research and evaluation |
+| TensorFold's checkpoint, MLX affine 4-bit, group size 32 (`config.json`), with its MTP layer (113,233,046,214 B) | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa8066e3be900a0d148d0f5a2f4eb1cf6534` | `LICENSE` is the Qwen Community License 1.0, byte-identical to the base's (`a0dc4225…`) |
+| MiaAI single-Spark recipe | `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark@b8439110eec0230facbe4ddf0dffe01b8f769be0` (main on 2026-09-28) | AGPL-3.0-or-later ([below](#miaai-single-spark-recipe)) |
+| Its default engine | `vllm/vllm-openai:qwen38-flash-next`, index `sha256:fc120ece…`, arm64 `sha256:3b0e188f…`; built 2026-08-26 as a local build (its labels give no vLLM commit); FlashInfer 0.6.17, CUDA 13.0.1, NCCL 2.30.7 | vLLM Apache-2.0; the image's full closure is not audited |
+| Its opt-in lane (`start-v030.sh`) | `vllm/vllm-openai:v0.30.0`, index `sha256:8a69ffad…`, arm64 `sha256:4864d466…`; vLLM `ced6857a` (tag v0.30.0); FlashInfer 0.6.18.post1, CUTLASS v4.7.1, CUDA 13.0.2. It serves `nvidia/Qwen3.8-Flash-Next-NVFP4`, not pinned: only if this lane becomes a baseline | As above |
+| TensorFold | `ashhart/TensorFold@beddbb7bc818b432163c30500aea256e2b46ff8a` (0.3.5.1, head on 2026-09-28); runs in `nvcr.io/nvidia/pytorch:26.07-py3`, index `sha256:2140e699…` | MIT ([below](#tensorfold)) |
+| llama.cpp, the GGUF oracle | `b29c606e` (build 10964), the source lock's pin and M0's image `ghcr.io/ggml-org/llama.cpp@sha256:837fc732…`. It has `deepseek4`, `dflash` (DSpark) and `qwen4exp`; the drafter's card needs b10269 or newer | MIT (recorded under the first dense slice) |
+
+vLLM or SGLang as DeepSeek's cross-quantization comparator is not pinned:
+Mia's recipe uses only vLLM, and the SGLang image on the Sparks
+(`lmsysorg/sglang@sha256:9e1fb4c3…`) is the MiMo reference's. That choice
+waits for the baselines item.
+
+### MiaAI single-Spark recipe
+
+Pinned at `b8439110`: **70 tracked files** (79 tree entries with the 9
+directories; the 2026-09-27 survey's "93" is not reproduced at this
+commit). The root `LICENSE` is the AGPL-3.0 text, byte-identical to
+gnu.org's `agpl-3.0.txt` (SHA-256 `0d96a4ff…`); the README grants
+"AGPL-3.0-or-later" and says the license covers the repository's files but
+not vLLM, the container image or the checkpoints they act on. Every path:
+
+| Paths | Declaration |
+| --- | --- |
+| `LICENSE` | The AGPL-3.0 text |
+| `download.sh`, `start.sh`, `stop.sh`; `bench/mixed.py`, `bench/structured.py`, `bench/sweep.py`; `files/build_draft_vocab.py`, `files/build_ple_packed_table.py`, `files/memwatch.sh`; `scripts/alert.sh`, `health-probe.sh`, `heartbeat.sh`, `launch-lane.sh`, `maintenance-relaunch.sh`, `memwatch-rotate.sh`, `smoke-test.sh`, `start-memwatch.sh`, `supervise.sh`; `systemd/qwen38-flash-heartbeat.timer`, `qwen38-flash-maintenance.service`, `qwen38-flash-maintenance.timer`, `qwen38-flash-supervisor-failure@.service`, `qwen38-flash-supervisor.service` (23) | `SPDX-License-Identifier: AGPL-3.0-or-later` in the file, most with "Copyright (C) 2026 MiaAI Lab" |
+| The patch generators `files/patch_block_drop.py`, `patch_determinism.py`, `patch_modelopt_mxfp8.py`, `patch_mtp_draft_vocab.py`, `patch_mtp_draft_vocab_v030.py`, `patch_ple_layer.py`, `patch_ple_mmap_v030.py`, `patch_ple_offload.py`, `patch_qsa_fp8_kv.py`, `patch_qsa_fp8_kv_v030.py` (10) | The same AGPL-3.0-or-later header. They hold vLLM source fragments as the old side of old-to-new replacement pairs, and at run time write modified copies of files `start.sh` extracts from the image; per the README those copies keep vLLM's Apache-2.0 headers. `patch_qsa_fp8_kv.py` credits its FP8-KV approach to `lancelind/qwen3.8-Flash-DGX` (Apache-2.0) as "reimplemented"; that project was not compared. What they generate is a combined work, not audited |
+| `start-v030.sh`, `files/mtp_block.py`, `files/build_draft_vocab_extend.py`, `bench/audit-spanish.py`, `bench/structured-protocol.py`, `bench/verify-smoke.py`, and the 10 files in `tests/` (16) | No notice in the file; the repository default, AGPL-3.0-or-later |
+| `README.md`, `CHANGELOG.md`, the 5 files in `docs/`, the 6 in `.github/`, `.env.sample`, `.gitignore`, `files/sysctl-spark3.conf`, `files/draft_vocab_en_code_47k.txt`, `files/draft_vocab_es_en_code_65k.txt` (18) | No notice; the repository default. The draft vocabularies are token-ID lists |
+| `files/chat-template/chat_template.jinja` | No notice in the file. `.env.sample` and `.gitignore` name it froggeric's v22.5 template (`hf.co/froggeric/Qwen-Fixed-Chat-Templates`), Apache-2.0: a declaration by reference, not a statement in the file. Used only when `CHAT_TEMPLATE` is set; the default is the checkpoint's own template |
+| `files/smoke-vision-fixture.jpeg` | No license; a screenshot of the model's release-countdown page, used by `smoke-test.sh` |
+
+**Disposition** (owner, 2026-09-28): the scripts may be **run unmodified
+as a baseline recipe**. Running them locally conveys nothing and
+incorporates nothing into jitLLM; the AGPL's section 13 applies to a
+modified version offered over a network, which a local benchmark of the
+unmodified recipe is not. No file here is a candidate for jitLLM's code;
+any later reuse starts from vLLM's or another upstream's own sources.
+
+### TensorFold
+
+Pinned at `beddbb7b`: 371 tracked files. The root `LICENSE` is the MIT
+text, "Copyright (c) 2026 TensorFold contributors" (SHA-256 `be6a9ee4…`),
+and `pyproject.toml` declares MIT. No file carries an SPDX tag or a
+license text of its own. `THIRD_PARTY_NOTICES.md` names what is adapted
+or vendored, and `LICENSES/Apache-2.0.txt` ships the Apache text:
+
+| Paths | Declaration |
+| --- | --- |
+| `src/tensorfold/drafters/vendor/z_lab_dflash/model_mlx.py` | Vendored unmodified from `z-lab/dflash`, MIT, Copyright (c) 2026 Z Lab: stated in its directory's `README.md` and the notices, not in the file |
+| The n-gram ID helpers in `src/tensorfold/families/qwen4_exp/model.py` and `cuda/ngram.py` | Translated from transformers' `modeling_qwen4_exp.py`, Apache-2.0, Copyright 2026 The Qwen Team and The HuggingFace Inc. team (per the notices) |
+| `src/tensorfold/kernels/qwen/dense/v1/lane_gdn.py`, `lane_tree.py` | Adapt mlx-lm's `qwen3_5` and `gated_delta` math, MIT, Apple (per the notices) |
+| Everything else | TensorFold's MIT. The notices say the CUDA DeltaNet kernel follows flash-linear-attention's numerics, the NCCL wrapper vLLM's stream convention, and the GLM EXL3 decoder ExLlamaV3's layout "without copying"; the GLM engine follows Mia's recipe "without including recipe code" |
+
+**Status: cleared** to run as a baseline, and its own code is
+core-eligible (MIT) if ever ported, with the Apache-2.0 and MIT notices
+above kept for the files they cover. Its runtime (PyTorch, Triton) comes
+from NVIDIA's container and is not audited. Its Qwen3.8 Flash Next family
+reads groups of 32 (`families/qwen4_exp/cuda/qmm.py`), matching the
+checkpoint; the 64 in [tensorfold-assessment.md](tensorfold-assessment.md)
+is the dense Qwen3.8-27B family's.
+
+### Mia's NVFP4 and MXFP8 path: vLLM, FlashInfer and CUTLASS
+
+Identified at the v0.30 lane's pins (vLLM `ced6857a`, FlashInfer v0.6.17
+`a0a6b019` and v0.6.18.post1 `8bc3b578`, CUTLASS v4.7.1 `cb424739`); the
+default image's vLLM commit is unknown until the image is pulled. Which
+candidate runs on the GB10 is read from the engine log in the baselines
+item. No reuse decision is made here.
+
+| Part | What it does | License, as found |
+| --- | --- | --- |
+| vLLM `model_executor/layers/quantization/modelopt.py` | ModelOpt NVFP4, MXFP8 and mixed-precision configs; Mia's `patch_modelopt_mxfp8.py` patches it | Apache-2.0 (SPDX header, "Copyright contributors to the vLLM project"; root `LICENSE` the Apache text) |
+| vLLM `model_executor/kernels/linear/{nvfp4,mxfp8}/` | The linear-kernel choice, in priority order on CUDA. MXFP8: FlashInfer CuTe-DSL, FlashInfer CUTLASS, Marlin, B12X, emulation, Humming, FlashInfer TRT-LLM. NVFP4: FlashInfer CuTe-DSL, FlashInfer CUTLASS, FlashInfer B12X, vLLM CUTLASS, then weight-only and fallbacks | Apache-2.0, as above |
+| vLLM `model_executor/layers/fused_moe/oracle/nvfp4.py`, `experts/flashinfer_cutlass_moe.py` | NVFP4 routed experts through FlashInfer's CUTLASS fused MoE. The default lane always mounts Mia's copy of this file (its determinism patch), so it is very likely that lane's MoE backend; the engine log confirms it | Apache-2.0, as above |
+| vLLM `csrc/libtorch_stable/quantization/fp4/` | vLLM's NVFP4 activation quantization and CUTLASS GEMMs, `nvfp4_scaled_mm_sm120_kernels.cu` among them | Apache-2.0: 9 files "Copyright (c) 2025, NVIDIA CORPORATION" with the Apache notice, 2 MXFP4 files vLLM's SPDX header |
+| FlashInfer `csrc/fused_moe/cutlass_backend/`, `csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/`, `csrc/cute_sm120_mxfp8_groupwise/` (97 files) | The CUTLASS fused MoE and FP4 GEMMs, from TensorRT-LLM, and an sm_120 MXFP8 groupwise GEMM | Apache-2.0 notices, NVIDIA or FlashInfer team copyright. Root `LICENSE` Apache-2.0; `NOTICE` names NVIDIA and the FlashInfer community; `licenses/` holds CUTLASS's BSD-3-Clause, FlashAttention-3's, fmt's and spdlog's texts |
+| FlashInfer `flashinfer/gemm/kernels/` CuTe-DSL kernels, `dense_blockscaled_gemm_sm120_b12x.py` among them | Block-scaled FP4 and FP8 GEMMs written in CUTLASS's Python DSL | BSD-3-Clause SPDX headers (NVIDIA); three cuTile files MIT. They compile through `nvidia-cutlass-dsl` 4.7.1, whose wheel is under NVIDIA's proprietary CUTLASS Python DSL license (PyPI "Other/Proprietary License"; [terms](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html)). D-017 names no such category for incorporated code, so reusing a CuTe-DSL kernel would need a decision |
+| CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause |
+| `humming-kernels` 0.1.12, the `b12x` extra | Other vLLM candidates | PyPI declares no license for `humming-kernels`; `b12x` not checked. Unknown until needed |
+
+### Still owed
+
 | Item | Found | To do |
 | --- | --- | --- |
-| `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark` (M3 baseline) | HEAD `b8439110`, 93 tracked paths; root `LICENSE` AGPL-3.0, README AGPL-3.0-or-later; SPDX AGPL-3.0-or-later headers on the 4 files checked (`download.sh`, `start.sh`, `files/patch_ple_offload.py`, `files/build_ple_packed_table.py`). Its vLLM image tag has no digest, and `download.sh` pins no checkpoint revision | Pin a revision; inventory all 93 paths as for the pinned repositories below; the owner decides whether its AGPL scripts may be run as a baseline recipe (the MiMo recipe was read, not run) |
-| `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4` (M3's Qwen3.8; weights, informational) | Read at `925d7be6`. The card says Apache-2.0; the base `Qwen/Qwen3.8-Flash-Next` is under the Qwen Community License 1.0 (the base's terms are expected to govern; not a legal finding) | Pin it; record both declarations |
-| `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93` (M3's DeepSeek; weights, informational) | MIT; replaces the `e3aa0d6a` revision in `experiments/paging-feasibility/full-pins.json` | Record its pins and license hashes the same way |
-| Qwen-Image-2.1 BF16 (M3's image; weights, informational) | Qwen Research License, non-commercial research and evaluation ([BF16 study](experiments/image-reference/README.md)); stable-diffusion.cpp's GGUFs are under the same terms | Pin the revision jitLLM imports; record the license |
-| TensorFold (M3, M4 baseline) | MIT; `d7470ed` assessed, HEAD `beddbb7b`. Checkpoint licenses (`Vontra/*-MLX-4bit`) not verified | Pin a commit and its checkpoints; record the checkpoints' licenses for information |
 | Qwen3.8 Dual repository | Our pin `d2f54b78` (below); HEAD `2c86a1d0` | Re-audit only if its configuration becomes a baseline |
 | `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
 | DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |

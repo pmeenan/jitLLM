@@ -245,7 +245,8 @@ The runtime starts, checks and waits; it serves nothing yet, though test
 harnesses run native FP16 and EXL3 models paged into device VMM. **M3
 (single-Spark fast full swap) is in progress** ([docs/plan.md](docs/plan.md)):
 DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
-in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. Landed: GGML widened
-for the two LLMs' operations. D-087 moved the
+in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. Landed: its models
+and baselines pinned, with licenses recorded, and GGML widened for the two
+LLMs' operations. D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

@@ -159,8 +159,9 @@ under D-017 before the native tokenizer is adopted
    (llama.cpp PR #25784), so its drafter is DSpark.
 2. **Qwen3.8 Flash Next** as Mia's single-Spark build: NVFP4 routed
    experts, MXFP8 attention and shared expert
-   (`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4`, read at `925d7be6`, to be pinned;
-   about 105.9 GB, 26.8 GiB of it the packed PLE table).
+   (`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`, a mirror of
+   `local-inference-lab`'s; 105,935,742,983 B, 26.8 GiB of it the packed
+   PLE table).
 3. **Qwen-Image-2.1** in BF16, like diffusers: text encoder (Qwen3-VL-8B),
    single-stream DiT and VAE (Qwen Research License, non-commercial,
    recorded for information). GGUF quantizations may follow later if
@@ -179,14 +180,25 @@ it appears.
 
 **Scope:**
 
-- [ ] **Provenance and licenses** (D-017, D-080): pin and audit
-      `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark` (only 4 of its 93
-      tracked paths are checked; AGPL-3.0 files) and decide whether its
-      AGPL scripts may be run as a baseline recipe; record each
+- [x] **Provenance and licenses** (D-017, D-080): pin and audit
+      `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark` and decide whether
+      its AGPL scripts may be run as a baseline recipe; record each
       checkpoint's pins and license hashes, the 0731 GGUF's among them,
       and the Qwen NVFP4 card's Apache-2.0 beside the base model's Qwen
       Community License 1.0 (weight licenses are recorded for information
       and gate nothing, D-087); pin TensorFold and its checkpoint.
+      *Done 2026-09-28* ([licensing.md](licensing.md#fast-swap-models-and-baselines-m3-m4),
+      [pins](experiments/fast-swap/pins.json)): the recipe pinned at
+      `b8439110` with all 70 tracked files classified, and run unmodified
+      as a baseline (owner, 2026-09-28); TensorFold at `beddbb7b` and its
+      checkpoint cleared; the four checkpoints, the vLLM images and the
+      llama.cpp pin recorded; the vLLM, FlashInfer and CUTLASS parts of
+      Mia's NVFP4 and MXFP8 path identified with their licenses, a
+      CuTe-DSL kernel's runtime among them under NVIDIA's proprietary
+      terms. The checkpoints are on both Sparks' NVMe, TensorFold's on
+      `spark` only ([environment.md](environment.md#m3-model-store-2026-09-28)).
+      Left for the baselines item: the default vLLM image's own commit,
+      read once it is pulled, and which kernels its engine log selects.
 - [ ] **Baselines,** installed and run on the Sparks by us: MiaAI's
       configurations, TensorFold, llama.cpp for the GGUF, and vLLM or SGLang
       where they support these models; for the image, diffusers in BF16 as
@@ -271,12 +283,18 @@ it appears.
       per-token host cost is measured on these models (about 1.9 µs per
       launch measured on the fixtures; several milliseconds per MoE token
       is an estimate).
-- [ ] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
+- [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
       on the GB10, one `cuDeviceGetAttribute` call. Mia's
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`
       then blocking the host's next launch (creator-reported). The answer
       decides how page-in copies and phases share the submission lane
-      during a swap.
+      during a swap. *Done 2026-09-28* ([RE-029](rough-edges.md#re-029-a-jobs-kernel-launches-can-block-its-lane-while-the-stream-is-busy--2026-09-27-status-open)):
+      the deprecated `_V1` attribute reads 0 and the current memory
+      operations are supported; the wait does not block the next launch.
+      A stream holds about 1,020 pending operations and a launch into a
+      full one blocks the thread, so the swap path keeps the zone's copies
+      off a thread that can launch into a full stream, or keeps each
+      stream under the limit.
 - [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
@@ -350,9 +368,6 @@ it appears.
 
 **Open questions** (for the owner):
 
-- TensorFold's group size: its recipe says 32, and
-  [tensorfold-assessment.md](tensorfold-assessment.md) says 64 (from
-  `qmm.py`). Reconcile before comparing against it.
 - The image pipeline, and a drafter that shares its target's tables, need
   manifest references to another artifact, with shared resources counted
   once ([artifact-format.md](artifact-format.md#deliberately-open)). Settle

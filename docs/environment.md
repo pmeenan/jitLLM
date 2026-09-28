@@ -358,6 +358,40 @@ SSDs' local rates and the link's 184.76 Gb/s RDMA baseline above, so the
 copy method limited them; the bottleneck within it was not profiled. No
 network, driver or SSH settings changed, and the test files were removed.
 
+### M3 model store (2026-09-28)
+
+M3's checkpoints ([pins](experiments/fast-swap/pins.json)) live on each
+Spark's NVMe under `~/.local/share/jitllm/models/<org>/<repo>@<revision
+prefix>/`, with the repository's own file layout. Owner environment, not
+application configuration.
+
+| Checkpoint | `spark` | `spark-b` |
+| --- | --- | --- |
+| `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93` (UD-Q2_K_XL, DSpark Q8_0, READMEs) | yes | yes |
+| `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` | yes | yes |
+| `Qwen/Qwen-Image-2.1@790c9263` (BF16; without `assets/qr.png`) | yes | yes |
+| `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` | yes | no |
+
+Every file was checked on each host against the pinned SHA-256 (or Git
+blob, for small files) and size. The older store,
+`~/.local/share/jitllm/reference-models/`, keeps M0's GGUFs, including
+DeepSeek V4 Flash at `e3aa0d6a` (`D/`) and Qwen3.8's UD-IQ3_XXS (`Q/`).
+
+Each checkpoint was downloaded once, on `spark`, then copied to `spark-b`
+over the direct link. One sample each, on 2026-09-28:
+- **Internet** (`curl` from `huggingface.co`, resumable): about 55 MB/s
+  for one stream in a 1 GiB range probe, and about 80 MB/s with three
+  files in parallel (213.7 GB in about 44 minutes).
+- **Direct link** (`rsync -a --inplace` over SSH, OpenSSH 9.6p1 default
+  cipher, new files at the destination): DeepSeek (107.7 GB) to
+  `10.100.208.1` and the NVFP4 checkpoint (105.9 GB) to `10.100.209.1`
+  in parallel ran at 0.350 and 0.338 GB/s, 0.69 GB/s together; Qwen-Image
+  (33.1 GB) alone to `10.100.208.1` ran at 0.39 GB/s. `spark` was also
+  downloading at the time, and part of each source was in its page cache.
+  This matches the 0.45 GB/s of SSH with AES-128-GCM above: SSH limits
+  it, far below the link, and unencrypted `nc` (1.05 GB/s above) or more
+  parallel streams would be faster.
+
 ### Front-door TLS certificates (2026-09-23)
 
 Owner environment for D-065, not application configuration. At the owner's

@@ -77,11 +77,45 @@ one can delay page-ins.
   lane for the zone's copies, or phases split into jobs that fit the
   queue. Measure before choosing.
 
-Lead, not verified: MiaAI-Lab's `patch_ple_offload.py` states that the
-GB10 reports `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS = 0` and that a
-`cuStreamWaitValue32` then makes the next launch block the host
-(creator-reported). Our gate was such a wait. M3 checks the attribute with
-one `cuDeviceGetAttribute` call.
+**Checked 2026-09-28: the wait is not the cause; a full stream is.**
+MiaAI-Lab's `patch_ple_offload.py` (at `b8439110`) states that the GB10
+reports `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS = 0` and that after a
+`cuStreamWaitValue32` "the *next* kernel launch on that stream blocks the
+host thread". A probe on `spark` (GB10, driver 580.178.04, driver API
+13000), built with the SDK (`aarch64-e0a0c85c42806fb1`, CUDA 13.4.92
+headers, clang 22.1.8), gave, in two identical runs:
+- `cuDeviceGetAttribute`: `CAN_USE_STREAM_MEM_OPS_V1` (92) = 0,
+  `CAN_USE_64_BIT_STREAM_MEM_OPS_V1` (93) = 0,
+  `CAN_USE_STREAM_WAIT_VALUE_NOR_V1` (94) = 0,
+  `CAN_FLUSH_REMOTE_WRITES` (98) = 0, `CAN_USE_64_BIT_STREAM_MEM_OPS`
+  (122) = 1, `CAN_USE_STREAM_WAIT_VALUE_NOR` (123) = 1. CUDA 13.4's
+  `cuda.h` has no unsuffixed `CAN_USE_STREAM_MEM_OPS`; attribute 92 is now
+  the deprecated `_V1`, and Mia's 0 is that value. The current memory
+  operations are supported.
+- A `cuStreamWaitValue32` on a mapped host flag returned `CUDA_SUCCESS` and
+  gated the stream. Behind it, 1,020 empty-kernel launches returned at
+  once (the first in 6–7 µs); the 1,021st blocked the host for the whole
+  3 s gate and returned 7–12 µs after the flag was written.
+- Behind a 3 s spinning kernel instead of the wait, the 1,022nd launch
+  blocked the same way, until the kernel ended.
+- With one stream holding 1,000 gated launches, 20,000 launches and 2,000
+  small `cuMemcpyHtoDAsync` calls on a second stream never blocked.
+
+So a stream holds about 1,020 pending operations, whatever it waits on,
+and a launch into a full stream blocks the calling thread; other streams
+are unaffected. Mia's "next launch" did not reproduce with the driver API.
+
+What it implies for page-in copies sharing the submission lane: the lane
+must never launch into a stream that may be full. A phase of more than
+about 1,000 launches, queued behind unfinished work on its stream, stalls
+the lane and every page-in copy waiting behind it, while the copy stream
+itself stays free. The options are the two above, now with a number:
+submit the zone's copies from their own thread, or keep each stream's
+queued launches under the limit (split phases into jobs of well under
+1,000 launches, or count a stream's outstanding launches before
+submitting). A replayed CUDA graph may take far fewer entries than its
+kernels (not measured). The depth is observed, not documented, and may
+change with the driver; whichever design M3 picks measures it again.
 
 ## RE-028: cuBLAS's handle keeps a 64 MiB default workspace pool that `cublasSetWorkspace` does not free, and nsys's memory trace hides who allocated it  (2026-09-27, status: worked-around)
 
