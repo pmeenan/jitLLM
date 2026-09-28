@@ -65,11 +65,12 @@ if(JITLLM_CUDA)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h): its
-  # own unit, device code for sm_121a only (the SM120 block-scaled kernels
-  # build for no other target; a plan names it only on that device), with
+  # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
+  # its MXFP8 GEMM for Qwen3.8's dense products (mxfp8_cutlass.h): units of
+  # their own, device code for sm_121a only (the SM120 block-scaled kernels
+  # build for no other target; a plan names them only on that device), with
   # the flags CUTLASS's examples build with.
-  add_library(jitllm_ggml_cutlass STATIC moe_cutlass.cu)
+  add_library(jitllm_ggml_cutlass STATIC moe_cutlass.cu mxfp8_cutlass.cu)
   target_include_directories(jitllm_ggml_cutlass PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(jitllm_ggml_cutlass PRIVATE jitllm_cutlass_headers)
   set_target_properties(jitllm_ggml_cutlass PROPERTIES CUDA_ARCHITECTURES 121a-real)
@@ -135,6 +136,7 @@ if(JITLLM_CUDA)
                    implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
                    jitllm_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
+                   mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_graph.cc qwen38_graph.h
                    tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h

@@ -62,6 +62,9 @@ struct Qwen38Model {
   // artifact's, binding->cutlass(), or converted at load by the resident
   // harness) rather than GGML's.
   bool fused = true;
+  // The fused graph's reference form (Qwen38GraphOptions::exact) rather
+  // than the fast one.
+  bool exact = false;
   bool cutlass = false;
 };
 

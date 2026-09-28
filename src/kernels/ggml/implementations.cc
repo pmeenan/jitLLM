@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 69> kKernels = {{
+constexpr std::array<Kernel::Entry, 80> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -498,14 +498,15 @@ constexpr std::array<Kernel::Entry, 69> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunGatedDeltaNetLanes(launch, n[0]); }},
     {.name = "jitllm.gdn.conv",
      .operation = execution::Operation::kSsmConv,
-     .variant = "GdnConvKernel: a head of a token a 128-thread block; ssm_conv, silu, and "
-                "rms_norm_f32<256>'s reduction for the query and key heads",
+     .variant = "GdnConvKernel<F32 or BF16 rows>: a head of a token a 128-thread block; "
+                "ssm_conv, silu, and rms_norm_f32<256>'s reduction for the query and key heads",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnConv(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnConv(launch, n[0]); }},
     {.name = "jitllm.gdn.norm_gate",
      .operation = execution::Operation::kNormGate,
-     .variant = "GdnNormGateKernel<F32 or BF16>: a head a warp, rms_norm_f32<256>'s reduction",
+     .variant = "GdnNormGateKernel<F32 or BF16 out, F32 or BF16 z>: a head a warp, "
+                "rms_norm_f32<256>'s reduction; GdnNormGateMxfp8Kernel<z> into MXFP8 rows",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnNormGate(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnNormGate(launch, n[0]); }},
@@ -578,12 +579,89 @@ constexpr std::array<Kernel::Entry, 69> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckArgmax(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunArgmax(launch, n[0]); }},
+    // Qwen3.8's fast path (jitllm_ops.h): the MXFP8 products on tensor cores.
+    {.name = "jitllm.mxfp8.quantize",
+     .operation = execution::Operation::kQuantize,
+     .variant = "Mxfp8QuantizeKernel<F32 or BF16>: a 32-value block a thread, E8M0 scale "
+                "2^ceil(log2(amax / 448)), E4M3 codes rounded to nearest, swizzled scales",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMxfp8Quantize(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Quantize(launch, n[0]); }},
+    {.name = "jitllm.mxfp8.swizzle",
+     .operation = execution::Operation::kConvert,
+     .variant = "Mxfp8SwizzleKernel: a scale a thread, rows padded to 128",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMxfp8Swizzle(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Swizzle(launch, n[0]); }},
+    {.name = "jitllm.mxfp8.gemm.cutlass",
+     .operation = execution::Operation::kMatMul,
+     .variant = "CUTLASS 4.7.1 Sm120 block-scaled MXFP8 GEMM, KernelTmaWarpSpecializedPingpong, "
+                "tile 128x128x128, cluster 1x1x1, F32 or BF16 LinearCombination epilogue, tiles "
+                "swizzled 8 along N past 4,096 rows",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMxfp8Gemm(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Gemm(launch, n[0]); }},
+    {.name = "jitllm.hc.prep",
+     .operation = execution::Operation::kHcNorm,
+     .variant = "HcPrepKernel<combine, inject>: a token a block, a float4 column of every stream "
+                "a thread; the combine, the streams' RMS norms into BF16, the inject logits",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcPrep(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcPrep(launch, n[0]); }},
+    {.name = "jitllm.hc.lo",
+     .operation = execution::Operation::kUnary,
+     .variant = "HcLoKernel: silu(lo / hc) into BF16, an element a thread",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcLo(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcLo(launch, n[0]); }},
+    {.name = "jitllm.hc.mix_bf16",
+     .operation = execution::Operation::kHcMix,
+     .variant = "HcMixBf16Kernel: eight columns of a token a thread, BF16 streams and logits",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcMixBf16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunHcMixBf16(launch, n[0]); }},
+    {.name = "jitllm.moe.router",
+     .operation = execution::Operation::kArgsort,
+     .variant = "MoeRouterKernel: a token a warp; softmax, top experts by warp argmax, their "
+                "weights renormalized, the shared expert's gate logit",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMoeRouter(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMoeRouter(launch, n[0]); }},
+    {.name = "jitllm.gdn.history",
+     .operation = execution::Operation::kCont,
+     .variant = "GdnHistoryKernel<F32 or BF16>: a channel a thread, the last rows transposed",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGdnHistory(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGdnHistory(launch, n[0]); }},
+    {.name = "jitllm.qsa.prep",
+     .operation = execution::Operation::kRope,
+     .variant = "QsaPrepKernel: a head of a token a warp; rms_norm times the weight, then "
+                "rope_multi's NEOX pairs at the token's position over 64 dimensions",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQsaPrep(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaPrep(launch, n[0]); }},
+    {.name = "jitllm.qsa.gate_quantize",
+     .operation = execution::Operation::kQuantize,
+     .variant = "QsaGateQuantizeKernel: a 32-value block a thread, attention times "
+                "sigmoid(gate), MXFP8",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQsaGateQuantize(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaGateQuantize(launch, n[0]); }},
+    {.name = "jitllm.qsa.select",
+     .operation = execution::Operation::kTopK,
+     .variant = "QsaSelectKernel: a token a 512-thread block; the blocks' summed relu scores, a "
+                "four-pass radix select of the width-th cell, the mask with ties to the lower "
+                "cell",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQsaSelect(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaSelect(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,
                                   std::string_view variant) {
-  // The grouped GEMM is CUTLASS's kernel: its identity names that tree too.
-  const bool cutlass = name == kMoeGemmName;
+  // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
+  // identities name that tree too.
+  const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
   return {
       .name = std::string(name),
       .operation = operation,

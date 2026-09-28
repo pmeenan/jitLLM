@@ -57,6 +57,17 @@
 //                       converting F32 activations, so one conversion
 //                       serves every product of an input.
 //
+// Those are the fused graph's reference form. Its fast form, the default
+// (D-085: speed before bit exactness), adds operations below whose
+// arithmetic is not GGML's nodes', each checked against an FP64 reference
+// (tests/unit/qwen38_fast_test.cc): the MXFP8 products on tensor cores
+// (jitllm.mxfp8.*), the hyper-connections' prep and mix (jitllm.hc.prep,
+// .lo, .mix_bf16), routing (jitllm.moe.router), Gated DeltaNet's history
+// (jitllm.gdn.history, and its conv and gated norm over BF16 rows and into
+// MXFP8), and QSA's prep, selection and gate (jitllm.qsa.*). Several write
+// more than one output into one byte blob, whose layout struct names each
+// part's offset; the graph views each part as a tensor of its type.
+//
 // Each is a GGML_OP_CUSTOM node (ggml_custom_4d) whose function pointer
 // names the operation; the function itself is never called (GGML's CPU
 // backend never runs these graphs). The builders make the nodes; the plan
@@ -99,6 +110,17 @@ enum class JitllmOp : std::uint8_t {
   kMoeGemv,
   kGdnConv,
   kGdnNormGate,
+  kMxfp8Quantize,
+  kMxfp8Swizzle,
+  kMxfp8Gemm,
+  kHcPrep,
+  kHcLo,
+  kHcMixBf16,
+  kMoeRouter,
+  kGdnHistory,
+  kQsaPrep,
+  kQsaGateQuantize,
+  kQsaSelect,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
@@ -150,8 +172,10 @@ ggml_tensor* MoeCombine(ggml_context* context, ggml_tensor* down, ggml_tensor* i
                         ggml_tensor* shared_gate);
 // `x` F32: BF16 of its shape.
 ggml_tensor* ToBf16(ggml_context* context, ggml_tensor* x);
-// `weights` BF16 [k, n], `x` BF16 [k, t]: F32 [n, t].
-ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x);
+// `weights` BF16 [k, n], `x` BF16 [k, t]: `type` (F32, or BF16 for the fast
+// path's hyper-connection gate) [n, t].
+ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x,
+                      ggml_type type = GGML_TYPE_F32);
 
 // The host checks: operands bound, typed and shaped as above, packed where
 // the kernels read them with vector loads (codes and x rows 16-byte
@@ -214,20 +238,32 @@ std::expected<void, KernelFailure> CheckGatedDeltaNetLanes(const ggml_tensor* no
 //                         concatenation);
 //   jitllm.gdn.norm_gate  each head's rms_norm times the norm weight times
 //                         sigmoid(z), in F32 or rounded to BF16 (the output
-//                         projection's input).
-// `x` F32 [channels, t] (the QKV rows), `history` F32 [(k - 1) · channels]
-// (the conv state: tap j of channel c at c · (k - 1) + j), `weight` F32 [k,
-// channels], `qk_channels` the leading channels (query and key heads of
-// `head` values) that are normalized: F32 [channels, t].
+//                         projection's input), or (the fast graph's)
+//                         quantized to MXFP8 for the tensor-core product
+//                         (mxfp8_cutlass.h RowsLayout, as
+//                         jitllm.mxfp8.quantize quantizes).
+// The fast graph's QKV and z rows may be BF16 (its tensor-core products'
+// output), and its convolution history is stored by
+//   jitllm.gdn.history    the chunk's last k - 1 rows transposed into the
+//                         conv state's layout, in F32.
+// `x` F32 or BF16 [channels, t] (the QKV rows), `history` F32 [(k - 1) ·
+// channels] (the conv state: tap j of channel c at c · (k - 1) + j),
+// `weight` F32 [k, channels], `qk_channels` the leading channels (query and
+// key heads of `head` values) that are normalized: F32 [channels, t].
 ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history,
                      ggml_tensor* weight, std::int64_t qk_channels, std::int64_t head, float eps,
                      float scale);
-// `o` F32 [d, heads, t] (packed), `weight` F32 [d], `z` F32 [d · heads, t]:
-// [d · heads, t] of `type` (F32 or BF16).
+// `o` F32 [d, heads, t] (packed), `weight` F32 [d], `z` F32 or BF16 [d ·
+// heads, t]: [d · heads, t] of `type` (F32 or BF16), or with I8 the MXFP8
+// rows' bytes.
 ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* weight, ggml_tensor* z,
                          float eps, ggml_type type);
+// `x` F32 or BF16 [channels, t], t at least k - 1: F32 [(k - 1) · channels,
+// 1].
+ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps);
 std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node);
 
 // The routed experts over the CUTLASS layout (moe_layout.h), for
 // Qwen3.8's prefill and decode (jitllm_moe.cu; the grouped GEMM is
@@ -317,6 +353,7 @@ std::expected<void, KernelFailure> RunGatedDeltaNetColumns(LaunchContext& launch
 std::expected<void, KernelFailure> RunGatedDeltaNetLanes(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunGdnConv(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunGdnNormGate(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunGdnHistory(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeRoute(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeQuantize(LaunchContext& launch, ggml_tensor* node);
 // The grouped GEMM draws its arguments and CUTLASS's workspace from the
@@ -327,6 +364,196 @@ std::expected<void, KernelFailure> RunMoeGemm(LaunchContext& launch, ggml_tensor
 std::expected<void, KernelFailure> RunMoeGluQuantize(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeCombineSorted(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeGemv(LaunchContext& launch, ggml_tensor* node);
+
+// Qwen3.8's fast path (the graph's default, qwen38_graph.h; D-085: speed
+// before bit exactness): the MXFP8 products on tensor cores (CUTLASS's
+// block-scaled GEMM, mxfp8_cutlass.h), their activations quantized to MXFP8
+// as Mia's vLLM quantizes the checkpoint's MXFP8 linears' (the oracle,
+// docs/experiments/qwen38-native/README.md):
+//
+//   jitllm.mxfp8.quantize   F32 or BF16 rows [k, t] to MXFP8: each 32-value
+//                           block's E8M0 scale 2^ceil(log2(amax / 448)) (so
+//                           no value saturates), its values divided by it
+//                           and rounded to the nearest E4M3; the codes and
+//                           swizzled scales laid out as mxfp8_cutlass.h's
+//                           RowsLayout;
+//   jitllm.mxfp8.swizzle    a weight's E8M0 scales [k / 32, n] (the
+//                           artifact's) into the product's swizzled layout
+//                           (SwizzledScaleBytes), each chunk: 1/32 of the
+//                           weight's bytes;
+//   jitllm.mxfp8.gemm       y[n, t] = W x from the two, F32 or BF16 out.
+//
+// `x` F32 or BF16 [k, t], k a multiple of 128, its rows at a 16-byte
+// aligned stride: I8 [RowsLayout{k, t}.bytes()].
+ggml_tensor* Mxfp8Quantize(ggml_context* context, ggml_tensor* x);
+// `scales` I8 [k / 32, n]: I8 [SwizzledScaleBytes(n, k)].
+ggml_tensor* Mxfp8Swizzle(ggml_context* context, ggml_tensor* scales);
+// `a` the MXFP8 rows of [k, t] (jitllm.mxfp8.quantize's, or a fusion's
+// ending in the same quantization: RowsLayout's bytes), `codes` I8 [k, n],
+// `scales` a jitllm.mxfp8.swizzle node of the weight's scales: `type` (F32
+// or BF16) [n, t].
+ggml_tensor* Mxfp8Gemm(ggml_context* context, ggml_tensor* a, ggml_tensor* codes,
+                       ggml_tensor* scales, ggml_type type, std::int64_t t);
+// The checks: operands bound, typed and shaped as the builders', packed
+// (the quantization's input rows at any 16-byte aligned stride of at least
+// a row), 16-byte aligned, within the kernels' 32-bit grids, the output
+// disjoint from every operand; the product's operands the nodes of those
+// builders with its extents.
+std::expected<void, KernelFailure> CheckMxfp8Quantize(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckMxfp8Swizzle(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckMxfp8Gemm(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunMxfp8Quantize(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunMxfp8Swizzle(LaunchContext& launch, ggml_tensor* node);
+// The product runs on a compute capability 12.1 device only, and draws
+// CUTLASS's workspace from the pool: PlanMxfp8Gemm's bytes.
+std::expected<std::uint64_t, KernelFailure> PlanMxfp8Gemm(const LaunchContext& launch,
+                                                          const ggml_tensor* node);
+std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tensor* node);
+
+// And the fast path's hyper-connections, which read and write the four
+// streams once a mix instead of three times (the reference form's
+// jitllm.hc.combine, jitllm.hc.norm and jitllm.hc.mix):
+//
+//   jitllm.hc.prep      a token a block: optionally the previous block's
+//                       output combined into the streams first (as
+//                       jitllm.hc.combine), then each stream's rms_norm
+//                       times the norm weight, stored in BF16 for the
+//                       mixer's products, and, given an inject weight
+//                       (BF16 [width · hc, hc]), the next combine's logits
+//                       from the normalized streams in F32: a blob of the
+//                       new streams, the normalized streams and the logits
+//                       (HcPrepLayout);
+//   jitllm.hc.lo        the mixer's rank-wide activation, silu(lo / hc), in
+//                       BF16 for its up product;
+//   jitllm.hc.mix_bf16  (1 / hc) Σ_k xn_k · sigmoid(g_k) over the BF16
+//                       normalized streams and the up product's BF16 logits.
+struct HcPrepLayout {
+  std::int64_t width = 0;
+  std::int64_t hc = 0;
+  std::int64_t t = 0;
+  bool combine = false;  // the blob starts with the combined streams
+  bool inject = false;   // and ends with the logits
+  static constexpr std::uint64_t Align(std::uint64_t b) { return (b + 255) / 256 * 256; }
+  std::uint64_t streams_bytes() const {
+    return combine ? static_cast<std::uint64_t>(width * hc * t) * sizeof(float) : 0;
+  }
+  static constexpr std::uint64_t streams() { return 0; }
+  std::uint64_t normed() const { return Align(streams_bytes()); }
+  std::uint64_t logits() const {
+    return Align(normed() + (static_cast<std::uint64_t>(width * hc * t) * 2));
+  }
+  std::uint64_t bytes() const {
+    return logits() + (inject ? static_cast<std::uint64_t>(hc * t) * sizeof(float) : 0);
+  }
+};
+// `x` F32 [width, hc, t] (packed), `norm` F32 [width · hc], `inject` BF16
+// [width · hc, hc] or null; with `out` F32 [width, t] and `logits` F32 [hc,
+// t] (packed rows), the combine first. I8 [HcPrepLayout.bytes()].
+ggml_tensor* HcPrep(ggml_context* context, ggml_tensor* x, ggml_tensor* norm, ggml_tensor* inject,
+                    ggml_tensor* out, ggml_tensor* logits, float eps);
+// `lo` F32 [rank, t], `hc` the streams: BF16 [rank, t].
+ggml_tensor* HcLo(ggml_context* context, ggml_tensor* lo, std::int64_t hc);
+// `normed` and `gate` BF16 [width · hc, t] (packed rows): F32 [width, t];
+// or, with `mxfp8`, a blob of that F32 output, its MXFP8 quantization (as
+// jitllm.mxfp8.quantize's, for the products that read it) and, with
+// `bf16`, it rounded to BF16 (HcMixLayout).
+struct HcMixLayout {
+  std::int64_t width = 0;
+  std::int64_t t = 0;
+  bool bf16 = false;
+  static constexpr std::uint64_t Align(std::uint64_t b) { return (b + 255) / 256 * 256; }
+  static constexpr std::uint64_t mixed() { return 0; }
+  std::uint64_t quantized() const {
+    return Align(static_cast<std::uint64_t>(width * t) * sizeof(float));
+  }
+  std::uint64_t quantized_bytes() const;
+  std::uint64_t rounded() const { return Align(quantized() + quantized_bytes()); }
+  std::uint64_t bytes() const {
+    return rounded() + (bf16 ? static_cast<std::uint64_t>(width * t) * 2 : 0);
+  }
+};
+ggml_tensor* HcMixBf16(ggml_context* context, ggml_tensor* normed, ggml_tensor* gate,
+                       std::int64_t hc, bool mxfp8 = false, bool bf16 = false);
+std::expected<void, KernelFailure> CheckHcPrep(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckHcLo(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckHcMixBf16(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunHcPrep(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunHcLo(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunHcMixBf16(LaunchContext& launch, ggml_tensor* node);
+
+// And the fast path's routing:
+//
+//   jitllm.moe.router   a token a warp: the router logits' softmax, the
+//                       `used` most probable experts (descending, the lower
+//                       index first among equals) and their probabilities
+//                       renormalized (their sum clamped below at 2^-14, as
+//                       build_moe_ffn clamps it), and the shared expert's gate
+//                       logit (the gate row · x): a blob of I32 ids [used,
+//                       t], then F32 weights [used, t], then F32 gate logits
+//                       [t] (MoeRouterLayout).
+struct MoeRouterLayout {
+  std::int64_t used = 0;
+  std::int64_t t = 0;
+  static constexpr std::uint64_t ids() { return 0; }
+  std::uint64_t weights() const { return static_cast<std::uint64_t>(used * t) * 4; }
+  std::uint64_t gate() const { return static_cast<std::uint64_t>(2 * used * t) * 4; }
+  std::int64_t ints() const { return (2 * used * t) + t; }
+};
+// `logits` F32 [experts, t], `x` F32 [width, t], `gate_row` BF16 [width]:
+// I32 [MoeRouterLayout.ints()].
+ggml_tensor* MoeRouter(ggml_context* context, ggml_tensor* logits, ggml_tensor* x,
+                       ggml_tensor* gate_row, std::int64_t used);
+std::expected<void, KernelFailure> CheckMoeRouter(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunMoeRouter(LaunchContext& launch, ggml_tensor* node);
+
+// And QSA's attention inputs and output:
+//
+//   jitllm.qsa.prep            a head of a token a warp: its rms_norm times
+//                              the norm weight, then the text-only
+//                              interleaved mrope (every section at the
+//                              token's position: NEOX pairs (i, i + 32) of
+//                              the first 64 dimensions, theta = pos ·
+//                              theta_scale^i, as GGML's rope_multi computes
+//                              it), packed [d, heads, t];
+//   jitllm.qsa.gate_quantize   the attention's output times sigmoid of its
+//                              gate (the second half of each head's query
+//                              projection), quantized to MXFP8 for the output
+//                              projection (RowsLayout).
+// `x` F32 [.., t] whose heads of d values sit `stride` values apart from
+// its row's start, `weight` F32 [d], `positions` I32 [4 · t] (the first t
+// read): F32 [d, heads, t]. d a multiple of 32, at most 512; 64 rotated
+// dimensions.
+ggml_tensor* QsaPrep(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
+                     ggml_tensor* positions, std::int64_t d, std::int64_t heads,
+                     std::int64_t stride, float eps, float theta_scale);
+// `attn` F32 [d · heads, t] (packed), `q_full` F32 [2 · d · heads, t] (each
+// head's query then its gate): I8 [RowsLayout{d · heads, t}.bytes()].
+ggml_tensor* QsaGateQuantize(ggml_context* context, ggml_tensor* attn, ggml_tensor* q_full,
+                             std::int64_t d);
+std::expected<void, KernelFailure> CheckQsaPrep(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckQsaGateQuantize(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaPrep(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaGateQuantize(LaunchContext& launch, ggml_tensor* node);
+
+//   jitllm.qsa.select   a token a block: build_qsa_top_k's selection and
+//                       build_attn_qsa's mask in one pass. Each cell's
+//                       score is its block's (the heads' relu scores
+//                       summed, plus the block's bias), -inf past the
+//                       token's position; the `width` best cells are kept
+//                       (by a radix select over the scores, the lower cell
+//                       first among equals, where GGML's top_k picks any),
+//                       and the mask is 0 at a kept cell at or before the
+//                       position, -inf elsewhere.
+// `score` F32 [blocks, heads, t], `bias` F32 [blocks, t], `cell_block` I32
+// [n_kv], `positions` I32 [4 · t] (the first t read): F16 [n_kv, t, 1, 1].
+// At most kQsaSelectMaxBlocks blocks (their scores fill 32 KiB of shared
+// memory: 32,768 cells at Qwen3.8's ratio of 4); past it the graph keeps
+// GGML's top-k.
+inline constexpr std::int64_t kQsaSelectMaxBlocks = 8192;
+ggml_tensor* QsaSelect(ggml_context* context, ggml_tensor* score, ggml_tensor* bias,
+                       ggml_tensor* cell_block, ggml_tensor* positions, std::int64_t width);
+std::expected<void, KernelFailure> CheckQsaSelect(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaSelect(LaunchContext& launch, ggml_tensor* node);
 
 // Byte ranges copied device to device in one kernel, not a graph node: a
 // speculative verify's snapshot of the state rows it will write, and the

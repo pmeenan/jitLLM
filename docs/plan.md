@@ -277,7 +277,9 @@ it appears.
       ([qwen38-native](experiments/qwen38-native/README.md#kernel-ab-d-085)):
       NVFP4 experts on GGML's MMVQ and MMQ (the NVFP4 MMQ instance unit added
       to the lock); MXFP8 products on jitLLM's own vector product up to 8
-      rows and otherwise dequantized to BF16 for cuBLAS; the n-gram table's
+      rows and otherwise dequantized to BF16 for cuBLAS (since the second
+      prefill pass, the reference form's; the default takes CUTLASS's
+      MXFP8 GEMM, 1.9–2.5× cuBLAS's at 4,096 rows); the n-gram table's
       NVFP4 rows on jitLLM's own lookup (`kernels/ggml/jitllm_ops.h`). Each
       matches an FP64 reference built from the format's dequantization on a
       GB10. For prefill, CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3, a new
@@ -353,6 +355,17 @@ it appears.
       memory 0.97× at a 4,096-token context against vLLM's 262,144, 1.07×
       while prefilling 8,192 tokens in one chunk
       ([qwen38-native](experiments/qwen38-native/README.md#prefill-d-085)).
+      A second prefill pass under D-085's speed before bit exactness made
+      the graph's default a fast form (the first pass's fusions stay as
+      its reference form): the MXFP8 products on CUTLASS's MXFP8 GEMM over
+      activations quantized to MXFP8, as the oracle runs them, and fused
+      hyper-connection, routing, Gated DeltaNet and QSA kernels, QSA's
+      selection making its mask on the device. Prefill 1.41× the oracle's
+      at 8,192 tokens in 8,192-row chunks, 1.38× in 4,096-row chunks, 2.02×
+      at 2,048, 1.56× at 512; decode unchanged; perplexity −0.8% to −1.2%; one of
+      the 192 greedy steps now misses the near-tie bound (jitLLM's own
+      margin there is 0.18 nats in the reference form)
+      ([qwen38-native](experiments/qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness)).
       *On the paged node* (`benchmarks/qwen38_runner.h`): chunks as device
       jobs over leased closures, the expert slabs as DeepSeek's pages, the
       28.8 GB n-gram table never resident but read by rows before each

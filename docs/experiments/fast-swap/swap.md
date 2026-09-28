@@ -140,9 +140,12 @@ never fit together.
   and hashed, the unswapped continuation run from it (the reference) and
   the state put back; after the swap back the restored state must hash
   the same (outside the timed parts) and the continuation's every logit
-  equal the reference's. Qwen3.8 past 2,051 attended cells is not
-  repeatable (RE-031: GGML's radix top-k picks among tied indexer scores
-  nondeterministically), so a rerun of the prefill is no reference for it;
+  equal the reference's. Qwen3.8 past 2,051 attended cells was not
+  repeatable in these runs (RE-031: GGML's radix top-k picks among tied
+  indexer scores nondeterministically; since the second prefill pass the
+  default graph selects with ties to the lower cell up to 32,768 cells,
+  [qwen38-native](../qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness)),
+  so a rerun of the prefill is no reference for it;
   each cycle's prefill is still compared with the control's, and noted.
   The substitution is sound one way only: the state digest is exact, and
   a continuation equal to the reference's shows the weights came back

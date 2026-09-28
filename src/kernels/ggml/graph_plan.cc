@@ -392,6 +392,39 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kArgmax:
             add(Operation::kTopK, kArgmaxName, i, {node}, 1);
             break;
+          case JitllmOp::kMxfp8Quantize:
+            add(Operation::kQuantize, kMxfp8QuantizeName, i, {node}, 1);
+            break;
+          case JitllmOp::kMxfp8Swizzle:
+            add(Operation::kConvert, kMxfp8SwizzleName, i, {node}, 1);
+            break;
+          case JitllmOp::kMxfp8Gemm:
+            add(Operation::kMatMul, kMxfp8GemmName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcPrep:
+            add(Operation::kHcNorm, kHcPrepName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcLo:
+            add(Operation::kUnary, kHcLoName, i, {node}, 1);
+            break;
+          case JitllmOp::kHcMixBf16:
+            add(Operation::kHcMix, kHcMixBf16Name, i, {node}, 1);
+            break;
+          case JitllmOp::kMoeRouter:
+            add(Operation::kArgsort, kMoeRouterName, i, {node}, 1);
+            break;
+          case JitllmOp::kGdnHistory:
+            add(Operation::kCont, kGdnHistoryName, i, {node}, 1);
+            break;
+          case JitllmOp::kQsaPrep:
+            add(Operation::kRope, kQsaPrepName, i, {node}, 1);
+            break;
+          case JitllmOp::kQsaGateQuantize:
+            add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);
+            break;
+          case JitllmOp::kQsaSelect:
+            add(Operation::kTopK, kQsaSelectName, i, {node}, 1);
+            break;
           case JitllmOp::kNone:
             return Rejected(
                 std::format("{}: a custom operation jitLLM does not name", Where(graph, i)));

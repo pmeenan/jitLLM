@@ -28,6 +28,9 @@
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/moe_cutlass.h"
+#include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/mxfp8_quant.cuh"
 #include "kernels/ggml/validate.h"
 
 namespace jitllm::kernels::ggml {
@@ -522,8 +525,12 @@ __device__ float RowScale128(float v, float eps, float* shared) {
 // convolution over the history then the rows (ssm_conv's multiply-add chain
 // and its zero bias), silu, and for the query and key heads the L2 norm
 // (rms_norm with eps, then scale_f32's scale).
+__device__ __forceinline__ float Load(const float* p) { return *p; }
+__device__ __forceinline__ float Load(const nv_bfloat16* p) { return __bfloat162float(*p); }
+
+template <typename T>
 __global__ void __launch_bounds__(128)
-    GdnConvKernel(const float* __restrict__ x, const float* __restrict__ history,
+    GdnConvKernel(const T* __restrict__ x, const float* __restrict__ history,
                   const float* __restrict__ weight, float* __restrict__ out, int channels,
                   int qk_channels, float eps, float scale, float bias) {
   __shared__ float shared[4];
@@ -533,8 +540,8 @@ __global__ void __launch_bounds__(128)
 #pragma unroll
   for (int j = 0; j < 4; ++j) {
     const int tau = t + j;  // time in the history-then-rows sequence
-    in[j] =
-        tau < 3 ? history[(c * 3) + tau] : x[(static_cast<std::int64_t>(tau - 3) * channels) + c];
+    in[j] = tau < 3 ? history[(c * 3) + tau]
+                    : Load(x + (static_cast<std::int64_t>(tau - 3) * channels) + c);
   }
   const float* w = weight + (c * 4);
   float sum = fmaf(in[0], w[0], 0.0f);
@@ -554,17 +561,17 @@ __global__ void __launch_bounds__(128)
 // One 128-value head a warp: rms_norm_f32<256>'s scale (each warp-sized
 // quarter summed as one of its warps would, then the eight warps' sums),
 // times the weight, times sigmoid(z).
-template <typename T>
+template <typename T, typename Z>
 __global__ void __launch_bounds__(256)
     GdnNormGateKernel(const float* __restrict__ o, const float* __restrict__ weight,
-                      const float* __restrict__ z, T* __restrict__ out, int rows, float eps) {
+                      const Z* __restrict__ z, T* __restrict__ out, int rows, float eps) {
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
   if (row >= rows) {
     return;
   }
   const float* x = o + (static_cast<std::int64_t>(row) * 128);
-  const float* g = z + (static_cast<std::int64_t>(row) * 128);
+  const Z* g = z + (static_cast<std::int64_t>(row) * 128);
   float v[4];
   float quarter[4];
 #pragma unroll
@@ -583,7 +590,576 @@ __global__ void __launch_bounds__(256)
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     const int d = (32 * k) + lane;
-    dst[d] = Store<T>(s * v[k] * weight[d] * Sigmoid(g[d]));
+    dst[d] = Store<T>(s * v[k] * weight[d] * Sigmoid(Load(g + d)));
+  }
+}
+
+// The same, quantized to MXFP8 for the output projection (the fast graph's):
+// each 32-value block is a quarter of the head, one value a lane, so its
+// scale is a warp's max. Row r is head r % heads of token r / heads, so its
+// codes are the rows' codes from r · 128.
+template <typename Z>
+__global__ void __launch_bounds__(256)
+    GdnNormGateMxfp8Kernel(const float* __restrict__ o, const float* __restrict__ weight,
+                           const Z* __restrict__ z, std::uint8_t* __restrict__ codes,
+                           std::uint8_t* __restrict__ scales, int rows, int heads, float eps) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
+  if (row >= rows) {
+    return;
+  }
+  const float* x = o + (static_cast<std::int64_t>(row) * 128);
+  const Z* g = z + (static_cast<std::int64_t>(row) * 128);
+  float v[4];
+  float sum = 0.0f;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    v[k] = x[(32 * k) + lane];
+    sum = fmaf(v[k], v[k], sum);
+  }
+  const float s = rsqrtf(fmaf(WarpSum(sum), 1.0f / 128.0f, eps));
+  const auto t = static_cast<std::uint64_t>(row / heads);
+  const auto h = static_cast<std::uint64_t>(row % heads);
+  const auto blocks = static_cast<std::uint64_t>(heads) * 4;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const int d = (32 * k) + lane;
+    const float y = s * v[k] * weight[d] * Sigmoid(Load(g + d));
+    float amax = fabsf(y);
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+      amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset, 32));
+    }
+    const std::uint32_t e = mxfp8::ScaleCode(amax);
+    codes[(static_cast<std::int64_t>(row) * 128) + d] = static_cast<std::uint8_t>(
+        __nv_cvt_float_to_fp8(y * mxfp8::InverseScale(e), __NV_SATFINITE, __NV_E4M3));
+    if (lane == 0) {
+      scales[moe::SfOffset(t, (h * 4) + static_cast<std::uint64_t>(k), blocks)] =
+          static_cast<std::uint8_t>(e);
+    }
+  }
+}
+
+// A head of a token a warp (dimension lane + 32 j in the lane's slot j): its
+// rms_norm times the weight, then the NEOX rotation of dimensions (lane,
+// lane + 32), both in the lane, by pos · theta_scale^lane (GGML's rope_multi
+// with every section at the token's position).
+constexpr int kQsaSlots = 16;  // d / 32, at most
+__global__ void __launch_bounds__(256)
+    QsaPrepKernel(const float* __restrict__ x, const float* __restrict__ weight,
+                  const std::int32_t* __restrict__ positions, float* __restrict__ out, int d,
+                  int heads, int stride, std::int64_t row, int items, float eps,
+                  float theta_scale) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int g = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
+  if (g >= items) {
+    return;
+  }
+  const int t = g / heads;
+  const int h = g % heads;
+  const int slots = d / 32;
+  const float* src =
+      x + (static_cast<std::int64_t>(t) * row) + (static_cast<std::int64_t>(h) * stride);
+  float v[kQsaSlots];
+  float sum = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kQsaSlots; ++j) {
+    v[j] = j < slots ? src[(32 * j) + lane] : 0.0f;
+    sum = fmaf(v[j], v[j], sum);
+  }
+  const float s = rsqrtf(fmaf(WarpSum(sum), 1.0f / static_cast<float>(d), eps));
+#pragma unroll
+  for (int j = 0; j < kQsaSlots; ++j) {
+    if (j < slots) {
+      v[j] = (v[j] * s) * weight[(32 * j) + lane];
+    }
+  }
+  const float theta =
+      static_cast<float>(positions[t]) * powf(theta_scale, static_cast<float>(lane));
+  const float c = cosf(theta);
+  const float sn = sinf(theta);
+  const float x0 = v[0];
+  const float x1 = v[1];
+  v[0] = (x0 * c) - (x1 * sn);
+  v[1] = (x0 * sn) + (x1 * c);
+  float* dst = out + (static_cast<std::int64_t>(g) * d);
+#pragma unroll
+  for (int j = 0; j < kQsaSlots; ++j) {
+    if (j < slots) {
+      dst[(32 * j) + lane] = v[j];
+    }
+  }
+}
+
+// A 32-value block of a token a thread: the attention's output times the
+// sigmoid of its gate, quantized to MXFP8 (rows past t, up to the scale
+// atoms' padding, write a zero scale).
+__global__ void QsaGateQuantizeKernel(const float* __restrict__ attn,
+                                      const float* __restrict__ q_full,
+                                      std::uint8_t* __restrict__ codes,
+                                      std::uint8_t* __restrict__ scales, int d, int k, int rows,
+                                      std::int64_t items) {
+  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i >= items) {
+    return;
+  }
+  const int blocks = k / 32;
+  const auto r = static_cast<int>(i / blocks);
+  const auto b = static_cast<int>(i % blocks);
+  const std::uint64_t at =
+      moe::SfOffset(static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(b),
+                    static_cast<std::uint64_t>(blocks));
+  if (r >= rows) {
+    scales[at] = 0;
+    return;
+  }
+  const int h = (b * 32) / d;
+  const int o = (b * 32) % d;
+  const auto* a =
+      reinterpret_cast<const float4*>(attn + (static_cast<std::int64_t>(r) * k) + (b * 32));
+  const auto* g = reinterpret_cast<const float4*>(q_full + (static_cast<std::int64_t>(r) * 2 * k) +
+                                                  (static_cast<std::int64_t>(h) * 2 * d) + d + o);
+  float y[32];
+  float amax = 0.0f;
+#pragma unroll
+  for (int j = 0; j < 8; ++j) {
+    const float4 av = a[j];
+    const float4 gv = g[j];
+    y[(4 * j) + 0] = av.x * Sigmoid(gv.x);
+    y[(4 * j) + 1] = av.y * Sigmoid(gv.y);
+    y[(4 * j) + 2] = av.z * Sigmoid(gv.z);
+    y[(4 * j) + 3] = av.w * Sigmoid(gv.w);
+#pragma unroll
+    for (int m = 0; m < 4; ++m) {
+      amax = fmaxf(amax, fabsf(y[(4 * j) + m]));
+    }
+  }
+  const std::uint32_t e = mxfp8::ScaleCode(amax);
+  const float inverse = mxfp8::InverseScale(e);
+  std::uint32_t packed[8];
+#pragma unroll
+  for (int j = 0; j < 8; ++j) {
+    packed[j] =
+        mxfp8::Pack4(y[(4 * j) + 0], y[(4 * j) + 1], y[(4 * j) + 2], y[(4 * j) + 3], inverse);
+  }
+  auto* dst = reinterpret_cast<uint4*>(codes + (static_cast<std::int64_t>(r) * k) + (b * 32));
+  dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+  dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
+  scales[at] = static_cast<std::uint8_t>(e);
+}
+
+// A float's bits in an unsigned order that is the floats' (-inf lowest).
+__device__ __forceinline__ std::uint32_t OrderKey(float f) {
+  const std::uint32_t b = __float_as_uint(f);
+  return (b & 0x80000000U) != 0 ? ~b : (b | 0x80000000U);
+}
+
+// A token a block: its blocks' scores into shared memory, then a radix
+// select (four 8-bit passes over the cells' keys) for the width-th best
+// key K, and the mask in cell order: every key above K kept, and of those
+// equal to K the first ones, so exactly `width` cells are kept.
+constexpr int kSelectThreads = 512;
+__global__ void __launch_bounds__(kSelectThreads)
+    QsaSelectKernel(const float* __restrict__ score, const float* __restrict__ bias,
+                    const std::int32_t* __restrict__ cell_block,
+                    const std::int32_t* __restrict__ positions, __half* __restrict__ mask,
+                    int blocks, int heads, int n_kv, int width) {
+  extern __shared__ float block_score[];
+  __shared__ std::uint32_t hist[256];
+  __shared__ std::uint32_t chosen[2];  // the key's digits so far, the keys still to keep
+  __shared__ std::uint32_t warp_counts[kSelectThreads / 32];
+  __shared__ std::uint32_t kept;
+  const int t = static_cast<int>(blockIdx.x);
+  const int tid = static_cast<int>(threadIdx.x);
+  const int lane = tid % 32;
+  const int warp = tid / 32;
+  const int pos = positions[t];
+  const float* st = score + (static_cast<std::int64_t>(t) * heads * blocks);
+  const float* bt = bias + (static_cast<std::int64_t>(t) * blocks);
+  for (int b = tid; b < blocks; b += kSelectThreads) {
+    float s = fmaxf(st[b], 0.0f);
+    for (int h = 1; h < heads; ++h) {
+      s += fmaxf(st[(h * blocks) + b], 0.0f);
+    }
+    block_score[b] = s + bt[b];
+  }
+  if (tid == 0) {
+    kept = 0;
+  }
+  __syncthreads();
+  const std::uint32_t hidden = OrderKey(-INFINITY);
+  // (A cell whose block is outside the scores, which the host's inputs never
+  // name, is hidden rather than read past the shared scores.)
+  const auto key_of = [&](int j) {
+    if (j > pos) {
+      return hidden;
+    }
+    const auto b = static_cast<unsigned>(cell_block[j]);
+    return b < static_cast<unsigned>(blocks) ? OrderKey(block_score[b]) : hidden;
+  };
+  std::uint32_t prefix = 0;
+  auto remaining = static_cast<std::uint32_t>(width);
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    for (int i = tid; i < 256; i += kSelectThreads) {
+      hist[i] = 0;
+    }
+    __syncthreads();
+    for (int j = tid; j < n_kv; j += kSelectThreads) {
+      const std::uint32_t key = key_of(j);
+      if (shift == 24 || (key >> (static_cast<unsigned>(shift) + 8U)) == prefix) {
+        atomicAdd(&hist[(key >> static_cast<unsigned>(shift)) & 255U], 1U);
+      }
+    }
+    __syncthreads();
+    if (tid == 0) {
+      std::uint32_t above = 0;
+      int digit = 255;
+      for (; digit > 0; --digit) {
+        if (above + hist[digit] >= remaining) {
+          break;
+        }
+        above += hist[digit];
+      }
+      chosen[0] = (prefix << 8U) | static_cast<std::uint32_t>(digit);
+      chosen[1] = remaining - above;
+    }
+    __syncthreads();
+    prefix = chosen[0];
+    remaining = chosen[1];
+  }
+  __half* row = mask + (static_cast<std::int64_t>(t) * n_kv);
+  const std::uint32_t below = (1U << static_cast<unsigned>(lane)) - 1U;
+  for (int base = 0; base < n_kv; base += kSelectThreads) {
+    const int j = base + tid;
+    const std::uint32_t key = j < n_kv ? key_of(j) : 0U;
+    const bool equal = j < n_kv && key == prefix;
+    const std::uint32_t ballot = __ballot_sync(0xffffffffU, equal);
+    if (lane == 0) {
+      warp_counts[warp] = static_cast<std::uint32_t>(__popc(ballot));
+    }
+    __syncthreads();
+    std::uint32_t offset = kept;
+    for (int w = 0; w < warp; ++w) {
+      offset += warp_counts[w];
+    }
+    const std::uint32_t rank = offset + static_cast<std::uint32_t>(__popc(ballot & below));
+    const bool keep = key > prefix || (equal && rank < remaining);
+    if (j < n_kv) {
+      row[j] = keep && j <= pos ? __float2half(0.0f) : __float2half(-INFINITY);
+    }
+    __syncthreads();
+    if (tid == 0) {
+      std::uint32_t total = 0;
+      for (int w = 0; w < kSelectThreads / 32; ++w) {
+        total += warp_counts[w];
+      }
+      kept += total;
+    }
+    __syncthreads();
+  }
+}
+
+// The last `taps` rows of x transposed into the conv state (tap j of channel
+// c at c · taps + j), a channel a thread.
+template <typename T>
+__global__ void GdnHistoryKernel(const T* __restrict__ x, float* __restrict__ out, int channels,
+                                 int t, int taps) {
+  const int c = static_cast<int>((blockIdx.x * blockDim.x) + threadIdx.x);
+  if (c >= channels) {
+    return;
+  }
+  for (int j = 0; j < taps; ++j) {
+    out[(static_cast<std::int64_t>(c) * taps) + j] =
+        Load(x + (static_cast<std::int64_t>(t - taps + j) * channels) + c);
+  }
+}
+
+// The fast path's hyper-connections (jitllm_ops.h jitllm.hc.prep, .lo and
+// .mix_bf16): not GGML's order of operations, so not bit for bit.
+
+// Four BF16 values (8 bytes) as floats, and back.
+__device__ __forceinline__ float4 Bf16x4(uint2 raw) {
+  return make_float4(__uint_as_float(raw.x << 16U), __uint_as_float(raw.x & 0xffff0000U),
+                     __uint_as_float(raw.y << 16U), __uint_as_float(raw.y & 0xffff0000U));
+}
+__device__ __forceinline__ uint2 ToBf16x4(float4 v) {
+  const __nv_bfloat162 lo = __floats2bfloat162_rn(v.x, v.y);
+  const __nv_bfloat162 hi = __floats2bfloat162_rn(v.z, v.w);
+  return make_uint2(*reinterpret_cast<const std::uint32_t*>(&lo),
+                    *reinterpret_cast<const std::uint32_t*>(&hi));
+}
+__device__ __forceinline__ float Dot4(float4 a, float4 b) {
+  return fmaf(a.x, b.x, fmaf(a.y, b.y, fmaf(a.z, b.z, a.w * b.w)));
+}
+
+// Each of `hc` per-thread values summed over the block (warps of 32, at
+// most 32 of them); every thread gets the sums. `shared` holds 32 · 8.
+template <int kStreams>
+__device__ __forceinline__ void BlockSums(float (&v)[kStreams], int hc, float* shared) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+  const int warps = static_cast<int>((blockDim.x + 31) / 32);
+#pragma unroll
+  for (int k = 0; k < kStreams; ++k) {
+    if (k < hc) {
+      const float s = WarpSum(v[k]);
+      if (lane == 0) {
+        shared[(warp * kStreams) + k] = s;
+      }
+    }
+  }
+  __syncthreads();
+#pragma unroll
+  for (int k = 0; k < kStreams; ++k) {
+    if (k < hc) {
+      v[k] = WarpSum(lane < warps ? shared[(lane * kStreams) + k] : 0.0f);
+    }
+  }
+  __syncthreads();
+}
+
+// A token a block, a float4 column of every stream a thread: the combine
+// (res + out · 2 sigmoid(logit / hc)) if asked, each stream's RMS scale, the
+// normalized streams in BF16, and the next combine's logits from them.
+template <bool kCombine, bool kInject>
+__global__ void __launch_bounds__(1024)
+    HcPrepKernel(const float4* __restrict__ x, const float4* __restrict__ norm,
+                 const uint2* __restrict__ inject_w, const float4* __restrict__ out,
+                 const float* __restrict__ logits_in, float4* __restrict__ streams,
+                 uint2* __restrict__ normed, float* __restrict__ logits, int width, int hc,
+                 float eps, float inv_hc) {
+  __shared__ float shared[32 * kMaxStreams];
+  __shared__ float gains[kMaxStreams];
+  const std::int64_t t = blockIdx.x;
+  const int c4 = static_cast<int>(threadIdx.x);
+  const int w4 = width / 4;
+  const bool live = c4 < w4;
+  const std::int64_t row = t * hc * w4;  // token t's first float4
+  if constexpr (kCombine) {
+    if (threadIdx.x < static_cast<unsigned>(hc)) {
+      gains[threadIdx.x] = 2.0f * Sigmoid(logits_in[(t * hc) + threadIdx.x] * inv_hc);
+    }
+    __syncthreads();
+  }
+  float4 v[kMaxStreams];
+  float sums[kMaxStreams];
+  float4 o = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+  if (kCombine && live) {
+    o = out[(t * w4) + c4];
+  }
+#pragma unroll
+  for (int k = 0; k < kMaxStreams; ++k) {
+    sums[k] = 0.0f;
+    v[k] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (k < hc && live) {
+      float4 r = x[row + (static_cast<std::int64_t>(k) * w4) + c4];
+      if constexpr (kCombine) {
+        const float g = gains[k];
+        r = make_float4(fmaf(o.x, g, r.x), fmaf(o.y, g, r.y), fmaf(o.z, g, r.z), fmaf(o.w, g, r.w));
+        streams[row + (static_cast<std::int64_t>(k) * w4) + c4] = r;
+      }
+      v[k] = r;
+      sums[k] = Dot4(r, r);
+    }
+  }
+  BlockSums(sums, hc, shared);
+  float dots[kMaxStreams];
+#pragma unroll
+  for (int m = 0; m < kMaxStreams; ++m) {
+    dots[m] = 0.0f;
+  }
+  const float inverse = 1.0f / static_cast<float>(width);
+#pragma unroll
+  for (int k = 0; k < kMaxStreams; ++k) {
+    if (k < hc && live) {
+      const float s = rsqrtf(fmaf(sums[k], inverse, eps));
+      const float4 w = norm[(static_cast<std::int64_t>(k) * w4) + c4];
+      const float4 xn =
+          make_float4(s * v[k].x * w.x, s * v[k].y * w.y, s * v[k].z * w.z, s * v[k].w * w.w);
+      normed[row + (static_cast<std::int64_t>(k) * w4) + c4] = ToBf16x4(xn);
+      if constexpr (kInject) {
+#pragma unroll
+        for (int m = 0; m < kMaxStreams; ++m) {
+          if (m < hc) {
+            const std::int64_t at =
+                (static_cast<std::int64_t>(m) * hc * w4) + (static_cast<std::int64_t>(k) * w4) + c4;
+            dots[m] += Dot4(xn, Bf16x4(inject_w[at]));
+          }
+        }
+      }
+    }
+  }
+  if constexpr (kInject) {
+    BlockSums(dots, hc, shared);
+    if (threadIdx.x < static_cast<unsigned>(hc)) {
+#pragma unroll
+      for (int m = 0; m < kMaxStreams; ++m) {
+        if (m == static_cast<int>(threadIdx.x)) {
+          logits[(t * hc) + m] = dots[m];
+        }
+      }
+    }
+  }
+}
+
+// silu(lo / hc) in BF16.
+__global__ void HcLoKernel(const float* __restrict__ lo, nv_bfloat16* __restrict__ dst,
+                           std::int64_t n, float inv_hc) {
+  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i < n) {
+    dst[i] = __float2bfloat16(Silu(lo[i] * inv_hc));
+  }
+}
+
+// Eight columns of a token a thread: (1 / hc) Σ_k xn_k · sigmoid(g_k); with
+// kQuantize also its MXFP8 codes (four threads a 32-value block, whose
+// scale their shuffled max gives) and, with kRound, its BF16.
+template <bool kQuantize, bool kRound>
+__global__ void HcMixBf16Kernel(const uint4* __restrict__ normed, const uint4* __restrict__ gate,
+                                float4* __restrict__ dst, std::uint8_t* __restrict__ codes,
+                                std::uint8_t* __restrict__ scales, uint4* __restrict__ rounded,
+                                int width8, int hc, std::int64_t items, float inv_hc) {
+  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i >= items) {
+    return;
+  }
+  const std::int64_t t = i / width8;
+  const std::int64_t c8 = i % width8;
+  float4 lo = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float4 hi = lo;
+  for (int k = 0; k < hc; ++k) {
+    const std::int64_t at = (((t * hc) + k) * width8) + c8;
+    const uint4 n = normed[at];
+    const uint4 g = gate[at];
+    const float4 n0 = Bf16x4(make_uint2(n.x, n.y));
+    const float4 n1 = Bf16x4(make_uint2(n.z, n.w));
+    const float4 g0 = Bf16x4(make_uint2(g.x, g.y));
+    const float4 g1 = Bf16x4(make_uint2(g.z, g.w));
+    lo = make_float4(fmaf(n0.x, Sigmoid(g0.x), lo.x), fmaf(n0.y, Sigmoid(g0.y), lo.y),
+                     fmaf(n0.z, Sigmoid(g0.z), lo.z), fmaf(n0.w, Sigmoid(g0.w), lo.w));
+    hi = make_float4(fmaf(n1.x, Sigmoid(g1.x), hi.x), fmaf(n1.y, Sigmoid(g1.y), hi.y),
+                     fmaf(n1.z, Sigmoid(g1.z), hi.z), fmaf(n1.w, Sigmoid(g1.w), hi.w));
+  }
+  lo = make_float4(lo.x * inv_hc, lo.y * inv_hc, lo.z * inv_hc, lo.w * inv_hc);
+  hi = make_float4(hi.x * inv_hc, hi.y * inv_hc, hi.z * inv_hc, hi.w * inv_hc);
+  dst[2 * i] = lo;
+  dst[(2 * i) + 1] = hi;
+  if constexpr (kQuantize) {
+    // Rows are whole blocks of four threads, and a block's threads share a
+    // warp, so the four are all here.
+    const unsigned lane = threadIdx.x % 32U;
+    const unsigned group = 0xfU << (lane & ~3U);
+    float amax = fmaxf(fmaxf(fmaxf(fabsf(lo.x), fabsf(lo.y)), fmaxf(fabsf(lo.z), fabsf(lo.w))),
+                       fmaxf(fmaxf(fabsf(hi.x), fabsf(hi.y)), fmaxf(fabsf(hi.z), fabsf(hi.w))));
+    amax = fmaxf(amax, __shfl_xor_sync(group, amax, 1, 32));
+    amax = fmaxf(amax, __shfl_xor_sync(group, amax, 2, 32));
+    const std::uint32_t e = mxfp8::ScaleCode(amax);
+    const float inverse = mxfp8::InverseScale(e);
+    *reinterpret_cast<uint2*>(codes + (i * 8)) =
+        make_uint2(mxfp8::Pack4(lo.x, lo.y, lo.z, lo.w, inverse),
+                   mxfp8::Pack4(hi.x, hi.y, hi.z, hi.w, inverse));
+    if (c8 % 4 == 0) {
+      scales[moe::SfOffset(static_cast<std::uint64_t>(t), static_cast<std::uint64_t>(c8 / 4),
+                           static_cast<std::uint64_t>(width8 / 4))] = static_cast<std::uint8_t>(e);
+    }
+    if constexpr (kRound) {
+      const uint2 a = ToBf16x4(lo);
+      const uint2 b = ToBf16x4(hi);
+      rounded[i] = make_uint4(a.x, a.y, b.x, b.y);
+    }
+  }
+}
+
+// A token a warp: the softmax of its router logits (expert lane + 32 i in
+// lane `lane`'s slot i), the `used` most probable experts one warp argmax at
+// a time (the lower index first among equals), their probabilities over
+// their clamped sum, and the shared expert's gate logit.
+constexpr int kRouterWarps = 8;
+constexpr int kRouterSlots = 32;  // experts / 32, at most
+__global__ void __launch_bounds__(kRouterWarps * 32)
+    MoeRouterKernel(const float* __restrict__ logits, const float4* __restrict__ x,
+                    const uint2* __restrict__ gate_row, std::int32_t* __restrict__ ids,
+                    float* __restrict__ weights, float* __restrict__ gate, int tokens, int slots,
+                    int used, int width4) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const std::int64_t t =
+      (static_cast<std::int64_t>(blockIdx.x) * kRouterWarps) + (threadIdx.x / 32);
+  if (t >= tokens) {
+    return;
+  }
+  const float* l = logits + (t * slots * 32);
+  float p[kRouterSlots];
+  float most = -INFINITY;
+#pragma unroll
+  for (int i = 0; i < kRouterSlots; ++i) {
+    p[i] = i < slots ? l[(32 * i) + lane] : -INFINITY;
+    most = fmaxf(most, p[i]);
+  }
+#pragma unroll
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, offset, 32));
+  }
+  float sum = 0.0f;
+#pragma unroll
+  for (int i = 0; i < kRouterSlots; ++i) {
+    p[i] = i < slots ? expf(p[i] - most) : -1.0f;
+    sum += i < slots ? p[i] : 0.0f;
+  }
+  const float inverse = 1.0f / WarpSum(sum);
+  // A NaN probability (from NaN or all -inf logits) counts as 0, so every
+  // pick is a distinct expert within range, never the argmax's sentinel.
+#pragma unroll
+  for (int i = 0; i < kRouterSlots; ++i) {
+    const float q = p[i] * inverse;
+    p[i] = i < slots ? (q >= 0.0f ? q : 0.0f) : -1.0f;
+  }
+  float mine = 0.0f;  // lane j: the j-th pick's probability
+  float picked = 0.0f;
+  for (int j = 0; j < used; ++j) {
+    float best = -1.0f;
+    int index = 0x7fffffff;
+#pragma unroll
+    for (int i = 0; i < kRouterSlots; ++i) {
+      if (p[i] > best) {
+        best = p[i];
+        index = (32 * i) + lane;
+      }
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+      const float b = __shfl_xor_sync(0xffffffffu, best, offset, 32);
+      const int bi = __shfl_xor_sync(0xffffffffu, index, offset, 32);
+      if (b > best || (b == best && bi < index)) {
+        best = b;
+        index = bi;
+      }
+    }
+    if ((index % 32) == lane) {
+#pragma unroll
+      for (int i = 0; i < kRouterSlots; ++i) {
+        if (i == index / 32) {
+          p[i] = -1.0f;
+        }
+      }
+    }
+    if (lane == j) {
+      mine = best;
+    }
+    if (lane == 0) {
+      ids[(t * used) + j] = index;
+    }
+    picked += best;
+  }
+  if (lane < used) {
+    weights[(t * used) + lane] = mine / fmaxf(picked, 6.103515625e-5f);
+  }
+  float dot = 0.0f;
+  for (int c4 = lane; c4 < width4; c4 += 32) {
+    dot += Dot4(x[(t * width4) + c4], Bf16x4(gate_row[c4]));
+  }
+  dot = WarpSum(dot);
+  if (lane == 0) {
+    gate[t] = dot;
   }
 }
 
@@ -752,11 +1328,90 @@ std::expected<void, KernelFailure> RunGdnConv(LaunchContext& launch, ggml_tensor
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* x = node->src[0];
     const dim3 grid(static_cast<unsigned>(x->ne[0] / 128), static_cast<unsigned>(x->ne[1]));
-    GdnConvKernel<<<grid, 128, 0, context.stream()>>>(
+    const auto launch_with = [&](const auto* rows) {
+      GdnConvKernel<<<grid, 128, 0, context.stream()>>>(
+          rows, static_cast<const float*>(node->src[1]->data),
+          static_cast<const float*>(node->src[2]->data), static_cast<float*>(node->data),
+          static_cast<int>(x->ne[0]), JitllmOpInt(node, 0), JitllmOpFloat(node, 2),
+          JitllmOpFloat(node, 3), 0.0f);
+    };
+    if (x->type == GGML_TYPE_BF16) {
+      launch_with(static_cast<const nv_bfloat16*>(x->data));
+    } else {
+      launch_with(static_cast<const float*>(x->data));
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunQsaPrep(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckQsaPrep(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* x = node->src[0];
+    const int d = JitllmOpInt(node, 0);
+    const int heads = JitllmOpInt(node, 1);
+    const int items = heads * JitllmOpInt(node, 3);
+    QsaPrepKernel<<<static_cast<unsigned>((items + 7) / 8), 256, 0, context.stream()>>>(
         static_cast<const float*>(x->data), static_cast<const float*>(node->src[1]->data),
-        static_cast<const float*>(node->src[2]->data), static_cast<float*>(node->data),
-        static_cast<int>(x->ne[0]), JitllmOpInt(node, 0), JitllmOpFloat(node, 2),
-        JitllmOpFloat(node, 3), 0.0f);
+        static_cast<const std::int32_t*>(node->src[2]->data), static_cast<float*>(node->data), d,
+        heads, JitllmOpInt(node, 2), static_cast<std::int64_t>(x->nb[1] / sizeof(float)), items,
+        JitllmOpFloat(node, 4), JitllmOpFloat(node, 5));
+  });
+}
+
+std::expected<void, KernelFailure> RunQsaGateQuantize(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckQsaGateQuantize(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int d = JitllmOpInt(node, 0);
+    const int k = d * JitllmOpInt(node, 1);
+    const int rows = JitllmOpInt(node, 2);
+    const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(k),
+                                   .rows = static_cast<std::uint64_t>(rows)};
+    auto* base = static_cast<std::uint8_t*>(node->data);
+    const std::int64_t items = static_cast<std::int64_t>(mxfp8::PaddedRows(layout.rows)) * (k / 32);
+    QsaGateQuantizeKernel<<<Blocks(items, kThreads), kThreads, 0, context.stream()>>>(
+        static_cast<const float*>(node->src[0]->data),
+        static_cast<const float*>(node->src[1]->data), base + layout.codes(),
+        base + layout.scales(), d, k, rows, items);
+  });
+}
+
+std::expected<void, KernelFailure> RunQsaSelect(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckQsaSelect(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int blocks = JitllmOpInt(node, 0);
+    QsaSelectKernel<<<static_cast<unsigned>(JitllmOpInt(node, 2)), kSelectThreads,
+                      static_cast<std::size_t>(blocks) * sizeof(float), context.stream()>>>(
+        static_cast<const float*>(node->src[0]->data),
+        static_cast<const float*>(node->src[1]->data),
+        static_cast<const std::int32_t*>(node->src[2]->data),
+        static_cast<const std::int32_t*>(node->src[3]->data), static_cast<__half*>(node->data),
+        blocks, JitllmOpInt(node, 1), JitllmOpInt(node, 3), JitllmOpInt(node, 4));
+  });
+}
+
+std::expected<void, KernelFailure> RunGdnHistory(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGdnHistory(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* x = node->src[0];
+    const int channels = static_cast<int>(x->ne[0]);
+    const int t = static_cast<int>(x->ne[1]);
+    const int taps = JitllmOpInt(node, 0);
+    auto* out = static_cast<float*>(node->data);
+    if (x->type == GGML_TYPE_BF16) {
+      GdnHistoryKernel<<<Blocks(channels, kThreads), kThreads, 0, context.stream()>>>(
+          static_cast<const nv_bfloat16*>(x->data), out, channels, t, taps);
+    } else {
+      GdnHistoryKernel<<<Blocks(channels, kThreads), kThreads, 0, context.stream()>>>(
+          static_cast<const float*>(x->data), out, channels, t, taps);
+    }
   });
 }
 
@@ -769,15 +1424,31 @@ std::expected<void, KernelFailure> RunGdnNormGate(LaunchContext& launch, ggml_te
     const int rows = static_cast<int>(o->ne[1] * o->ne[2]);
     const auto* x = static_cast<const float*>(o->data);
     const auto* w = static_cast<const float*>(node->src[1]->data);
-    const auto* z = static_cast<const float*>(node->src[2]->data);
     const float eps = JitllmOpEps(node);
     const unsigned blocks = static_cast<unsigned>((rows + 7) / 8);
-    if (node->type == GGML_TYPE_BF16) {
-      GdnNormGateKernel<nv_bfloat16><<<blocks, 256, 0, context.stream()>>>(
-          x, w, z, static_cast<nv_bfloat16*>(node->data), rows, eps);
+    cudaStream_t stream = context.stream();
+    const auto launch_with = [&](const auto* z) {
+      if (node->type == GGML_TYPE_I8) {
+        const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(o->ne[0] * o->ne[1]),
+                                       .rows = static_cast<std::uint64_t>(o->ne[2])};
+        auto* base = static_cast<std::uint8_t*>(node->data);
+        // The padding rows' scales are zero, never stale bytes.
+        (void)cudaMemsetAsync(base + layout.scales(), 0, layout.bytes() - layout.scales(), stream);
+        GdnNormGateMxfp8Kernel<<<blocks, 256, 0, stream>>>(x, w, z, base + layout.codes(),
+                                                           base + layout.scales(), rows,
+                                                           static_cast<int>(o->ne[1]), eps);
+      } else if (node->type == GGML_TYPE_BF16) {
+        GdnNormGateKernel<<<blocks, 256, 0, stream>>>(
+            x, w, z, static_cast<nv_bfloat16*>(node->data), rows, eps);
+      } else {
+        GdnNormGateKernel<<<blocks, 256, 0, stream>>>(x, w, z, static_cast<float*>(node->data),
+                                                      rows, eps);
+      }
+    };
+    if (node->src[2]->type == GGML_TYPE_BF16) {
+      launch_with(static_cast<const nv_bfloat16*>(node->src[2]->data));
     } else {
-      GdnNormGateKernel<float><<<blocks, 256, 0, context.stream()>>>(
-          x, w, z, static_cast<float*>(node->data), rows, eps);
+      launch_with(static_cast<const float*>(node->src[2]->data));
     }
   });
 }
@@ -790,6 +1461,126 @@ std::expected<void, KernelFailure> RunBf16(LaunchContext& launch, ggml_tensor* n
     const std::int64_t n = ggml_nelements(node);
     Bf16Kernel<<<Blocks(n, kThreads), kThreads, 0, context.stream()>>>(
         static_cast<const float*>(node->src[0]->data), static_cast<nv_bfloat16*>(node->data), n);
+  });
+}
+
+std::expected<void, KernelFailure> RunHcPrep(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckHcPrep(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const HcPrepLayout l{.width = JitllmOpInt(node, 0),
+                         .hc = JitllmOpInt(node, 1),
+                         .t = JitllmOpInt(node, 2),
+                         .combine = JitllmOpInt(node, 3) == 1,
+                         .inject = JitllmOpInt(node, 4) == 1};
+    auto* blob = static_cast<std::uint8_t*>(node->data);
+    const auto* x = static_cast<const float4*>(node->src[0]->data);
+    const auto* norm = static_cast<const float4*>(node->src[1]->data);
+    const int next = l.inject ? 3 : 2;
+    const auto* inject = l.inject ? static_cast<const uint2*>(node->src[2]->data)
+                                  : static_cast<const uint2*>(nullptr);
+    const auto* out = l.combine ? static_cast<const float4*>(node->src[next]->data)
+                                : static_cast<const float4*>(nullptr);
+    const auto* logits_in = l.combine ? static_cast<const float*>(node->src[next + 1]->data)
+                                      : static_cast<const float*>(nullptr);
+    auto* streams = reinterpret_cast<float4*>(blob + HcPrepLayout::streams());
+    auto* normed = reinterpret_cast<uint2*>(blob + l.normed());
+    auto* logits = reinterpret_cast<float*>(blob + l.logits());
+    const int width = static_cast<int>(l.width);
+    const int hc = static_cast<int>(l.hc);
+    const float eps = JitllmOpFloat(node, 5);
+    const float inv_hc = 1.0f / static_cast<float>(hc);
+    const auto threads = static_cast<unsigned>(((width / 4) + 31) / 32 * 32);
+    const auto grid = static_cast<unsigned>(l.t);
+    cudaStream_t s = context.stream();
+    if (l.combine && l.inject) {
+      HcPrepKernel<true, true><<<grid, threads, 0, s>>>(x, norm, inject, out, logits_in, streams,
+                                                        normed, logits, width, hc, eps, inv_hc);
+    } else if (l.combine) {
+      HcPrepKernel<true, false><<<grid, threads, 0, s>>>(x, norm, inject, out, logits_in, streams,
+                                                         normed, logits, width, hc, eps, inv_hc);
+    } else if (l.inject) {
+      HcPrepKernel<false, true><<<grid, threads, 0, s>>>(x, norm, inject, out, logits_in, streams,
+                                                         normed, logits, width, hc, eps, inv_hc);
+    } else {
+      HcPrepKernel<false, false><<<grid, threads, 0, s>>>(x, norm, inject, out, logits_in, streams,
+                                                          normed, logits, width, hc, eps, inv_hc);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunHcLo(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckHcLo(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const std::int64_t n = ggml_nelements(node);
+    HcLoKernel<<<Blocks(n, kThreads), kThreads, 0, context.stream()>>>(
+        static_cast<const float*>(node->src[0]->data), static_cast<nv_bfloat16*>(node->data), n,
+        1.0f / static_cast<float>(JitllmOpInt(node, 0)));
+  });
+}
+
+std::expected<void, KernelFailure> RunHcMixBf16(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckHcMixBf16(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int hc = JitllmOpInt(node, 0);
+    const HcMixLayout layout{.width = JitllmOpInt(node, 1),
+                             .t = JitllmOpInt(node, 2),
+                             .bf16 = JitllmOpInt(node, 4) == 1};
+    const bool quantize = JitllmOpInt(node, 3) == 1;
+    const std::int64_t items = layout.width * layout.t / 8;
+    auto* blob = static_cast<std::uint8_t*>(node->data);
+    const mxfp8::RowsLayout rows{.k = static_cast<std::uint64_t>(layout.width),
+                                 .rows = static_cast<std::uint64_t>(layout.t)};
+    std::uint8_t* codes = blob + layout.quantized() + rows.codes();
+    std::uint8_t* scales = blob + layout.quantized() + rows.scales();
+    auto* rounded = reinterpret_cast<uint4*>(blob + layout.rounded());
+    const auto* normed = static_cast<const uint4*>(node->src[0]->data);
+    const auto* gate = static_cast<const uint4*>(node->src[1]->data);
+    auto* dst = reinterpret_cast<float4*>(blob + HcMixLayout::mixed());
+    const auto width8 = static_cast<int>(layout.width / 8);
+    const float inv_hc = 1.0f / static_cast<float>(hc);
+    cudaStream_t s = context.stream();
+    if (quantize) {
+      // The padding rows' scales are zero, never stale bytes.
+      (void)cudaMemsetAsync(scales, 0, rows.bytes() - rows.scales(), s);
+    }
+    if (quantize && layout.bf16) {
+      HcMixBf16Kernel<true, true><<<Blocks(items, kThreads), kThreads, 0, s>>>(
+          normed, gate, dst, codes, scales, rounded, width8, hc, items, inv_hc);
+    } else if (quantize) {
+      HcMixBf16Kernel<true, false><<<Blocks(items, kThreads), kThreads, 0, s>>>(
+          normed, gate, dst, codes, scales, rounded, width8, hc, items, inv_hc);
+    } else {
+      HcMixBf16Kernel<false, false><<<Blocks(items, kThreads), kThreads, 0, s>>>(
+          normed, gate, dst, codes, scales, rounded, width8, hc, items, inv_hc);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunMoeRouter(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckMoeRouter(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int experts = JitllmOpInt(node, 0);
+    const int used = JitllmOpInt(node, 1);
+    const int tokens = JitllmOpInt(node, 2);
+    const MoeRouterLayout layout{.used = used, .t = tokens};
+    auto* blob = static_cast<std::uint8_t*>(node->data);
+    MoeRouterKernel<<<static_cast<unsigned>((tokens + kRouterWarps - 1) / kRouterWarps),
+                      kRouterWarps * 32, 0, context.stream()>>>(
+        static_cast<const float*>(node->src[0]->data),
+        static_cast<const float4*>(node->src[1]->data),
+        static_cast<const uint2*>(node->src[2]->data),
+        reinterpret_cast<std::int32_t*>(blob + MoeRouterLayout::ids()),
+        reinterpret_cast<float*>(blob + layout.weights()),
+        reinterpret_cast<float*>(blob + layout.gate()), tokens, experts / 32, used,
+        JitllmOpInt(node, 3) / 4);
   });
 }
 
@@ -815,10 +1606,11 @@ std::expected<void, KernelFailure> RunGemmBf16(LaunchContext& launch, ggml_tenso
     const float alpha = 1.0f;
     const float beta = 0.0f;
     // ggml_cuda_mul_mat_cublas_impl's call for BF16 weights with F32 output
-    // (its lda and ldb the packed rows, ldc the output's).
+    // (its lda and ldb the packed rows, ldc the output's), or BF16 output.
+    const cudaDataType_t out = node->type == GGML_TYPE_BF16 ? CUDA_R_16BF : CUDA_R_32F;
     CUBLAS_CHECK(cublasGemmEx(context.cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N, n, t, k, &alpha,
                               weights->data, CUDA_R_16BF, k, x->data, CUDA_R_16BF, k, &beta,
-                              node->data, CUDA_R_32F, n, CUBLAS_COMPUTE_32F,
+                              node->data, out, n, CUBLAS_COMPUTE_32F,
                               CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   });
 }

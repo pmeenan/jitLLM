@@ -732,7 +732,7 @@ in the same change; the [M2 record](m2-record.md) and the report list them.
 - The loose process-level memory comparison fails and the excess is
   jitLLM's own.
 
-## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
+## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; the owner added speed before bit exactness on 2026-09-28; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
 
 **Decision.** The owner, on 2026-09-27: any operation that takes more than
 10 minutes should run "only when actually necessary and not as part of any
@@ -801,6 +801,16 @@ The machinery around development was holding it back.
   pre-registered. The catalog's own accounting stays exact, because it is
   code, not measurement. The census rules (v1–v3) and nsys passes stop;
   nsys is a debugging tool for a gap found this way.
+- **Speed before bit exactness (2026-09-28).** The owner: "Speed matters
+  more than bit exactness." The default path takes the fastest correct
+  kernels, fused or quantized differently from a reference engine's, and
+  its correctness is judged coarsely against the oracle, as the
+  [qwen38-native](experiments/qwen38-native/README.md) bounds do: greedy
+  teacher-forced agreement within the near-tie bound and perplexity
+  within 3%. A bit-exact kernel may stay as an optional reference mode
+  where that is cheap, never at the default's expense. jitLLM's own
+  determinism still holds: a swap, spill or restore leaves every later
+  result bit-identical to the uninterrupted run's.
 
 **Reopen if.** A regression that a skipped long run would have caught
 costs more than the time the rule saves.

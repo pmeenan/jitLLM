@@ -513,9 +513,12 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& p, const Qwen38PleH
   return rows;
 }
 
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
-    const Qwen38Profile& p, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
-    std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows) {
+std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p,
+                                                          const Qwen38StateLayout& state,
+                                                          const Qwen38PleHash& hash,
+                                                          std::span<const std::int32_t> history,
+                                                          std::uint32_t n_past, std::uint32_t rows,
+                                                          bool selection_masks) {
   const std::uint64_t end = std::uint64_t{n_past} + rows;
   if (rows == 0 || rows > state.max_rows || end > state.context) {
     return Refused(
@@ -559,12 +562,24 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
     in.cells[i] = pos;
   }
   const std::size_t n_kv = in.n_kv;
-  in.mask.assign(n_kv * rows, kQwen38HalfNegInf);
-  in.mask_f32.assign(n_kv * rows, -std::numeric_limits<float>::infinity());
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    for (std::uint64_t j = 0; j <= std::uint64_t{n_past} + i; ++j) {
-      in.mask[(i * n_kv) + j] = kQwen38HalfZero;
-      in.mask_f32[(i * n_kv) + j] = 0.0f;
+  // QSA: the budget keeps indexer_budget + ratio - 1 cells (whole blocks,
+  // plus the tail); a chunk whose attention reads no more keeps every cell,
+  // so the selection changes nothing and is not built.
+  const std::uint32_t ratio = p.indexer_ratio;
+  const std::uint64_t width = std::uint64_t{p.indexer_budget} + ratio - 1;
+  in.qsa_select = n_kv > width;
+  if (!in.qsa_select || selection_masks) {
+    in.mask.assign(n_kv * rows, kQwen38HalfNegInf);
+    for (std::uint32_t i = 0; i < rows; ++i) {
+      std::fill_n(in.mask.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
+                  static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), kQwen38HalfZero);
+    }
+  }
+  if (selection_masks) {
+    in.mask_f32.assign(n_kv * rows, -std::numeric_limits<float>::infinity());
+    for (std::uint32_t i = 0; i < rows; ++i) {
+      std::fill_n(in.mask_f32.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
+                  static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), 0.0f);
     }
   }
   in.ple_rows.resize(std::size_t{p.ple_heads()} * rows);
@@ -572,12 +587,6 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
     const auto r = Qwen38PleRows(p, hash, history, n_past + i);
     std::ranges::copy(r, in.ple_rows.begin() + (std::ptrdiff_t{i} * p.ple_heads()));
   }
-  // QSA: the budget keeps indexer_budget + ratio - 1 cells (whole blocks,
-  // plus the tail); a chunk whose attention reads no more keeps every cell,
-  // so the selection changes nothing and is not built.
-  const std::uint32_t ratio = p.indexer_ratio;
-  const std::uint64_t width = std::uint64_t{p.indexer_budget} + ratio - 1;
-  in.qsa_select = n_kv > width;
   if (in.qsa_select) {
     Qwen38QsaInputs& q = in.qsa;
     q.blocks = static_cast<std::uint32_t>((n_kv + ratio - 1) / ratio);

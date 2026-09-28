@@ -28,6 +28,23 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-034: CUTLASS's SM120 MXFP8 GEMM halves its speed on wide products at 8,192 rows unless its tiles are swizzled  (2026-09-28, status: worked-around)
+
+`spark-b`, GB10, CUTLASS 4.7.1's SM120 block-scaled GEMM (MXFP8 × MXFP8,
+128 × 128 × 128 tiles, ping-pong or cooperative, the persistent CLC tile
+scheduler with its default rasterization), a quick A/B on an idle GPU at
+Qwen3.8's shapes. At 4,096 rows the kernel is 1.9–2.5× cuBLAS's BF16
+product; at 8,192 rows the wide products fall behind cuBLAS: QKV (n
+10,240, k 2,560) 4.66 ms in BF16 out and 7.5 ms in F32 out against 5.3 ms,
+Q (n 12,288) 5.6 and 9.0 against 6.3, while the narrow ones (n 2,560 or
+6,144) stay ahead. Setting the scheduler's `max_swizzle_size` to 8 with
+raster along N gives QKV 2.59 ms and Q 3.09 (F32 3.3 and 3.9), and at
+4,096 rows the swizzle is slightly slower (QKV 1.31 against 1.18), which
+fits an L2 working-set cliff (the A and B operands of a wave no longer
+share the L2). Impact: `kernels/ggml/mxfp8_cutlass.cu` swizzles past 4,096
+rows; anything else on CUTLASS's SM120 persistent GEMMs at this size
+should A/B the swizzle rather than trust the default heuristic.
+
 ## RE-033: GGML's MMVQ changes its launch with the column count, so a multi-token verify's rows differ in their last bits from one-token decoding  (2026-09-28, status: worked-around)
 
 `spark-b`, GB10, the pinned llama.cpp `b29c606e2`'s `mmvq.cu` as jitLLM
@@ -79,7 +96,7 @@ their outputs (the others are the same bit for bit); the fused test builds
 its unfused reference the same way, with no slack. Fix upstream: bound the
 load by the window's columns.
 
-## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells  (2026-09-28, status: open)
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells  (2026-09-28, status: worked-around in the fast graph; open for the reference and unfused graphs)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
 `top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
@@ -106,7 +123,14 @@ Impact: jitLLM's Qwen3.8 is not repeatable past 2,051 cells; any
 bit-identity check there must compare against the same state, not a rerun
 (the swap runner snapshots the state and runs the unswapped continuation
 from it). Fix: a top-k that breaks ties by index (a patch to GGML's radix
-select, or jitLLM's own), part of the Qwen3.8 work.
+select, or jitLLM's own), part of the Qwen3.8 work. Since the second
+prefill pass the fast graph (the default, in prefill and decode) selects
+with jitLLM's own `jitllm.qsa.select`, which keeps the lower cell among
+equals, and its perplexity run (3,557 positions, past the budget)
+repeated exactly three times
+([qwen38-native](experiments/qwen38-native/README.md#results-second-pass));
+the reference (`--exact`) and unfused graphs keep GGML's top-k, and so
+does the fast graph past 32,768 cells (the kernel's shared memory).
 
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 

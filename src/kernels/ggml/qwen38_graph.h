@@ -34,10 +34,26 @@
 //     indexer's keys are still cached);
 //   - the rows the head computes are gathered before the final mixer
 //     (llama.cpp gathers them in the last layer);
-//   - by default (Qwen38GraphOptions::fused) the hyper-connections' and the
-//     MoE output's elementwise nodes run as jitLLM's fusions of them, and
-//     wide float products read activations converted to BF16 once
-//     (jitllm_ops.h), with the unfused graph's result.
+//   - with Qwen38GraphOptions::fused and ::exact (the reference form) the
+//     hyper-connections' and the MoE output's elementwise nodes run as
+//     jitLLM's fusions of them, and wide float products read activations
+//     converted to BF16 once (jitllm_ops.h), with the unfused graph's
+//     result;
+//   - by default (fused, not exact: the fast form, D-085's speed before
+//     bit exactness) the MXFP8 products past 8 rows run on tensor cores
+//     over activations quantized to MXFP8, as the oracle runs them; each
+//     block's output is combined into the streams by the next mix's
+//     jitllm.hc.prep, which also normalizes them into BF16 and gives the
+//     next combine's logits, and the mix reads those and the BF16 up
+//     product; the router's softmax, top experts and the shared expert's
+//     gate are one kernel; Gated DeltaNet's QKV and z rows are BF16 and its
+//     gated norm is quantized for the output product in one pass; QSA's
+//     heads are normalized and rotated in one pass, its selection makes the
+//     attention's mask on the device (ties to the lower cell, so the
+//     selection repeats run to run), and the output gate is fused with the
+//     output product's quantization. Each is checked against an FP64
+//     reference (tests/unit/qwen38_fast_test.cc), and the model against
+//     the oracle coarsely (docs/experiments/qwen38-native/README.md).
 //
 // Routed experts are 3D weights [k, n, experts] at the caller's expert
 // stride (the resident expert layout, docs/artifact-format.md#executable-views);
@@ -140,9 +156,18 @@ struct Qwen38GraphOptions {
   // SwiGLU, and their weighted sum with the gated shared expert; and, above
   // kQwen38Bf16Rows rows, each float product's activations converted to
   // BF16 once for all the products that read them (GGML's cuBLAS path
-  // converts them per product). The result is the unfused graph's, bit for
-  // bit; false builds the unfused graph.
+  // converts them per product). false builds the unfused graph.
   bool fused = true;
+  // With `fused`: the reference form, whose fusions repeat GGML's nodes bit
+  // for bit and whose MXFP8 products past the vector product's columns run
+  // on the weights dequantized to BF16 through cuBLAS (the unfused graph's
+  // result, but for the chunked delta rule's order of sums). Otherwise the
+  // fast form, the default (D-085: speed before bit exactness): those
+  // products on tensor cores over activations quantized to MXFP8
+  // (jitllm.mxfp8.*, as the oracle's vLLM runs the checkpoint's MXFP8
+  // linears), judged against the oracle coarsely
+  // (docs/experiments/qwen38-native/README.md).
+  bool exact = false;
   // The routed experts' resident layout: GGML's block_nvfp4 slices (GGML's
   // mul_mat_id: MMVQ and MMQ), or the CUTLASS layout (moe_layout.h;
   // jitllm.moe.gemv up to 8 rows, else CUTLASS's grouped GEMM over rows

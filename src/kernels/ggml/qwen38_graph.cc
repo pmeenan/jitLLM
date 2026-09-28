@@ -45,8 +45,15 @@ std::size_t U(std::int64_t n) { return static_cast<std::size_t>(n); }
 class Builder {
  public:
   Builder(ggml_context* c, const model::Qwen38Profile& p, const model::Qwen38Binding& b,
-          const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool cutlass)
-      : c_(c), p_(p), b_(b), s_(s), g_(g), fused_(fused), cutlass_(cutlass) {}
+          const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool exact, bool cutlass)
+      : c_(c),
+        p_(p),
+        b_(b),
+        s_(s),
+        g_(g),
+        fused_(fused),
+        fast_(fused && !exact),
+        cutlass_(cutlass) {}
 
   std::expected<void, KernelFailure> Leaves(const Qwen38GraphOptions& options);
   void Build();
@@ -82,33 +89,86 @@ class Builder {
                            GGML_ROPE_TYPE_IMROPE, 262144, p_.rope_base, 1.0f, 0.0f, 1.0f, 32.0f,
                            1.0f);
   }
-  // An MXFP8 product y[n, t] = W x: jitLLM's vector product up to its
-  // column bound, else the weights dequantized to BF16 for GGML's product,
-  // or for jitLLM's BF16 product where `x_bf16`, x converted, is given.
-  ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, ggml_tensor* x, ggml_tensor* x_bf16 = nullptr) {
+  // A product's input x [k, t] (packed) and its conversions, each made once
+  // for every product that reads it: BF16 (the fused graph's float products
+  // past kQwen38Bf16Rows) and MXFP8 (the fast graph's tensor-core products).
+  struct Input {
+    ggml_tensor* x = nullptr;
+    ggml_tensor* bf16 = nullptr;
+    ggml_tensor* mxfp8 = nullptr;
+  };
+  Input In(ggml_tensor* x) {
     if (!ggml_is_contiguous(x)) {
       x = ggml_cont(c_, x);
     }
     if (x->ne[2] != 1 || x->ne[3] != 1) {
       x = ggml_reshape_2d(c_, x, x->ne[0], ggml_nelements(x) / x->ne[0]);
     }
-    if (x->ne[1] <= kMxfp8VecColumns) {
-      return Mxfp8MulMatVec(c_, w.codes, w.scales, x);
+    return {.x = x};
+  }
+  // x in BF16 for the float products, or null where GGML's product takes x.
+  ggml_tensor* Bf16Of(Input& in) {
+    if (in.bf16 == nullptr && Bf16Inputs(in.x->ne[1])) {
+      in.bf16 = ToBf16(c_, in.x);
     }
-    if (x_bf16 != nullptr) {
+    return in.bf16;
+  }
+  // An MXFP8 product y[n, t] = W x: jitLLM's vector product up to its
+  // column bound; past it, in the fast graph, the tensor-core product
+  // (`out` F32 or BF16), else the weights dequantized to BF16 for jitLLM's
+  // BF16 product (the fused graph) or GGML's (the unfused one). F32 unless
+  // `out` is BF16 and the tensor-core product runs.
+  ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, Input& in, ggml_type out = GGML_TYPE_F32) {
+    if (in.x->ne[1] <= kMxfp8VecColumns) {
+      return Mxfp8MulMatVec(c_, w.codes, w.scales, in.x);
+    }
+    if (fast_) {
+      if (in.mxfp8 == nullptr) {
+        in.mxfp8 = Mxfp8Quantize(c_, in.x);
+      }
+      return LinearMxfp8(w, in.mxfp8, in.x->ne[1], out);
+    }
+    if (ggml_tensor* x_bf16 = Bf16Of(in); x_bf16 != nullptr) {
       return GemmBf16(c_, Mxfp8Dequant(c_, w.codes, w.scales), x_bf16);
     }
-    return ggml_mul_mat(c_, Mxfp8Dequant(c_, w.codes, w.scales), x);
+    return ggml_mul_mat(c_, Mxfp8Dequant(c_, w.codes, w.scales), in.x);
   }
-  // A product with BF16 weights: jitLLM's over `x_bf16` where given, else
-  // GGML's.
-  ggml_tensor* MulMat(ggml_tensor* w, ggml_tensor* x, ggml_tensor* x_bf16) {
-    return x_bf16 != nullptr ? GemmBf16(c_, w, x_bf16) : ggml_mul_mat(c_, w, x);
+  ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, ggml_tensor* x) {
+    Input in = In(x);
+    return Linear(w, in);
+  }
+  // The tensor-core product over `rows` activations already quantized to
+  // MXFP8 (a fusion's output).
+  ggml_tensor* LinearMxfp8(const Qwen38Mxfp8Tensors& w, ggml_tensor* mxfp8, std::int64_t rows,
+                           ggml_type out = GGML_TYPE_F32) {
+    return Mxfp8Gemm(c_, mxfp8, w.codes, Mxfp8Swizzle(c_, w.scales), out, rows);
+  }
+  // The type the fast graph's products into the recurrences' rows give:
+  // BF16 past the vector product's columns.
+  ggml_type RowsType(std::int64_t rows) const {
+    return fast_ && rows > kMxfp8VecColumns ? GGML_TYPE_BF16 : GGML_TYPE_F32;
+  }
+  // A product with BF16 weights: jitLLM's over x in BF16 where the fused
+  // graph converts it, else GGML's.
+  ggml_tensor* MulMat(ggml_tensor* w, Input& in) {
+    ggml_tensor* x_bf16 = Bf16Of(in);
+    return x_bf16 != nullptr ? GemmBf16(c_, w, x_bf16) : ggml_mul_mat(c_, w, in.x);
   }
   // Whether the fused graph gives a float product of `rows` BF16 inputs.
   bool Bf16Inputs(std::int64_t rows) const { return fused_ && rows > kQwen38Bf16Rows; }
-  // `x` [n, t] converted to BF16 for the products that read it, or null.
-  ggml_tensor* Bf16Of(ggml_tensor* x) { return Bf16Inputs(x->ne[1]) ? ToBf16(c_, x) : nullptr; }
+  // Whether the fast graph's QSA fusions (jitllm.qsa.prep and .select) take
+  // the profile's heads: a 64-dimension rotation, heads of whole warps.
+  bool FastSelect() const {
+    return fast_ && p_.rope_dims == 64 && p_.indexer_head_dim % 32 == 0 &&
+           p_.indexer_head_dim >= 64 && p_.indexer_head_dim <= 512 && p_.head_dim % 32 == 0 &&
+           p_.head_dim >= 64 && p_.head_dim <= 512;
+  }
+  // Whether this chunk's QSA selection runs on the device (jitllm.qsa.select,
+  // which makes the attention's mask): the fast graph's, within the kernel's
+  // blocks. Otherwise GGML's top-k selects over the host's masks.
+  bool DeviceSelect() const {
+    return s_.qsa_select && FastSelect() && s_.qsa_blocks <= kQsaSelectMaxBlocks;
+  }
   // build_lora_mm_id with a per-expert scale (llama-graph.cpp:1545-1581).
   ggml_tensor* MulMatId(ggml_tensor* w, ggml_tensor* x, ggml_tensor* ids, ggml_tensor* scale) {
     ggml_tensor* res = ggml_mul_mat_id(c_, w, x, ids);
@@ -125,17 +185,48 @@ class Builder {
     return ggml_set_rows(c_, state, rows, g_.state_row);
   }
 
+  // A packed `type` [ne0, ne1] view of a byte blob a jitLLM operation wrote
+  // (several outputs laid out in one tensor), from `offset`.
+  ggml_tensor* TypedView(ggml_tensor* blob, ggml_type type, std::int64_t ne0, std::int64_t ne1,
+                         std::size_t offset) {
+    const std::size_t row = ggml_row_size(type, ne0);
+    // ggml_view_1d counts the blob's own elements (bytes, or I32 words).
+    ggml_tensor* v = ggml_view_1d(
+        c_, blob, static_cast<std::int64_t>(row * U(ne1) / ggml_type_size(blob->type)), offset);
+    v->type = type;
+    v->ne[0] = ne0;
+    v->ne[1] = ne1;
+    v->nb[0] = ggml_type_size(type);
+    v->nb[1] = row;
+    v->nb[2] = row * U(ne1);
+    v->nb[3] = v->nb[2];
+    return v;
+  }
   ggml_tensor* HcMix(ggml_tensor* x, ggml_tensor* w_norm, ggml_tensor* w_down, ggml_tensor* w_up,
                      ggml_tensor* w_inject, ggml_tensor** inject, int il);
+  // The fast graph's mix (jitllm.hc.prep, .lo, .mix_bf16): `res` the streams,
+  // or, given the previous block's output `out` and its combine logits
+  // `logits`, the streams before that combine, which is done first and
+  // `res` set to its result. Returns the mixed input; `inject`, if given,
+  // the next combine's logits.
+  // Past the vector product's columns the mix also gives its output in
+  // MXFP8 for the products and, with `bf16`, in BF16 (the router's).
+  Input HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor* logits, ggml_tensor* w_norm,
+               ggml_tensor* w_down, ggml_tensor* w_up, ggml_tensor* w_inject, ggml_tensor** inject,
+               bool bf16, int il);
+  void BuildFast(ggml_tensor* res, ggml_tensor* ple);
   ggml_tensor* HcCombine(ggml_tensor* residual, ggml_tensor* block_out, ggml_tensor* inject);
   ggml_tensor* ConvStateAt(ggml_tensor* state, ggml_tensor* x, std::int64_t cols,
                            std::int64_t channels);
   ggml_tensor* Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_tensor* hidden, int il);
-  ggml_tensor* LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
-  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggml_tensor* cur_bf16,
-                       int il);
-  ggml_tensor* Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
-  ggml_tensor* Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il);
+  // The blocks read `cur`, or with `pre` its conversions made already.
+  ggml_tensor* LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
+                               const Input* pre = nullptr);
+  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il);
+  ggml_tensor* Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
+                         const Input* pre = nullptr);
+  ggml_tensor* Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
+                   const Input* pre = nullptr);
 
   ggml_context* c_;
   const model::Qwen38Profile& p_;
@@ -143,6 +234,7 @@ class Builder {
   const Qwen38ChunkShape& s_;
   Qwen38Graph& g_;
   bool fused_;
+  bool fast_;
   bool cutlass_;
   std::vector<ggml_tensor*> expanded_;
 };
@@ -186,14 +278,20 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
   g_.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
   g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * n);
   g_.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
-  g_.mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.n_kv, n, 1, 1);
+  // The fast graph's selection makes the attention's mask itself.
+  const bool fast_select = DeviceSelect();
+  if (!fast_select) {
+    g_.mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.n_kv, n, 1, 1);
+  }
   g_.ple_rows = ggml_new_tensor_1d(c_, GGML_TYPE_I32, std::int64_t{p_.ple_heads()} * n);
   g_.state_row = ggml_new_tensor_1d(c_, GGML_TYPE_I64, 1);
   g_.row_zero = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 1);
   g_.out_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.outputs);
   if (s_.qsa_select) {
     const std::int64_t blocks = s_.qsa_blocks;
-    g_.mask_f32 = ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
+    if (!fast_select) {
+      g_.mask_f32 = ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
+    }
     g_.cell_block = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.n_kv);
     g_.block_cells = ggml_new_tensor_1d(c_, GGML_TYPE_I32, std::int64_t{p_.indexer_ratio} * blocks);
     g_.block_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * blocks);
@@ -434,6 +532,95 @@ ggml_tensor* Builder::HcCombine(ggml_tensor* residual, ggml_tensor* block_out,
   return ggml_add(c_, residual, ggml_mul(c_, b, w));
 }
 
+Builder::Input Builder::HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor* logits,
+                               ggml_tensor* w_norm, ggml_tensor* w_down, ggml_tensor* w_up,
+                               ggml_tensor* w_inject, ggml_tensor** inject, bool bf16, int il) {
+  const std::int64_t hc = p_.hc;
+  const std::int64_t hc_dim = p_.hc_width();
+  const std::int64_t nt = res->ne[2];
+  const std::int64_t n_embd = p_.width;
+  ggml_tensor* blob =
+      HcPrep(c_, res, w_norm, inject != nullptr ? w_inject : nullptr,
+             out != nullptr ? ggml_reshape_2d(c_, out, n_embd, nt) : nullptr, logits, p_.rms_eps);
+  const HcPrepLayout layout{
+      .width = n_embd, .hc = hc, .t = nt, .combine = out != nullptr, .inject = inject != nullptr};
+  if (out != nullptr) {
+    ggml_tensor* streams = TypedView(blob, GGML_TYPE_F32, hc_dim, nt, HcPrepLayout::streams());
+    res = ggml_reshape_3d(c_, streams, n_embd, hc, nt);
+  }
+  ggml_tensor* xn = TypedView(blob, GGML_TYPE_BF16, hc_dim, nt, layout.normed());
+  ggml_tensor* lo = HcLo(c_, GemmBf16(c_, w_down, xn), hc);
+  ggml_tensor* gate = GemmBf16(c_, w_up, lo, GGML_TYPE_BF16);
+  if (inject != nullptr) {
+    *inject = TypedView(blob, GGML_TYPE_F32, hc, nt, layout.logits());
+  }
+  // (The head's mix, which has no inject weight, feeds no MXFP8 product.)
+  if (nt <= kMxfp8VecColumns || n_embd % 128 != 0 || inject == nullptr) {
+    ggml_tensor* mixed = HcMixBf16(c_, xn, gate, hc);
+    Name(mixed, "hc_mixed", il);
+    return {.x = mixed};
+  }
+  ggml_tensor* both = HcMixBf16(c_, xn, gate, hc, true, bf16);
+  const HcMixLayout mix{.width = n_embd, .t = nt, .bf16 = bf16};
+  Input in{.x = TypedView(both, GGML_TYPE_F32, n_embd, nt, HcMixLayout::mixed()),
+           .bf16 = bf16 ? TypedView(both, GGML_TYPE_BF16, n_embd, nt, mix.rounded()) : nullptr,
+           .mxfp8 = TypedView(both, GGML_TYPE_I8, static_cast<std::int64_t>(mix.quantized_bytes()),
+                              1, mix.quantized())};
+  Name(in.x, "hc_mixed", il);
+  return in;
+}
+
+// The fast graph's layers: each block's output combined into the streams by
+// the next mix's jitllm.hc.prep, so the streams are read once a mix; the
+// n-gram layer and the head take the streams combined on their own.
+void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
+  const std::int64_t nt = s_.rows;
+  const std::int64_t hc = p_.hc;
+  ggml_tensor* out = nullptr;     // the last block's output, not yet combined
+  ggml_tensor* logits = nullptr;  // its combine logits
+  const auto combine = [&](int il) {
+    res = ggml::HcCombine(c_, res, ggml_reshape_2d(c_, out, p_.width, nt), logits);
+    Name(res, "l_last", il);
+    out = nullptr;
+  };
+  for (std::uint32_t il_u = 0; il_u < p_.layers; ++il_u) {
+    const int il = static_cast<int>(il_u);
+    const Qwen38LayerTensors& l = g_.layers[il_u];
+    if (il_u == p_.ple_layer) {
+      if (out != nullptr) {
+        combine(il - 1);
+      }
+      res = Ple(l, ple, res, il);
+      Name(res, "ple_out", il);
+    }
+    ggml_tensor* inject = nullptr;
+    Input cur = HcFast(res, out, logits, l.hc_attn_norm, l.hc_attn_down, l.hc_attn_up,
+                       l.hc_attn_inject, &inject, false, il);
+    Expand(cur.x);
+    out = b_.layers[il_u].linear ? LinearAttention(l, cur.x, il, &cur)
+                                 : Attention(l, cur.x, il, &cur);
+    logits = inject;
+    cur = HcFast(res, out, logits, l.hc_ffn_norm, l.hc_ffn_down, l.hc_ffn_up, l.hc_ffn_inject,
+                 &inject, true, il);
+    out = Moe(l, cur.x, il, &cur);
+    Name(out, "ffn_out", il);
+    logits = inject;
+  }
+  combine(static_cast<int>(p_.layers) - 1);
+  // The rows the head computes.
+  ggml_tensor* flat = ggml_reshape_2d(c_, res, p_.hc_width(), nt);
+  flat = ggml_get_rows(c_, flat, g_.out_ids);
+  res = ggml_reshape_3d(c_, flat, p_.width, hc, s_.outputs);
+  ggml_tensor* cur = HcFast(res, nullptr, nullptr, g_.output_hc_norm, g_.output_hc_down,
+                            g_.output_hc_up, nullptr, nullptr, false, -1)
+                         .x;
+  Name(cur, "result_norm", -1);
+  g_.logits = ggml_mul_mat(c_, g_.output, cur);
+  Name(g_.logits, "result_output", -1);
+  Expand(g_.logits);
+  g_.nodes = GraphOrder(expanded_);
+}
+
 // build_conv_state_at (qwen4exp.cpp:1117-1169), one sequence, no rollback
 // slots: the history [cols, channels] then the chunk's rows, time fastest;
 // the last `cols` columns become the new history.
@@ -504,20 +691,21 @@ ggml_tensor* Builder::Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_te
 
 // build_layer_attn_linear (qwen4exp.cpp:847-972) with the fused gated delta
 // rule (delta-net-base.cpp build_delta_net_fused, K = 1).
-ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il) {
+ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
+                                      const Input* pre) {
   const std::int64_t nt = cur->ne[1];
   const std::int64_t d = p_.lin_head_dim;
   const std::int64_t hk = p_.lin_k_heads;
   const std::int64_t hv = p_.lin_v_heads;
   const std::int64_t channels = p_.conv_channels();
-  ggml_tensor* cur_bf16 = Bf16Of(cur);
-  ggml_tensor* qkv = Linear(l.qkv, cur, cur_bf16);
+  Input in = pre != nullptr ? *pre : In(cur);
+  ggml_tensor* qkv = Linear(l.qkv, in, RowsType(nt));
   qkv = ggml_reshape_3d(c_, qkv, qkv->ne[0], nt, 1);
-  ggml_tensor* z = Linear(l.z, cur, cur_bf16);
-  ggml_tensor* beta = Linear(l.beta, cur, cur_bf16);
+  ggml_tensor* z = Linear(l.z, in, RowsType(nt));
+  ggml_tensor* beta = Linear(l.beta, in);
   beta = ggml_reshape_4d(c_, beta, 1, hv, nt, 1);
   beta = ggml_sigmoid(c_, beta);
-  ggml_tensor* alpha = Linear(l.alpha, cur, cur_bf16);
+  ggml_tensor* alpha = Linear(l.alpha, in);
   alpha = ggml_reshape_3d(c_, alpha, hv, nt, 1);
   ggml_tensor* alpha_sp = ggml_softplus(c_, ggml_add(c_, alpha, l.dt_bias));
   ggml_tensor* gate = ggml_mul(c_, alpha_sp, l.ssm_a);
@@ -535,9 +723,14 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
                    d, p_.rms_eps / n, 1.0f / std::sqrt(n));
     // The convolution reads the old history before the new one is stored.
     Expand(conv);
-    ggml_tensor* tail = ggml_view_2d(c_, qkv, channels, history, qkv->nb[1],
-                                     static_cast<std::size_t>(nt - history) * qkv->nb[1]);
-    Expand(StoreState(l.conv_state, ggml_cont(c_, ggml_transpose(c_, tail))));
+    if (fast_) {
+      Expand(StoreState(l.conv_state,
+                        GdnHistory(c_, ggml_reshape_2d(c_, qkv, channels, nt), history)));
+    } else {
+      ggml_tensor* tail = ggml_view_2d(c_, qkv, channels, history, qkv->nb[1],
+                                       static_cast<std::size_t>(nt - history) * qkv->nb[1]);
+      Expand(StoreState(l.conv_state, ggml_cont(c_, ggml_transpose(c_, tail))));
+    }
   } else {
     ggml_tensor* conv_input = ConvStateAt(l.conv_state, qkv, history, channels);
     // Past 32 tokens upstream's convolution loads whole 32-token windows,
@@ -580,7 +773,14 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
       ggml_row_size(result->type, d * d * hv), ggml_row_size(result->type, d * hv * nt));
   Expand(StoreState(l.recurrent, new_state));
   ggml_tensor* out = nullptr;
-  if (fused_ && d == 128) {
+  if (fast_ && d == 128) {
+    // build_norm_gated as jitllm.gdn.norm_gate, quantized to MXFP8 for the
+    // tensor-core product.
+    const bool wide = nt > kMxfp8VecColumns;
+    ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
+                                      p_.rms_eps, wide ? GGML_TYPE_I8 : GGML_TYPE_F32);
+    out = wide ? LinearMxfp8(l.ssm_out, normed, nt) : Linear(l.ssm_out, normed);
+  } else if (fused_ && d == 128) {
     // build_norm_gated as jitllm.gdn.norm_gate, in BF16 for cuBLAS's product.
     const bool bf16 = Bf16Inputs(nt);
     ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
@@ -599,15 +799,14 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
 }
 
 // build_qsa_top_k (qwen4exp.cpp:525-674), one stream, the per-block bias.
-ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggml_tensor* cur_bf16,
-                              int il) {
+ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
   const std::int64_t idx_dim = p_.indexer_head_dim;
   const std::int64_t n_idx_h = p_.indexer_heads;
   const std::int64_t r = p_.indexer_ratio;
   const std::int64_t n_kv = s_.n_kv;
   const std::int64_t n_blocks = s_.qsa_blocks;
-  const std::int64_t nt = cur->ne[1];
-  ggml_tensor* qk = Linear(l.idx_qk, cur, cur_bf16);  // [q heads · dim | dim, nt]
+  const std::int64_t nt = cur.x->ne[1];
+  ggml_tensor* qk = Linear(l.idx_qk, cur);  // [q heads · dim | dim, nt]
   ggml_tensor* k_raw =
       ggml_view_2d(c_, qk, idx_dim, nt, qk->nb[1], ggml_row_size(qk->type, n_idx_h * idx_dim));
   // The cached keys are raw: pooling precedes their norm and rotation.
@@ -626,6 +825,22 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggm
     pooled = pooled != nullptr ? ggml_add(c_, pooled, slice) : slice;
   }
   pooled = ggml_scale(c_, pooled, 1.0f / static_cast<float>(r));
+  if (DeviceSelect()) {
+    // The fast graph: the pooled keys' and the queries' norm and rotation
+    // by jitllm.qsa.prep, then the selection and the attention's mask in one
+    // pass (jitllm.qsa.select), which Attention takes as is.
+    const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
+    pooled = QsaPrep(c_, pooled, l.idx_k_norm, g_.block_pos, idx_dim, 1, idx_dim, p_.rms_eps,
+                     theta_scale);
+    ggml_tensor* q = QsaPrep(c_, qk, l.idx_q_norm, g_.positions, idx_dim, n_idx_h, idx_dim,
+                             p_.rms_eps, theta_scale);
+    ggml_tensor* score = ggml_mul_mat(c_, ggml_reshape_2d(c_, pooled, idx_dim, n_blocks),
+                                      ggml_reshape_2d(c_, q, idx_dim, n_idx_h * nt));
+    score = ggml_reshape_3d(c_, score, n_blocks, n_idx_h, nt);
+    const std::int64_t width =
+        std::min<std::int64_t>(n_kv, std::int64_t{p_.indexer_budget} + r - 1);
+    return QsaSelect(c_, score, g_.block_bias, g_.cell_block, g_.positions, width);
+  }
   pooled = ggml_reshape_3d(c_, pooled, idx_dim, n_blocks, 1);
   pooled = Norm(pooled, l.idx_k_norm);
   pooled = ggml_reshape_3d(c_, pooled, idx_dim, 1, n_blocks);
@@ -656,30 +871,37 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, ggml_tensor* cur, ggm
 }
 
 // build_layer_attn with build_attn_qsa (qwen4exp.cpp:676-845).
-ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il) {
+ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
+                                const Input* pre) {
   const std::int64_t d = p_.head_dim;
   const std::int64_t heads = p_.heads;
   const std::int64_t kvh = p_.kv_heads;
   const std::int64_t nt = cur->ne[1];
   const std::int64_t n_kv = s_.n_kv;
-  ggml_tensor* cur_bf16 = Bf16Of(cur);
-  ggml_tensor* top_k = QsaTopK(l, cur, cur_bf16, il);
+  Input in = pre != nullptr ? *pre : In(cur);
+  ggml_tensor* top_k = QsaTopK(l, in, il);
   // [(d · 2) · heads, nt]: per head, q then its gate
-  ggml_tensor* q_full = Linear(l.q, cur, cur_bf16);
+  ggml_tensor* q_full = Linear(l.q, in);
   const std::size_t f = ggml_element_size(q_full);
   const std::size_t per_head = f * U(d) * 2;  // q then its gate
-  ggml_tensor* q = ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), 0);
-  q = Norm(q, l.q_norm);
-  ggml_tensor* k = Linear(l.k, cur, cur_bf16);
-  ggml_tensor* v = Linear(l.v, cur, cur_bf16);
-  k = ggml_reshape_3d(c_, k, d, kvh, nt);
-  k = Norm(k, l.k_norm);
-  ggml_tensor* gate =
-      ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), f * U(d));
-  gate = ggml_cont_2d(c_, gate, d * heads, nt);
+  ggml_tensor* k = Linear(l.k, in);
+  ggml_tensor* v = Linear(l.v, in);
+  ggml_tensor* q = nullptr;
+  // The fast graph's query and key heads: norm and rotation in one pass
+  // (jitllm.qsa.prep), where the rotation is 64 dimensions.
+  if (FastSelect()) {
+    const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
+    q = QsaPrep(c_, q_full, l.q_norm, g_.positions, d, heads, 2 * d, p_.rms_eps, theta_scale);
+    k = QsaPrep(c_, k, l.k_norm, g_.positions, d, kvh, d, p_.rms_eps, theta_scale);
+  } else {
+    q = ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), 0);
+    q = Norm(q, l.q_norm);
+    k = ggml_reshape_3d(c_, k, d, kvh, nt);
+    k = Norm(k, l.k_norm);
+    q = Rope(q, g_.positions);
+    k = Rope(k, g_.positions);
+  }
   v = ggml_reshape_3d(c_, v, d, kvh, nt);
-  q = Rope(q, g_.positions);
-  k = Rope(k, g_.positions);
   Expand(q);
   Expand(v);
   Expand(k);
@@ -687,7 +909,10 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   Expand(ggml_set_rows(c_, l.cache_k, ggml_reshape_2d(c_, k, d * kvh, nt), g_.cells));
   Expand(ggml_set_rows(c_, l.cache_v, ggml_reshape_2d(c_, v, d * kvh, nt), g_.cells));
   ggml_tensor* kq_mask = g_.mask;
-  if (top_k != nullptr) {
+  if (top_k != nullptr && JitllmOpOf(top_k) == JitllmOp::kQsaSelect) {
+    // The fast graph's selection is the mask.
+    kq_mask = top_k;
+  } else if (top_k != nullptr) {
     // build_attn_qsa's mask: -inf everywhere but the selected cells, plus
     // the causal mask.
     ggml_tensor* all = ggml_fill(c_, kq_mask, -INFINITY);
@@ -715,8 +940,17 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   ggml_prec_set_acc(attn, GGML_PREC_F32);
   attn = ggml_reshape_2d(c_, attn, attn->ne[0] * attn->ne[1], attn->ne[2] * attn->ne[3]);
   Name(attn, "attn_pregate", il);
-  attn = ggml_mul(c_, attn, ggml_sigmoid(c_, gate));
-  ggml_tensor* out = Linear(l.o, attn);
+  ggml_tensor* out = nullptr;
+  if (fast_ && nt > kMxfp8VecColumns) {
+    // The gate and the output projection's quantization in one pass.
+    out = LinearMxfp8(l.o, QsaGateQuantize(c_, attn, q_full, d), nt);
+  } else {
+    ggml_tensor* gate =
+        ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), f * U(d));
+    gate = ggml_cont_2d(c_, gate, d * heads, nt);
+    attn = ggml_mul(c_, attn, ggml_sigmoid(c_, gate));
+    out = Linear(l.o, attn);
+  }
   Name(out, "attn_output", il);
   return out;
 }
@@ -725,29 +959,46 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
 // llama-graph.cpp:1748-2380): softmax routing, the top experts' weights
 // renormalized, SwiGLU experts, and the shared expert behind its sigmoid
 // gate.
-ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il) {
+ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il, const Input* pre) {
   const std::int64_t n_embd = cur->ne[0];
   const std::int64_t nt = cur->ne[1];
   const std::int64_t n_expert = p_.experts;
   const std::int64_t used = p_.experts_used;
-  ggml_tensor* cur_bf16 = Bf16Of(cur);
-  ggml_tensor* logits = MulMat(l.router, cur, cur_bf16);
-  ggml_tensor* probs = ggml_soft_max(c_, logits);
-  ggml_tensor* selected = ggml_argsort_top_k(c_, probs, static_cast<int>(used));
+  Input in = pre != nullptr ? *pre : In(cur);
+  ggml_tensor* logits = MulMat(l.router, in);
+  ggml_tensor* selected = nullptr;
+  ggml_tensor* weights = nullptr;
+  ggml_tensor* fast_gate = nullptr;
+  if (fast_) {
+    // jitllm.moe.router: the softmax, top experts and their renormalized
+    // weights, and the shared expert's gate logit, in one pass.
+    ggml_tensor* routed = MoeRouter(c_, logits, in.x, l.shared_gate, used);
+    const MoeRouterLayout layout{.used = used, .t = nt};
+    selected = TypedView(routed, GGML_TYPE_I32, used, nt, MoeRouterLayout::ids());
+    weights = TypedView(routed, GGML_TYPE_F32, used, nt, layout.weights());
+    fast_gate = TypedView(routed, GGML_TYPE_F32, 1, nt, layout.gate());
+  } else {
+    ggml_tensor* probs = ggml_soft_max(c_, logits);
+    selected = ggml_argsort_top_k(c_, probs, static_cast<int>(used));
+    probs = ggml_reshape_3d(c_, probs, 1, n_expert, nt);
+    weights = ggml_get_rows(c_, probs, selected);
+    weights = ggml_reshape_2d(c_, weights, used, nt);
+    ggml_tensor* sum = ggml_sum_rows(c_, weights);
+    sum = ggml_clamp(c_, sum, 6.103515625e-5f, INFINITY);
+    weights = ggml_div(c_, weights, sum);
+  }
   Name(selected, "ffn_moe_topk", il);
-  probs = ggml_reshape_3d(c_, probs, 1, n_expert, nt);
-  ggml_tensor* weights = ggml_get_rows(c_, probs, selected);
-  weights = ggml_reshape_2d(c_, weights, used, nt);
-  ggml_tensor* sum = ggml_sum_rows(c_, weights);
-  sum = ggml_clamp(c_, sum, 6.103515625e-5f, INFINITY);
-  weights = ggml_div(c_, weights, sum);
   weights = ggml_reshape_3d(c_, weights, 1, used, nt);
   Expand(weights);
   ggml_tensor* x = ggml_reshape_3d(c_, cur, n_embd, 1, nt);
   // The shared expert's gate, one value a token: GGML's products refuse a
   // one-row output (its rows are not 8-byte aligned), so the dot product is
-  // the gate row (read as F32) times each token, summed.
+  // the gate row (read as F32) times each token, summed (the fast graph's
+  // router computes it).
   const auto shared_gate_dot = [&] {
+    if (fast_gate != nullptr) {
+      return fast_gate;
+    }
     ggml_tensor* gate_row =
         ggml_get_rows(c_, ggml_reshape_2d(c_, l.shared_gate, n_embd, 1), g_.row_zero);
     return ggml_sum_rows(c_, ggml_mul(c_, cur, gate_row));
@@ -756,8 +1007,8 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il)
     // The CUTLASS layout: moe_layout.h's parts of each slot.
     const moe::ExpertLayout layout{.ffn = p_.expert_ffn, .width = p_.width};
     const std::int64_t f = p_.expert_ffn;
-    ggml_tensor* sh_up = Linear(l.up_shexp, cur, cur_bf16);
-    ggml_tensor* sh_gate = Linear(l.gate_shexp, cur, cur_bf16);
+    ggml_tensor* sh_up = Linear(l.up_shexp, in);
+    ggml_tensor* sh_gate = Linear(l.gate_shexp, in);
     ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
     if (nt <= kMoeGemvTokens) {
       // Decode: each slot's products straight from the layout (gate and up
@@ -788,8 +1039,8 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il)
     ggml_tensor* gate = ggml_mul_mat_id(c_, l.gate_exps, x, selected);
     ggml_tensor* act = MoeGlu(c_, gate, up, selected, l.gate_exps_scale, l.up_exps_scale);
     ggml_tensor* down = ggml_mul_mat_id(c_, l.down_exps, act, selected);
-    ggml_tensor* sh_up = Linear(l.up_shexp, cur, cur_bf16);
-    ggml_tensor* sh_gate = Linear(l.gate_shexp, cur, cur_bf16);
+    ggml_tensor* sh_up = Linear(l.up_shexp, in);
+    ggml_tensor* sh_gate = Linear(l.gate_shexp, in);
     ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
     // (Named ffn_out by the caller: the fusion includes the shared expert.)
     return MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate_dot());
@@ -836,6 +1087,10 @@ void Builder::Build() {
   ggml_tensor* res =
       ggml_repeat_4d(c_, ggml_reshape_3d(c_, inpl, p_.width, 1, nt), p_.width, hc, nt, 1);
   Name(res, "hc_init", -1);
+  if (fast_) {
+    BuildFast(res, ple);
+    return;
+  }
   for (std::uint32_t il_u = 0; il_u < p_.layers; ++il_u) {
     const int il = static_cast<int>(il_u);
     const Qwen38LayerTensors& l = g_.layers[il_u];
@@ -881,8 +1136,13 @@ Qwen38ChunkShape Qwen38ShapeOf(const model::Qwen38StateLayout& state,
 }
 
 std::vector<ggml_tensor*> Qwen38Graph::inputs() const {
-  std::vector<ggml_tensor*> all = {tokens,   positions, cells,    mask,
-                                   ple_rows, state_row, row_zero, out_ids};
+  std::vector<ggml_tensor*> all = {tokens, positions, cells};
+  if (mask != nullptr) {
+    all.push_back(mask);
+  }
+  for (ggml_tensor* t : {ple_rows, state_row, row_zero, out_ids}) {
+    all.push_back(t);
+  }
   for (ggml_tensor* t : {mask_f32, cell_block, block_cells, block_pos, block_bias}) {
     if (t != nullptr) {
       all.push_back(t);
@@ -935,7 +1195,8 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
   if (cutlass && (!options.fused || options.expert_stride.empty())) {
     return Rejected("the CUTLASS expert layout takes the fused graph and an expert stride");
   }
-  Builder builder(arena.context(), profile, binding, shape, g, options.fused, cutlass);
+  Builder builder(arena.context(), profile, binding, shape, g, options.fused, options.exact,
+                  cutlass);
   if (auto leaves = builder.Leaves(options); !leaves) {
     return std::unexpected(leaves.error());
   }

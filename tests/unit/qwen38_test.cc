@@ -423,6 +423,20 @@ TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {
     }
   }
   EXPECT_EQ(c->ple_rows.size(), 48U);
+  // Without the selection's masks a chunk that does not select still gets
+  // the causal mask (the fast graph's attention reads it), and one that
+  // selects gets neither (the fast graph's selection makes its own).
+  auto unmasked = md::Qwen38Chunk(p, *s, h, history, 37, 3, false);
+  ASSERT_TRUE(unmasked.has_value()) << Why(unmasked);
+  EXPECT_EQ(unmasked->mask, c->mask);
+  EXPECT_TRUE(unmasked->mask_f32.empty());
+  std::vector<std::int32_t> selecting(2400, 7);
+  auto past = md::Qwen38Chunk(p, *s, h, selecting, 2000, 400, false);
+  ASSERT_TRUE(past.has_value()) << Why(past);
+  EXPECT_TRUE(past->qsa_select);
+  EXPECT_TRUE(past->mask.empty());
+  EXPECT_TRUE(past->mask_f32.empty());
+  EXPECT_FALSE(past->qsa.bias.empty());
   // Refusals: history of the wrong length, a chunk past the context, a
   // token outside the vocabulary.
   EXPECT_FALSE(md::Qwen38Chunk(p, *s, h, history, 36, 3).has_value());
@@ -501,19 +515,28 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
   ASSERT_TRUE(state.has_value());
   const md::Qwen38PleHash h = Hash();
   const std::vector<std::uint64_t> strides(p.layers, kExpertStride);
-  for (const auto& [n_past, rows, fused, cutlass] : {std::tuple{0U, 37U, true, false},
-                                                     {37U, 1U, true, false},
-                                                     {2800U, 512U, true, false},
-                                                     {4095U, 1U, true, false},
-                                                     {0U, 37U, false, false},
-                                                     {37U, 1U, false, false},
-                                                     {2800U, 512U, false, false},
-                                                     {4095U, 1U, false, false},
-                                                     {40U, 12U, true, false},
-                                                     {0U, 37U, true, true},
-                                                     {37U, 1U, true, true},
-                                                     {2800U, 512U, true, true},
-                                                     {40U, 8U, true, true}}) {
+  // (n_past, rows, fused, exact, cutlass): the fused graph's fast form (the
+  // default) and its reference form.
+  for (const auto& [n_past, rows, fused, exact, cutlass] : {std::tuple{0U, 37U, true, true, false},
+                                                            {37U, 1U, true, true, false},
+                                                            {2800U, 512U, true, true, false},
+                                                            {4095U, 1U, true, true, false},
+                                                            {0U, 37U, false, false, false},
+                                                            {37U, 1U, false, false, false},
+                                                            {2800U, 512U, false, false, false},
+                                                            {4095U, 1U, false, false, false},
+                                                            {40U, 12U, true, true, false},
+                                                            {0U, 37U, true, true, true},
+                                                            {37U, 1U, true, true, true},
+                                                            {2800U, 512U, true, true, true},
+                                                            {40U, 8U, true, true, true},
+                                                            {0U, 37U, true, false, true},
+                                                            {37U, 1U, true, false, true},
+                                                            {2800U, 512U, true, false, true},
+                                                            {40U, 8U, true, false, true},
+                                                            {40U, 12U, true, false, true},
+                                                            {0U, 2U, true, false, true},
+                                                            {0U, 37U, true, false, false}}) {
     std::vector<std::int32_t> history(std::size_t{n_past} + rows, 1000);
     auto chunk = md::Qwen38Chunk(p, *state, h, history, n_past, rows);
     ASSERT_TRUE(chunk.has_value()) << Why(chunk);
@@ -524,9 +547,11 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
         kg::BuildQwen38Graph(*arena, p, *binding, shape,
                              {.expert_stride = strides,
                               .fused = fused,
+                              .exact = exact,
                               .experts = cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
                                                  : kg::Qwen38GraphOptions::Experts::kGgml});
     ASSERT_TRUE(graph.has_value()) << Why(graph);
+    const bool fast = fused && !exact;
     std::uint64_t next = std::uint64_t{1} << 40U;
     const auto bind_leaf = [&](ggml_tensor* t) {
       if (t != nullptr && t->data == nullptr) {
@@ -552,11 +577,26 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
       used.insert(step.implementation);
     }
     for (const std::string_view name :
-         {kg::kNvfp4RowsName, kg::kFlashAttnMmaName, kg::kArgsortName, kg::kRopeExtName,
-          kg::kSetRowsExtName, kg::kConcatName, kg::kSumRowsName, kg::kRepeatName}) {
+         {kg::kNvfp4RowsName, kg::kFlashAttnMmaName, kg::kSetRowsExtName, kg::kConcatName,
+          kg::kSumRowsName, kg::kRepeatName}) {
       EXPECT_TRUE(used.contains(name)) << name << " at " << rows << " rows";
     }
-    EXPECT_TRUE(used.contains(rows <= 8 ? kg::kMxfp8MulMatVecName : kg::kMxfp8DequantName));
+    // The fast form routes, and normalizes and rotates QSA's heads, in
+    // jitLLM's fusions; the others in GGML's nodes.
+    EXPECT_EQ(used.contains(kg::kArgsortName), !fast) << rows;
+    EXPECT_EQ(used.contains(kg::kRopeExtName), !fast) << rows;
+    EXPECT_EQ(used.contains(kg::kMoeRouterName), fast) << rows;
+    EXPECT_EQ(used.contains(kg::kQsaPrepName), fast) << rows;
+    // The MXFP8 products: the vector product up to 8 rows; past them the
+    // tensor-core product over quantized activations (the fast form) or the
+    // weights dequantized to BF16.
+    const bool wide = rows > 8;
+    EXPECT_EQ(used.contains(kg::kMxfp8MulMatVecName), !wide) << rows;
+    EXPECT_EQ(used.contains(kg::kMxfp8DequantName), wide && !fast) << rows;
+    for (const std::string_view name : {kg::kMxfp8GemmName, kg::kMxfp8QuantizeName,
+                                        kg::kMxfp8SwizzleName, kg::kQsaGateQuantizeName}) {
+      EXPECT_EQ(used.contains(name), wide && fast) << name << " at " << rows << " rows";
+    }
     // The routed experts: GGML's mul_mat_id over GGML's layout; over the
     // CUTLASS layout, the vector products up to 8 rows, else the grouped
     // GEMM path.
@@ -570,8 +610,14 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     }
     // The fusions replace the hyper-connections' and the MoE output's
     // elementwise nodes; past 16 rows the float products read BF16 once.
-    for (const std::string_view name : {kg::kHcCombineName, kg::kHcNormName, kg::kHcMixName}) {
-      EXPECT_EQ(used.contains(name), fused) << name << " at " << rows << " rows";
+    // The fast form's mixes combine, normalize and mix in its own three
+    // (the n-gram layer's and the head's streams still combined apart).
+    EXPECT_EQ(used.contains(kg::kHcCombineName), fused) << rows;
+    for (const std::string_view name : {kg::kHcNormName, kg::kHcMixName}) {
+      EXPECT_EQ(used.contains(name), fused && !fast) << name << " at " << rows << " rows";
+    }
+    for (const std::string_view name : {kg::kHcPrepName, kg::kHcLoName, kg::kHcMixBf16Name}) {
+      EXPECT_EQ(used.contains(name), fast) << name << " at " << rows << " rows";
     }
     // (Over the CUTLASS layout decode's SwiGLU is the vector product's.)
     EXPECT_EQ(used.contains(kg::kMoeGluName), fused && !cutlass) << rows;
@@ -581,14 +627,22 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(used.contains(kg::kGdnConvName), fused && rows >= 3) << rows;
     EXPECT_EQ(used.contains(kg::kSsmConvName), !fused || rows < 3) << rows;
     EXPECT_EQ(used.contains(kg::kGdnNormGateName), fused) << rows;
+    EXPECT_EQ(used.contains(kg::kGdnHistoryName), fast && rows >= 3) << rows;
     EXPECT_TRUE(used.contains(static_cast<std::int64_t>(rows) > kg::kGatedDeltaNetLanesTokens
                                   ? kg::kGatedDeltaNetLanesName
                                   : kg::kGatedDeltaNetColumnsName))
         << rows;
+    // (The fast form's mixes give their BF16 themselves, and its
+    // hyper-connection products are BF16 at every width.)
     const bool bf16 = fused && static_cast<std::int64_t>(rows) > kg::kQwen38Bf16Rows;
-    EXPECT_EQ(used.contains(kg::kBf16Name), bf16) << rows;
-    EXPECT_EQ(used.contains(kg::kGemmBf16Name), bf16) << rows;
-    EXPECT_EQ(used.contains(kg::kTopKName), chunk->qsa_select) << rows << " at " << n_past;
+    EXPECT_EQ(used.contains(kg::kBf16Name), bf16 && !fast) << rows;
+    EXPECT_EQ(used.contains(kg::kGemmBf16Name), bf16 || fast) << rows;
+    EXPECT_EQ(used.contains(kg::kTopKName), chunk->qsa_select && !fast) << rows << " at " << n_past;
+    EXPECT_EQ(used.contains(kg::kQsaSelectName), chunk->qsa_select && fast)
+        << rows << " at " << n_past;
+    // The fast form's selection makes the attention's mask: no host masks.
+    EXPECT_EQ(graph->mask == nullptr, chunk->qsa_select && fast) << rows << " at " << n_past;
+    EXPECT_EQ(graph->mask_f32 != nullptr, chunk->qsa_select && !fast) << rows << " at " << n_past;
     auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
     ASSERT_TRUE(placed.has_value()) << Why(placed);
     EXPECT_NE(graph->Named("l_last-47"), nullptr);
@@ -596,6 +650,43 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(graph->logits->ne[0], 248320);
     EXPECT_EQ(graph->logits->ne[1], rows);
   }
+  // Past the device selection's blocks (32,768 cells) the fast form selects
+  // with GGML's top-k over the host's masks.
+  auto long_state = md::Qwen38State(p, 33280, 8);
+  ASSERT_TRUE(long_state.has_value());
+  std::vector<std::int32_t> history(33001, 1000);
+  auto chunk = md::Qwen38Chunk(p, *long_state, h, history, 33000, 1);
+  ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+  ASSERT_TRUE(chunk->qsa_select);
+  EXPECT_GT(chunk->qsa.blocks, kg::kQsaSelectMaxBlocks);
+  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+  ASSERT_TRUE(arena.has_value());
+  auto graph = kg::BuildQwen38Graph(
+      *arena, p, *binding, kg::Qwen38ShapeOf(*long_state, *chunk, 1),
+      {.expert_stride = strides, .experts = kg::Qwen38GraphOptions::Experts::kCutlass});
+  ASSERT_TRUE(graph.has_value()) << Why(graph);
+  EXPECT_NE(graph->mask, nullptr);
+  EXPECT_NE(graph->mask_f32, nullptr);
+  std::uint64_t next = std::uint64_t{1} << 40U;
+  for (ggml_tensor* node : graph->nodes) {
+    for (ggml_tensor* src : node->src) {
+      if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr &&
+          src->data == nullptr) {
+        kg::TensorArena::Bind(src, next);
+        next += ((ggml_nbytes(src) + 255) / 256 * 256) + 256;
+      }
+    }
+  }
+  kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+  auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+  ASSERT_TRUE(plan.has_value()) << Why(plan);
+  std::set<std::string_view> used;
+  for (const auto& step : plan->steps) {
+    used.insert(step.implementation);
+  }
+  EXPECT_TRUE(used.contains(kg::kTopKName));
+  EXPECT_FALSE(used.contains(kg::kQsaSelectName));
+  EXPECT_TRUE(used.contains(kg::kQsaPrepName));
 }
 
 TEST(Qwen38Test, ExpertStridesAreWholeBlocks) {

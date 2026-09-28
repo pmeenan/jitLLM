@@ -3,6 +3,7 @@
 
 #include "kernels/ggml/jitllm_ops.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include "cutlass/version.h"
 #include "ggml.h"
 #include "kernels/ggml/moe_layout.h"
+#include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
 
@@ -74,6 +76,17 @@ constinit std::array kTagMoeCombineSorted = std::to_array("jitllm.moe.combine_so
 constinit std::array kTagMoeGemv = std::to_array("jitllm.moe.gemv");
 constinit std::array kTagGdnConv = std::to_array("jitllm.gdn.conv");
 constinit std::array kTagGdnNormGate = std::to_array("jitllm.gdn.norm_gate");
+constinit std::array kTagMxfp8Quantize = std::to_array("jitllm.mxfp8.quantize");
+constinit std::array kTagMxfp8Swizzle = std::to_array("jitllm.mxfp8.swizzle");
+constinit std::array kTagMxfp8Gemm = std::to_array("jitllm.mxfp8.gemm");
+constinit std::array kTagHcPrep = std::to_array("jitllm.hc.prep");
+constinit std::array kTagHcLo = std::to_array("jitllm.hc.lo");
+constinit std::array kTagHcMixBf16 = std::to_array("jitllm.hc.mix_bf16");
+constinit std::array kTagMoeRouter = std::to_array("jitllm.moe.router");
+constinit std::array kTagGdnHistory = std::to_array("jitllm.gdn.history");
+constinit std::array kTagQsaPrep = std::to_array("jitllm.qsa.prep");
+constinit std::array kTagQsaGateQuantize = std::to_array("jitllm.qsa.gate_quantize");
+constinit std::array kTagQsaSelect = std::to_array("jitllm.qsa.select");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
 constexpr std::size_t kEpsOffset = 32;
@@ -160,7 +173,18 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 15> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 26> fused = {{
+      {kTagQsaSelect.data(), JitllmOp::kQsaSelect},
+      {kTagQsaPrep.data(), JitllmOp::kQsaPrep},
+      {kTagQsaGateQuantize.data(), JitllmOp::kQsaGateQuantize},
+      {kTagGdnHistory.data(), JitllmOp::kGdnHistory},
+      {kTagMoeRouter.data(), JitllmOp::kMoeRouter},
+      {kTagHcPrep.data(), JitllmOp::kHcPrep},
+      {kTagHcLo.data(), JitllmOp::kHcLo},
+      {kTagHcMixBf16.data(), JitllmOp::kHcMixBf16},
+      {kTagMxfp8Quantize.data(), JitllmOp::kMxfp8Quantize},
+      {kTagMxfp8Swizzle.data(), JitllmOp::kMxfp8Swizzle},
+      {kTagMxfp8Gemm.data(), JitllmOp::kMxfp8Gemm},
       {kTagGdnConv.data(), JitllmOp::kGdnConv},
       {kTagGdnNormGate.data(), JitllmOp::kGdnNormGate},
       {kTagHcCombine.data(), JitllmOp::kHcCombine},
@@ -316,9 +340,8 @@ ggml_tensor* ToBf16(ggml_context* context, ggml_tensor* x) {
                 kTagBf16.data());
 }
 
-ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x) {
-  return Custom(context, GGML_TYPE_F32, {weights->ne[1], x->ne[1], 1, 1}, {weights, x},
-                kTagGemmBf16.data());
+ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x, ggml_type type) {
+  return Custom(context, type, {weights->ne[1], x->ne[1], 1, 1}, {weights, x}, kTagGemmBf16.data());
 }
 
 ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history,
@@ -334,9 +357,23 @@ ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history
 
 ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* weight, ggml_tensor* z,
                          float eps, ggml_type type) {
-  return WithEps(Custom(context, type, {o->ne[0] * o->ne[1], o->ne[2], 1, 1}, {o, weight, z},
-                        kTagGdnNormGate.data()),
-                 eps);
+  const std::int64_t k = o->ne[0] * o->ne[1];
+  const std::int64_t t = o->ne[2];
+  const std::array<std::int64_t, 4> ne =
+      type == GGML_TYPE_I8
+          ? std::array<std::int64_t, 4>{static_cast<std::int64_t>(
+                                            mxfp8::RowsLayout{.k = static_cast<std::uint64_t>(k),
+                                                              .rows = static_cast<std::uint64_t>(t)}
+                                                .bytes()),
+                                        1, 1, 1}
+          : std::array<std::int64_t, 4>{k, t, 1, 1};
+  return WithEps(Custom(context, type, ne, {o, weight, z}, kTagGdnNormGate.data()), eps);
+}
+
+ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps) {
+  return WithInts(
+      Custom(context, GGML_TYPE_F32, {taps * x->ne[0], 1, 1, 1}, {x}, kTagGdnHistory.data()),
+      {taps});
 }
 
 namespace {
@@ -737,9 +774,12 @@ bool IsRoute(const ggml_tensor* route, const RouteExtents& want) {
 bool IsQuantized(const ggml_tensor* a, const ggml_tensor* route, const RouteExtents& r,
                  std::int64_t k) {
   const JitllmOp op = JitllmOpOf(a);
-  const ggml_tensor* laid_out_by = op == JitllmOp::kMoeQuantize      ? a->src[1]
-                                   : op == JitllmOp::kMoeGluQuantize ? a->src[2]
-                                                                     : nullptr;
+  const ggml_tensor* laid_out_by = nullptr;
+  if (op == JitllmOp::kMoeQuantize) {
+    laid_out_by = a->src[1];
+  } else if (op == JitllmOp::kMoeGluQuantize) {
+    laid_out_by = a->src[2];
+  }
   return laid_out_by != nullptr && laid_out_by == route && Bound(a) && a->type == GGML_TYPE_I8 &&
          Packed(a) && Aligned(a, 16) && AllCurrent({a}) && JitllmOpInt(a, 0) == r.experts &&
          JitllmOpInt(a, 1) == r.used && JitllmOpInt(a, 2) == r.tokens && JitllmOpInt(a, 3) == k &&
@@ -906,10 +946,11 @@ std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node) {
   const std::int64_t head = JitllmOpInt(node, 1);
   const float eps = JitllmOpFloat(node, 2);
   const float scale = JitllmOpFloat(node, 3);
-  if (!IsF32(x) || !Shaped(x, channels, t, 1) || !IsF32(weight) ||
+  if ((!IsF32(x) && x->type != GGML_TYPE_BF16) || !Shaped(x, channels, t, 1) || !IsF32(weight) ||
       !Shaped(weight, 4, channels, 1) || !IsF32(history) ||
       ggml_nelements(history) != 3 * channels || !IsF32(node) || !Shaped(node, channels, t, 1)) {
-    return Rejected("F32 rows [channels, t], a 4-tap weight [4, channels] and a history of 3");
+    return Rejected(
+        "F32 or BF16 rows [channels, t], a 4-tap weight [4, channels] and a history of 3");
   }
   if (head != 128 || qk < 0 || qk % head != 0 || qk > channels || channels % head != 0 ||
       t > 65535 || std::cmp_greater(ggml_nelements(node), kInt32Max) || !std::isfinite(eps) ||
@@ -917,11 +958,27 @@ std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node) {
     return Rejected("heads of 128 channels, normalized heads leading, within the kernel's grid");
   }
   for (const ggml_tensor* tensor : {x, history, weight, node}) {
-    if (!Aligned(tensor, sizeof(float))) {
-      return Rejected("aligned F32 operands");
+    if (!Aligned(tensor, ggml_type_size(tensor->type))) {
+      return Rejected("aligned operands");
     }
   }
   return CheckDense(node, {x, history, weight});
+}
+
+std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kGdnHistory, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const std::int64_t taps = JitllmOpInt(node, 0);
+  const std::int64_t channels = x->ne[0];
+  if ((!IsF32(x) && x->type != GGML_TYPE_BF16) || !Shaped(x, channels, x->ne[1], 1) || taps <= 0 ||
+      taps > 8 || x->ne[1] < taps || !IsF32(node) || !Shaped(node, taps * channels, 1, 1) ||
+      std::cmp_greater(ggml_nelements(node), kInt32Max) || !Aligned(x, ggml_type_size(x->type)) ||
+      !Aligned(node, sizeof(float))) {
+    return Rejected("F32 or BF16 rows [channels, t] into the history of their last rows");
+  }
+  return CheckDense(node, {x});
 }
 
 std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node) {
@@ -935,19 +992,24 @@ std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node) {
   const std::int64_t heads = o->ne[1];
   const std::int64_t t = o->ne[2];
   const float eps = JitllmOpEps(node);
-  if (!IsF32(o) || d != 128 || o->ne[3] != 1 || !Vector(weight, d) || !IsF32(z) ||
-      !Shaped(z, d * heads, t, 1) ||
-      (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16) ||
-      !Shaped(node, d * heads, t, 1) || !std::isfinite(eps) || eps < 0.0f ||
-      std::cmp_greater(heads * t, kInt32Max)) {
-    return Rejected("F32 heads [128, heads, t], a weight [128] and a gate [128 · heads, t]");
+  const bool quantized = node->type == GGML_TYPE_I8;
+  const mxfp8::RowsLayout rows{.k = static_cast<std::uint64_t>(d * heads),
+                               .rows = static_cast<std::uint64_t>(t)};
+  if (!IsF32(o) || d != 128 || o->ne[3] != 1 || !Vector(weight, d) ||
+      (!IsF32(z) && z->type != GGML_TYPE_BF16) || !Shaped(z, d * heads, t, 1) ||
+      (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16 && !quantized) ||
+      (quantized ? !Shaped(node, static_cast<std::int64_t>(rows.bytes()), 1, 1)
+                 : !Shaped(node, d * heads, t, 1)) ||
+      !std::isfinite(eps) || eps < 0.0f || std::cmp_greater(heads * t, kInt32Max)) {
+    return Rejected(
+        "F32 heads [128, heads, t], a weight [128] and an F32 or BF16 gate [128 · heads, t]");
   }
   for (const ggml_tensor* tensor : {o, weight, z}) {
-    if (!Aligned(tensor, sizeof(float))) {
-      return Rejected("aligned F32 operands");
+    if (!Aligned(tensor, ggml_type_size(tensor->type))) {
+      return Rejected("aligned operands");
     }
   }
-  if (!Aligned(node, ggml_type_size(node->type))) {
+  if (!Aligned(node, quantized ? 16 : ggml_type_size(node->type))) {
     return Rejected("an aligned output");
   }
   return CheckDense(node, {o, weight, z});
@@ -1005,9 +1067,10 @@ std::expected<void, KernelFailure> CheckGemmBf16(const ggml_tensor* node) {
   const std::int64_t k = weights->ne[0];
   const std::int64_t n = weights->ne[1];
   const std::int64_t t = x->ne[1];
-  if (weights->type != GGML_TYPE_BF16 || x->type != GGML_TYPE_BF16 || !IsF32(node) ||
-      !Shaped(weights, k, n, 1) || !Shaped(x, k, t, 1) || !Shaped(node, n, t, 1)) {
-    return Rejected("BF16 weights [k, n] and activations [k, t] into F32 [n, t]");
+  if (weights->type != GGML_TYPE_BF16 || x->type != GGML_TYPE_BF16 ||
+      (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16) || !Shaped(weights, k, n, 1) ||
+      !Shaped(x, k, t, 1) || !Shaped(node, n, t, 1)) {
+    return Rejected("BF16 weights [k, n] and activations [k, t] into F32 or BF16 [n, t]");
   }
   if (std::cmp_greater(k, kInt32Max) || std::cmp_greater(n, kInt32Max) ||
       std::cmp_greater(t, kInt32Max) || !Aligned(weights, 16) || !Aligned(x, 16) ||
@@ -1015,6 +1078,443 @@ std::expected<void, KernelFailure> CheckGemmBf16(const ggml_tensor* node) {
     return Rejected("cuBLAS's int extents and 16-byte aligned operands");
   }
   return CheckDense(node, {weights, x});
+}
+
+ggml_tensor* Mxfp8Quantize(ggml_context* context, ggml_tensor* x) {
+  const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(x->ne[0]),
+                                 .rows = static_cast<std::uint64_t>(x->ne[1])};
+  return WithInts(
+      Custom(context, GGML_TYPE_I8, {static_cast<std::int64_t>(layout.bytes()), 1, 1, 1}, {x},
+             kTagMxfp8Quantize.data()),
+      {x->ne[0], x->ne[1]});
+}
+
+ggml_tensor* Mxfp8Swizzle(ggml_context* context, ggml_tensor* scales) {
+  const std::int64_t n = scales->ne[1];
+  const std::int64_t k = scales->ne[0] * static_cast<std::int64_t>(mxfp8::kBlock);
+  return WithInts(Custom(context, GGML_TYPE_I8,
+                         {static_cast<std::int64_t>(mxfp8::SwizzledScaleBytes(
+                              static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(k))),
+                          1, 1, 1},
+                         {scales}, kTagMxfp8Swizzle.data()),
+                  {n, k});
+}
+
+ggml_tensor* Mxfp8Gemm(ggml_context* context, ggml_tensor* a, ggml_tensor* codes,
+                       ggml_tensor* scales, ggml_type type, std::int64_t t) {
+  const std::int64_t k = codes->ne[0];
+  const std::int64_t n = codes->ne[1];
+  return WithInts(Custom(context, type, {n, t, 1, 1}, {a, codes, scales}, kTagMxfp8Gemm.data()),
+                  {k, n, t});
+}
+
+namespace {
+
+// Extents the MXFP8 operations take: k a multiple of 128 (whole scale atoms
+// along k), each within the kernels' 32-bit grids.
+bool Mxfp8Extents(std::int64_t k, std::int64_t rows) {
+  return k > 0 && k % 128 == 0 && k <= (1 << 20) && rows > 0 &&
+         std::cmp_less_equal(mxfp8::PaddedRows(static_cast<std::uint64_t>(rows)), kInt32Max) &&
+         std::cmp_less_equal(
+             mxfp8::PaddedRows(static_cast<std::uint64_t>(rows)) * static_cast<std::uint64_t>(k),
+             kInt32Max * std::uint64_t{32});
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> CheckMxfp8Quantize(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kMxfp8Quantize, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const std::int64_t k = JitllmOpInt(node, 0);
+  const std::int64_t t = JitllmOpInt(node, 1);
+  const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(k),
+                                 .rows = static_cast<std::uint64_t>(t)};
+  if (!Mxfp8Extents(k, t) || (x->type != GGML_TYPE_F32 && x->type != GGML_TYPE_BF16) ||
+      !Shaped(x, k, t, 1) || x->nb[0] != ggml_type_size(x->type) || x->nb[1] % 16 != 0 ||
+      x->nb[1] < ggml_row_size(x->type, k) || !Aligned(x, 16) || AnyEmpty({x}) || !AllSane({x}) ||
+      !AllCurrent({x})) {
+    return Rejected(
+        "F32 or BF16 rows [k, t], k a multiple of 128, at a 16-byte aligned stride of a row or "
+        "more");
+  }
+  if (node->type != GGML_TYPE_I8 ||
+      !Shaped(node, static_cast<std::int64_t>(layout.bytes()), 1, 1) || !Aligned(node, 16) ||
+      !Disjoint(node, x, false)) {
+    return Rejected("an aligned I8 output of the quantized rows' layout, disjoint from x");
+  }
+  return CheckDense(node, {});
+}
+
+std::expected<void, KernelFailure> CheckMxfp8Swizzle(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kMxfp8Swizzle, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* scales = node->src[0];
+  const std::int64_t n = JitllmOpInt(node, 0);
+  const std::int64_t k = JitllmOpInt(node, 1);
+  if (!Mxfp8Extents(k, n) || !IsBytes(scales) ||
+      !Shaped(scales, k / static_cast<std::int64_t>(mxfp8::kBlock), n, 1) ||
+      node->type != GGML_TYPE_I8 ||
+      !Shaped(node,
+              static_cast<std::int64_t>(mxfp8::SwizzledScaleBytes(static_cast<std::uint64_t>(n),
+                                                                  static_cast<std::uint64_t>(k))),
+              1, 1) ||
+      !Aligned(node, 16)) {
+    return Rejected("I8 scales [k / 32, n] into the product's swizzled layout");
+  }
+  return CheckDense(node, {scales});
+}
+
+std::expected<void, KernelFailure> CheckMxfp8Gemm(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kMxfp8Gemm, 3); !checked) {
+    return checked;
+  }
+  const ggml_tensor* a = node->src[0];
+  const ggml_tensor* codes = node->src[1];
+  const ggml_tensor* scales = node->src[2];
+  const std::int64_t k = JitllmOpInt(node, 0);
+  const std::int64_t n = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  // The activations: a quantization of [k, t] (jitllm.mxfp8.quantize's, or
+  // a fusion's that ends in one), I8 bytes of the rows' layout.
+  const mxfp8::RowsLayout rows{.k = static_cast<std::uint64_t>(k),
+                               .rows = static_cast<std::uint64_t>(t)};
+  if (!Mxfp8Extents(k, t) || !Mxfp8Extents(k, n) || !IsBytes(a) ||
+      !Shaped(a, static_cast<std::int64_t>(rows.bytes()), 1, 1) ||
+      (JitllmOpOf(a) == JitllmOp::kMxfp8Quantize &&
+       (JitllmOpInt(a, 0) != k || JitllmOpInt(a, 1) != t)) ||
+      JitllmOpOf(scales) != JitllmOp::kMxfp8Swizzle || JitllmOpInt(scales, 0) != n ||
+      JitllmOpInt(scales, 1) != k || !Aligned(a, 16) || !Aligned(scales, 16)) {
+    return Rejected("the quantized activations [k, t] and the weight's swizzled scales [n, k]");
+  }
+  if (!IsBytes(codes) || !Shaped(codes, k, n, 1) || !Aligned(codes, 16)) {
+    return Rejected("the weight's I8 codes [k, n], 16-byte aligned");
+  }
+  const std::size_t element = ggml_type_size(node->type);
+  if ((node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16) || !Shaped(node, n, t, 1) ||
+      (static_cast<std::uint64_t>(n) * element) % 16 != 0 || !Aligned(node, 16)) {
+    return Rejected("an F32 or BF16 output [n, t], its rows whole 16 bytes, 16-byte aligned");
+  }
+  return CheckDense(node, {a, codes, scales});
+}
+
+ggml_tensor* HcPrep(ggml_context* context, ggml_tensor* x, ggml_tensor* norm, ggml_tensor* inject,
+                    ggml_tensor* out, ggml_tensor* logits, float eps) {
+  const HcPrepLayout layout{.width = x->ne[0],
+                            .hc = x->ne[1],
+                            .t = x->ne[2],
+                            .combine = out != nullptr,
+                            .inject = inject != nullptr};
+  std::array<ggml_tensor*, 5> args{x, norm};
+  std::size_t n = 2;
+  if (inject != nullptr) {
+    args[n++] = inject;
+  }
+  if (out != nullptr) {
+    args[n++] = out;
+    args[n++] = logits;
+  }
+  std::array<ggml_tensor*, GGML_MAX_SRC> list{};
+  std::copy_n(args.begin(), n, list.begin());
+  ggml_tensor* node =
+      ggml_custom_4d(context, GGML_TYPE_I8, static_cast<std::int64_t>(layout.bytes()), 1, 1, 1,
+                     list.data(), static_cast<int>(n), &JitllmCustomTag, 1, kTagHcPrep.data());
+  WithInts(node,
+           {layout.width, layout.hc, layout.t, layout.combine ? 1 : 0, layout.inject ? 1 : 0});
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 20, &eps, sizeof(eps));
+  return node;
+}
+
+ggml_tensor* HcLo(ggml_context* context, ggml_tensor* lo, std::int64_t hc) {
+  return WithInts(
+      Custom(context, GGML_TYPE_BF16, {lo->ne[0], lo->ne[1], 1, 1}, {lo}, kTagHcLo.data()), {hc});
+}
+
+std::uint64_t HcMixLayout::quantized_bytes() const {
+  return mxfp8::RowsLayout{.k = static_cast<std::uint64_t>(width),
+                           .rows = static_cast<std::uint64_t>(t)}
+      .bytes();
+}
+
+ggml_tensor* HcMixBf16(ggml_context* context, ggml_tensor* normed, ggml_tensor* gate,
+                       std::int64_t hc, bool mxfp8, bool bf16) {
+  const std::int64_t width = normed->ne[0] / hc;
+  const std::int64_t t = normed->ne[1];
+  if (!mxfp8) {
+    return WithInts(
+        Custom(context, GGML_TYPE_F32, {width, t, 1, 1}, {normed, gate}, kTagHcMixBf16.data()),
+        {hc, width, t, 0, 0});
+  }
+  const HcMixLayout layout{.width = width, .t = t, .bf16 = bf16};
+  return WithInts(
+      Custom(context, GGML_TYPE_I8, {static_cast<std::int64_t>(layout.bytes()), 1, 1, 1},
+             {normed, gate}, kTagHcMixBf16.data()),
+      {hc, width, t, 1, bf16 ? 1 : 0});
+}
+
+namespace {
+
+HcPrepLayout HcPrepLayoutOf(const ggml_tensor* node) {
+  return {.width = JitllmOpInt(node, 0),
+          .hc = JitllmOpInt(node, 1),
+          .t = JitllmOpInt(node, 2),
+          .combine = JitllmOpInt(node, 3) == 1,
+          .inject = JitllmOpInt(node, 4) == 1};
+}
+
+// Packed rows [n0, n1] of `type`, 16-byte aligned: views of a blob too.
+bool Rows(const ggml_tensor* t, ggml_type type, std::int64_t n0, std::int64_t n1) {
+  return t != nullptr && t->type == type && Shaped(t, n0, n1, 1) && Packed(t) && Aligned(t, 16) &&
+         !AnyEmpty({t}) && AllSane({t}) && AllCurrent({t});
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> CheckHcPrep(const ggml_tensor* node) {
+  const HcPrepLayout l = HcPrepLayoutOf(node);
+  const int arity = 2 + (l.inject ? 1 : 0) + (l.combine ? 2 : 0);
+  if (auto checked = CheckCustom(node, JitllmOp::kHcPrep, arity); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* norm = node->src[1];
+  const ggml_tensor* inject = l.inject ? node->src[2] : nullptr;
+  const ggml_tensor* out = l.combine ? node->src[l.inject ? 3 : 2] : nullptr;
+  const ggml_tensor* logits = l.combine ? node->src[l.inject ? 4 : 3] : nullptr;
+  const float eps = JitllmOpFloat(node, 5);
+  const std::int64_t wide = l.width * l.hc;
+  if (l.width <= 0 || l.width % 8 != 0 || l.width > 4096 || l.hc <= 0 || l.hc > 8 || l.t <= 0 ||
+      std::cmp_greater(wide, 1 << 16) || std::cmp_greater(l.t, kInt32Max) ||
+      (JitllmOpInt(node, 3) != 0 && !l.combine) || (JitllmOpInt(node, 4) != 0 && !l.inject) ||
+      !std::isfinite(eps) || eps < 0.0f) {
+    return Rejected(
+        "streams of whole 8 values, at most 4,096 of them (a thread a float4 column), at most 8 "
+        "streams, a finite eps");
+  }
+  if (!IsF32(x) || x->ne[0] != l.width || x->ne[1] != l.hc || x->ne[2] != l.t || x->ne[3] != 1 ||
+      !Packed(x) || !Aligned(x, 16) || !Vector(norm, wide) || !Aligned(norm, 16) ||
+      (inject != nullptr && !Rows(inject, GGML_TYPE_BF16, wide, l.hc)) ||
+      (out != nullptr && !Rows(out, GGML_TYPE_F32, l.width, l.t)) ||
+      (logits != nullptr &&
+       (!IsF32(logits) || !Shaped(logits, l.hc, l.t, 1) || logits->nb[0] != sizeof(float) ||
+        logits->nb[1] != static_cast<std::size_t>(l.hc) * sizeof(float) ||
+        !Aligned(logits, sizeof(float))))) {
+    return Rejected(
+        "F32 streams [width, hc, t], a norm weight [width · hc], a BF16 inject weight [width · "
+        "hc, hc], an F32 output [width, t] and logits [hc, t], packed and aligned");
+  }
+  if (node->type != GGML_TYPE_I8 || !Shaped(node, static_cast<std::int64_t>(l.bytes()), 1, 1) ||
+      !Aligned(node, 256)) {
+    return Rejected("a 256-byte aligned I8 blob of the layout's bytes");
+  }
+  for (const ggml_tensor* t : {x, norm, inject, out, logits}) {
+    if (t != nullptr && !Disjoint(node, t, false)) {
+      return Rejected("an output overlapping an operand");
+    }
+  }
+  return CheckDense(node, {x, norm});
+}
+
+std::expected<void, KernelFailure> CheckHcLo(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kHcLo, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* lo = node->src[0];
+  const std::int64_t hc = JitllmOpInt(node, 0);
+  if (!IsF32(lo) || lo->ne[2] != 1 || lo->ne[3] != 1 || node->type != GGML_TYPE_BF16 ||
+      !ggml_are_same_shape(node, lo) || hc <= 0 || hc > 8 ||
+      std::cmp_greater(ggml_nelements(lo), kInt32Max) || !Aligned(lo, sizeof(float)) ||
+      !Aligned(node, 2)) {
+    return Rejected("F32 [rank, t] into BF16 of its shape, at most 8 streams");
+  }
+  return CheckDense(node, {lo});
+}
+
+std::expected<void, KernelFailure> CheckHcMixBf16(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kHcMixBf16, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* normed = node->src[0];
+  const ggml_tensor* gate = node->src[1];
+  const std::int64_t hc = JitllmOpInt(node, 0);
+  const std::int64_t width = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const bool blob = JitllmOpInt(node, 3) == 1;
+  const HcMixLayout layout{.width = width, .t = t, .bf16 = JitllmOpInt(node, 4) == 1};
+  if (hc <= 0 || hc > 8 || width <= 0 || width % 8 != 0 || t <= 0 ||
+      (JitllmOpInt(node, 3) != 0 && !blob) || (JitllmOpInt(node, 4) != 0 && !layout.bf16) ||
+      (layout.bf16 && !blob) || (blob && !Mxfp8Extents(width, t)) ||
+      !Rows(normed, GGML_TYPE_BF16, width * hc, t) || !Rows(gate, GGML_TYPE_BF16, width * hc, t) ||
+      !Aligned(node, blob ? 256 : 16) || std::cmp_greater(width * t / 8, kInt32Max)) {
+    return Rejected(
+        "BF16 normalized streams and logits [width · hc, t], width whole 8 values (128 for the "
+        "quantization)");
+  }
+  if (blob ? node->type != GGML_TYPE_I8 ||
+                 !Shaped(node, static_cast<std::int64_t>(layout.bytes()), 1, 1)
+           : !IsF32(node) || !Shaped(node, width, t, 1)) {
+    return Rejected("an F32 output [width, t], or the blob of its layout");
+  }
+  return CheckDense(node, {normed, gate});
+}
+
+ggml_tensor* QsaPrep(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
+                     ggml_tensor* positions, std::int64_t d, std::int64_t heads,
+                     std::int64_t stride, float eps, float theta_scale) {
+  ggml_tensor* node = WithInts(Custom(context, GGML_TYPE_F32, {d, heads, x->ne[1], 1},
+                                      {x, weight, positions}, kTagQsaPrep.data()),
+                               {d, heads, stride, x->ne[1]});
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 16, &eps, sizeof(eps));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 20, &theta_scale,
+              sizeof(theta_scale));
+  return node;
+}
+
+ggml_tensor* QsaGateQuantize(ggml_context* context, ggml_tensor* attn, ggml_tensor* q_full,
+                             std::int64_t d) {
+  const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(attn->ne[0]),
+                                 .rows = static_cast<std::uint64_t>(attn->ne[1])};
+  return WithInts(
+      Custom(context, GGML_TYPE_I8, {static_cast<std::int64_t>(layout.bytes()), 1, 1, 1},
+             {attn, q_full}, kTagQsaGateQuantize.data()),
+      {d, attn->ne[0] / d, attn->ne[1]});
+}
+
+std::expected<void, KernelFailure> CheckQsaPrep(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaPrep, 3); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* weight = node->src[1];
+  const ggml_tensor* positions = node->src[2];
+  const std::int64_t d = JitllmOpInt(node, 0);
+  const std::int64_t heads = JitllmOpInt(node, 1);
+  const std::int64_t stride = JitllmOpInt(node, 2);
+  const std::int64_t t = JitllmOpInt(node, 3);
+  const float eps = JitllmOpFloat(node, 4);
+  const float theta_scale = JitllmOpFloat(node, 5);
+  if (d < 64 || d % 32 != 0 || d > 512 || heads <= 0 || stride < d || t <= 0 ||
+      std::cmp_greater(heads * t, kInt32Max) || !std::isfinite(eps) || eps < 0.0f ||
+      !std::isfinite(theta_scale)) {
+    return Rejected("heads of 64 to 512 values (whole warps) at least a head apart");
+  }
+  if (!IsF32(x) || x->ne[1] != t || x->ne[2] != 1 || x->ne[3] != 1 || !Packed(x) ||
+      x->ne[0] < ((heads - 1) * stride) + d || !Aligned(x, sizeof(float)) || !Vector(weight, d) ||
+      positions->type != GGML_TYPE_I32 || ggml_nelements(positions) < t || !Packed(positions) ||
+      !IsF32(node) || !Shaped(node, d, heads, t)) {
+    return Rejected(
+        "F32 rows [n, t] holding the heads, a weight [d], I32 positions, into [d, "
+        "heads, t]");
+  }
+  return CheckDense(node, {x, weight, positions});
+}
+
+std::expected<void, KernelFailure> CheckQsaGateQuantize(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaGateQuantize, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* attn = node->src[0];
+  const ggml_tensor* q_full = node->src[1];
+  const std::int64_t d = JitllmOpInt(node, 0);
+  const std::int64_t heads = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(d * heads),
+                                 .rows = static_cast<std::uint64_t>(t)};
+  if (d <= 0 || d % 32 != 0 || heads <= 0 || !Mxfp8Extents(d * heads, t) || !IsF32(attn) ||
+      !Shaped(attn, d * heads, t, 1) || !IsF32(q_full) || !Shaped(q_full, 2 * d * heads, t, 1) ||
+      !Aligned(attn, 16) || !Aligned(q_full, 16) || node->type != GGML_TYPE_I8 ||
+      !Shaped(node, static_cast<std::int64_t>(layout.bytes()), 1, 1) || !Aligned(node, 16)) {
+    return Rejected(
+        "F32 attention [d · heads, t] and query rows [2 · d · heads, t] into MXFP8 rows");
+  }
+  return CheckDense(node, {attn, q_full});
+}
+
+ggml_tensor* QsaSelect(ggml_context* context, ggml_tensor* score, ggml_tensor* bias,
+                       ggml_tensor* cell_block, ggml_tensor* positions, std::int64_t width) {
+  const std::int64_t n_kv = cell_block->ne[0];
+  const std::int64_t t = score->ne[2];
+  return WithInts(Custom(context, GGML_TYPE_F16, {n_kv, t, 1, 1},
+                         {score, bias, cell_block, positions}, kTagQsaSelect.data()),
+                  {score->ne[0], score->ne[1], t, n_kv, width});
+}
+
+namespace {
+
+// The selection's shared memory: every block's score.
+std::uint64_t QsaSelectShared(std::int64_t blocks) {
+  return static_cast<std::uint64_t>(blocks) * sizeof(float);
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> CheckQsaSelect(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaSelect, 4); !checked) {
+    return checked;
+  }
+  const ggml_tensor* score = node->src[0];
+  const ggml_tensor* bias = node->src[1];
+  const ggml_tensor* cell_block = node->src[2];
+  const ggml_tensor* positions = node->src[3];
+  const std::int64_t blocks = JitllmOpInt(node, 0);
+  const std::int64_t heads = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const std::int64_t n_kv = JitllmOpInt(node, 3);
+  const std::int64_t width = JitllmOpInt(node, 4);
+  if (blocks <= 0 || blocks > kQsaSelectMaxBlocks || heads <= 0 || heads > 64 || t <= 0 ||
+      t > 65535 || n_kv <= 0 || width <= 0 || width > n_kv || QsaSelectShared(blocks) > 32768 ||
+      std::cmp_greater(n_kv * t, kInt32Max)) {
+    return Rejected("at most 8,192 blocks, 64 heads and 65,535 tokens, a width within the cells");
+  }
+  if (!IsF32(score) || !Shaped(score, blocks, heads, t) || !IsF32(bias) ||
+      !Shaped(bias, blocks, t, 1) || cell_block->type != GGML_TYPE_I32 ||
+      !Shaped(cell_block, n_kv, 1, 1) || positions->type != GGML_TYPE_I32 ||
+      ggml_nelements(positions) < t || node->type != GGML_TYPE_F16 || !Shaped(node, n_kv, t, 1) ||
+      !Aligned(score, 4) || !Aligned(bias, 4) || !Aligned(cell_block, 4) ||
+      !Aligned(positions, 4) || !Aligned(node, 2)) {
+    return Rejected(
+        "F32 scores [blocks, heads, t] and bias [blocks, t], I32 cell blocks [n_kv] and "
+        "positions, into an F16 mask [n_kv, t]");
+  }
+  return CheckDense(node, {score, bias, cell_block, positions});
+}
+
+ggml_tensor* MoeRouter(ggml_context* context, ggml_tensor* logits, ggml_tensor* x,
+                       ggml_tensor* gate_row, std::int64_t used) {
+  const MoeRouterLayout layout{.used = used, .t = logits->ne[1]};
+  return WithInts(Custom(context, GGML_TYPE_I32, {layout.ints(), 1, 1, 1}, {logits, x, gate_row},
+                         kTagMoeRouter.data()),
+                  {logits->ne[0], used, logits->ne[1], x->ne[0]});
+}
+
+std::expected<void, KernelFailure> CheckMoeRouter(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kMoeRouter, 3); !checked) {
+    return checked;
+  }
+  const std::int64_t experts = JitllmOpInt(node, 0);
+  const std::int64_t used = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const std::int64_t width = JitllmOpInt(node, 3);
+  const MoeRouterLayout layout{.used = used, .t = t};
+  const ggml_tensor* logits = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const ggml_tensor* gate_row = node->src[2];
+  if (experts <= 0 || experts % 32 != 0 || experts > 1024 || used <= 0 || used > 32 ||
+      used > experts || t <= 0 || width <= 0 || width % 4 != 0 ||
+      std::cmp_greater(layout.ints(), kInt32Max)) {
+    return Rejected("32 to 1,024 experts (whole warps), at most 32 used, whole float4 rows");
+  }
+  if (!IsF32(logits) || !Shaped(logits, experts, t, 1) || !IsF32(x) || !Shaped(x, width, t, 1) ||
+      gate_row->type != GGML_TYPE_BF16 || ggml_nelements(gate_row) != width || !Aligned(x, 16) ||
+      !Aligned(gate_row, 8) || !Aligned(logits, sizeof(float)) || node->type != GGML_TYPE_I32 ||
+      !Shaped(node, layout.ints(), 1, 1) || !Aligned(node, 16)) {
+    return Rejected(
+        "F32 logits [experts, t] and x [width, t], a BF16 gate row [width], into the routing's "
+        "I32 blob");
+  }
+  return CheckDense(node, {logits, x, gate_row});
 }
 
 }  // namespace jitllm::kernels::ggml

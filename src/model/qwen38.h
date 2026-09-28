@@ -276,6 +276,7 @@ struct Qwen38ChunkInputs {
   std::vector<std::int64_t> cells;      // rows: each token's cache cell
   std::vector<std::uint16_t> mask;      // F16 bits [n_kv, rows]: 0 visible, -inf not
   std::vector<float> mask_f32;          // the same in F32, for the indexer's scores
+                                        // (both empty where not asked for)
   std::vector<std::int32_t> ple_rows;   // ple_heads x rows: the n-gram table's rows
   bool qsa_select = false;              // the indexer's budget is below n_kv
   Qwen38QsaInputs qsa;                  // when qsa_select
@@ -286,12 +287,16 @@ struct Qwen38ChunkInputs {
 // n-gram hash reads each token's predecessors). Refused if the chunk is
 // empty, runs past the layout's context, is longer than its chunk bound,
 // the history is not n_past + rows tokens, or a token is outside the
-// vocabulary.
+// vocabulary. With `selection_masks` false, a chunk whose QSA selects gets
+// no host-built masks (the GGML fast graph's selection makes them on the
+// device, kernels/ggml/qwen38_graph.h), which at a context of 8,192 are
+// 192 MiB a chunk.
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& profile,
                                                           const Qwen38StateLayout& state,
                                                           const Qwen38PleHash& hash,
                                                           std::span<const std::int32_t> history,
-                                                          std::uint32_t n_past, std::uint32_t rows);
+                                                          std::uint32_t n_past, std::uint32_t rows,
+                                                          bool selection_masks = true);
 
 // The n-gram rows of the token at `position` (exposed for tests):
 // ple_heads rows, llm_graph_input_ple::set_input's hash.

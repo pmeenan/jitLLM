@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // jitLLM's own kernels on GGML tensors (jitllm_ops.h): MXFP8 vector
-// products and dequantization, and NVFP4 table rows.
+// products, dequantization, quantization and the tensor-core product's
+// launch (mxfp8_cutlass.h), and NVFP4 table rows.
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -10,11 +11,15 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
 
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/moe_cutlass.h"
+#include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/mxfp8_quant.cuh"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -214,6 +219,89 @@ __global__ void CopyRangesKernel(const RangeCopy* __restrict__ ranges) {
   }
 }
 
+// Thirty-two values of row `x` from `at` as floats.
+__device__ __forceinline__ void Load32(const float* x, float v[32]) {
+  const auto* p = reinterpret_cast<const float4*>(x);
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    const float4 f = p[i];
+    v[(4 * i) + 0] = f.x;
+    v[(4 * i) + 1] = f.y;
+    v[(4 * i) + 2] = f.z;
+    v[(4 * i) + 3] = f.w;
+  }
+}
+__device__ __forceinline__ void Load32(const __nv_bfloat16* x, float v[32]) {
+  const auto* p = reinterpret_cast<const uint4*>(x);
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    const uint4 q = p[i];
+    const std::uint32_t words[4] = {q.x, q.y, q.z, q.w};
+#pragma unroll
+    for (int w = 0; w < 4; ++w) {
+      v[(8 * i) + (2 * w) + 0] = __uint_as_float(words[w] << 16U);
+      v[(8 * i) + (2 * w) + 1] = __uint_as_float(words[w] & 0xffff0000U);
+    }
+  }
+}
+
+// One 32-value block a thread (rows past `rows`, up to the scale atoms'
+// padding, write a zero scale): its E8M0 scale and 32 E4M3 codes.
+template <typename T>
+__global__ void Mxfp8QuantizeKernel(const T* __restrict__ x, std::int64_t x_stride,
+                                    std::uint8_t* __restrict__ codes,
+                                    std::uint8_t* __restrict__ scales, int k, int rows,
+                                    std::int64_t items) {
+  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i >= items) {
+    return;
+  }
+  const int blocks = k / 32;
+  const auto r = static_cast<int>(i / blocks);
+  const auto b = static_cast<int>(i % blocks);
+  const std::uint64_t at =
+      moe::SfOffset(static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(b),
+                    static_cast<std::uint64_t>(blocks));
+  if (r >= rows) {
+    scales[at] = 0;
+    return;
+  }
+  float v[32];
+  Load32(x + (static_cast<std::int64_t>(r) * x_stride) + (b * 32), v);
+  float amax = 0.0f;
+#pragma unroll
+  for (int j = 0; j < 32; ++j) {
+    amax = fmaxf(amax, fabsf(v[j]));
+  }
+  const std::uint32_t e = mxfp8::ScaleCode(amax);
+  const float inverse = mxfp8::InverseScale(e);
+  std::uint32_t packed[8];
+#pragma unroll
+  for (int j = 0; j < 8; ++j) {
+    packed[j] =
+        mxfp8::Pack4(v[(4 * j) + 0], v[(4 * j) + 1], v[(4 * j) + 2], v[(4 * j) + 3], inverse);
+  }
+  auto* out = reinterpret_cast<uint4*>(codes + (static_cast<std::int64_t>(r) * k) + (b * 32));
+  out[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+  out[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
+  scales[at] = static_cast<std::uint8_t>(e);
+}
+
+// One scale a thread: row r's block b to its swizzled place (zero for the
+// padding rows).
+__global__ void Mxfp8SwizzleKernel(const std::uint8_t* __restrict__ in,
+                                   std::uint8_t* __restrict__ out, int n, int blocks,
+                                   std::int64_t items) {
+  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i >= items) {
+    return;
+  }
+  const auto r = static_cast<int>(i / blocks);
+  const auto b = static_cast<int>(i % blocks);
+  out[moe::SfOffset(static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(b),
+                    static_cast<std::uint64_t>(blocks))] = r < n ? in[i] : 0;
+}
+
 template <int kColumns>
 void LaunchGemv(const ggml_tensor* node, cudaStream_t stream) {
   const ggml_tensor* codes = node->src[0];
@@ -325,6 +413,113 @@ std::expected<void, KernelFailure> RunNvfp4Rows(LaunchContext& launch, ggml_tens
         static_cast<const std::int32_t*>(node->src[1]->data),
         static_cast<const float*>(node->src[2]->data), static_cast<float*>(node->data), values);
   });
+}
+
+std::expected<void, KernelFailure> RunMxfp8Quantize(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckMxfp8Quantize(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* x = node->src[0];
+    const int k = JitllmOpInt(node, 0);
+    const int rows = JitllmOpInt(node, 1);
+    const mxfp8::RowsLayout layout{.k = static_cast<std::uint64_t>(k),
+                                   .rows = static_cast<std::uint64_t>(rows)};
+    auto* base = static_cast<std::uint8_t*>(node->data);
+    const std::int64_t items = static_cast<std::int64_t>(mxfp8::PaddedRows(layout.rows)) * (k / 32);
+    constexpr int kThreads = 256;
+    const auto grid = static_cast<unsigned>((items + kThreads - 1) / kThreads);
+    const auto stride = static_cast<std::int64_t>(x->nb[1] / ggml_type_size(x->type));
+    if (x->type == GGML_TYPE_BF16) {
+      Mxfp8QuantizeKernel<<<grid, kThreads, 0, context.stream()>>>(
+          static_cast<const __nv_bfloat16*>(x->data), stride, base + layout.codes(),
+          base + layout.scales(), k, rows, items);
+    } else {
+      Mxfp8QuantizeKernel<<<grid, kThreads, 0, context.stream()>>>(
+          static_cast<const float*>(x->data), stride, base + layout.codes(), base + layout.scales(),
+          k, rows, items);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunMxfp8Swizzle(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckMxfp8Swizzle(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int n = JitllmOpInt(node, 0);
+    const int blocks = JitllmOpInt(node, 1) / 32;
+    const std::int64_t items =
+        static_cast<std::int64_t>(mxfp8::PaddedRows(static_cast<std::uint64_t>(n))) * blocks;
+    constexpr int kThreads = 256;
+    Mxfp8SwizzleKernel<<<static_cast<unsigned>((items + kThreads - 1) / kThreads), kThreads, 0,
+                         context.stream()>>>(static_cast<const std::uint8_t*>(node->src[0]->data),
+                                             static_cast<std::uint8_t*>(node->data), n, blocks,
+                                             items);
+  });
+}
+
+namespace {
+
+mxfp8::Gemm Mxfp8GemmOf(const ggml_tensor* node) {
+  const int k = JitllmOpInt(node, 0);
+  const int t = JitllmOpInt(node, 2);
+  const mxfp8::RowsLayout a{.k = static_cast<std::uint64_t>(k),
+                            .rows = static_cast<std::uint64_t>(t)};
+  const auto* base = static_cast<const std::uint8_t*>(node->src[0]->data);
+  return {.m = t,
+          .n = JitllmOpInt(node, 1),
+          .k = k,
+          .a = base + a.codes(),
+          .a_scales = base + a.scales(),
+          .b = node->src[1]->data,
+          .b_scales = node->src[2]->data,
+          .d = node->data,
+          .bf16 = node->type == GGML_TYPE_BF16};
+}
+
+}  // namespace
+
+std::expected<std::uint64_t, KernelFailure> PlanMxfp8Gemm(const LaunchContext& launch,
+                                                          const ggml_tensor* node) {
+  if (auto checked = CheckMxfp8Gemm(node); !checked) {
+    return std::unexpected(checked.error());
+  }
+  const auto& device = ggml_cuda_info().devices[launch.device()];
+  if (device.cc != 1210 || !mxfp8::Available()) {
+    return std::unexpected(
+        KernelFailure{.error = KernelError::kRejected,
+                      .detail = "the MXFP8 product runs on a compute capability 12.1 device only"});
+  }
+  return static_cast<std::uint64_t>(mxfp8::Scratch(Mxfp8GemmOf(node), device.nsm));
+}
+
+std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tensor* node) {
+  auto scratch = PlanMxfp8Gemm(launch, node);
+  if (!scratch) {
+    return std::unexpected(scratch.error());
+  }
+  const int sms = ggml_cuda_info().devices[launch.device()].nsm;
+  int status = 0;
+  auto ran = launch.Run(base::Bytes(*scratch), [&](ggml_backend_cuda_context& context) {
+    mxfp8::Gemm gemm = Mxfp8GemmOf(node);
+    if (*scratch > 0) {
+      ggml_cuda_pool_alloc<std::uint8_t> pool(context.pool(), *scratch);
+      gemm.scratch = pool.get();
+      status = mxfp8::Run(gemm, sms, context.stream());
+    } else {
+      status = mxfp8::Run(gemm, sms, context.stream());
+    }
+  });
+  if (!ran) {
+    return ran;
+  }
+  if (status != 0) {
+    return std::unexpected(KernelFailure{
+        .error = KernelError::kRejected,
+        .detail = std::format("CUTLASS refused the MXFP8 product (status {})", status - 1)});
+  }
+  return {};
 }
 
 }  // namespace jitllm::kernels::ggml

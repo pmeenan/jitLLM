@@ -149,6 +149,17 @@ inline constexpr std::string_view kMoeGemvName = "jitllm.moe.gemv";
 inline constexpr std::string_view kGdnConvName = "jitllm.gdn.conv";
 inline constexpr std::string_view kGdnNormGateName = "jitllm.gdn.norm_gate";
 inline constexpr std::string_view kArgmaxName = "jitllm.argmax";
+inline constexpr std::string_view kMxfp8QuantizeName = "jitllm.mxfp8.quantize";
+inline constexpr std::string_view kMxfp8SwizzleName = "jitllm.mxfp8.swizzle";
+inline constexpr std::string_view kMxfp8GemmName = "jitllm.mxfp8.gemm.cutlass";
+inline constexpr std::string_view kHcPrepName = "jitllm.hc.prep";
+inline constexpr std::string_view kHcLoName = "jitllm.hc.lo";
+inline constexpr std::string_view kHcMixBf16Name = "jitllm.hc.mix_bf16";
+inline constexpr std::string_view kMoeRouterName = "jitllm.moe.router";
+inline constexpr std::string_view kGdnHistoryName = "jitllm.gdn.history";
+inline constexpr std::string_view kQsaPrepName = "jitllm.qsa.prep";
+inline constexpr std::string_view kQsaGateQuantizeName = "jitllm.qsa.gate_quantize";
+inline constexpr std::string_view kQsaSelectName = "jitllm.qsa.select";
 // A speculative verify's row-invariant products (D-092; ops_ext.h).
 inline constexpr std::string_view kMulMatVecQRows = "jitllm.mul_mat.mmvq_rows";
 inline constexpr std::string_view kMulMatIdVecQRows = "jitllm.mul_mat_id.mmvq_rows";

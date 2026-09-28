@@ -130,6 +130,7 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
       kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape,
                            {.expert_stride = m.places.stride,
                             .fused = m.fused,
+                            .exact = m.exact,
                             .experts = m.cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
                                                  : kg::Qwen38GraphOptions::Experts::kGgml});
   if (!graph) {
@@ -195,16 +196,20 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   std::ranges::iota(out.out_ids, static_cast<std::int32_t>(in.rows - outputs));
   out.zero_row = 0;
   out.zero_index = 0;
-  out.sources = {{g.tokens, in.tokens.data()},
-                 {g.positions, in.positions.data()},
-                 {g.cells, in.cells.data()},
-                 {g.mask, in.mask.data()},
-                 {g.ple_rows, ple_rows.empty() ? in.ple_rows.data() : ple_rows.data()},
-                 {g.state_row, &out.zero_row},
-                 {g.row_zero, &out.zero_index},
-                 {g.out_ids, out.out_ids.data()}};
+  out.sources = {
+      {g.tokens, in.tokens.data()}, {g.positions, in.positions.data()}, {g.cells, in.cells.data()}};
+  // The fast graph's QSA selection makes its masks on the device.
+  if (g.mask != nullptr) {
+    out.sources.emplace_back(g.mask, in.mask.data());
+  }
+  out.sources.emplace_back(g.ple_rows, ple_rows.empty() ? in.ple_rows.data() : ple_rows.data());
+  out.sources.emplace_back(g.state_row, &out.zero_row);
+  out.sources.emplace_back(g.row_zero, &out.zero_index);
+  out.sources.emplace_back(g.out_ids, out.out_ids.data());
   if (in.qsa_select) {
-    out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
+    if (g.mask_f32 != nullptr) {
+      out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
+    }
     out.sources.emplace_back(g.cell_block, in.qsa.cell_block.data());
     out.sources.emplace_back(g.block_cells, in.qsa.block_cells.data());
     out.sources.emplace_back(g.block_pos, in.qsa.block_pos.data());

@@ -262,9 +262,11 @@ its closure once (D-093) decoding at 1.02× llama.cpp's unfused speed;
 Qwen3.8 Flash
 Next native and resident from Mia's NVFP4 checkpoint (against Mia's vLLM:
 greedy within near-ties under a bound set after the first comparison,
-perplexity −1.5%; prefill, after fused kernels and CUTLASS's grouped
-GEMM, 0.91× its speed at 8K in 8,192-row chunks, within D-085's gate,
-and 0.89× in 4,096-row chunks, just under it); and Qwen-Image-2.1 imported as component artifacts joined by a composition
+perplexity −1.5%; prefill, after a second pass under D-085's speed before
+bit exactness (MXFP8 tensor-core products, fused hyper-connections,
+routing and QSA selection), 1.41× its speed at 8K in 8,192-row chunks and
+1.38× in 4,096-row chunks, perplexity −0.8 to −1.2%, one greedy step
+now outside the near-tie bound, for the owner); and Qwen-Image-2.1 imported as component artifacts joined by a composition
 (D-089) and run natively (within its pre-registered bounds of diffusers
 BF16; 0.70× its generation time with weights resident, one prompt at
 1024², 40 steps); and all six ordered swap pairs of the three on the

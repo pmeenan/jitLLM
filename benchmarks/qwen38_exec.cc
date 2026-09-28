@@ -10,7 +10,7 @@
 //   jitllm_qwen38_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                      [--prompts FILE --generate N [--force FILE]]
 //                      [--ppl FILE] [--dump NAMES] [--layout-proof] [--ab]
-//                      [--bench-prefill N --bench-decode N] [--unfused]
+//                      [--bench-prefill N --bench-decode N] [--unfused | --exact]
 //                      [--convert-experts]
 //
 // - Weights: the artifact is opened as untrusted input (artifact.h), bound
@@ -28,8 +28,10 @@
 //   off and placed by the path the paged runner shares (qwen38_common.h),
 //   bound to the registry's implementations and run on one stream; plans
 //   are kept per chunk shape. The graph runs jitLLM's fusions (qwen38_graph.h
-//   Qwen38GraphOptions::fused); --unfused builds the GGML nodes they
-//   repeat, whose logits must be the same bit for bit.
+//   Qwen38GraphOptions::fused) in their fast form by default (D-085: speed
+//   before bit exactness), judged against the oracle; --exact runs the
+//   reference form, and --unfused builds the GGML nodes the reference form
+//   repeats, whose logits must be the reference form's bit for bit.
 // - The routed experts: an artifact in the CUTLASS layout (the importer's
 //   since the prefill work) is read as it is, and the graph's grouped GEMM
 //   and vector products read it. An artifact in GGML's layout (the first
@@ -501,6 +503,7 @@ struct Model {
   const md::Qwen38PleHash* hash = nullptr;
   std::uint64_t state_base = 0;
   bool fused = true;
+  bool exact = false;
   // The slots hold the CUTLASS layout: the artifact's, or GGML's converted
   // at load (--convert-experts).
   bool cutlass = true;
@@ -521,6 +524,7 @@ jitllm::benchmarks::Qwen38Model CommonOf(const Model& m) {
                      .state = m.state_base,
                      .ple_table = ResourceAddress(*a, *w, m.binding->ple_table.index)},
           .fused = m.fused,
+          .exact = m.exact,
           .cutlass = m.cutlass};
 }
 
@@ -565,7 +569,9 @@ class Runner {
                std::vector<float>& logits, std::span<const std::string> keep = {},
                std::map<std::string, std::vector<float>>* kept = nullptr) {
     const auto rows = static_cast<std::uint32_t>(history.size() - n_past);
-    auto in = md::Qwen38Chunk(*m_.profile, *m_.state, *m_.hash, history, n_past, rows);
+    // The fast graph's QSA selection makes its masks on the device.
+    auto in = md::Qwen38Chunk(*m_.profile, *m_.state, *m_.hash, history, n_past, rows,
+                              !m_.fused || m_.exact);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -596,22 +602,18 @@ class Runner {
       p = once.get();
     }
     const kg::Qwen38Graph& g = p->graph;
-    std::vector<std::int32_t> out_ids(outputs);
-    std::ranges::iota(out_ids, static_cast<std::int32_t>(rows - outputs));
-    const std::int64_t zero_row = 0;
-    const std::int32_t zero_index = 0;
-    std::vector<std::pair<ggml_tensor*, const void*>> sources = {
-        {g.tokens, in->tokens.data()},     {g.positions, in->positions.data()},
-        {g.cells, in->cells.data()},       {g.mask, in->mask.data()},
-        {g.ple_rows, in->ple_rows.data()}, {g.state_row, &zero_row},
-        {g.row_zero, &zero_index},         {g.out_ids, out_ids.data()}};
-    if (in->qsa_select) {
-      sources.emplace_back(g.mask_f32, in->mask_f32.data());
-      sources.emplace_back(g.cell_block, in->qsa.cell_block.data());
-      sources.emplace_back(g.block_cells, in->qsa.block_cells.data());
-      sources.emplace_back(g.block_pos, in->qsa.block_pos.data());
-      sources.emplace_back(g.block_bias, in->qsa.bias.data());
+    if ((g.mask != nullptr && in->mask.empty()) ||
+        (g.mask_f32 != nullptr && in->mask_f32.empty())) {
+      // A selection the device does not make (past its blocks): the host's
+      // masks after all.
+      in = md::Qwen38Chunk(*m_.profile, *m_.state, *m_.hash, history, n_past, rows, true);
+      if (!in) {
+        return std::unexpected(in.error());
+      }
     }
+    jitllm::benchmarks::Qwen38HostInputs host;
+    jitllm::benchmarks::Qwen38Sources(g, *in, outputs, {}, host);
+    const auto& sources = host.sources;
     auto stream = d_.Stream();
     if (!stream) {
       return std::unexpected(stream.error());
@@ -1448,6 +1450,7 @@ struct Options {
   bool stepwise = false;
   bool state_roundtrip = false;
   bool unfused = false;
+  bool exact = false;
   bool convert_experts = false;
   std::uint32_t bench_prefill = 0;
   std::uint32_t bench_decode = 0;
@@ -1523,6 +1526,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.state_roundtrip = true;
     } else if (a == "--unfused") {
       o.unfused = true;
+    } else if (a == "--exact") {
+      o.exact = true;
     } else if (a == "--convert-experts") {
       o.convert_experts = true;
     } else {
@@ -1597,6 +1602,7 @@ Status Run(const Options& o) {
               .hash = &*hash,
               .state_base = Address(state_region),
               .fused = !o.unfused,
+              .exact = o.exact,
               .cutlass = binding->cutlass() || o.convert_experts};
 
   int major = 0;

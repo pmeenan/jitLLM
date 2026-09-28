@@ -129,6 +129,9 @@ most about 1.1× its), and the results below say where they stand.
   the graph runs jitLLM's fusions of those nodes and the CUTLASS expert
   path by default (`--unfused` builds the nodes): 2,717 steps a decode step
   at position 0, 3,017 for a prefill chunk, 3,389 with QSA's selection.
+  Since the second prefill pass ([below](#prefill-second-pass-speed-before-bit-exactness))
+  the default is the fast form (`--exact` builds the first pass's graph):
+  2,010, 2,238 and 2,394 steps.
 - **State** (`model/qwen38.h Qwen38StateLayout`): the QSA layers' F16 K and V
   caches and F32 indexer keys (a cell per position), the linear-attention
   layers' F32 recurrent state (128 × 128 × 48) and convolution history, and
@@ -246,15 +249,16 @@ Decode on
 24.93 with the fused graph on GGML's MMVQ, 24.54 unfused (the graph before
 this work).
 
-**MXFP8 on tensor cores** (not adopted). A standalone A/B of CUTLASS's
-MXFP8 GEMM (activations quantized to MXFP8, F32 out) against the current
-dequantize-to-BF16 and cuBLAS at 4,096 rows: QKV 1.64 against 2.64 ms, z
-0.98 against 1.59, out 0.88 against 1.64, Q 2.04 against 3.12; at 8,192
-rows F32 out was slower for the wide products. About 0.3 s a pass of
-8,192 tokens at best (estimated from those numbers, not measured end to
-end), and it would quantize the activations the checkpoint's linears see,
-which jitLLM keeps in BF16. Left for later: prefill meets the gate without
-it.
+**MXFP8 on tensor cores** (not adopted in this pass; adopted in the
+[second](#prefill-second-pass-speed-before-bit-exactness)). A standalone
+A/B of CUTLASS's MXFP8 GEMM (activations quantized to MXFP8, F32 out)
+against the current dequantize-to-BF16 and cuBLAS at 4,096 rows: QKV 1.64
+against 2.64 ms, z 0.98 against 1.59, out 0.88 against 1.64, Q 2.04
+against 3.12; at 8,192 rows F32 out was slower for the wide products. About
+0.3 s a pass of 8,192 tokens at best (estimated from those numbers, not
+measured end to end), and it would quantize the activations the
+checkpoint's linears see, which jitLLM kept in BF16. Left for later then:
+prefill met the gate without it.
 
 **Chunk size.** Larger chunks help (fewer passes over the weights); the
 memory they take is activations and the attention's mask and scores:
@@ -273,9 +277,69 @@ runs, each best of three): 8,192 tokens in 8,192-row chunks at
 D-085's 1.1×); decode 24.98 tok/s (128 steps, context 4,096; 0.99×).
 Prefill at 8,192 tokens is within D-085's 10% of the oracle's in
 8,192-row chunks, and just outside it (0.89×) in 4,096-row chunks; at 512
-and 2,048 tokens jitLLM is ahead. What remains is the dense BF16 GEMMs
+and 2,048 tokens jitLLM is ahead. What remained was the dense BF16 GEMMs
 (the MXFP8 lever above), the hyper-connections' four-stream traffic and
-the elementwise nodes left unfused (the n-gram layer's, QSA's).
+the elementwise nodes left unfused (the n-gram layer's, QSA's): the second
+pass took them.
+
+## Prefill, second pass: speed before bit exactness
+
+The owner, on 2026-09-28: "Speed matters more than bit exactness"
+([D-085](../../decisions.md), as amended that day).
+So the fused graph now has two forms (`Qwen38GraphOptions::exact`): the
+**reference form** (`--exact`), the first pass's graph, whose fusions
+repeat GGML's nodes bit for bit, and the **fast form**, the default,
+whose kernels change the order or precision of the arithmetic and are
+each checked against an FP64 reference (`qwen38_fast_test`) and the model
+against the oracle coarsely (the bounds above). `--unfused` still builds
+GGML's nodes. The levers, each kept only where the end-to-end number moved
+(`spark-b`, `--bench-prefill 8192` in 4,096-row chunks, best of three, one
+run each unless noted; resident harness, whose chunks wait on a fence
+polled every 20 µs, not the scheduler's poll):
+
+| Change (cumulative, fast form) | 8,192 tokens in 4,096-row chunks |
+| --- | ---: |
+| Before (`7cd1d01`, the same session) | 4.316 s (1,898 tok/s) |
+| The MXFP8 products past 8 rows on tensor cores: CUTLASS 4.7.1's SM120 block-scaled MXFP8 GEMM (`kernels/ggml/mxfp8_cutlass.h`, 128 × 128 × 128 ping-pong, tiles swizzled 8 along N past 4,096 rows) over activations quantized to MXFP8 as the oracle's linears quantize them (`jitllm.mxfp8.quantize`), the weights' scales swizzled each chunk (1/32 of their bytes) | 3.942 s (2,078) |
+| The hyper-connections: each block's output combined into the streams by the next mix's `jitllm.hc.prep`, which also normalizes them into BF16 and computes the next combine's logits; the up product in BF16; `jitllm.hc.mix_bf16` reads the BF16 streams and logits (the streams read once a mix instead of three times) | 3.519 s (2,328) |
+| Routing in one kernel (softmax, top 10 by warp argmax, weights renormalized, the shared expert's gate); Gated DeltaNet's QKV and z rows in BF16 and its gated norm quantized for its output product; QSA's heads normalized and rotated in one pass (`jitllm.qsa.prep`) and its output gate fused with the output product's quantization | 3.198 s (2,562) |
+| QSA's selection in one kernel a token (`jitllm.qsa.select`: the heads' relu scores, a radix select of the budget's cells, ties to the lower cell, and the attention's mask), so the chunk's host-built F16 and F32 masks (192 MiB for a 4,096-row chunk over 8,192 cells) are neither built nor copied | 2.875 s (2,850) |
+| The mix gives its output's MXFP8 and BF16 copies itself | 2.802 s (2,924) |
+
+**Profile, before and after** (`nsys`, kernels, GPU time a pass of 8,192
+tokens in 4,096-row chunks): before, 4.16 s: the dense BF16 GEMMs about
+1.14 s (cuBLAS over the dequantized MXFP8 linears, the hyper-connections'
+products and the router), the hyper-connection kernels 0.85 s,
+the routed experts 0.76 s (CUTLASS 0.53 s), Gated DeltaNet 0.38 s, flash
+attention 0.23 s, QSA's selection chain about 0.27 s (the radix top-k
+0.07 s, relu, the heads' adds, permuted copies, the row gather and the
+mask), the dequantization and BF16 conversions 0.15 s, the router's
+argsort 0.04 s. After: see [below](#results-second-pass).
+
+**Levers that did not move the number** (each tried and dropped):
+
+- *cuBLASLt's heuristics* for the products that stay BF16 (a quick A/B,
+  idle GPU): cuBLAS's default algorithm is the best candidate for the
+  hyper-connections' down product and the router; for the up product one
+  candidate is 21% faster at 4,096 rows (0.508 against 0.645 ms) and 5% at
+  8,192, about 26 ms a pass, but only by timing each candidate: that choice
+  could differ between processes, and with it the paged node's logits from
+  the resident harness's. Not taken.
+- *The grouped GEMM's tile* (a sweep at Qwen3.8's expert shapes): within
+  2% of one another, the product bound by streaming each expert's weights
+  once a chunk; 128 × 64 × 256 end to end was no faster (2.854–2.856 s in
+  two runs, against 2.80 just before it). The tile stays 128 × 128 × 256.
+- *The delta rule over 32-token chunks* (one block a multiprocessor for the
+  shared memory): 218 against 203 ms a pass. Kept at 16.
+- *The routed experts' activations without the scale search*: 7 ms a pass
+  faster, but the perplexity moved from 14.48 to 14.73. Dropped.
+- *Overlapping a chunk's host inputs with the previous chunk*: with the
+  masks on the device the host adds about 30 ms a pass; not worth
+  restructuring the harness.
+- *Not tried:* the residual streams in BF16 (about 0.14 s a pass by
+  their traffic, but a change to the residual's precision the oracle's
+  own may not make), flash attention's tile shapes and a chunked delta
+  rule on tensor cores (both larger than this pass).
 
 ## RE-030
 
@@ -359,14 +423,14 @@ bounds; neither side speculates):
 
 | | jitLLM | Mia's vLLM (MTP off, deterministic mode) |
 | --- | --- | --- |
-| Prefill, 8,192 tokens | first results: 772 tok/s in 2,048-row chunks, 681 in 512-row (best of 3); after the prefill work: 1,918–1,924 in 8,192-row chunks, 1,879–1,883 in 4,096-row ([above](#prefill-d-085)) | 2,101 tok/s (8,266 tokens) |
-| Decode | 24.77 tok/s (128 steps from an empty context, mean of 3 after a warm-up); 23.9–25.1 in the prompt runs; after the prefill work 24.53–24.60 against the earlier binary's 24.47–24.50 in the same session (3 runs each, alternating) | 25.12 / 25.33 tok/s (`prose` / `code`, 256 steps) |
+| Prefill, 8,192 tokens | first results: 772 tok/s in 2,048-row chunks, 681 in 512-row (best of 3); after the prefill work: 1,918–1,924 in 8,192-row chunks, 1,879–1,883 in 4,096-row ([above](#prefill-d-085)); after the second pass: 2,959–2,968 and 2,905–2,915 ([below](#results-second-pass)) | 2,101 tok/s (8,266 tokens) |
+| Decode | 24.77 tok/s (128 steps from an empty context, mean of 3 after a warm-up); 23.9–25.1 in the prompt runs; after the prefill work 24.53–24.60 against the earlier binary's 24.47–24.50 in the same session (3 runs each, alternating); after the second pass 25.04–25.10 against 24.96–24.97 | 25.12 / 25.33 tok/s (`prose` / `code`, 256 steps) |
 | Load | 7.5–8.1 s (artifact, direct reads); the CUTLASS-layout artifact 7.7 s, as loaded (the prefill work's load-time rewrite added 3.9–4.0 s) | 10 min 52 s to `/health` |
-| Peak memory (drop in `MemAvailable`) | 99.3–99.9 GiB at context 4,096; 104.7–104.9 GiB prefilling 8,192 tokens in 4,096-row chunks, 110.3–110.5 in one chunk (context 8,704) | 102.7 GiB |
+| Peak memory (drop in `MemAvailable`) | 99.3–99.9 GiB at context 4,096; 104.7–104.9 GiB prefilling 8,192 tokens in 4,096-row chunks, 110.3–110.5 in one chunk (context 8,704); after the second pass 104.3–104.7 and 108.6–109.3 (the masks no longer on the host) | 102.7 GiB |
 
 So decode is 0.97–0.99× the oracle's and within D-085's 10%. Prefill was
-0.37× the oracle's at first; after the prefill work it is 0.91× at 8,192
-tokens in 8,192-row chunks, within D-085's 10%. Peak memory is 0.97×, but not like for like: jitLLM
+0.37× the oracle's at first; after the prefill work it was 0.91× at 8,192
+tokens in 8,192-row chunks, and after the second pass it is 1.41×. Peak memory is 0.97×, but not like for like: jitLLM
 holds a 4,096-token context (244 MB of state), vLLM its configured 262,144
 (a 19.21 GiB KV pool). At vLLM's context jitLLM's state alone would add
 about 7.5 GiB (30,720 bytes a position in the QSA layers' caches,
@@ -379,7 +443,69 @@ the NVFP4 MMQ products (16%), the gated delta rule (6%), cuBLAS's F32-to-BF16
 activation conversion (5%) and the BF16 and dequantized MXFP8 GEMMs; the
 prefill work took those levers ([above](#prefill-d-085)). Decode launches
 each of its steps from the host (2,717 at position 0 after the prefill
-work, 5,052 before; no CUDA graphs yet, an M3 item).
+work, 5,052 before, 2,010 after the second pass; no CUDA graphs yet, an
+M3 item).
+
+### Results, second pass
+
+The fast form (the default) from the CUTLASS-layout artifact (`c4fb47a9…`),
+`spark-b`, 2026-09-28, the resident harness; raw outputs in
+`~/scratch/m3qpre2/` on `spark-b`.
+
+**Prefill** (`--bench-prefill`, synthetic tokens from an empty context,
+context 8,704, three runs of the best of three each, other agents' work
+sharing the host between runs):
+
+| Tokens (chunk rows) | jitLLM | Mia's vLLM, MTP off, deterministic | MTP 3 launch | Peak memory |
+| --- | ---: | ---: | ---: | ---: |
+| 8,192 (8,192) | 2,959–2,968 tok/s: **1.41×** | 2,101 | 2,066: 1.43–1.44× | 108.6–109.3 GiB (1.06× vLLM's 102.7) |
+| 8,192 (4,096) | 2,905–2,915: **1.38–1.39×** | 2,101 | 2,066: 1.41× | 104.3–104.7 GiB (1.02×) |
+| 2,048 (2,048) | 2,825–2,828: 2.02× | 1,398 | 1,625: 1.74× | |
+| 512 (512) | 1,900–1,920: 1.56–1.57× | 1,220 | 1,198: 1.59–1.60× | |
+
+Before, in the same session (`7cd1d01`, one run each): 1,926, 1,898,
+2,021 and 1,437 tok/s. Decode (128 steps, context 4,096, two runs each,
+alternating with the earlier binary): 25.04–25.10 tok/s against
+24.96–24.97.
+
+**Profile after** (GPU time a pass of 8,192 tokens in 4,096-row chunks,
+against 4.16 s before): 2.78 s: the hyper-connections' kernels 0.59 s
+(`jitllm.hc.prep` 0.39 s, the mix with its MXFP8 and BF16 copies 0.20 s)
+and their BF16 products 0.22 s; the routed experts 0.79 s (CUTLASS 0.53 s,
+the weighted sum 0.12 s, the two quantizations 0.11 s, routing 0.03 s);
+the MXFP8 products 0.34 s; Gated DeltaNet 0.33 s (the recurrence 0.20 s);
+flash attention 0.23 s; QSA's prep, selection and gate 0.09 s. Wall time
+(2.81 s in that run) exceeds it by about 30 ms (the host's inputs).
+
+**Correctness** (the bounds [above](#inputs-and-bounds)):
+
+| Check | Result |
+| --- | --- |
+| Greedy, teacher-forced (bound 1: 1.0 this run, jitLLM's own margin move p95 0.989) | 180 of 192 argmax equal to the oracle's; 11 near-ties at oracle margins 0.0 (×4), 0.125, 0.25, 0.75 and 1.0 (×4); **one outside the bound**: `french` step 3, oracle margin 2.0, where jitLLM prefers its own token by 0.30 nats |
+| Logprobs vs oracle (bound 2) | \|dlogprob\| RMS 0.50–1.31 per prompt (the reference form 0.50–1.19), max 2.2–7.2 |
+| Free-running greedy | identical to the oracle's for the first 22, 3, 21, 29, 7 and 2 tokens |
+| Perplexity (bound 3) | 14.4800 in 512-row chunks (−1.2%), 14.5416 in 4,096-row chunks (−0.8%); top-1 agreement 84.0% and 84.1%; the 512-row run repeated exactly three times (the selection's ties now go to the lower cell) |
+| State spill and restore (bound 5) | 0 of 47,677,440 logits differ |
+
+The step outside bound 1 is one where jitLLM itself hardly decides: the
+reference form (`--exact`, and the build before this pass) agrees with
+the oracle there by only 0.18 nats, the fast form's own `--stepwise` run
+(decode's kernels throughout) agrees by 0.45, and turning off any one of
+the fast form's MXFP8 activations, hyper-connection fusion, router or BF16
+recurrence rows flips it back (while turning off the hyper-connection
+fusion alone makes another step fail); the swing, 0.48 nats, is within
+jitLLM's own kernel noise (its p95 0.99). The token jitLLM prefers there
+is the one it prefers at step 2, where the oracle itself ties (margin
+0.0). The bound reads only the oracle's margin, so a step that is a
+near-tie for jitLLM and not for the oracle fails it. It is reported, not
+waved through: by the letter of bound 1 the fast form fails one step of
+192 (`french` step 3: oracle margin 2.0, bound 1.0; it would fail the
+reference form's bound of 1.25 too), where the perplexity and top-1
+agreement are unchanged. **For the owner's decision** under D-085's speed
+before bit exactness: accept the fast form as the default with this step
+recorded as a miss, or keep the reference form (`--exact`, 0.91× the
+oracle's prefill at 8K) as the default until the bound passes. The bound
+itself is not changed after the fact.
 
 ## Judgement calls
 
@@ -395,7 +521,7 @@ work, 5,052 before; no CUDA graphs yet, an M3 item).
   re-imports) and the experts' static activation scales (GGML quantizes
   activations per row).
 - **Kernels:** as the A/B above; CUTLASS left for the prefill work, which
-  adopted it.
+  adopted it (and the second pass its MXFP8 GEMM).
 - **Prefill work:** the fused kernels are jitLLM's own, planned as named
   implementations (D-053) with the unfused nodes still built by
   `--unfused`; CUTLASS enters the lock as a header-only component rather
@@ -418,6 +544,31 @@ work, 5,052 before; no CUDA graphs yet, an M3 item).
   it keeps every cell.
 - **Bound 1:** derived from jitLLM's own kernel noise, after the first
   comparison (see above).
+- **Second pass, two forms:** the first pass's bit-exact fusions stay as
+  the reference form (`--exact`; the code existed, so keeping it is
+  cheap) rather than being deleted; the fast form is the default for
+  decode too (its decode is no slower).
+- **Several outputs of one kernel** are one byte blob with a layout
+  struct (`HcPrepLayout`, `HcMixLayout`, `MoeRouterLayout`), viewed as
+  typed tensors by the graph, rather than kernels writing into their
+  operands or running twice.
+- **Where the fast form keeps precision:** the residual streams stay F32,
+  and the routed experts' activations keep GGML's scale search (without
+  it: 7 ms faster, perplexity +1.7%); the hyper-connections' normalized
+  streams and up product, Gated DeltaNet's QKV and z rows and the mix's
+  router copy go to BF16, the MXFP8 linears' activations to MXFP8.
+- **QSA's selection** breaks ties toward the lower cell, where GGML's top-k
+  picks any, so the fast form's selection repeats run to run. Its blocks'
+  scores sit in 32 KiB of shared memory, so past 8,192 blocks (32,768
+  cells) the fast form falls back to GGML's top-k over the host's masks
+  (and RE-031's ties), rather than being refused.
+- **Host masks:** `Qwen38Chunk` takes a flag to skip the masks a fast
+  selection makes on the device; the resident harness passes it, the paged
+  runner (another slice's code) still builds them, and the shared input
+  list skips any the graph does not read.
+- **cuBLASLt autotuning** not taken: its gain (about 26 ms a pass) would
+  come with an algorithm chosen by timing, which could differ between the
+  resident harness and the paged node.
 
 ## Limits
 
@@ -431,18 +582,27 @@ work, 5,052 before; no CUDA graphs yet, an M3 item).
   23.71–23.81 tok/s, 0.94× the oracle's (the job's device span 40.8 ms a
   step, and ~1.3 ms of host work outside the job: the rows read and the
   inputs built; the lease's round trip 0.01 ms;
-  [swap](../fast-swap/swap.md#a-lease-per-request)).
-- Not repeatable past 2,051 attended cells: the QSA indexer's top-k (GGML's
-  radix select) picks among tied scores nondeterministically (RE-031), so
-  the perplexity run, whose positions pass 2,048, need not repeat bit for
-  bit (at 8,192 tokens, reruns differed from the 11th to the 16th chunk of
-  512 on); the
-  prompts, below that, do.
+  [swap](../fast-swap/swap.md#a-lease-per-request); measured before the
+  second prefill pass). Again with the fast form after the second pass
+  (`jitllm_swap_pairs --cycles 0` against the same build's resident run,
+  `spark-b`: 0 logits differ; [swap](../fast-swap/swap.md#qwen38-flash-next-on-the-paged-node)),
+  and in both DeepSeek pairs (`jitllm_swap_pairs`, 8,192 context tokens,
+  the review's build): every cycle `exact`, peak 96.2–96.5 GiB by
+  `MemAvailable`, as before the pass.
+- The reference and unfused graphs are not repeatable past 2,051 attended
+  cells: the QSA indexer's top-k (GGML's radix select) picks among tied
+  scores nondeterministically (RE-031), so their perplexity runs, whose
+  positions pass 2,048, need not repeat bit for bit (at 8,192 tokens,
+  reruns differed from the 11th to the 16th chunk of 512 on); the prompts,
+  below that, do. The fast form's selection (prefill and decode) breaks
+  ties by cell, and its perplexity run repeated exactly.
 - The state's spill and restore is the harness's copy of one region; the
   swap path's spill format is M4's (D-086).
 - The grouped GEMM is built for `sm_121a` only (`PlanMoeGemm` requires
   compute capability 12.1): elsewhere a CUTLASS-layout artifact's prefill
   is refused, and the GGML-layout artifact runs GGML's products. The
+  MXFP8 GEMM likewise (`PlanMxfp8Gemm`): elsewhere the fast form's prefill
+  is refused, and `--exact` runs. The
   harness's `--unfused`, `--layout-proof` and `--ab` read GGML's layout, so
   they take the first artifact.
 - The unfused graph (`--unfused`) keeps GGML's `ssm_conv`, which past 32
