@@ -378,20 +378,24 @@ violation). Each full restore took 53–121 ms (reported, not gated).
 
 ### Not covered here
 
-- BP-F2's timing (pre-registered; below) and the EXL3 census (its `F` cap
-  first).
+- BP-F2's timing (pre-registered; below). The EXL3 census is replaced by
+  D-085's coarse memory check, which passes: native's peak (EXL3-O, rung
+  3, `spark`, 2026-09-27) is 0.82× upstream's at 4.0 bpw (4,813 against
+  5,856 MiB) and 0.87× at 4.5 bpw (4,813 against 5,557 MiB). Method and
+  caveats are in
+  [backend-proof.md](../../backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd).
 - Tier E's operation-level recomputation runs on EXL3-G, as the approved
   item says; EXL3-O's GGML operations are the same launches (the plan
   gate).
-- Allocations inside a phase, which quiescent census readings cannot see.
+- Allocations inside a phase, which quiescent readings cannot see.
   The plan-gate runs' nsys API traces (all four arms, one evaluation) and
   the paged harness's (two evaluations) show no allocation call after the
   first launch (no `cudaMalloc`, `cuMemAlloc`, `cuMemCreate`,
   `cudaMallocAsync` or pool call), and GGML's pool is bounded per
   operation (only the attention draws). They do show 30 lazy module loads
   (`cuLibraryLoadData`, cuBLASLt's kernels) in the first evaluation's
-  reconstruction-path prefills, and none in the second: warm-up growth
-  that the census charges to `F`, whose EXL3 cap is not set yet.
+  reconstruction-path prefills, and none in the second: warm-up growth,
+  which the coarse peak check includes.
 
 ### BP-F2, prepared
 

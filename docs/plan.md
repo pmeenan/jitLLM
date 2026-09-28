@@ -662,7 +662,10 @@ reservation policy) were recorded in M0.
         Memory is judged loosely: native's peak, read from `MemAvailable`,
         may be at most about 10% above the bridge's. Native's rung-3 peaks
         on `spark` were 0.81 to 0.96 times the bridge's on all four arms.
-        EXL3 takes the same check against EXL3-O once it runs end to end.
+        Native EXL3's peaks (EXL3-O arm, rung 3) were 0.82 (4.0 bpw) and
+        0.87 (4.5 bpw) times upstream ExLlamaV3's in its reference
+        container. That comparison is not like for like: the reference's
+        peak includes PyTorch's context and cache.
         - Two later census rules stopped under D-085 (in Git history). v2
           (counters plus an exact nsys tier) failed its bridge holdout on
           opaque counter jumps. v3 (the nsys tier alone) passed its holdout
@@ -829,7 +832,8 @@ reservation policy) were recorded in M0.
       Next: BP-F2 on an idle `spark` (the missing tuning records, the
       launch record, calibration, holdout, harness equivalence, then the
       sessions), after writing the native candidate's timing harness and
-      its session driver; the EXL3 census with its `F` cap set first.
+      its session driver. (D-085 later replaced the EXL3 census with the
+      coarse memory check, which passes on both fixtures.)
 - [x] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

@@ -1185,8 +1185,28 @@ registered (details are in Git history).
   All four pass. A first pass on `spark-b`, shared with other agents' GPU
   tests, is not used: its baseline fell by 4.5 GB during the batch. Its
   `control` ratios were 0.99 and 1.01, and FP16-F `heldout` read 1.66.
-- **EXL3** runs end to end natively since P3; it takes the same check
-  against EXL3-O (pending).
+- **EXL3, rung 3, against EXL3-O** (`spark`, idle, 2026-09-27; the
+  held-out trajectory, prefixes 32, 144, 145, 1,023 and 1,024 with 16
+  single-token steps each). Native is `jitllm_exl3_exec --arm O
+  --evaluations 1` (binary `6a5574fb…`, P3's, cuBLAS 13.8.0.4, the
+  `plan-NN-O` plans); its logits equal P3's rung 3 bit for bit. The
+  reference is `exl3_heldout.py` in the reference container
+  (`exl3_run.sh`, frozen caches `tune-40`/`tune-45`,
+  `--hgemm-f16acc 0`, GEMV on, as P0's `o` arm), which repeats each
+  prefix three times and restores it; it passed its own checks, and its
+  caches were unchanged.
+
+  | Fixture | Native peak (MiB) | EXL3-O peak (MiB) | Ratio |
+  | --- | ---: | ---: | ---: |
+  | 4.0 bpw | 4,813 | 5,856 | 0.82 |
+  | 4.5 bpw | 4,813 | 5,557 | 0.87 |
+
+  Both pass. The two sides are not like for like. The reference's peak is
+  a Python process in a container, with PyTorch's CUDA context and its
+  caching allocator's reserve. Its own allocation peak above each phase's
+  start (`--memory`) was at most 376,915,456 bytes (the 1,023-row
+  prefill), a different quantity from the process peak. Native's peak is
+  the same on both fixtures: its buffer plan, not the weights, sets it.
 - **What the nsys passes found** stays recorded: cuBLAS's handle creation
   keeps a 64.1 MiB default workspace pool that `cublasSetWorkspace` does
   not free (RE-028). By the owner's decision (2026-09-27), the pool does
