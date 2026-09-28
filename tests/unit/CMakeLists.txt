@@ -157,6 +157,45 @@ add_executable(plan_record_test plan_record_test.cc)
 target_link_libraries(plan_record_test PRIVATE jitllm_plan_record jitllm_plan_record_sample)
 jitllm_gtest(plan_record_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# General JSON as untrusted input (base/json.h).
+add_executable(json_test json_test.cc)
+target_link_libraries(json_test PRIVATE jitllm_json jitllm_chat jitllm_base)
+jitllm_gtest(json_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The tokenizer and chat fixtures (tests/unit/data), copied into the build
+# tree so that remote runs map them (JITLLM_TEST_DATA).
+set(tokenizer_data "${CMAKE_CURRENT_BINARY_DIR}/data")
+file(GLOB_RECURSE tokenizer_data_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/data"
+     CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/*.json")
+foreach(file IN LISTS tokenizer_data_files)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/data/${file}" "${tokenizer_data}/${file}" COPYONLY)
+endforeach()
+
+# The native tokenizer (M3) on synthetic vocabularies, in every profile.
+add_executable(tokenizer_test tokenizer_test.cc)
+target_link_libraries(tokenizer_test PRIVATE jitllm_tokenizer)
+jitllm_gtest(tokenizer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The chat renderers against their references' text (D-067), and JSON as
+# Python prints it.
+add_executable(chat_test chat_test.cc)
+target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json)
+jitllm_gtest(chat_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+# The tokenizer and renderers against the references' token IDs on the real
+# vocabularies, and NFC against UCD's NormalizationTest: label `models` too,
+# since the files live on the Sparks; each test skips where they are absent.
+add_executable(tokenizer_models_test tokenizer_models_test.cc)
+target_link_libraries(tokenizer_models_test PRIVATE jitllm_chat jitllm_tokenizer jitllm_json jitllm_base)
+jitllm_gtest(tokenizer_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models"
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+# Greedy and seeded sampling (execution/sampling.h).
+add_executable(sampling_test sampling_test.cc)
+target_link_libraries(sampling_test PRIVATE jitllm_sampling)
+jitllm_gtest(sampling_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The implementation registry and plans (D-053), on fake declarations.
 add_executable(execution_test execution_test.cc)
 target_link_libraries(execution_test PRIVATE jitllm_execution)

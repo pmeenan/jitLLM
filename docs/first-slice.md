@@ -150,15 +150,18 @@ recorded the bridge's executed CUDA closure
 ([`fp16-plan.json`](experiments/backend-proof-p0/fp16-plan.json)). Admitting
 the selected GGML subset through D-057 is still M2 work.
 
-Native tokenizer incorporation has an explicit blocker: llama.cpp's Unicode
+Native tokenizer incorporation had an explicit blocker: llama.cpp's Unicode
 tables are generated from inputs whose exact revisions are not recorded in
 the generated file. The generator reads a moving Unicode URL and Python's
 Unicode data; root MIT alone does not resolve the derived-data terms.
-Resolve provenance and D-017 eligibility, or deliberately amend that policy,
-before incorporation. Fixed-ID M2 work can proceed; this gate must close
-before M3 tokenizer adoption. An owned native renderer for the pinned Qwen
-template must also pass exact fixtures, rather than silently pulling in the
-full upstream Jinja/parser/vendor dependency closure.
+The provenance is now established (2026-09-28): the tables are UCD 15.1.0
+data ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)). jitLLM's
+tokenizer does not copy them; it generates its own from the pinned UCD
+15.1.0 files, and D-088 (proposed) admits Unicode-licensed data to the core.
+The gate closes when the owner accepts D-088; until then the native
+tokenizer ([tokenizer.md](tokenizer.md)) links into tests only. Owned native
+renderers pass exact fixtures without the upstream Jinja/parser/vendor
+closure; this fixture's Qwen2.5 template (`d5495a1e…`) has none yet (M5).
 
 The early integration proof covers this control and the D-052 EXL3 companion:
 prepared artifacts, jitLLM-owned weight/state/workspace backing, chunk-closure

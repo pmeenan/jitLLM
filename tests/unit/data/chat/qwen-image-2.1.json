@@ -1,0 +1,11 @@
+{
+  "template": "qwen-image-2.1-t2i",
+  "pipeline": "diffusers 8b3c707e pipelines/qwenimage21/pipeline_qwenimage21.py",
+  "drop_tokens": 14,
+  "cases": [
+    {"name": "simple", "prompt": "A red fox in the snow, watercolor.", "text": "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\nA red fox in the snow, watercolor.<|im_end|>\n<|im_start|>assistant\n", "hf_ids": [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 32, 2518, 38835, 304, 279, 11794, 11, 3015, 3423, 13, 151645, 198, 151644, 77091, 198]},
+    {"name": "empty", "prompt": "", "text": "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n <|im_end|>\n<|im_start|>assistant\n", "hf_ids": [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 220, 151645, 198, 151644, 77091, 198]},
+    {"name": "unicode", "prompt": "一只在雪地里的红狐狸 🦊, Tiếng", "text": "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n一只在雪地里的红狐狸 🦊, Tiếng<|im_end|>\n<|im_start|>assistant\n", "hf_ids": [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 102292, 18493, 100167, 29490, 102073, 99425, 114647, 11162, 99, 232, 11, 22325, 26068, 968, 151645, 198, 151644, 77091, 198]},
+    {"name": "braces", "prompt": "A sign that says {hello} and <think>", "text": "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\nA sign that says {hello} and <think><|im_end|>\n<|im_start|>assistant\n", "hf_ids": [151644, 8948, 198, 1092, 30782, 408, 323, 23643, 279, 3897, 9934, 13, 151645, 198, 151644, 872, 198, 32, 1841, 429, 2727, 314, 14990, 92, 323, 220, 151667, 151645, 198, 151644, 77091, 198]}
+  ]
+}

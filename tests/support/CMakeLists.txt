@@ -73,7 +73,9 @@ if(JITLLM_CUDA)
 endif()
 
 # No production binary links the support libraries, directly or through
-# another library. Checked once every target exists.
+# another library; nor, until the owner accepts D-088, the tokenizer (its
+# UCD tables) or the chat renderers built on it. Checked once every target
+# exists.
 function(jitllm_check_no_test_support)
   set(pending jitllm jitllm-runtime)
   set(seen "")
@@ -82,6 +84,9 @@ function(jitllm_check_no_test_support)
     # Anywhere in the item, so that a generator expression cannot hide it.
     if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
+    endif()
+    if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(tokenizer|chat)([^A-Za-z0-9_]|$)")
+      message(FATAL_ERROR "A production binary links ${target}, which waits for D-088 (docs/decisions.md).")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")
       continue()

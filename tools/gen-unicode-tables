@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Generates the tokenizer's Unicode tables from pinned Unicode Character Database files (D-088).
+
+    tools/gen-unicode-tables --ucd DIR [--download] [--output FILE | --check FILE]
+
+Reads UnicodeData.txt, PropList.txt and DerivedNormalizationProps.txt of UCD
+15.1.0 from DIR, after checking each against the SHA-256 pinned below, and
+writes src/tokenizer/unicode_data.cc: the data behind
+src/tokenizer/unicode_data.h. `--download` first fetches the three files from
+unicode.org into DIR (and still checks them). `--check FILE` regenerates in
+memory and fails unless FILE holds exactly those bytes.
+
+UCD 15.1.0 is the version whose UnicodeData.txt and PropList.txt reproduce
+llama.cpp's generated tables at the pinned revision exactly (docs/licensing.md,
+"Tokenizer Unicode tables"), so the pre-tokenizers classify every code point
+as the reference does. The output depends only on those files: this tool
+never consults Python's own unicodedata module, whose version follows the
+interpreter.
+
+What it writes, all derived from the files (Unicode License V3, the same
+notice the package already ships):
+
+- per code point, one byte: the general category (bits 0-4, in the order of
+  unicode.h's Category), White_Space (bit 5), NFC_QC=No (bit 6)
+  and NFC_QC=Maybe (bit 7), as a two-stage table of 256-code-point blocks;
+- the canonical combining class, as a second two-stage table;
+- each code point's full canonical decomposition (recursively applied,
+  Hangul syllables excluded: they are algorithmic);
+- the primary composites: canonical pairs not in Full_Composition_Exclusion.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import hashlib
+import pathlib
+import urllib.request
+
+VERSION = "15.1.0"
+BASE_URL = f"https://www.unicode.org/Public/{VERSION}/ucd/"
+FILES = {
+    "UnicodeData.txt": "2fc713e6a31a87c4850a37fe2caffa4218180fadb5de86b43a143ddb4581fb86",
+    "PropList.txt": "05672956317b6296bc2ec3d6cef1f6452b57ff4f2efc6dc55b0a19277d5fcfd1",
+    "DerivedNormalizationProps.txt": "8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1",
+}
+
+MAX_CODE_POINT = 0x110000
+BLOCK = 256
+# unicode.h's Category, in order.
+CATEGORIES = ["Cn", "Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe",
+              "Pi", "Pf", "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co"]
+WHITE_SPACE_BIT = 0x20
+NFC_NO_BIT = 0x40
+NFC_MAYBE_BIT = 0x80
+HANGUL_FIRST, HANGUL_COUNT = 0xAC00, 11172
+
+
+class Error(Exception):
+    pass
+
+
+def read(ucd: pathlib.Path, name: str) -> str:
+    path = ucd / name
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise Error(f"{path}: {e.strerror} (fetch it with --download, or from {BASE_URL}{name})") from e
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != FILES[name]:
+        raise Error(f"{path}: SHA-256 {digest}, expected {FILES[name]} (UCD {VERSION})")
+    return data.decode("utf-8")
+
+
+def download(ucd: pathlib.Path) -> None:
+    ucd.mkdir(parents=True, exist_ok=True)
+    for name in FILES:
+        with urllib.request.urlopen(BASE_URL + name, timeout=60) as response:  # noqa: S310 (fixed https URL)
+            (ucd / name).write_bytes(response.read())
+
+
+def ranges(text: str):
+    """Yields (first, last, fields) for each data line of a UCD property file."""
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = [f.strip() for f in line.split(";")]
+        span = fields[0]
+        first, _, last = span.partition("..")
+        yield int(first, 16), int(last or first, 16), fields[1:]
+
+
+def unicode_data(text: str):
+    """Yields (code point, fields) for every assigned code point, expanding First/Last ranges."""
+    pending = None
+    for line in text.splitlines():
+        fields = line.split(";")
+        if len(fields) != 15:
+            raise Error(f"UnicodeData.txt: malformed line {line!r}")
+        cp = int(fields[0], 16)
+        if fields[1].endswith(", First>"):
+            pending = cp
+            continue
+        if fields[1].endswith(", Last>"):
+            if pending is None:
+                raise Error(f"UnicodeData.txt: range end without start at {cp:04X}")
+            for c in range(pending, cp):
+                yield c, fields
+            pending = None
+        yield cp, fields
+
+
+def two_stage(values: list[int]) -> tuple[list[int], list[list[int]]]:
+    """Splits values into a stage-1 index of blocks and the distinct blocks."""
+    index, blocks, seen = [], [], {}
+    for start in range(0, MAX_CODE_POINT, BLOCK):
+        block = tuple(values[start:start + BLOCK])
+        if block not in seen:
+            seen[block] = len(blocks)
+            blocks.append(list(block))
+        index.append(seen[block])
+    return index, blocks
+
+
+def generate(ucd: pathlib.Path) -> str:
+    texts = {name: read(ucd, name) for name in FILES}
+
+    props = [0] * MAX_CODE_POINT  # category 0 is Cn: unassigned
+    ccc = [0] * MAX_CODE_POINT
+    decomposition: dict[int, list[int]] = {}
+    for cp, f in unicode_data(texts["UnicodeData.txt"]):
+        if f[2] not in CATEGORIES:
+            raise Error(f"UnicodeData.txt: unknown category {f[2]} at {cp:04X}")
+        props[cp] = CATEGORIES.index(f[2])
+        ccc[cp] = int(f[3])
+        if f[5] and not f[5].startswith("<"):
+            decomposition[cp] = [int(x, 16) for x in f[5].split()]
+
+    for first, last, f in ranges(texts["PropList.txt"]):
+        if f[0] == "White_Space":
+            for cp in range(first, last + 1):
+                props[cp] |= WHITE_SPACE_BIT
+
+    exclusions: set[int] = set()
+    for first, last, f in ranges(texts["DerivedNormalizationProps.txt"]):
+        if f[0] == "Full_Composition_Exclusion":
+            exclusions.update(range(first, last + 1))
+        elif f[0] == "NFC_QC":
+            bit = {"N": NFC_NO_BIT, "M": NFC_MAYBE_BIT}.get(f[1])
+            if bit is None:
+                raise Error(f"DerivedNormalizationProps.txt: NFC_QC value {f[1]!r}")
+            for cp in range(first, last + 1):
+                props[cp] |= bit
+
+    def full(cp: int) -> list[int]:
+        parts = decomposition.get(cp)
+        if parts is None:
+            return [cp]
+        return [x for p in parts for x in full(p)]
+
+    decompositions = [(cp, full(cp)) for cp in sorted(decomposition)]
+    compositions = sorted((parts[0], parts[1], cp) for cp, parts in decomposition.items()
+                          if len(parts) == 2 and cp not in exclusions)
+    for cp, _ in decompositions:
+        if HANGUL_FIRST <= cp < HANGUL_FIRST + HANGUL_COUNT:
+            raise Error("UnicodeData.txt lists a Hangul syllable decomposition")
+
+    prop_index, prop_blocks = two_stage(props)
+    ccc_index, ccc_blocks = two_stage(ccc)
+    flat: list[int] = []
+    entries = []
+    for cp, parts in decompositions:
+        entries.append((cp, len(flat), len(parts)))
+        flat.extend(parts)
+    if len(flat) >= 1 << 16 or max(len(p) for _, p in decompositions) > 255:
+        raise Error("decomposition table exceeds its field widths")
+
+    out = []
+    w = out.append
+    # The tags are spelled in parts, so that REUSE and the header check do
+    # not read them as this tool's own.
+    copyright_tag, license_tag = "SPDX-" + "FileCopyrightText", "SPDX-" + "License-Identifier"
+    w(f"// {copyright_tag}: 2026 jitLLM contributors")
+    w(f"// {copyright_tag}: 1991-2023 Unicode, Inc.")
+    w(f"// {license_tag}: Apache-2.0 AND Unicode-3.0")
+    w("")
+    w("// clang-format off")
+    w(f"// Generated by tools/gen-unicode-tables from the Unicode Character Database {VERSION}; do not edit.")
+    for name, digest in FILES.items():
+        w(f"// {name} SHA-256 {digest}")
+    w("")
+    w('#include "tokenizer/unicode_data.h"')
+    w("")
+    w("namespace jitllm::tokenizer::unicode_data {")
+    w("namespace {")
+    w("")
+
+    def array(element: str, name: str, values: list[str], per_line: int) -> None:
+        w(f"constexpr std::array<{element}, {len(values)}> {name} = {{{{")
+        for i in range(0, len(values), per_line):
+            w("    " + ", ".join(values[i:i + per_line]) + ",")
+        w("}};")
+        w("")
+
+    def blocks(name: str, rows: list[list[int]], fmt: str) -> None:
+        w(f"constexpr std::array<Block, {len(rows)}> {name} = {{{{")
+        for block in rows:
+            w("    {{")
+            for i in range(0, BLOCK, 16):
+                w("        " + ", ".join(format(v, fmt) for v in block[i:i + 16]) + ",")
+            w("    }},")
+        w("}};")
+        w("")
+
+    array("std::uint16_t", "kPropertyIndexData", [str(v) for v in prop_index], 16)
+    blocks("kPropertyBlockData", prop_blocks, "#04x")
+    array("std::uint16_t", "kCombiningClassIndexData", [str(v) for v in ccc_index], 16)
+    blocks("kCombiningClassBlockData", ccc_blocks, "d")
+    array("Decomposition", "kDecompositionData", [f"Decomposition{{0x{cp:05X}, {off}, {n}}}" for cp, off, n in entries], 3)
+    array("char32_t", "kDecompositionPartData", [f"0x{cp:05X}" for cp in flat], 8)
+    array("Composition", "kCompositionData",
+          [f"Composition{{0x{a:05X}, 0x{b:05X}, 0x{c:05X}}}" for a, b, c in compositions], 2)
+    w("}  // namespace")
+    w("")
+    w(f'const std::string_view kVersion = "{VERSION}";')
+    w("const std::span<const std::uint16_t, kBlocks> kPropertyIndex(kPropertyIndexData);")
+    w("const std::span<const Block> kPropertyBlocks(kPropertyBlockData);")
+    w("const std::span<const std::uint16_t, kBlocks> kCombiningClassIndex(kCombiningClassIndexData);")
+    w("const std::span<const Block> kCombiningClassBlocks(kCombiningClassBlockData);")
+    w("const std::span<const Decomposition> kDecompositions(kDecompositionData);")
+    w("const std::span<const char32_t> kDecompositionParts(kDecompositionPartData);")
+    w("const std::span<const Composition> kCompositions(kCompositionData);")
+    w("")
+    w("}  // namespace jitllm::tokenizer::unicode_data")
+    w("// clang-format on")
+    return "\n".join(out) + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--ucd", required=True, type=pathlib.Path, help="directory holding the UCD files")
+    parser.add_argument("--download", action="store_true", help="fetch the UCD files into --ucd first")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--output", type=pathlib.Path, help="write the generated source here")
+    group.add_argument("--check", type=pathlib.Path, help="fail unless this file is the generated source")
+    args = parser.parse_args()
+    try:
+        if args.download:
+            download(args.ucd)
+        text = generate(args.ucd)
+    except Error as e:
+        print(f"gen-unicode-tables: {e}", file=sys.stderr)
+        return 1
+    if args.check:
+        if args.check.read_text(encoding="utf-8") != text:
+            print(f"gen-unicode-tables: {args.check} differs from the generated tables", file=sys.stderr)
+            return 1
+        return 0
+    args.output.write_text(text, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

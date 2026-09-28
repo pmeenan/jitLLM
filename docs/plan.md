@@ -147,7 +147,8 @@ is recorded for information and gates nothing, D-087), and its prompt set,
 perplexity text, or image prompts and seeds, are fixed with the bounds
 below. The provenance of llama.cpp's generated Unicode tables is cleared
 under D-017 before the native tokenizer is adopted
-([first-slice.md](first-slice.md)).
+([first-slice.md](first-slice.md)): traced to UCD 15.1.0 on 2026-09-28;
+jitLLM generates its own tables, and D-088 (proposed) awaits the owner.
 
 **Models, in this order.** Each runs its reference's quantization.
 
@@ -253,10 +254,14 @@ it appears.
       quick A/B where both are viable (D-085), and proven by one MoE layer
       whose output is bit-identical to the reference layout's. Compaction
       and demand-paged dispatch stay in M7.
-- [ ] **Tokenizer and chat templates** (pulled from M5; D-067): the native
+- [x] **Tokenizer and chat templates** (pulled from M5; D-067): the native
       tokenizer, renderers for each model's pinned template (DeepSeek's
       upstream ships Python encoding scripts, not a template), stop rules,
-      and greedy and seeded sampling.
+      and greedy and seeded sampling. Landed in tests
+      ([tokenizer.md](tokenizer.md)): token for token with llama.cpp and
+      Hugging Face on a 92-item corpus for all three models, and both
+      templates byte for byte; shipped binaries wait for D-088. The output
+      parsers and the request mapping are the chat route's.
 - [ ] **Speculative decoding in the core** (pulled from M9; D-068): Qwen3.8's
       MTP layer and DeepSeek's DSpark drafter, with verify and rollback that
       keep only the accepted prefix, and forced draft rejection for the

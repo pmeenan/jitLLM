@@ -1,0 +1,58 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The Unicode Character Database tables behind unicode.h, generated into
+// unicode_data.cc by tools/gen-unicode-tables from pinned UCD 15.1.0 files
+// (D-088). Only unicode.cc reads them. Every table is constant-initialized.
+
+#ifndef JITLLM_TOKENIZER_UNICODE_DATA_H_
+#define JITLLM_TOKENIZER_UNICODE_DATA_H_
+
+#include <array>
+#include <cstdint>
+#include <span>
+#include <string_view>
+
+namespace jitllm::tokenizer::unicode_data {
+
+inline constexpr char32_t kMaxCodePoint = 0x10FFFF;
+inline constexpr unsigned kBlockBits = 8;  // 256 code points per block
+inline constexpr unsigned kBlocks = (kMaxCodePoint + 1) >> kBlockBits;
+
+// A property byte: the general category in bits 0-4 (unicode.h's Category
+// order), White_Space, NFC_QC=No and NFC_QC=Maybe.
+inline constexpr std::uint8_t kCategoryMask = 0x1F;
+inline constexpr std::uint8_t kWhiteSpaceBit = 0x20;
+inline constexpr std::uint8_t kNfcNoBit = 0x40;
+inline constexpr std::uint8_t kNfcMaybeBit = 0x80;
+
+using Block = std::array<std::uint8_t, 256>;
+
+struct Decomposition {
+  char32_t code_point;
+  std::uint16_t offset;  // into kDecompositionParts
+  std::uint8_t length;
+};
+
+// A primary composite: first + second compose to composite.
+struct Composition {
+  char32_t first;
+  char32_t second;
+  char32_t composite;
+};
+
+extern const std::string_view kVersion;
+// Two-stage tables: index[cp >> 8] names the block holding cp's byte.
+extern const std::span<const std::uint16_t, kBlocks> kPropertyIndex;
+extern const std::span<const Block> kPropertyBlocks;
+extern const std::span<const std::uint16_t, kBlocks> kCombiningClassIndex;
+extern const std::span<const Block> kCombiningClassBlocks;
+// Sorted by code point.
+extern const std::span<const Decomposition> kDecompositions;
+extern const std::span<const char32_t> kDecompositionParts;
+// Sorted by (first, second).
+extern const std::span<const Composition> kCompositions;
+
+}  // namespace jitllm::tokenizer::unicode_data
+
+#endif  // JITLLM_TOKENIZER_UNICODE_DATA_H_

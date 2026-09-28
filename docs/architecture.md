@@ -288,7 +288,7 @@ substitute a fake at any provider boundary.
 | Platform | `platform` | Linux services: files opened beneath a directory without following links, io_uring, sockets, processes, memory counters |
 | Providers | `providers`, `providers/fake`, `providers/cuda` | The [provider interfaces](#providers) and their implementations; with kernel units, the only place vendor headers appear (D-026) |
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
-| Model | `artifact`, `model`, `execution` | The artifact reader and verifier; architecture and state adapters; the tokenizer, renderers and parsers; the operation contract, planner and dispatcher |
+| Model | `tokenizer`, `chat`, `artifact`, `model`, `execution` | The tokenizer; the chat renderers and, later, output parsers; the artifact reader and verifier; architecture and state adapters; the operation contract, planner and dispatcher, and sampling |
 | Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053) |
 | Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration and storage roles (D-073); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
@@ -1232,9 +1232,9 @@ M7's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M3's large pair
   pre-tokenizer and normalizer kinds, selected by identifier or hash like
   renderers; patterns from artifact metadata are never compiled. The
   vocabulary, merges and special tokens come from the artifact, and the
-  result must reproduce the reference token IDs on fixtures. Incorporating
-  upstream's Unicode tables waits until their provenance clears D-017
-  ([first-slice.md](first-slice.md#selected-reuse-and-outstanding-gates)).
+  result must reproduce the reference token IDs on fixtures. M3's byte-level
+  BPE with its UCD 15.1.0 tables is in [tokenizer.md](tokenizer.md); its
+  adoption into shipped binaries waits for D-088.
 - **Renderer:** one native renderer per supported template hash, with golden
   fixtures and segment boundaries (D-067).
 - **Output:** incremental detokenization that holds back incomplete UTF-8,
@@ -1884,7 +1884,7 @@ evidence or a later choice:
 | Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | Settled in M2 ([vmm-counters](experiments/vmm-counters/README.md)) |
 | Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M3 (the swap path), M6 |
 | State block sizes and KV layouts per state adapter | M2/M3 |
-| HTTP, TLS and JSON libraries (TOML: toml++, D-073) | M3 (HTTP, JSON); M5 (TLS), under D-017, D-057 and D-066 |
+| HTTP, TLS and JSON libraries (TOML: toml++, D-073; general JSON so far jitLLM's own `base/json.h`, M3) | M3 (HTTP, JSON); M5 (TLS), under D-017, D-057 and D-066 |
 | How jobs are launched and report back (their containment and confinement are D-074's); the peer-replication transfer mechanism | M5; M6a |
 | Switching-policy default and tuning (minimum run, pause cap, deadline handling) | M6 comparison of the D-069 policies |
 | Whether a worker node serves its own loopback management listener for node-local operations | M6a |

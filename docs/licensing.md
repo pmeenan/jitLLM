@@ -223,19 +223,74 @@ The inventory is not clearance of the future compiled dependency closure.
 | Official Qwen GGUF and base metadata/tokenizer files | External model/test data; both repositories supply the same Apache-2.0 license file. No weights redistributed; retain source terms and required notices with future derived artifacts. Exact source-to-GGUF conversion lineage is unverified |
 | Pinned llama.cpp executable/libraries and GGUF Python inspector | External reference/inspection tools, root MIT and gguf-py MIT; actual container/runtime terms remain in the reference setup record. Used only outside jitLLM serving |
 | Selected GGML core, CPU/CUDA kernels; Qwen2 graph/tensor semantics; native GGUF reader | Future core implementation candidates, root MIT plus local MIT notices (including Mozilla llamafile SGEMM and YaRN authors). Preserve notices and audit the selected compiled closure before adoption. GGML allocator/workspace behavior still needs the M2 proof |
-| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp` lacks exact input-data provenance; its generator uses a moving Unicode URL and Python Unicode data. **Blocked from native incorporation** until provenance/terms and D-017 eligibility are resolved |
+| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp`'s provenance was established on 2026-09-28: UCD 15.1.0 ([below](#tokenizer-unicode-tables-m3)). Not incorporated: jitLLM's tokenizer generates its own tables from the pinned UCD files, and adopting them waits for D-088 (proposed) |
 | Chat-template rendering | The pinned template is model data under its source terms. Future owned native rendering must pass exact byte/token fixtures for enabled branches. Full `common/jinja`, chat/parser and vendor closure is not adopted or cleared |
 | HF converter and Python package closure | Inspected only; neither executed nor incorporated. The split converter has remote-code/legacy-checkpoint paths outside the selected model path. Any future use needs independently pinned/audited tools, allowlisted data formats and remote code disabled |
 | CUDA, driver and standard runtimes; NumPy/GGUF Python packages | D-017 platform dependencies and external experiment tools, respectively; retain exact image/component identities and their own terms. No new platform exception or source dependency is approved |
 
 The current [Unicode license](https://www.unicode.org/license.txt) is Unicode
-License V3 with notice requirements. The exact terms for data underlying the
-pinned generated tables must still be traced; do not apply today's text
-retroactively as proof. D-017 does not list that license, so regeneration or
-copying needs a permitted path or a deliberate policy amendment. Fixed token
-IDs keep M2 independent of tokenizer adoption; close this gate before M3.
+License V3 with notice requirements. D-017 does not list that license, so
+regeneration or copying needs a permitted path or a deliberate policy
+amendment: D-088 proposes one ([below](#tokenizer-unicode-tables-m3)).
 No whole-vendor-tree, complete-image or redistribution clearance follows from
 root MIT.
+
+## Tokenizer Unicode tables (M3)
+
+The provenance record for the native tokenizer's Unicode data (D-017's
+fields; D-088, proposed; checked 2026-09-28).
+
+**llama.cpp's tables, traced.** At the pinned `b29c606e`,
+`src/unicode-data.cpp` says only "generated with
+scripts/gen-unicode-data.py", which fetches
+`https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt` and calls
+Python's `unicodedata` for the NFD table. Its tables last changed in
+llama.cpp commits `b43272af` (2024-05-17) and `37bef894` (2024-06-18); later
+commits changed container types and a comment only. Rerunning the
+generator's logic on UCD 15.0.0, 15.1.0, 16.0.0 and 17.0.0 (fetched from
+unicode.org on spark-b; 15.1.0's files are hashed below) reproduces its category-flag
+ranges (2,273), lowercase (1,433) and uppercase (1,450) maps from 15.1.0
+only; 15.0.0 differs in 59 flag ranges, 16.0.0 and 17.0.0 in hundreds. Its
+whitespace set equals PropList.txt's White_Space, and its NFD table equals
+what 15.0.0 and 15.1.0 give alike, so it does not say which Python made it.
+The tables are therefore UCD 15.1.0 data.
+
+**What jitLLM uses instead.** `tools/gen-unicode-tables` (jitLLM's,
+Apache-2.0; a developer-run build tool) generates
+`src/tokenizer/unicode_data.cc` from three UCD 15.1.0 files and checks each:
+
+| File | SHA-256 |
+| --- | --- |
+| UnicodeData.txt | `2fc713e6a31a87c4850a37fe2caffa4218180fadb5de86b43a143ddb4581fb86` |
+| PropList.txt | `05672956317b6296bc2ec3d6cef1f6452b57ff4f2efc6dc55b0a19277d5fcfd1` |
+| DerivedNormalizationProps.txt | `8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1` |
+| NormalizationTest.txt (tests only) | `871238e37e3be0696ec2bd0891119a041b052da1a84485eda05a5438724b223e` |
+
+| Field | Record |
+| --- | --- |
+| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, compiled into `jitllm_tokenizer` |
+| Version | Unicode Character Database 15.1.0 (release 2023-09) |
+| License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
+| In a binary | None yet: the tokenizer links into tests only until D-088 is accepted. A shipped binary that links it carries the Unicode notice, which every package already ships (decision 4 above) |
+| Source file | `src/tokenizer/unicode_data.cc` declares `Apache-2.0 AND Unicode-3.0` and "1991-2023 Unicode, Inc."; [NOTICE](../NOTICE) names it |
+
+**Chat templates' text.** The renderers write the format text their
+templates print: DeepSeek's tool, reasoning-effort and DSML strings (from
+`encoding_dsv4.py`, MIT, which Unsloth's template, declared Apache-2.0,
+repeats) and Qwen3.8's tool and reasoning-effort instructions (from the
+NVFP4 checkpoint's `chat_template.jinja`; the card declares Apache-2.0, the
+base model the Qwen Community License 1.0). These are format constants a
+compatible prompt must contain, recorded here as model-format data, like
+the special-token strings; whether that reading needs the owner's
+confirmation is an open question (D-087 makes weight licenses
+informational; templates are not named there).
+
+**Reference tools** (run, never incorporated;
+[tokenizer-reference](experiments/tokenizer-reference/README.md)): the
+pinned llama.cpp image (MIT, as above), Hugging Face tokenizers 0.22.2 and
+transformers 5.12.1 (Apache-2.0), Jinja2 3.1.6 (BSD-3-Clause), and DeepSeek's
+`encoding_dsv4.py` at `7872f01b` (MIT). The sampling tests use Random123's
+published Philox known-answer vectors (values, cited in the test).
 
 ## Early EXL3 companion (D-052)
 

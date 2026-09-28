@@ -19,3 +19,10 @@ target_link_libraries(jitllm_base PRIVATE jitllm_warnings)
 add_library(jitllm_report STATIC report.cc)
 target_include_directories(jitllm_report PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_report PRIVATE jitllm_warnings)
+
+# General JSON (json.h): tokenizer.json, chat fixtures and later request
+# bodies, parsed as untrusted input. Its own library, so that only what
+# reads JSON links it (and floating-point from_chars).
+add_library(jitllm_json STATIC json.cc)
+target_include_directories(jitllm_json PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(jitllm_json PRIVATE jitllm_warnings)
