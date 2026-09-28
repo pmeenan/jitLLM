@@ -4,8 +4,8 @@
 # Capacity reservations and bounded progress
 
 D-050 answers M0 question 9. This is the initial internal admission policy
-for M2, with concurrent execution validated in M4 and routed expert phases
-in M5. It defines guarantees and required tests; it does not claim an
+for M2, with concurrent execution validated in M6 and routed expert phases
+in M7. It defines guarantees and required tests; it does not claim an
 implemented scheduler or measured model envelopes. D-048's
 [completion protocol](async-model.md) remains the lifetime authority.
 
@@ -41,13 +41,13 @@ of phase types. Record peak physical requirements for those bounds, not just
 current tensor sizes or one observed successful run. A missing client output
 limit resolves to a finite supported limit before admission; no unbounded
 request is implicit, and no input is silently truncated to make it fit.
-Numeric defaults and backend envelopes require M2/M3 evidence.
+Numeric defaults and backend envelopes require M2/M3/M5 evidence.
 
 For the first dense path, a phase is a bounded prefill chunk or decode step
 whose entire dependency closure fits until its completed boundary. A
 whole-turn phase is legal only with a bounded full-turn envelope. A smaller
 boundary must be supported by the actual backend; a layer name or an I/O
-wait alone is not a yield boundary. M5 may use validated routing/expert
+wait alone is not a yield boundary. M7 may use validated routing/expert
 subphases. Its bound covers every allowed selected closure for the admitted
 batch, including shared experts, containing extents and routing activations;
 average expert locality and predicted routes cannot establish a guarantee.
@@ -143,11 +143,11 @@ Do not discount the sum based on expected non-overlap or cache hits in this
 initial policy. After the cohort drains, the serial bound still allows any
 other admitted request to run. A request may join a cohort only when this
 check passes; it never displaces a running request. M2 starts with one
-active request; M4 must validate
+active request; M6 must validate
 concurrent progress for supported all-resident configurations whose complete
 envelopes fit, as D-020 requires. Placement on independent nodes applies the
 rule independently; aggregate cluster bytes never satisfy a local deficit.
-M6 still owes coordinated per-rank admission and collective-order proof.
+M8 still owes coordinated per-rank admission and collective-order proof.
 Recheck the serial and any active-cohort inequalities on every grant,
 envelope replacement, cohort change and increase to `F` or `J`, and on any
 budget reduction. While requests are paused (D-069), the same transactions
@@ -274,7 +274,7 @@ collateral for an admitted request's capacity guarantee. Suspended admitted
 state retains its full `R(G)` allowance; freeing its physical copy does not
 admit extra guarantees against that allowance. A future policy that credits
 spilled live state must separately prove bounded disk space, restore and
-write-back peaks, coverage/correctness and a safe restore schedule. M4's
+write-back peaks, coverage/correctness and a safe restore schedule. M3's and M6's
 completed-request spill/restore tests do not establish that stronger policy.
 
 At full occupancy, clean weights or idle state whose retention is optional
@@ -380,31 +380,31 @@ each row stays at its gate.
 | Adversarial case | Required result / earliest execution gate |
 | --- | --- |
 | Two phases each retain activations and await missing weights | M2: serialize before the second phase starts, or admit their full concurrent envelopes; no circular capacity wait |
-| Agent and subagent requests on two models whose envelopes do not fit together | M2 fake / M4 real: under the default policy (same class) the running request keeps the slot through all its phases; the other starts after its retirement or explicit termination; no per-step alternation or mid-request model switch |
-| Interactive B arrives while background A generates; time-slicing configured; a cohort member is the pause candidate; B has a known deadline A's remaining bound would miss | M2 fake / M4 real: pauses only at completed boundaries; paused state stays protected and charged, with nothing it keeps charged to its phase envelope; a substitute runs only if the running set passes the cohort inequality; minimum run, pause caps and resume-next bound alternation and paused time; a newcomer, an envelope increase by a running member, a new grant or an `F`/`J` increase that would block a promised resumption waits or is refused; a pause that would make the paused request miss its known deadline, counting its remaining work and both switching costs, is not taken; every admitted request completes or ends explicitly; an unservable known deadline is refused before admission with 429, never after. M4 reports queue delay separately from paging/switch time and first-token compute (D-069) |
+| Agent and subagent requests on two models whose envelopes do not fit together | M2 fake / M6 real: under the default policy (same class) the running request keeps the slot through all its phases; the other starts after its retirement or explicit termination; no per-step alternation or mid-request model switch |
+| Interactive B arrives while background A generates; time-slicing configured; a cohort member is the pause candidate; B has a known deadline A's remaining bound would miss | M2 fake / M6 real: pauses only at completed boundaries; paused state stays protected and charged, with nothing it keeps charged to its phase envelope; a substitute runs only if the running set passes the cohort inequality; minimum run, pause caps and resume-next bound alternation and paused time; a newcomer, an envelope increase by a running member, a new grant or an `F`/`J` increase that would block a promised resumption waits or is refused; a pause that would make the paused request miss its known deadline, counting its remaining work and both switching costs, is not taken; every admitted request completes or ends explicitly; an unservable known deadline is refused before admission with 429, never after. M6 reports queue delay separately from paging/switch time and first-token compute (D-069) |
 | Running member's envelope increase during a pause: `B=100`, `F+R(G)=10`, cohort A (`80`) and C (`10`); A is paused for substitute B (`30`); C requests an envelope replacement to `50` | M2 fake: the serial and active-cohort checks alone would pass (`10 + 30 + 50 = 90`), but the promised resumption set would need `10 + 80 + 50 = 140`, so C's replacement waits until A has resumed or is refused; the same applies to a new grant, an `F`/`J` increase or a budget reduction during the pause (D-069) |
 | Substitute B requests an envelope replacement during A's pause; a second request tries to pause a still-running cohort member while A's pause is open | M2 fake: B's replacement is checked without B's own allowance and, if it still fails, refused rather than deferred, so no B-waits-for-A-waits-for-B cycle; the second pause is not taken while A's is open (D-069) |
-| State grows from a small prefix to the admitted context/output limit | M2: grow without a grant upgrade; include old/new transition peaks. *Moved to M4* (retention's branches and sharing): branch/copy-on-write growth |
-| One selected closure or rounded allocation exceeds its bound | M2 synthetic: planning refuses it. *Moved to M5 routes* (the routing boundary): the runtime check that detects it before submission, drains accepted work and fails; no expert substitution or indefinite upgrade wait |
+| State grows from a small prefix to the admitted context/output limit | M2: grow without a grant upgrade; include old/new transition peaks. *Moved to M6* (retention's branches and sharing): branch/copy-on-write growth |
+| One selected closure or rounded allocation exceeds its bound | M2 synthetic: planning refuses it. *Moved to M7 routes* (the routing boundary): the runtime check that detects it before submission, drains accepted work and fails; no expert substitution or indefinite upgrade wait |
 | Feasible queued request versus permanently impossible minimum phase | M2: bounded deferral for the former; immediate impossible result or validated alternative for the latter |
 | Grant with a full useful cache; lease release without pressure | M2: no eager eviction; acquire only missing extents on use; lease release preserves resident contents |
-| Full memory, spill full/failed, write-back needs scratch | M2 injected / M4 storage: no reclaim cycle or false recoverability; use budgeted cleanup, invalidate eligible cache, or fail explicitly |
-| Shared/tied extents, a fork, a leased tensor in an otherwise idle extent | M2: charge unique physical backing, protect entire conflicting restore footprint and never reclaim leased neighbors. *Moved to M4* (retention's branches and sharing): a fork and its divergent growth |
-| Many suballocation holes, pinned slab/registration, padded tails | M2: pinned registration and padded tails; include non-reclaimable backing and restore footprints. *Moved to M3* (state blocks, which bring suballocation within extents): logical free bytes in suballocation holes do not authorize impossible physical allocation |
+| Full memory, spill full/failed, write-back needs scratch | M2 injected / M6 storage: no reclaim cycle or false recoverability; use budgeted cleanup, invalidate eligible cache, or fail explicitly |
+| Shared/tied extents, a fork, a leased tensor in an otherwise idle extent | M2: charge unique physical backing, protect entire conflicting restore footprint and never reclaim leased neighbors. *Moved to M6* (retention's branches and sharing): a fork and its divergent growth |
+| Many suballocation holes, pinned slab/registration, padded tails | M2: pinned registration and padded tails; include non-reclaimable backing and restore footprints. *Moved to M5* (state blocks, which bring suballocation within extents): logical free bytes in suballocation holes do not authorize impossible physical allocation |
 | Cancelled phase, late DMA, registration still live, then replacement phase | M2: retain execution allowance/occupancy until retirement; stale IDs cannot release it; test with D-048 event permutations |
-| Repeated speculation, shared page-in waiters, cancellation of one waiter | M2: shared page-in waiters; demand makes progress; cancelling one waiter does not reclaim another's dependency. *Moved to M7* (prefetch, a deferred optimization): repeated speculation, whose full speculative peak stays in `J` or the owning phase |
-| All task/result/submission/output queues full during cancellation | M2: each queue full alone. *Moved to M3* (the front door's output queues): every queue full at once; bounded metadata and independent result/cleanup capacity drain accepted operations without a new allocation |
-| Slow/disconnected client or endless high-priority arrivals | M2 fake: output/queue limits and fairness produce progress; intake cannot starve admitted cleanup. *Moved to M3* (the front door): a stalled or disconnected client's explicit termination |
-| Continuation/prefix expires while an admitted request is suspended | M2 lifetime / M4 retention: preserve admitted state and independent shared-prefix claims; idle expiry cannot release its allowance |
-| Envelope upgrade, grant retirement and cached-state promotion race | M2: envelope upgrade and grant retirement as single-owner atomic transitions; no gap in protection, double grant or lost backing charge. *Moved to M4* (retention): the race with cached-state promotion |
-| Smaller configured budget, unexpected external pressure, unknown provider completion | M2 injection / provider proof: refuse/defer policy reduction; quarantine remains charged; timeout is never reclaim. *Moved to M3* (the first serving under a real memory budget; owner, 2026-09-27): injected capacity loss, which faults |
-| All-resident concurrent cohort and subsequent serial handoff | M4: full cohort fits and both progress; bounds still admit the next serial phase after retirement |
-| Local fit inferred from aggregate cluster capacity or stale report | M4a: each node rechecks its own guarantees; M6 adds per-rank coordinated admission and failure/collective tests |
+| Repeated speculation, shared page-in waiters, cancellation of one waiter | M2: shared page-in waiters; demand makes progress; cancelling one waiter does not reclaim another's dependency. *Moved to M9* (prefetch, a deferred optimization): repeated speculation, whose full speculative peak stays in `J` or the owning phase |
+| All task/result/submission/output queues full during cancellation | M2: each queue full alone. *Moved to M5* (the front door's output queues): every queue full at once; bounded metadata and independent result/cleanup capacity drain accepted operations without a new allocation |
+| Slow/disconnected client or endless high-priority arrivals | M2 fake: output/queue limits and fairness produce progress; intake cannot starve admitted cleanup. *Moved to M5* (the front door): a stalled or disconnected client's explicit termination |
+| Continuation/prefix expires while an admitted request is suspended | M2 lifetime / M6 retention: preserve admitted state and independent shared-prefix claims; idle expiry cannot release its allowance |
+| Envelope upgrade, grant retirement and cached-state promotion race | M2: envelope upgrade and grant retirement as single-owner atomic transitions; no gap in protection, double grant or lost backing charge. *Moved to M6* (retention): the race with cached-state promotion |
+| Smaller configured budget, unexpected external pressure, unknown provider completion | M2 injection / provider proof: refuse/defer policy reduction; quarantine remains charged; timeout is never reclaim. *Moved to M5* (serving the fixtures under a real memory budget; owner, 2026-09-27): injected capacity loss, which faults |
+| All-resident concurrent cohort and subsequent serial handoff | M6: full cohort fits and both progress; bounds still admit the next serial phase after retirement |
+| Local fit inferred from aggregate cluster capacity or stale report | M6a: each node rechecks its own guarantees; M8 adds per-rank coordinated admission and failure/collective tests |
 
 M2 supplies deterministic fake-backend execution plus the real GGML/VMM
-allocation and retirement evidence. M3 binds finite API request defaults
+allocation and retirement evidence. M5 binds finite API request defaults
 and, at exit, D-055's measured [retention limits](retention-policy.md);
-M4 proves retention and concurrent execution;
-M5 validates pessimistic routing envelopes before overlap optimizations.
+M6 proves retention and concurrent execution;
+M7 validates pessimistic routing envelopes before overlap optimizations.
 No new runtime, model support, spill format, public configuration schema or
 numeric production default is introduced by this policy document.

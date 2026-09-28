@@ -290,7 +290,7 @@ struct SchedulerSettings {
   static constexpr std::chrono::hours kLongest{1};
   // Polling after the last progress while a critical-path operation is in
   // flight: the window the task-lanes measurement used, not a tuned value
-  // (RE-017; M3/M4 tune it against per-token latency). Zero never polls.
+  // (RE-017; M3 onward tunes it against per-token latency). Zero never polls.
   std::chrono::microseconds poll_window{200};
   // The longest sleep: a timer tick, never needed for correctness. Positive.
   std::chrono::milliseconds tick{100};

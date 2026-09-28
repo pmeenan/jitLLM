@@ -56,7 +56,9 @@ separate step ([below](#proposed-use)).
   Apache-2.0 per its model card. GLM-5.3-Flash's optional drafter is
   CC BY-NC-ND 4.0 (non-commercial, no derivatives), so it must not enter
   any jitLLM artifact or default. As a benchmark-only component it needs
-  the owner's decision.
+  the owner's decision. *Owner, 2026-09-28 (D-087): allowed. jitLLM never
+  distributes weights, so a model's weight license gates nothing; M4's GLM
+  may use DFlash2 or MTP, whichever is faster and correct.*
 - **Architecture.** Its runtime is Python and PyTorch. jitLLM's hot path
   stays native (D-010), so reuse would mean porting ideas or individual
   kernels under their licenses (D-013), never adopting its runtime.
@@ -104,7 +106,7 @@ Mapped to where they would land in jitLLM:
    - This is stronger than our Tier E exactness and rung-5 restore checks,
      which compare the same plan and trajectory across paging. They do
      not establish equality between serial and batched execution. For
-     D-068 (M7), exact speculative verification would need that additional
+     D-068 (M3 onward), exact speculative verification would need that additional
      guarantee across its draft and verify shapes. The M2 operation
      contract should record row-invariance per kernel, which the P0 study
      partly shows:
@@ -126,7 +128,7 @@ Mapped to where they would land in jitLLM:
      NCCL's all-reduce order is an implementation detail, so it is not
      used.
    - The head is split by vocabulary, with a top-k merge.
-   - This is directly relevant to M6 sharding if restored or migrated
+   - This is directly relevant to M4 sharding if restored or migrated
      state must reproduce bit for bit.
 5. **Choose drafters and window widths by measurement.**
    - The engine picks per request whichever drafter commits more tokens
@@ -135,7 +137,7 @@ Mapped to where they would land in jitLLM:
    - Draft heads read a partial vocabulary. Its notes report that 98,304
      ids cover 99.6% of committed tokens.
 
-   These are inputs to M7.
+   These are inputs to M3's drafting and to M9.
 6. **A trap to check on our Sparks.** Its notes report GB10's kernel
    migrating pages under a running model. Some runs went at half speed
    during bursts of 45,000–265,000 migrated pages, and dropping the page
@@ -159,7 +161,7 @@ Mapped to where they would land in jitLLM:
 
    So compaction, not NUMA balancing, is the likely mover here. The
    migrations may cluster around large allocations and page-cache churn.
-   It is worth one measurement in M2 or M4: the counters sampled across
+   It is worth one measurement in M3: the counters sampled across
    loads, evictions and a steady decode.
 7. **Benchmark method.**
    - The same client for both engines.
@@ -180,8 +182,8 @@ Mapped to where they would land in jitLLM:
     libraries.
   - Its comparisons would use its normal configuration (drafts on) and a
     matched one (`--no-drafts`, its serial reference), as D-021 and D-068
-    ask. They land where drafting does: M3 for resident decode, and M7 for
-    speculative decoding.
+    ask. They land where drafting does: M3 for resident decode and
+    Qwen3.8's stored MTP, and M9 for other drafters.
 - **Format.** It reads only MLX 4-bit. A like-for-like comparison needs
   either jitLLM support for that format, which is a new import format and
   so a feature question, or an explicit cross-quantization comparison

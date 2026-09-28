@@ -11,8 +11,8 @@ and settings were not available to this experiment.
 **Completed:** 78 host-buffer test pairs and 27 two-GPU NCCL runs. Combined
 host writes reach **184.76 Gb/s**; large out-of-place NCCL SendRecv reaches
 **22.35 GB/s per rank** and AllReduce **22.20 GB/s**. All supported NCCL
-result checks passed. This completes the M0 interconnect baseline; M6 still
-owns sharded-model, pressure, cancellation and failure testing.
+result checks passed. This completes the M0 interconnect baseline; M4 still
+owns sharded-model testing, and M8 pressure, cancellation and failure testing.
 
 ## Topology and conditions
 
@@ -315,5 +315,5 @@ and VM audits agree with the report. The frozen manifest and hashes of all
 run by the reviewer. `git diff --check` passed; no outstanding correctness
 finding remains within this baseline's stated scope. Combined host rates
 remain sums of separately timed overlapping streams; exact copy volumes,
-latency tails and M6 execution/failure behavior remain unproven. Changes
+latency tails and M4/M8 execution/failure behavior remain unproven. Changes
 remain uncommitted for the human commit gate.

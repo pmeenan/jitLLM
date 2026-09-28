@@ -258,7 +258,7 @@ TEST(NodeConfigTest, UnknownKeysAndTablesAreFatal) {
               ElementsAre(HasSubstr("unknown key storage.spil")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\n"),
               ElementsAre(HasSubstr("unknown table client")));
-  // The front door's keys arrive in M3 (D-069, plan.md).
+  // The front door's keys arrive in M5 (D-069, plan.md).
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = \"127.0.0.1:8114\"\n"),
               ElementsAre(HasSubstr("a.toml:2:1: unknown table client")));
   EXPECT_THAT(Failures("schema_version = 2\nstorage = \"x\"\n"),

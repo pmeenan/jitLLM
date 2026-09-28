@@ -5,8 +5,8 @@
 
 Owner-requested assessment, 2026-09-22, building on the
 [D-040 client baseline](client-api-baseline.md). Status: D-041 accepted the
-Ollama listing/details/chat/generation subset, discovery (M3, cluster
-availability in M4a), targeted continuation close (M4) and download/warm jobs;
+Ollama listing/details/chat/generation subset, discovery (M5, cluster
+availability in M6a), targeted continuation close (M6) and download/warm jobs;
 D-042 accepted text resources, images and audio files, an optional MCP
 management adapter, application permissions, priorities, queue waits,
 cancellation and progress events, and later embeddings. Ollama registry and
@@ -89,7 +89,7 @@ Ollama-native routes are not required for it.
 
 | Request | Assessment and delivery recommendation |
 | --- | --- |
-| Model list | Already in D-040 for M3. Add native catalog details: immutable artifact ID, display alias, support level, capabilities, context/output limits and nodes where prepared artifacts exist. D-046 puts the client-facing subset in OpenRouter's `/v1/models` metadata shape. |
+| Model list | Already in D-040 for M5. Add native catalog details: immutable artifact ID, display alias, support level, capabilities, context/output limits and nodes where prepared artifacts exist. D-046 puts the client-facing subset in OpenRouter's `/v1/models` metadata shape. |
 | Model selection | Already confirmed: the request's `model` selects it. No global selected-model variable shared by clients. Resolve aliases to immutable identity for the attempt; echo the requested alias in the response `model` field and report the resolved identity in the extension header and diagnostics (D-045), so strict clients keep working. |
 | Activate an inactive model | Already confirmed on first request. Recommend an explicit asynchronous warm operation as the API form of the existing warm hint; define what was warmed, TTL and status. Availability, residency and admission are separate. |
 | Download/install | HF download/import is already confirmed. Expose a job with download → verify → repack → publish stages, progress, cancel/resume and failure reasons. Ollama registry ingestion would be a separate proposed source adapter. |
@@ -223,14 +223,14 @@ hosting. Such hosting remains a non-goal (vision.md).
 
 ## Staging and validation
 
-D-041 adds discovery to M3, targeted continuation close to M4, and cluster
-availability to M4a. The 2026-09-23 milestone ladder (plan.md) places import
-and download jobs in M3; warm jobs, priorities, queue waits, cancellation and
-progress events in M4; archive and peer replication in M4a; and the Ollama
-subset, file inputs, MCP, application permissions and embeddings in M8. MCP
+D-041 adds discovery to M5, targeted continuation close to M6, and cluster
+availability to M6a. The milestone ladder (plan.md, renumbered by D-087)
+places import and download jobs in M5; warm jobs, priorities, queue waits, cancellation and
+progress events in M6; archive and peer replication in M6a; and the Ollama
+subset, file inputs, MCP, application permissions and embeddings in M10. MCP
 follows the native management API.
 Live audio/video and batch/background jobs remain deferred until concrete
-workloads establish their requirements; earliest M7 planning, not automatic M7
+workloads establish their requirements; earliest M9 planning, not automatic M9
 obligations. All accepted scope still needs execution evidence.
 
 Before implementation acceptance, specify numeric bounds and adversarial tests:

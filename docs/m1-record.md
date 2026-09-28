@@ -3,6 +3,9 @@
 
 # M1 record — Bootstrap
 
+*Milestones renumbered (D-087, 2026-09-27): numbers here are those of
+their date; the 2026-09-23 ladder's M3–M8 are now M5–M10, and M4a is M6a.*
+
 M1 ran from 2026-09-23 to 2026-09-24 and exited on the owner's word on
 2026-09-24. This is its task-by-task record, moved out of [plan.md](plan.md)
 at exit so the plan stays lean: what each item built, how it was verified

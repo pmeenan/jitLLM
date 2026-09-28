@@ -11,7 +11,7 @@ DeepSeek/Qwen switching workload remain unchanged.
 | Candidate | Reference role | Status and next evidence |
 | --- | --- | --- |
 | Qwen-Image-2.1 GGUF | Quantized image-component footprint and repeated denoising, compared with the [BF16 study](image-reference/README.md) | [Bounded GGML-runner study done](image-gguf/README.md): pinned stable-diffusion.cpp, component identity reconciled, full-pipeline memory, same-runner quantization agreement, phase release and budgeted disk-backed denoising. Next, only if scheduled: native GGML execution in jitLLM, a quality metric beyond pixel agreement, text↔image switching with this runner |
-| MiMo-V2.6-Flash-RL | Large sparse MoE across two Spark memory domains | [Bounded text-only TP=2/EP=2 reference done](mimo-reference/README.md). Next: switching/state and multimodal cases separately, repeated boots and concurrency; native sharding remains M6 |
+| MiMo-V2.6-Flash-RL | Large sparse MoE across two Spark memory domains | [Bounded text-only TP=2/EP=2 reference done](mimo-reference/README.md). Next: switching/state and multimodal cases separately, repeated boots and concurrency; native sharding remains M4 |
 | Future smaller MiMo quantizations | Single-Spark resident or forced-paging case | Revisit when an artifact and compatible packed kernels exist; measure full execution budget and quality |
 
 ## Qwen GGUF

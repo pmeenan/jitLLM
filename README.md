@@ -50,8 +50,8 @@ the work, reviews it, and is the sole committer.
 ## Status
 
 **Pre-release. M0 (plan the plan), M1 (bootstrap) and M2 (the resource
-core and backend proof) are done; M3 (one resident model, end to end) is
-next.** M2's work is internal: test harnesses run a
+core and backend proof) are done; M3 (a fast full model swap on one
+Spark) is next.** M2's work is internal: test harnesses run a
 small FP16 model and two EXL3 fixtures natively, paged through device
 memory, but the runtime serves nothing yet.
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
@@ -64,10 +64,15 @@ driver, GPUs, VMM granularity and RDMA.
 Planned distribution is a signed apt repository for DGX Spark; changes are
 recorded in [CHANGELOG.md](CHANGELOG.md).
 
-The first useful product target is M4: chat with A, switch to B under memory
-pressure, then resume A with retained state, through an unmodified client.
-M4a adds configured placement across nodes; demand-paged MoE and sharding
-have separate later gates. See [the plan](docs/plan.md).
+First comes fast swapping of whole large models: DeepSeek V4 Flash, Qwen3.8
+Flash Next and Qwen-Image-2.1 on one Spark in M3, aiming at about 10 s from
+a swap to the first token, with the conversation's state restored, then
+models sharded across two Sparks in M4. M5 serves the small fixtures end to
+end through the standard client protocols. The first useful product target
+is M6: chat with A, switch to B under memory pressure, then resume A with
+retained state, through an unmodified client. M6a adds configured placement
+across nodes; demand-paged MoE and sharding under pressure have separate
+later gates. See [the plan](docs/plan.md).
 
 ## Development setup
 
@@ -165,9 +170,10 @@ purging the package keeps `/var/lib/jitllm`, `/etc/jitllm` and the user.
 
 The runtime reads `/etc/jitllm/jitllm.toml` and the fragments in
 `/etc/jitllm/jitllm.d/` (D-073), prepares its storage roles, checks the host
-as `jitllm doctor` does, reports readiness and waits; the front door arrives
-in M3. A refusal at startup exits 78, which the unit does not restart after;
-`journalctl -u jitllm` and `jitllm doctor` say why. For a development run,
+as `jitllm doctor` does, reports readiness and waits; a minimal chat route
+arrives at the end of M3, and the front door in M5. A refusal at startup
+exits 78, which the unit does not restart after; `journalctl -u jitllm`
+and `jitllm doctor` say why. For a development run,
 name the configuration and the enrollment anchor (the process lock is
 `<anchor>.lock`):
 
@@ -277,7 +283,7 @@ contributes to a build and what its notices require.
 - [AGENTS.md](AGENTS.md) — constraints, doc map, agent rules
 - [docs/vision.md](docs/vision.md) — why, who for, success criteria, non-goals
 - [docs/features.md](docs/features.md) — confirmed / proposed / open questions
-- [docs/plan.md](docs/plan.md) — the M1–M8 milestone ladder with exit criteria
+- [docs/plan.md](docs/plan.md) — the M1–M10 milestone ladder with exit criteria
 - [docs/m0-record.md](docs/m0-record.md) — what M0's planning, spikes and reference runs did, with evidence links
 - [docs/m1-record.md](docs/m1-record.md) — what M1's bootstrap items built and where each was verified
 - [docs/m2-record.md](docs/m2-record.md) — what M2's resource core and backend proof built, with evidence, caveats and the gate

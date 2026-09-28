@@ -324,7 +324,7 @@ scheduler (0.19–0.33, or all of one core with the shortest steps).
 - Polling costs a core per polling lane while a load runs (the device
   completion lane already yields while fences are pending); between
   sparse page-ins in a decode-like loop it cost little (below). The
-  windows are not tuned; M3/M4 set them against per-token latency.
+  windows are not tuned; M3 onward sets them against per-token latency.
 - Fresh device backing runs at ~78% of one thread at disk speed (above);
   a slower driver or a larger device would make the VMM lane the limit.
 - RE-027's cause is not isolated: fragmentation is ruled out (`filefrag`),

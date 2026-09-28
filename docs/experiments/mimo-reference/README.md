@@ -91,7 +91,7 @@ are plausible contributors but were not isolated. At these rates prefill uses
 about 2 GB/s and decode about 75 MB/s of a link measured at 22 GB/s for large
 NCCL transfers: this workload is not bandwidth-bound. Collective latency
 versus compute per step was not isolated; per-step collective latency, not
-link bandwidth, is the transport question for M6.
+link bandwidth, is the transport question for M4.
 
 Limits: one boot and single requests (no distributions, concurrency or
 long-context validation); no speculative decoding, CUDA graphs or multimodal

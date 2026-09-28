@@ -43,7 +43,7 @@ Start with a dedicated scheduler thread and separate storage, device
 submission and device-completion lanes; paging through the landing zone
 (D-081) adds a VMM lane, so creating and mapping backing never delays a
 page-in's copies ([pagein-perf](experiments/pagein-perf/README.md)).
-The network role arrives with M3/M4a. Worker counts and sleep/poll intervals are implementation settings to measure,
+The network role arrives with M3/M4. Worker counts and sleep/poll intervals are implementation settings to measure,
 not performance claims or new pins. A lane can contain multiple workers only
 if its provider's ordering/context contract permits it. Keep completion
 harvesting independent of submission waits. In particular, serializing all
@@ -266,7 +266,7 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
 - Kernel work is a job the submission lane runs on one of its streams; the
   lane fences after it, and the job's lease holds until that fence is seen
   complete.
-M4a/M6 add transport registration, lost-node and collective-order validation.
+M4, M6a and M8 add transport registration, lost-node and collective-order validation.
 Shutdown must stop admission, cancel queued work, drain accepted operations
 and registrations, then release backing; unreconciled work faults shutdown
 instead of reporting that its capacity was reclaimed.

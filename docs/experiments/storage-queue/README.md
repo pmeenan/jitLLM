@@ -4,7 +4,7 @@
 # Storage queue depth and request size through jitLLM's providers — 2026-09-25
 
 M2's providers item asks for storage queue depths and run sizes to be
-measured; M4 tunes them against spill write-back. This experiment measures
+measured; M3 and M6 tune them against spill write-back. This experiment measures
 the runtime's own paging path on `spark`:
 
 - `UringStorage`, the raw io_uring ring with one submission per request;
@@ -102,7 +102,7 @@ runs and their post-submit latency interval.
    - latency-first: a single 2 MiB dependency at depth one or two
      (164–172 µs, or 283–285 µs p50).
 
-   These are starting points, not tuned values. M4 sets them against spill
+   These are starting points, not tuned values. M3 and M6 set them against spill
    write-back and concurrent GPU work, and nothing here changes D-033's
    2 MiB extents.
 

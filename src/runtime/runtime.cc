@@ -233,8 +233,8 @@ int Run(std::span<const std::string_view> args, std::FILE* log) {
   if (!started) {
     return started.error();
   }
-  // 10. Ready. The front door arrives in M3; until then there is nothing
-  // to serve.
+  // 10. Ready. A minimal loopback endpoint arrives in M3 and the front door
+  // in M5; until then there is nothing to serve.
   if (auto notified =
           platform::NotifyServiceManager("READY=1\nSTATUS=standalone node; nothing to serve yet");
       !notified) {

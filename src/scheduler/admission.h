@@ -8,7 +8,7 @@
 // One admitted request holds the execution slot from its first phase until
 // it retires, unless the switching policy pauses it at a completed phase
 // boundary for one substitute. Others may join it as a concurrent cohort
-// only if the cohort inequality passes; joining never pauses anyone (M4
+// only if the cohort inequality passes; joining never pauses anyone (M6
 // validates concurrent execution; the policy is here now).
 //
 // The switching policies (D-069):
@@ -75,7 +75,7 @@ enum class SwitchingPolicy : std::uint8_t { kPriorityAware, kRunToCompletion, kT
 
 struct PolicySettings {
   SwitchingPolicy policy = SwitchingPolicy::kPriorityAware;
-  // Guards (D-069); numbers are placeholders until M4 measures them.
+  // Guards (D-069); numbers are placeholders until M6 measures them.
   Tick minimum_run = 0;
   std::uint32_t pause_cap = 1;
   Tick time_slice = 0;  // the quantum, for time-slicing

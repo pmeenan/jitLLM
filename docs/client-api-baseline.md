@@ -7,9 +7,11 @@ Documentation check: 2026-09-22. Decisions: D-040 (routes and client subset)
 and D-045 (front-door listener, auth and CORS defaults, admission status and
 keepalive contract, standard-client signals, alias echo), with D-047's
 reasoning, storage and non-streaming corrections, following D-022/D-030.
-This is the M3 implementation contract and test plan for the
+This is the M5 implementation contract and test plan for the
 inference front door, not a claim that jitLLM serves these clients: no
-application endpoint exists yet. Sources are live official documentation, not
+application endpoint exists yet. M3 serves only a minimal loopback
+`/v1/chat/completions` once the swap floor is proven; the surface here
+arrives in M5 (D-087). Sources are live official documentation, not
 pinned client binaries; recheck and record exact client versions and
 configurations when running acceptance.
 
@@ -21,7 +23,7 @@ compatibility, tokenization/rendering, constrained output, reasoning,
 reranking, metrics, raw Completions) and the
 [OpenRouter assessment](openrouter-api-assessment.md) (D-046: model-metadata,
 reasoning and hint spellings adopted on the OpenAI-shaped routes; hosted-routing
-features excluded). Delivery milestones for scope outside M3 are in
+features excluded). Delivery milestones for scope outside M5 are in
 [plan.md's milestone ladder](plan.md#milestone-ladder). D-040's JSON response
 envelopes do not imply schema-constrained generation; that comes from D-043.
 Advertise only the implemented feature profile; jitLLM extensions stay separate.
@@ -48,10 +50,10 @@ Cursor's server-mediated path implies that a workstation loopback address is
 not a sufficient deployment route. Keep D-014's local default; any reachable
 remote deployment requires explicit configuration, authentication and protected
 transport. This check does not authorize publishing a server or sending prompts
-to Cursor. Cursor remains a named target with an M3 validation gap, not a
+to Cursor. Cursor remains a named target with an M5 validation gap, not a
 reason to claim all four clients already work.
 
-## M3 surface
+## M5 surface
 
 All routes terminate at the single inference front door (D-045 defines its
 listener, authentication and CORS defaults). This is a bounded compatibility
@@ -95,7 +97,7 @@ pinned legacy profile may use `reasoning_content`. OpenRouter also uses
 and jitLLM identity/version inside their opaque signatures (D-047). The
 version is that of the signature's representation, an integer independent
 of the product version (D-062; version 1, `src/base/surface_versions.h`),
-whose contents M3 fixes. A signature of a version the runtime does not
+whose contents M5 fixes. A signature of a version the runtime does not
 implement is one it cannot verify. D-043
 owns the contract; D-046 adds the `reasoning` request object and
 `cached_tokens`/`cache_write_tokens` usage reporting. OpenRouter's
@@ -126,7 +128,7 @@ profile. Reject explicit `store: true`, non-boolean values, non-null
 400 before admission. Nothing is retrievable afterwards. Accept `reasoning` input items that jitLLM produced, or
 empty ones, on later turns; encrypted reasoning continuity, if ever offered,
 uses jitLLM's own opaque blobs and never a provider-shaped imitation.
-`prompt_cache_key` is an advisory retention hint (D-045). M3 does not promise
+`prompt_cache_key` is an advisory retention hint (D-045). M5 does not promise
 hosted tools, background jobs, stored-response retrieval, remote compaction or
 WebSockets. Reject unsupported semantic requests explicitly. In particular, if
 a pinned Codex build requires compaction or a tool variant that cannot be
@@ -303,11 +305,12 @@ in a jitLLM response header and in native discovery and diagnostics. jitLLM
 extensions travel as namespaced request and response headers on every
 protocol, and as namespaced body fields only where the protocol tolerates
 unknown keys. D-062 sets the lowercase `jitllm-` header prefix and a single
-top-level `jitllm` body object; M3 fixes the individual names.
+top-level `jitllm` body object; M5 fixes the individual names.
 
 ## Shared correctness and limits
 
-Before M3 accepts external input, specify numeric bounds on request/header
+Before M3's minimal endpoint or M5's front door accepts external input,
+specify numeric bounds on request/header
 bytes, history, tools, argument size, output, queued requests and stream
 buffers. Reject oversized or unsupported input before expensive work. Test
 malformed JSON, invalid tool links, unsupported modalities and unavailable
@@ -323,7 +326,7 @@ catalog lock across waits. Keepalives indicate liveness, not inference progress.
 Do not silently replay an uncertain execution when a client or node disconnects
 (D-037). Retried requests are not proof that an earlier attempt stopped.
 
-## Acceptance owed in M3
+## Acceptance owed in M5
 
 1. Pin each client build, provider/SDK version where applicable, model artifact,
    tokenizer/template and complete configuration; keep credentials out of the
@@ -335,14 +338,14 @@ Do not silently replay an uncertain execution when a client or node disconnects
    context exhaustion/compaction, auxiliary requests and model selection.
    Use opt-in synthetic traffic captures outside Git; retain aggregate evidence.
 3. Test each route's JSON/SSE schema independently even if only one named client
-   is needed for the existing M3 end-to-end gate. A passing client does not
+   is needed for the existing M5 end-to-end gate. A passing client does not
    certify another; publish a per-version/profile support matrix.
 4. Resolve Cursor's custom endpoint, model selection, exact routes, streaming,
    tools and reachability with an owner-enabled test deployment. Until then,
    retain the explicit compatibility gap. Do not claim Tab support.
 5. Challenge disconnects during tool emission, duplicate retries, slow readers,
    admission failure after headers, unknown beta fields and oversized inputs.
-   Add M4's A→B→A trace through a validated client, without session extensions.
+   Add M6's A→B→A trace through a validated client, without session extensions.
 6. Verify the D-045/D-047 contract: discovery answers inside the client bound with no
    I/O; an induced switch longer than the keepalive interval completes through
    each streaming protocol with a defined keepalive. Non-streaming calls
@@ -354,15 +357,15 @@ Do not silently replay an uncertain execution when a client or node disconnects
    recovery paths; side requests cause no extra switches under the default
    alias; a named client works on loopback without a credential, ignoring a
    placeholder one; cross-origin requests from a non-listed origin are
-   refused. Two checks wait for their scope: in M4, with D-041's close,
+   refused. Two checks wait for their scope: in M6, with D-041's close,
    `x-claude-code-context-compacted` (hint headers enabled in the pinned
    profile) releases the prior continuation while a shared prefix stays
-   reusable; in M8, with the Ollama profile, an Ollama-native client works
+   reusable; in M10, with the Ollama profile, an Ollama-native client works
    on loopback without a credential and its separate load-time bound holds.
 
 7. Verify D-047 storage validation: omitted/false `store` succeeds with full
    history, while true, non-boolean values and non-null continuation references
-   fail before admission. When reasoning support lands (M5), test current vLLM's
+   fail before admission. When reasoning support lands (M7), test current vLLM's
    `reasoning` and any separately advertised legacy spelling, plus the pinned
    OpenRouter SDK's preservation of `format: "unknown"` signed blocks through
    streamed tool calls and subsequent tool-result requests. Check text,

@@ -4,7 +4,7 @@
 # Architecture
 
 > **Status: first full draft, approved by the owner on 2026-09-23.** No application
-> code exists yet; this describes the system that M1–M8 build. It is the map:
+> code exists yet; this describes the system that M1–M10 build. It is the map:
 > processes, components, layers, the main flows and the boundaries between
 > them, with links to the designs that govern each area. Settled choices live
 > in [decisions.md](decisions.md). Where this document disagrees with a
@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | Task states, service lanes, completion ownership | [async-model.md](async-model.md) | D-048 |
 | Capacity reservations, admission and progress | [reservation-policy.md](reservation-policy.md) | D-007, D-050 |
-| Conversation-state retention and the M4 workload | [retention-policy.md](retention-policy.md) | D-024, D-031, D-055 |
+| Conversation-state retention and the M6 workload | [retention-policy.md](retention-policy.md) | D-024, D-031, D-055 |
 | Prepared artifacts and page-in | [artifact-format.md](artifact-format.md) | D-009, D-018, D-035, D-056 |
 | Kernel dispatch and the M2 backend proof | [backend-proof.md](backend-proof.md), [exl3-bringup.md](exl3-bringup.md), [first-slice.md](first-slice.md) | D-051–D-053 |
 | Cluster membership, transport and placement | [cluster-design.md](cluster-design.md) and [the conductor section](#conductor-ownership-and-admission) | D-037–D-039 |
@@ -58,8 +58,8 @@
   conversation nor its lifetime. Shared prompt prefixes and conversation
   continuations have independent reuse/expiry policies (D-024, D-031),
   capacity-driven with a 24-hour idle cap under D-055's
-  [retention policy](retention-policy.md), which also names M4's acceptance
-  workload. Sessions and hints are optional extensions (D-022). M3 serves Chat
+  [retention policy](retention-policy.md), which also names M6's acceptance
+  workload. Sessions and hints are optional extensions (D-022). M5 serves Chat
   Completions, Responses and Messages with model listing and token counting
   under the [D-040 client contract](client-api-baseline.md); client compatibility
   requires per-version execution evidence, including Cursor reachability.
@@ -163,7 +163,8 @@
 - **Model shapes.** The resource core names no model architecture. Adapters,
   phase kinds, state capabilities, decoding modes and operations carry
   shape-specific behavior with declared bounds. Speculative (MTP) and
-  block-diffusion decoding are designed for now and executed in M7 (D-068;
+  block-diffusion decoding are designed for now; speculation executes from
+  M3 and block diffusion in M9 (D-068, D-087;
   [model shapes](#model-shapes)).
 - **Portability posture.** NVIDIA first. The core holds no vendor types;
   device memory, paging, and transport sit behind narrow provider interfaces
@@ -217,7 +218,7 @@ fragmentation, sharing, envelope upgrades and cancellation with late I/O.
 Assert bounded occupancy and eventual completion or explicit safe failure;
 unknown completion remains charged and faults affected admission. The real
 GGML/EXL3/VMM proof must validate allocation envelopes and lifetime assumptions.
-M4 adds retention/concurrent-execution evidence and M5 routed expert closures.
+M6 adds retention/concurrent-execution evidence and M7 routed expert closures.
 The design decision is complete; merely avoiding OOM is not implementation
 proof of progress.
 
@@ -233,7 +234,7 @@ front door on the conductor node (loopback by default; TLS when exposed)
         |
         v
 jitllm runtime: conductor role + node role (one process)
-        | routed attempts over mTLS sessions (M4a)   | collectives (M6)
+        | routed attempts over mTLS sessions (M6a)   | collectives (M4)
         v                                             v
 jitllm runtime: node role, one process on each other enrolled node
 
@@ -248,7 +249,7 @@ topology: detected paths, enrolled membership; no fixed names or counts (D-038)
 | Import, install and archive jobs | `jitllm` | Download, stage and import sources; verify and publish artifacts; archive; replicate to peers (D-054) | Touches scheduler state or the hot path; runs beside a conflicting job for the same model or artifact |
 | `jitllm` CLI | The invoking user | A management client over loopback HTTP (D-064) | Reads runtime state files or links runtime code |
 | Setup tooling | An administrator | Enrollment, cluster documents, credentials, node identity (D-038, D-063) | Changes membership or trust while nodes serve ([cluster-design.md](cluster-design.md)) |
-| Dashboard (M8) | Its own service | Browser UI that calls the management API from its server side (D-064) | Takes runtime locks or exposes the management API to the browser |
+| Dashboard (M10) | Its own service | Browser UI that calls the management API from its server side (D-064) | Takes runtime locks or exposes the management API to the browser |
 | Certificate helpers | root | Keep front-door certificate files current: the certbot deploy hook and the Tailscale timer (D-065) | Hold any jitLLM authority |
 
 ### Runtime components
@@ -327,7 +328,7 @@ observations; they never change its records or run a continuation inline.
 | VMM | M2 | Creating, mapping and releasing managed backing, so a page-in's copies never wait behind it |
 | Device completion | M2 | Fence queries, independent of any blocking submission call |
 | CPU workers | M2 | Plan preparation, hashing and verification, then rendering and tokenization in M3; other long host work |
-| Network | M3 (front door), M4a (cluster) | Listeners, TLS, protocol parsing and writing, cluster sessions, backpressure |
+| Network | M3 (loopback endpoint), M5 (front door), M6a (cluster) | Listeners, TLS, protocol parsing and writing, cluster sessions, backpressure |
 
 CPU workers keep reserved capacity for admitted requests' work, such as
 spill-restore verification. Intake work such as rendering and token counting
@@ -365,7 +366,7 @@ step names the owner of its decisions; the linked designs govern the details.
    need more fails with a 413. An executing node reserves the same
    allowance from its own pool when it receives a routed request.
    cluster-design.md's initial values size the pool's decoded-body share,
-   and M3 sets the multiple and the pool size
+   and M5 sets the multiple and the pool size
    ([client-api-baseline.md](client-api-baseline.md#shared-correctness-and-limits),
    [cluster-design.md](cluster-design.md#internal-messages-and-bounded-state)).
 2. **Normalize (network lane).** The route's protocol adapter parses strict,
@@ -389,7 +390,7 @@ step names the owner of its decisions; the linked designs govern the details.
    artifact renders.
 5. **Admit (scheduler).** From intake until admission the request counts as
    queued for D-055's close and compaction records. The front door stamps
-   each request with the current close sequence number at intake; M4 serves
+   each request with the current close sequence number at intake; M6 serves
    the close API there too (D-041), so every close is ordered against
    intake. Once rendering has produced its tokens,
    the request is matched against every later close, and a close keeps its
@@ -425,7 +426,7 @@ step names the owner of its decisions; the linked designs govern the details.
    closure is complete, the dispatcher submits the phase's launches on the
    request's stream and records a completion fence. The phase reaches a
    completed boundary only once the fence has completed, its host readers
-   (the sampler, and in M5 the routing report) have consumed its outputs,
+   (the sampler, and in M7 the routing report) have consumed its outputs,
    and every other consumer and registration of its resources has retired.
    Then its new state becomes retained request state and its leases end
    (D-050).
@@ -449,7 +450,7 @@ drains the operations already accepted. It publishes only what D-055 allows a
 cancelled request to publish. The slot and the allowance stay held until
 retirement (D-048). A timeout never proves reclamation.
 
-**Remote execution (M4a).** The conductor forwards the normalized request
+**Remote execution (M6a).** The conductor forwards the normalized request
 over the chosen node's authenticated session. The node performs steps 4–9
 and streams response chunks back under credits. The conductor owns the
 client connection and its protocol semantics
@@ -522,7 +523,7 @@ below apply to each component artifact.
    across a rebuild, and any admission while detail is absent rebuilds it
    first. Plans are never serialized; only inputs such as separately keyed
    tuning results may be stored. Chunk hashes are not rechecked, because
-   integrity was established at install. M3 measures startup time and metadata
+   integrity was established at install. M5 measures startup time and metadata
    memory as the library grows, and the cold-switch cost that on-demand detail
    adds.
 4. **Use.** The first admitted request pages in each phase's missing
@@ -740,8 +741,8 @@ landing slot, fenced, and the slot written to the state's place with
 direct I/O. Only once the whole range is written is the backing released,
 and the catalog then marks the contents preserved at the same content
 generation, so a later load restores them (D-086). In M2 the place is a
-process-private unnamed file; D-055's spill role and retention arrive in
-M4.
+process-private unnamed file, and M3's swapped-out conversation state can
+use the same; D-055's spill role and retention arrive in M6.
 
 Storage backends sit behind one read/write completion interface. D-034 selects
 native direct-file I/O on validated Spark configurations, with bounded
@@ -758,7 +759,7 @@ registration/reclaim lifetimes are part of the M2 integration proof.
 Victims are chosen only when an admitted phase needs capacity or a retention
 cap is exceeded. Allowances and grants never trigger eviction (D-007). The
 baseline is deliberately simple, so that alternatives can be measured against
-it on recorded traces (M7 in [plan.md](plan.md#milestone-ladder)):
+it on recorded traces (M9 in [plan.md](plan.md#milestone-ladder)):
 
 - **Eligible:** resident and unleased, with no outstanding consumer or
   registration, and not quarantined. It must also be either clean
@@ -830,7 +831,7 @@ policy without making storage unbounded.
 
 D-055's [retention policy](retention-policy.md) settles the rules: entry
 identity, restore boundaries, immutable shared blocks, refresh by branch,
-release semantics, the initial victim order, spill storage and M4's named
+release semantics, the initial victim order, spill storage and M6's named
 acceptance workload. Shared prompt-prefix and conversation-continuation
 entries have separate reuse statistics and retention/expiry decisions within
 common bounds. Shared-prefix value comes from reuse across conversations;
@@ -838,7 +839,7 @@ continuation value comes from reuse of that history. A hit on the shared
 prefix does not refresh unrelated continuations. Retention is
 capacity-driven with a per-class maximum idle age of 24 hours by default.
 The capacity values (resident state, spill bytes, entry counts, minimum
-prefix length) are pinned at M3 exit from measured state sizes and headroom.
+prefix length) are pinned at M5 exit from measured state sizes and headroom.
 Spill-full or expiry invalidates only eligible reusable entries; active work
 retains a valid recovery path or safely fails under the admission policy.
 Spill is deleted at startup, so no crash durability or indefinite retention
@@ -885,7 +886,7 @@ compatible shorter prefix at a valid restore boundary and recompute only the
 remaining supplied history. Without a valid prefix, recompute from the
 request's full history. If required history is unavailable, fail explicitly.
 Expose reused/recomputed token counts and miss reasons through diagnostics
-without logging prompts or KV. M4 tests branching histories, edits to an
+without logging prompts or KV. M6 tests branching histories, edits to an
 earlier message, incompatible cache identity, expiry, and spill exhaustion,
 alongside both resident reuse and forced spill/restore. Include S+A and S+B
 with independent release/expiry, continuation eviction while S remains,
@@ -958,7 +959,7 @@ copy to or from device VMM is device-execution work (D-081).
   another in a file start as one request, so coalescing never delays a
   read; a span's failure is retried read by read, and a span is cancelled
   only once no read in it is wanted (`providers/direct_reader.h`). Tuning
-  is M2/M4 measurement.
+  is M2/M3/M6 measurement.
 - **Completion:** every submission resolves as not started, accepted or
   unknown, and the original request's terminal completion is harvested even
   after cancellation (D-048). A short read or an error publishes nothing.
@@ -1022,7 +1023,7 @@ no TCP, no signals or abstract sockets outside itself) and a seccomp
 filter that refuses sockets and io_uring to itself, since RE-013 blocks
 unprivileged `unshare` and `bwrap` on these hosts (D-074). M1's job proof
 covers a child that outlives its job, inherited locks across exec, runtime
-and unit restarts and a confined stage (`tools/job-proof`), before M3
+and unit restarts and a confined stage (`tools/job-proof`), before M5
 builds the importer on it.
 
 - **Import:** stage the source locally, validate it as untrusted input, plan
@@ -1040,8 +1041,8 @@ builds the importer on it.
 - **Verify:** the standalone verifier checks hashes, index bounds and
   manifest consistency on demand (features.md).
 
-How jobs are launched and how they report back are M3 implementation
-choices, as is the peer-transfer mechanism in M4a.
+How jobs are launched and how they report back are M5 implementation
+choices, as is the peer-transfer mechanism in M6a.
 
 ## Execution
 
@@ -1073,13 +1074,13 @@ Worst-case unions grow with phase width, so a model that fits with small
 decode phases may not fit a wide prefill or verify phase. A plan therefore
 carries a small set of validated widths for each wide phase kind, such as
 prefill chunk sizes, each with its envelope. A request profile may pin its
-width, and M4's acceptance profiles do; otherwise admission uses the widest
+width, and M6's acceptance profiles do; otherwise admission uses the widest
 validated width that fits. Widths can change numerics within declared bounds,
 so the chosen width is part of the plan identity recorded with retained state.
 An entry produced at another width is a miss unless the widths are validated
 as state-compatible (D-053, D-055). A rejection names the phase kind, width,
 required bytes and shortfall. Discovery and the what-if query show supported
-widths and their envelopes. M2 and M5 measure each phase kind's guaranteed
+widths and their envelopes. M2 and M7 measure each phase kind's guaranteed
 bound against its observed peak, to refine validated plans without weakening
 the guarantee.
 
@@ -1104,7 +1105,7 @@ phases drawn from the phase kinds the build registers.
 - **Phase kinds** each declare their dependency closure (static or
   discovered at run time), the worst-case bound on that closure, their
   envelope, their outputs and what their completed boundary means. The
-  first kinds are the prefill chunk and the decode step; M5 adds routing and
+  first kinds are the prefill chunk and the decode step; M7 adds routing and
   expert subphases (D-050). The rest are designed now and built later
   (D-068): draft, verify and accept or roll back for speculative decoding;
   canvas denoise and canvas commit for block diffusion; modality encode;
@@ -1182,22 +1183,22 @@ own decision.
 
 | Shape | Examples | Evidence so far | Design hooks | Execution |
 | --- | --- | --- | --- | --- |
-| Dense decoder, full-attention GQA KV | Qwen2.5-0.5B | D-051/D-052 fixtures and external references | The baseline adapters | M2–M4 |
-| Hybrid sliding-window and global attention | Gemma 4 | Gemma 26B-A4B reference; RE-004, RE-007 | Per-layer state representations; coverage checks (D-055) | M5 |
-| Linear-attention or recurrent layers mixed with attention | Ornith 1.5 (`qwen35moe`), Qwen3.8 | Ornith's recurrent state saved and restored in the A→B→A reference | Snapshot-only restore; truncation through snapshots | M5 (Ornith); M7 (Qwen3.8) |
-| Compressed attention with an indexer | DeepSeek V4 Flash | Its compressed-attention and indexer state charged in the paging study | State adapter and operations | M7 |
-| Routed experts, with or without shared experts | Gemma 4 26B-A4B, Ornith, Qwen3.8, DeepSeek V4, MiMo | References and route traces | Routing boundary; worst-case unions | M5 |
-| Sparse row tables | Qwen3.8's n-gram table | Layout study | Data-dependent closures | M7 |
-| Stored MTP layers | Ornith (one layer), Qwen3.8 (MTP head), MiMo | Stored and accounted in references, never executed | Draft, verify and rollback phase kinds; truncation | M7 (D-068) |
-| Companion MTP drafter | Gemma 4 assistant drafters | None | Composed contexts; resources shared across artifacts | M7 (D-068) |
-| Block diffusion over a causal prefix | DiffusionGemma-26B-A4B | None | Canvas phase kinds and sampler; transient canvas; bidirectional attention over cached KV; restore points only where the adapter validates them (vLLM describes the commit as a causal encoder pass) | M7 (D-068) |
-| Modality encoders | Gemma 4 and MiMo image input | None | Encoder components and phase kinds (D-042's staged modalities) | M8 (Gemma 4 first) |
-| Image-generation pipelines | Qwen-Image-2.1 | BF16 and GGUF references | Multi-component contexts; per-phase release | Unscheduled |
-| Pooled outputs | Embeddings (D-042), reranking (D-044) | None | Pooled-output phase kind; bidirectional attention | M8 |
-| Model-parallel sharding | MiMo TP=2/EP=2 | Two-Spark reference | Per-rank plans | M6 |
+| Dense decoder, full-attention GQA KV | Qwen2.5-0.5B | D-051/D-052 fixtures and external references | The baseline adapters | M2–M6 |
+| Hybrid sliding-window and global attention | Gemma 4 | Gemma 26B-A4B reference; RE-004, RE-007 | Per-layer state representations; coverage checks (D-055) | M7 |
+| Linear-attention or recurrent layers mixed with attention | Ornith 1.5 (`qwen35moe`), Qwen3.8 | Ornith's recurrent state saved and restored in the A→B→A reference | Snapshot-only restore; truncation through snapshots | M3 (Qwen3.8); M7 (Ornith) |
+| Compressed attention with an indexer | DeepSeek V4 Flash | Its compressed-attention and indexer state charged in the paging study | State adapter and operations | M3 |
+| Routed experts, with or without shared experts | Gemma 4 26B-A4B, Ornith, Qwen3.8, DeepSeek V4, MiMo | References and route traces | Routing boundary; worst-case unions | M3 (resident); M7 (demand-paged) |
+| Sparse row tables | Qwen3.8's n-gram table | Layout study | Data-dependent closures | M3 |
+| Stored MTP layers | Ornith (one layer), Qwen3.8 (MTP head), MiMo | Stored and accounted in references, never executed | Draft, verify and rollback phase kinds; truncation | M3 (Qwen3.8); M9 (Ornith, MiMo) (D-068) |
+| Companion MTP drafter | Gemma 4 assistant drafters; DeepSeek V4's DSpark; GLM-5.3's DFlash2 | None | Composed contexts; resources shared across artifacts | M3 (DSpark); M4 (DFlash2 or GLM's MTP, whichever is faster and correct, D-087); M9 (Gemma 4) (D-068) |
+| Block diffusion over a causal prefix | DiffusionGemma-26B-A4B | None | Canvas phase kinds and sampler; transient canvas; bidirectional attention over cached KV; restore points only where the adapter validates them (vLLM describes the commit as a causal encoder pass) | M9 (D-068) |
+| Modality encoders | Gemma 4 and MiMo image input | None | Encoder components and phase kinds (D-042's staged modalities) | M10 (Gemma 4 first) |
+| Image-generation pipelines | Qwen-Image-2.1 | BF16 and GGUF references | Multi-component contexts; per-phase release | M3 |
+| Pooled outputs | Embeddings (D-042), reranking (D-044) | None | Pooled-output phase kind; bidirectional attention | M10 |
+| Model-parallel sharding | GLM-5.3 and DeepSeek v4.1 TP2; MiMo TP=2/EP=2 | Two-Spark references | Per-rank plans | M4 (TP2); M8 (MiMo's EP) |
 
 Shapes arrive with the first model that needs them: Gemma 4 and Ornith as
-M5's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M7's large pair
+M7's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M3's large pair
 ([plan.md](plan.md#milestone-ladder)). Three consequences matter already:
 
 - **Wide phases on routed experts.** A k+1-token verify or a 256-token
@@ -1205,7 +1206,7 @@ M5's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M7's large pair
   routing, a canvas can plausibly touch most experts in each layer on every
   denoising step. If it does, demand paging cannot help those layers, and
   the plan must keep them resident. This is unmeasured; a bounded
-  DiffusionGemma reference study measures per-step closures before M7
+  DiffusionGemma reference study measures per-step closures before M9
   planning. Google notes that MoE verification can load additional experts,
   and the llama.cpp contributor saw no MoE speedup from Gemma's drafter
   (D-068).
@@ -1251,7 +1252,7 @@ speculative decoding, and the whole canvas for block diffusion. It runs on
 the host first, reading the logits from host-accessible
 backing that the plan allocates for them (a design choice, not yet
 measured); a device sampler is an option to measure against D-052's decode
-gates. The supported sampling parameters are part of the M3 contract
+gates. The supported sampling parameters are part of the M5 contract
 (D-040, D-043). Numerical acceptance compares logits, never sampled text
 ([first-slice.md](first-slice.md)).
 
@@ -1282,8 +1283,8 @@ EXL3 adds packed trellis/side-vector closures, per-tensor rates/codebooks,
 bounded reconstruction workspace and pointer-generation checks; conversion
 to FP16 does not satisfy packed execution. Its [acceptance contract](exl3-bringup.md)
 requires kernel performance against upstream in M2, full resident performance
-in M3 and EXL3 switch/restore evidence in M4.
-This proof informs M3 and the interfaces; it does not claim support for
+in M5 and EXL3 switch/restore evidence in M6.
+This proof informs M5 and the interfaces; it does not claim support for
 flagship architectures, and there is no runtime plugin ABI to freeze (D-028).
 The [proof scope](backend-proof.md) records the stages, oracle ladder and
 cases. D-053 puts dispatch in jitLLM. GGML's backend runtime keeps a hidden
@@ -1306,7 +1307,7 @@ signatures follow the M2 proof.
 | Device memory | Report domains, granularity and allocation classes; reserve and free address ranges; create and release backing in a class; map, set access, unmap | CUDA VMM through the driver API (D-006, D-033); device-located backing, with a host-located landing zone for direct I/O on Spark (D-081) |
 | Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (landing zone to device VMM and back, D-081; relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
 | Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034); every request ends not started, accepted or unknown |
-| Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M6, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
+| Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M4, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
 | Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `jitllm doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
 
 The fakes keep backing in host memory filled with poison patterns, so a touch
@@ -1405,12 +1406,13 @@ The conductor, or a standalone node, serves one inference front door
 (`127.0.0.1:8114` by default) and the management listener (`127.0.0.1:8115`)
 (D-037, D-045, D-063). Cluster-wide management goes through the conductor
 (D-038); whether a worker also serves a loopback listener for node-local
-operations is settled in M4a. Any non-loopback binding requires credentials
+operations is settled in M6a. Any non-loopback binding requires credentials
 and TLS. TLS comes from certificate files that external tools keep current,
 selected by SNI and reloaded on change, with the local CA as the fallback
 (D-065). The proposed baseline is HTTP/1.1 with keep-alive and SSE streaming,
-adding HTTP/2 only if a named client's tests require it. The HTTP, TLS and
-JSON libraries are M3 dependency choices under D-017, D-057 and D-066:
+adding HTTP/2 only if a named client's tests require it. The HTTP and JSON
+libraries are M3 dependency choices, and the TLS library M5's, under D-017,
+D-057 and D-066:
 no-exception APIs, bounded buffers, and non-blocking integration with the
 network lane.
 
@@ -1453,7 +1455,7 @@ The following are conceptual records, not a wire schema or public API:
 | --- | --- |
 | Node view | Conductor's advisory snapshot: configured node identity, runtime incarnation, report revision/freshness, capabilities/compatible plans, health, budget and occupancy/commitment summaries. Reports from an old incarnation or older revision cannot overwrite newer state |
 | Local capacity ledger | Node authority: its execution budget, outstanding capacity commitments and full execution envelopes under D-050. Physical occupancy is a separate ledger; cache and lazy commitments are not naively summed or counted as free memory |
-| Placement | Conductor intent and node-confirmed model-instance identity: artifact/plan compatibility, node incarnation, readiness or unknown status. Separate instances can represent future replicas or M6 ranks. Weight residency and extent ownership remain in the node catalog |
+| Placement | Conductor intent and node-confirmed model-instance identity: artifact/plan compatibility, node incarnation, readiness or unknown status. Separate instances can represent future replicas or M4 ranks. Weight residency and extent ownership remain in the node catalog |
 | Retained-state hint | Node-issued, compatibility-scoped hint for placement affinity. The node revalidates existence, identity, permissions and expiry at use. A prefix hit is neither conversation identity nor a refresh of unrelated continuation retention (D-031) |
 | Routed attempt | Conductor request/attempt identity, conductor incarnation, target node incarnation and model instance, dispatch/admission/start/terminal-or-unknown status, and stream progress. The node owns the matching execution record and any capacity grant; observations at the conductor may lag |
 
@@ -1466,7 +1468,7 @@ request elsewhere. Neither aggregate free bytes nor reported model residency
 is permission to run. D-050 defines envelope guarantees; their numeric bounds
 and implementation proof remain M2 work.
 
-**Whole-model placement (M4a).** Filter candidates by configured membership,
+**Whole-model placement (M6a).** Filter candidates by configured membership,
 current runtime identity, health and compatible executable plan/artifact.
 Prefer a feasible placement that avoids paging, using compatible retained
 state and existing model instances as affinity hints; preserve useful contents
@@ -1489,7 +1491,7 @@ must return its existing outcome or reject a retired identity, never turn a
 duplicate into another execution or commitment. Deduplication/terminal records
 are bounded, but pruning them must not make old requests executable again:
 retire their admission namespace or retain a rejection watermark/equivalent
-fence. D-038 uses session sequence high-water marks for this bound; M4a must
+fence. D-038 uses session sequence high-water marks for this bound; M6a must
 validate their implementation rather than rely on unbounded request tombstones. This is internal dispatch safety, not durable
 exactly-once semantics for client retries.
 
@@ -1532,7 +1534,7 @@ Reconnecting or restarting the conductor cannot reconstruct truth from its
 old snapshots. Each worker reconciles or cancels outstanding attempts, fences
 old control/admission sessions and reports current local status before new
 admission through a replacement session. Old attempts may still be retiring;
-new work can use only capacity the local ledger safely makes available. M4a
+new work can use only capacity the local ledger safely makes available. M6a
 has no automatic election, failover, stream resumption or durable replay log.
 Replacement of the configured conductor first requires fencing the previous
 authority; an unreachable process is not proof it is dead. Authentication,
@@ -1540,25 +1542,26 @@ session fencing, bounded control-record retention and reconciliation mechanics
 are specified in the [initial cluster design](cluster-design.md), D-038;
 they still require implementation validation.
 
-**M6 extension.** A sharded placement maps ranks to separate node domains.
+**M8 extension.** A sharded placement maps ranks to separate node domains
+(M4's full swaps run one first, without this transaction).
 The conductor coordinates a phase transaction with node-issued capacity
 reservations and readiness for every rank; all required ranks must be ready
 before a matching commit authorizes execution. Each node validates the current
 transaction/incarnations and its own grant before collective submission.
 Prepare failures cancel/unwind participating ranks; unknown rank completion
-never releases another rank's still-consumed buffers. Collective ordering,
-commit/abort races and failure recovery require the M6 protocol and tests;
-M4a whole-model routing does not require distributed prepare/commit. No
-cluster ledger may replace these local authorities with a sum of free bytes.
+never releases another rank's still-consumed buffers. Collective ordering
+arrives in M4; commit/abort races and failure recovery require the M8
+protocol and tests; M6a whole-model routing does not require distributed
+prepare/commit. No cluster ledger may replace these local authorities with a sum of free bytes.
 
-**Required validation, not results.** The M4a fake transport/node tests and
+**Required validation, not results.** The M6a fake transport/node tests and
 Spark integration must cover: two attempts racing on stale reported capacity;
 affinity pointing to expired state; out-of-order reports and stale incarnations;
 duplicated/delayed dispatch after cancellation and dedup-record retirement;
 lost acceptance before any token; slow/disconnected clients; conductor restart
 with a surviving worker; and node loss with pending GPU/I/O consumers. Assert
 no over-admission, duplicate execution, silent rerouting or early reuse, bounded
-client/queue waiting, and continued accounting for unresolved cleanup. M6 adds
+client/queue waiting, and continued accounting for unresolved cleanup. M8 adds
 partial preparation, lost commit, mismatched rank generations and node loss
 during a collective. These tests are owed at implementation, not run in M0.
 
@@ -1566,7 +1569,7 @@ during a collective. These tests are owed at implementation, not run in M0.
 
 Placement first (D-020, D-023, D-037, D-038): the conductor decides which node hosts each
 model and routes requests there; a subagent's model on another node while the
-main model stays resident needs no collective and no direct link. M4a starts
+main model stays resident needs no collective and no direct link. M6a starts
 with enrolled membership and one configured conductor, detected network
 paths, canonical QSFP layouts and bounded setup subnet scans under
 [D-038/D-039](cluster-design.md), capability and
@@ -1578,8 +1581,8 @@ an already-started stream. Automatic replica placement, automatic membership cha
 conductor election have separate revisit triggers in plan.md. A busy small
 model may later run as replicas on several nodes. Concurrent execution
 without paging requires a supported placement whose working sets and complete execution envelopes fit
-each node's budget; aggregate pool capacity alone is insufficient. M4a depends
-on M4, not on demand-paged MoE. Sharding, below, is M6 for the flagship model.
+each node's budget; aggregate pool capacity alone is insufficient. M6a depends
+on M6, not on demand-paged MoE. Sharding, below, is M4 for the flagship models.
 
 Describe the phase and local requirements per rank → reserve capacity on all
 required nodes → establish local residency → commit distributed execution →
@@ -1590,7 +1593,7 @@ plans; port the validated recipe's plan first. The first external sharded
 reference ([MiMo TP=2/EP=2](experiments/mimo-reference/README.md)) moved about
 0.84 MB per prefill token and 4 MB per decoded token each way at 18.5
 tokens/s, a small fraction of the measured link: per-step collective latency,
-not bandwidth, is the first transport question for M6.
+not bandwidth, is the first transport question for M4.
 
 ## Configuration
 
@@ -1604,8 +1607,8 @@ change (D-065). Runtime policy changes, such as a budget reduction, go
 through the management API as scheduler requests. Membership and trust
 changes need cluster-design.md's coordinated restart. D-063 records the
 `[storage]` keys and D-073 the rest of M1's spellings, the one-owner merge,
-the trust checks on the files and roles, and the diagnostics; M3 adds the
-front door's and TLS keys and M4 the switching policy's.
+the trust checks on the files and roles, and the diagnostics; M5 adds the
+front door's and TLS keys and M6 the switching policy's.
 
 ## Observability and privacy
 
@@ -1664,7 +1667,7 @@ returned token. Report queue delay behind a running request separately from
 paging and switch time and from first-token compute (D-069). Enable applicable
 reference routing and state-save features, verify them per checkpoint, and
 record any harness actions needed to use them. Pin the trace and settings so
-M4 can repeat the same experiment.
+M3 and M6 can repeat the same experiment.
 
 Every backend/paging performance comparison has two views:
 
@@ -1680,10 +1683,10 @@ Every backend/paging performance comparison has two views:
 For speculative runs, record drafter identity, settings, acceptance, and
 memory use; report throughput per accepted output token. If a matched run
 cannot be made, record why and leave its comparison unvalidated. D-036 records
-owner-accepted targets for named supported workloads: M4's median/p95 floor
-against the fastest correct full-swap reference arm in both directions; M5's
+owner-accepted targets for named supported workloads: M6's median/p95 floor
+against the fastest correct full-swap reference arm in both directions; M7's
 at most 10% added generation time, continuation time to first token included,
-and 20 ms p95 / 100 ms p99 added token gaps; and M7's at least 25% median
+and 20 ms p95 / 100 ms p99 added token gaps; and M9's at least 25% median
 return-switch benefit over jitLLM's own whole-model control on an agreed
 partial-retention workload, with at least one named library exceeding
 physical memory. Pin workloads, trial counts, and measurement methods before
@@ -1694,7 +1697,7 @@ same-budget whole-model control, and the full-swap switching reference are
 three distinct controls (D-036). Record latency distributions, bytes read and
 written, peak memory/spill occupancy, and prompt tokens reused versus
 recomputed. Never invent thresholds or measured results.
-M4 validates switching, M5 validates MoE paging, and M7 validates subsequent
+M6 validates switching, M7 validates MoE paging, and M9 validates subsequent
 optimizations against these criteria; scope changes when evidence warrants it.
 
 ### Comparator: Athena's Engine (closed source, creator-reported)
@@ -1720,7 +1723,7 @@ normal-reference view, never the matched one.
 
 What it tells us. The 46 s switch includes checkpointing the active session,
 so it is a real-world floor for A→B→A with state preserved on this exact
-model pair on one GB10 (D-021, D-025). The pair is M7's named large-model
+model pair on one GB10 (D-021, D-025). The pair is M9's named large-model
 configuration (D-036), where the target is to beat it clearly at comparable
 bit depths; our own measured baseline still governs. Because
 the pair does not both fit in 128 GB, it is the canonical two-large-model
@@ -1742,10 +1745,10 @@ Tests follow §18's layers, and D-061's local tiers decide where each runs:
 | Deterministic simulation | Fake providers with scripted delays, reordering, short reads, errors, unknown outcomes, full queues and cancellation races; the D-050, D-055 and cluster adversarial matrices | `check` |
 | Sanitizers and packaging | ASan and UBSan, the copyleft-disabled build, offline source gates, `.deb` install | `check:full` |
 | Spark device and I/O | Map, load, verify, evict, restore; leases across streams; actual kernel reads; direct I/O on the target NVMe; memory-ordering stress; LSan and TSan | `check:spark` |
-| Model semantics | Teacher-forced logits and intermediates on the oracle ladder, before and after restoration ([backend-proof.md](backend-proof.md#numerical-oracles)); M7 adds the speculative and diffusion contracts ([model shapes](#model-shapes)) | `check:spark` |
-| Multi-model pressure | Partial eviction, reuse, fairness, the M4 A→B→A workload | `check:spark` |
+| Model semantics | Teacher-forced logits and intermediates on the oracle ladder, before and after restoration ([backend-proof.md](backend-proof.md#numerical-oracles)); M3 adds the speculative contract and M9 the diffusion one ([model shapes](#model-shapes)) | `check:spark` |
+| Multi-model pressure | Partial eviction, reuse, fairness, the M6 A→B→A workload | `check:spark` |
 | Two-node | Placement, routing, fencing and failure; later sharding and collectives | `check:spark` on both Sparks |
-| Client acceptance | Named clients against pinned profiles ([client-api-baseline.md](client-api-baseline.md#acceptance-owed-in-m3)) | Recorded runs; aggregate evidence in Git |
+| Client acceptance | Named clients against pinned profiles ([client-api-baseline.md](client-api-baseline.md#acceptance-owed-in-m5)) | Recorded runs; aggregate evidence in Git |
 
 Every pager invariant has tests on the fake backend and on hardware. A test
 that injects a fault asserts bounded occupancy and either eventual
@@ -1788,7 +1791,7 @@ third_party/  curated vendored sources and patches with provenance (D-057)
 packaging/    Debian package, systemd units, sysusers and tmpfiles (D-063)
 tools/        setup, check, doctor and build-time tooling
 tests/{toolchain,unit,simulation,cuda,model,distributed,packaging}/   benchmarks/
-dashboard/ (M8)   docs/
+dashboard/ (M10)  docs/
 ```
 
 The toolchain file set was confirmed on 2026-09-21. File metadata uses
@@ -1816,7 +1819,7 @@ finalized after the M2 GGML and EXL3 proofs (D-052).
 ### Installed layout
 
 D-063 records the packaged layout, D-074 the package that implements it,
-and D-062 versions the configuration schema; M8 adds the repository.
+and D-062 versions the configuration schema; M10 adds the repository.
 
 | Path | Owner / mode | Holds |
 | --- | --- | --- |
@@ -1879,18 +1882,18 @@ evidence or a later choice:
 | The operation contract's exact types, the implementation registry, per-operation GGML integration, phase envelopes and `F` | M2 backend proof (P6) |
 | Keep or amend D-033: independent handles versus slab slots, under criteria approved before measuring | M2 [retained-backing comparison](backend-proof.md#retained-backing-comparison) |
 | Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | Settled in M2 ([vmm-counters](experiments/vmm-counters/README.md)) |
-| Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M4 |
+| Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M3 (the swap path), M6 |
 | State block sizes and KV layouts per state adapter | M2/M3 |
-| HTTP, TLS and JSON libraries (TOML: toml++, D-073) | M3, under D-017, D-057 and D-066 |
-| How jobs are launched and report back (their containment and confinement are D-074's); the peer-replication transfer mechanism | M3; M4a |
-| Switching-policy default and tuning (minimum run, pause cap, deadline handling) | M4 comparison of the D-069 policies |
-| Whether a worker node serves its own loopback management listener for node-local operations | M4a |
+| HTTP, TLS and JSON libraries (TOML: toml++, D-073) | M3 (HTTP, JSON); M5 (TLS), under D-017, D-057 and D-066 |
+| How jobs are launched and report back (their containment and confinement are D-074's); the peer-replication transfer mechanism | M5; M6a |
+| Switching-policy default and tuning (minimum run, pause cap, deadline handling) | M6 comparison of the D-069 policies |
+| Whether a worker node serves its own loopback management listener for node-local operations | M6a |
 | Host versus device sampling | M3, measured against D-052's decode gates |
-| Retention capacity values (`M_state`, `S_spill`, entry counts, `L_prefix`, maintenance interval) | M3 exit (D-055) |
-| Cluster dependencies: hardware profiles, bootstrap discovery, parsers, authenticated sessions, crash recovery | M4a (D-038) |
-| Expert dispatch: a pointer table versus a uniform stride | M5 GGML proof |
-| Model-parallel artifact partitioning | M6 entry |
-| Optimistic MoE execution, including a miss when the current step fills memory | After M5's pessimistic path is correct and measured |
-| Companion and multi-component artifacts: manifest references by artifact ID, shared-resource accounting | Before M7 execution (D-068) |
-| Per-step expert closures of wide phases (speculative verify, diffusion canvas) on routed experts | A bounded DiffusionGemma reference study, before M7 planning |
-| Numerical bounds and trace protocols for speculative and diffusion decoding | Before M7 execution |
+| Retention capacity values (`M_state`, `S_spill`, entry counts, `L_prefix`, maintenance interval) | M5 exit (D-055) |
+| Cluster dependencies: hardware profiles, bootstrap discovery, parsers, authenticated sessions, crash recovery | M6a (D-038) |
+| Expert dispatch: a pointer table versus a uniform stride | M3, the initial choice per format for resident experts; M7 GGML proof, compaction and demand paging |
+| Model-parallel artifact partitioning | M4 entry |
+| Optimistic MoE execution, including a miss when the current step fills memory | After M7's pessimistic path is correct and measured |
+| Companion and multi-component artifacts: manifest references by artifact ID, shared-resource accounting | M3 (D-068) |
+| Per-step expert closures of wide phases (speculative verify, diffusion canvas) on routed experts | A bounded DiffusionGemma reference study, before M9 planning |
+| Numerical bounds and trace protocols for speculative and diffusion decoding | Before execution: M3 (speculative), M9 (diffusion) |

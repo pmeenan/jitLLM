@@ -3,10 +3,12 @@
 
 # Initial cluster: detected links, configured authority
 
-D-038 with D-039 defines the M4a cluster design, extending [D-037's ownership
+D-038 with D-039 defines the M6a cluster design, extending [D-037's ownership
 contract](architecture.md#conductor-ownership-and-admission). This is an
 experimental design for implementation, not a working configuration loader,
-discovery service or cluster runtime. Whole-model placement precedes sharding.
+discovery service or cluster runtime. Whole-model placement precedes general
+sharding (M8); M4's sharded full swaps run earlier on a minimal configured
+two-node conductor, before this design is built ([plan](plan.md)).
 
 ## Setup experience
 
@@ -39,7 +41,7 @@ the candidates. Contradictory or incomplete evidence remains explicitly partial.
 
 The owner requested interface-based initial-layout detection on 2026-09-22.
 This brings **bootstrap discovery and ongoing path detection for enrolled
-members** into M4a. Automatic membership changes, conductor election and
+members** into M6a. Automatic membership changes, conductor election and
 automatic replicas remain deferred; D-023's original blanket discovery
 deferral is narrowed by D-038. D-039 adds the owner-requested single, pair,
 triangle and switched-N layout classifier and dedicated-QSFP subnet scanning.
@@ -102,7 +104,7 @@ reachable endpoint pairs**. A same-subnet route or carrier cannot distinguish
 a direct cable from a switch, reveal every unseen node, or establish an end-to-end
 bandwidth guarantee. Mark cabling as owner-supplied or externally corroborated
 when appropriate. On a larger graph, validate every needed conductor/worker
-route; a physical ring is not permission to assume IP forwarding. M4a needs
+route; a physical ring is not permission to assume IP forwarding. M6a needs
 TCP placement paths, not an RDMA fabric or a particular cable count.
 
 ### Layout classifier
@@ -440,7 +442,7 @@ bounded before allocation. Reject malformed lengths/UTF-8, duplicate or unknown
 keys/types, nesting over 16, and incompatible versions; terminate that session
 and account for/cancel its attempts. No raw process addresses, device pointers
 or unvalidated filesystem paths cross this boundary. Schema tests and an exact
-per-message field catalog are M4a implementation gates; they cannot silently
+per-message field catalog are M6a implementation gates; they cannot silently
 change these identity, framing or safety semantics.
 
 Message families are hello/session, heartbeat/capability summary, request
@@ -512,7 +514,7 @@ pool capacity before accepting chunks, and reject mismatched/excess lengths.
 Other resident state can further reduce what can actually be admitted.
 The conductor enforces the same pool for forwarding and local execution,
 not merely the count of requests. The total input limit is the same for local and
-remote execution and must be reconciled with named-client tests before M3/M4a.
+remote execution and must be reconciled with named-client tests before M5/M6a.
 
 ## Health, placement and state affinity
 
@@ -530,7 +532,7 @@ D-037's placement preference: avoid paging when a feasible placement exists,
 use already prepared instances and compatible retained-state affinity where
 helpful, and ask the chosen node to admit its complete envelope. Reported free
 bytes cannot overrule a competing local admission. The artifact need not be
-resident, but it must be locally prepared/available before execution; M4a
+resident, but it must be locally prepared/available before execution; M6a
 does not silently transfer checkpoints, KV or extents between nodes. If no
 node can make progress, defer within bounds, time-slice at safe boundaries,
 or explicitly reject under D-050's reservation policy.
@@ -541,7 +543,7 @@ compatibility identity; validate them locally at use, without logging prompt
 content. Stale affinity falls back to recomputation from the supplied history
 or a declared error, never a wrong conversation. No cache hit refreshes an
 unrelated continuation. A routed conversation can stay on an existing instance;
-automatic replica creation remains outside M4a.
+automatic replica creation remains outside M6a.
 
 ## Required validation and handoff
 
@@ -561,7 +563,7 @@ revisions, cloned identities, and delayed old-session commands must not admit
 work. Test invalid config/frame lengths, record-cap exhaustion, input/stream
 backpressure, stale reports, lost acceptance, queued cancel/reroute, worker and
 conductor restart, state-expiry races and unrecoverable consumer completion.
-M6 separately validates RDMA/collective paths and multi-rank failure behavior.
+M8 separately validates RDMA/collective paths and multi-rank failure behavior.
 
 Builder handoff, 2026-09-22: extended the existing uncommitted D-037 planning
 work; collected read-only sysfs/devlink/RDMA/IP/route evidence on both Sparks;

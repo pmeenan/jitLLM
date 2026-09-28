@@ -71,8 +71,9 @@ in the model support matrix, not to arbitrary checkpoints.
 - **Switching is fast and state survives it.** With a library larger than
   memory, switching from a resident model A to model B and back reloads only
   the missing dependencies; a compatible retained prefix resumes from KV or
-  equivalent state through residency or spill and restore. M4 demonstrates
-  both paths through an unmodified client. Expiry, capacity limits, or edited
+  equivalent state through residency or spill and restore. M6 demonstrates
+  both paths through an unmodified client, after M3 and M4 make full swaps
+  of large models fast. Expiry, capacity limits, or edited
   history can require recomputation; these cases are measured separately and
   must remain correct (D-024). Switch and switch-back latency are measured
   against the reference's end-to-end whole-model-switching baseline
@@ -109,10 +110,11 @@ in the model support matrix, not to arbitrary checkpoints.
 - **Two Sparks stay correct under stress.** A sharded model on two nodes
   passes asymmetric-memory-pressure, cancellation, and controlled-failure
   tests with no speculative reuse after timeouts.
-- **Placement is useful before sharding.** M4a routes a main model and its
+- **Placement is useful without sharding.** M6a routes a main model and its
   subagent across configured nodes through one conductor, with local budget
-  enforcement, health checks, and state affinity. It follows M4 independently
-  of demand-paged MoE; sharded execution has its own M6 gate.
+  enforcement, health checks, and state affinity. It follows M6 independently
+  of demand-paged MoE; sharded execution starts with M4's full swaps and has
+  its own M8 gate under pressure and failure.
 - **Every decision is explainable.** For any eviction or admission decision
   the runtime can report victims, expected and actual bytes recovered, the
   cost estimate, and why alternatives were retained, from structured events

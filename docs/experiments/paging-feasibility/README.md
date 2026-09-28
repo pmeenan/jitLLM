@@ -7,7 +7,7 @@
 complete (2026-09-22).** The measurements below retain their original scope.
 Real Gemma routes show useful decode locality, but global LRU can reread an
 expert working set many times during long-prompt prefill. This supports
-keeping M4's switching/retention work ahead of M5's expert paging, and makes
+keeping M6's switching/retention work ahead of M7's expert paging, and makes
 prefill scheduling and phase-specific retention explicit follow-up measurements.
 It establishes neither a switching speedup nor an end-to-end paging latency.
 

@@ -5,9 +5,10 @@
 
 D-052 makes a real EXL3 quant a **required M2 companion** to D-051's
 [FP16 GGML control](first-slice.md), before settling the operation contract
-and initial executable artifact layout. M3 includes resident EXL3 serving;
-M4 includes EXL3 switching and restoration. Initial EXL3 performance work
-starts with this proof, rather than waiting for M7 or a flagship model.
+and initial executable artifact layout. M4 serves sharded flagship EXL3
+models; M5 includes resident EXL3 serving of the fixtures;
+M6 includes EXL3 switching and restoration. Initial EXL3 performance work
+starts with this proof, rather than waiting for M9 or a flagship model.
 This is required implementation scope, not a claim of working support.
 
 ## Concrete small checkpoints
@@ -41,7 +42,7 @@ agreement with the quantization sidecar on 2026-09-22. The subsequent
 both full payloads, tokenizer/template identities and an executable reference.
 Both quants passed repeated-logit and synchronized in-place cache restoration
 controls; resident Model API and 176 linear-kernel cases are recorded. Full Generator
-serving controls remain required before M3 parity acceptance.
+serving controls remain required before M5 parity acceptance.
 
 The reference uses ExLlamaV3
 [`6b84a21b6f1e5da3f291b9e1019061f0de788279`](https://github.com/turboderp-org/exllamav3/tree/6b84a21b6f1e5da3f291b9e1019061f0de788279)
@@ -163,7 +164,7 @@ The target is **match or beat upstream ExLlamaV3 on Spark**, with equivalent
 quality and bounded memory, for the declared resident workloads. Establish
 it as a gate now: a measured regression blocks the stage until fixed or an
 explicit owner-approved tradeoff changes the acceptance contract. Merely
-loading EXL3 or eventually optimizing it in M7 does not meet D-052.
+loading EXL3 or eventually optimizing it in M9 does not meet D-052.
 
 The reference task predeclares input/shape sweeps, repetition counts,
 warm-up, comparison statistic, uncertainty/noise allowance, numerical
@@ -176,9 +177,9 @@ an unstable reference is not a pass. Do not invent tolerances here.
 | --- | --- |
 | M0/early M1 reference task | Recorded on Spark: both full-hash fixtures, executable environment, tokenizer identities, repeat/restore controls, resident performance and larger synthetic kernel cases ([report](experiments/exl3-reference/README.md)). Unstable timing cases cannot pass native acceptance; repeat reference beside the candidate. 145-token prefill and one synthetic kernel case are flagged from earlier unstable runs |
 | M2 native kernels and packing | GPU kernel-time parity and predeclared workspace/memory bounds for decode, small batches, prefill and dispatch boundaries; both fixtures' full-model correctness/restore proof and measured resident timings. Close per-kernel regressions before settling the operation contract |
-| M3 resident serving | Full-model prefill latency/throughput, time to first token and decode inter-token p50/p95/p99 meet the declared upstream parity bounds; exact tokenizer/template and numerical profile checks, complete memory accounting |
-| M4 switching | EXL3 participates in A→B→A under pressure with retained-state and forced-restore arms; compare resident, partial reload and full-swap controls at the same budget; correct continuations, read/write bytes and stall distributions |
-| M5/M6 extensions | Add representative EXL3 routed-expert and sharded cases with their own closure, kernel, quality and performance baselines before claiming those capabilities; the small dense fixture cannot validate them |
+| M5 resident serving | Full-model prefill latency/throughput, time to first token and decode inter-token p50/p95/p99 meet the declared upstream parity bounds; exact tokenizer/template and numerical profile checks, complete memory accounting |
+| M6 switching | EXL3 participates in A→B→A under pressure with retained-state and forced-restore arms; compare resident, partial reload and full-swap controls at the same budget; correct continuations, read/write bytes and stall distributions |
+| M4/M7 extensions | Add representative EXL3 routed-expert and sharded cases with their own closure, kernel, quality and performance baselines before claiming those capabilities; the small dense fixture cannot validate them |
 
 For kernel comparisons, exclude Python launch overhead using GPU timings
 and verify the actually selected kernel/plan. For end-to-end comparisons,
@@ -198,7 +199,7 @@ shapes in the M2 kernel sweep with declared synthetic provenance, then real
 larger dense/MoE workloads as those models enter support. D-036's existing
 measured workload thresholds do not automatically apply to this new model;
 set EXL3-specific switching budgets from the new matched controls before
-M4 acceptance. Keep these benchmarks as regressions through later changes.
+M6 acceptance. Keep these benchmarks as regressions through later changes.
 
 ## Adoption boundary
 

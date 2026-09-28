@@ -165,14 +165,14 @@ and allocation logs, checked against its pinned source, establish **mapped
 host communication buffers**: GPU kernels copy/reduce between user buffers
 and those buffers, and the NIC performs RDMA on them. This is not direct
 registration of user CUDA allocations or zero staging. Exact copy-byte
-counts and CUDA timeline tracing were not measured. Sharded execution,
-asymmetric memory pressure, cancellation and failure tests remain M6 work.
+counts and CUDA timeline tracing were not measured. Sharded execution is M4
+work; asymmetric memory pressure, cancellation and failure tests remain M8 work.
 
 Independent inventory review (2026-09-21): a separate agent repeated the
 read-only address, link, route, RDMA mapping and installed-tool checks on
 both nodes and found the inventory consistent. That pre-benchmark review left
 measured throughput, aggregate link capacity and GPUDirect support unproven;
-M0 baseline testing and M6 execution/failure testing remain distinct.
+M0 baseline testing and M4/M8 execution/failure testing remain distinct.
 No settings changed or transfer benchmarks ran during this review.
 
 ### VMM microbench follow-up (2026-09-21)
@@ -239,7 +239,7 @@ The SSD's observed interrupt-coalescing feature is a separate latency tuning
 point, tested with the original value restored afterwards. Raw block,
 NVMe passthrough, and SPDK were not timed because the only drive holds mounted
 root; no raw performance advantage is claimed. M2 still validates actual
-GGML pointers/kernels and cancellation/registration/reclaim lifetimes; M4
+GGML pointers/kernels and cancellation/registration/reclaim lifetimes; M6
 settles mixed read/write scheduling and spill retention/write-rate limits.
 
 ### Reference-engine follow-up (2026-09-21)
@@ -298,7 +298,7 @@ with recomputation. The earlier matching Gemma continuation above remains a
 narrow historical observation; the validated recompute arm supplies the usable
 correctness floor. Restore metadata must describe valid context coverage.
 
-The study supports keeping M4 partial retention ahead of M5 expert paging,
+The study supports keeping M6 partial retention ahead of M7 expert paging,
 without promising one-layer prefetch can hide misses. Actual pager execution,
 physical admission safety, and end-to-end latency validation remain runtime
 work. The owner accepted switching-benefit and generation-stall targets in
@@ -382,7 +382,7 @@ Subscriber Agreement and no email.
   leftover `_acme-challenge` TXT records.
 - **Renewal:** runs from `snap.certbot.renew.timer` with the settings saved
   in `/etc/letsencrypt/renewal/<name>.conf`. No deploy hook is set until
-  M3's jitLLM hook, which is added with
+  M5's jitLLM hook, which is added with
   `certbot reconfigure --cert-name <name> --deploy-hook …`.
 - **Local DNS:** the names resolve only on the LAN, through the router's
   local DNS at `192.168.0.1`; `meenan.us` has no public records for them.

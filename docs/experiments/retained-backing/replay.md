@@ -112,7 +112,7 @@ The hole policies:
   unleased, not wanted) with the fewest bytes to move (then lowest address)
   whose groups fit, best fit and largest first, in holes outside it; they
   move, and the restore that waited is a delayed admission. Experts never
-  move (M5 completes that case), so this is the owner's proposal restricted
+  move (M7 completes that case), so this is the owner's proposal restricted
   to dense groups. The window is chosen by bytes to move, not by activity:
   only unleased dense groups may move, and they are kept, not evicted. An
   activity-guided choice (moving the recently used dense groups out of the

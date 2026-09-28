@@ -109,7 +109,7 @@ model, stable result indices and explicit truncation and score semantics. Scores
 between models. A model-switching library could use a small embedding model,
 a reranker and a generator without requiring the server to own a retrieval DB.
 Classification, reward/token-level outputs and generic hidden-state pooling
-remain workload-driven deferrals under D-044, earliest M7 planning after
+remain workload-driven deferrals under D-044, earliest M9 planning after
 validated base-model execution; not implied by embedding approval.
 
 ### 5. Standard metrics and compatible health/load — confirmed (D-044)
@@ -155,7 +155,7 @@ confirmed, along with bounded vLLM-compatible token diagnostics. Preserve the ra
 - LoRA: vLLM has dynamic load/unload endpoints, gated by configuration; see
   [LoRA adapters](https://docs.vllm.ai/en/latest/features/lora/). This is a
   deferred library feature under D-044. Revisit when a concrete adapter workload
-  needs it, earliest M7 planning after validated base-model execution. Adoption would need
+  needs it, earliest M9 planning after validated base-model execution. Adoption would need
   prepared validated adapters, base/adapter identity in cache keys, capacity
   accounting, and completion-safe replacement; never accept arbitrary paths
   from an inference credential.

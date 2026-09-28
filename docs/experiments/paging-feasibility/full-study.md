@@ -155,7 +155,7 @@ over eight requests under retained-eager switching, versus **141.152 GiB** under
 whole-model switching and **70.004 GiB** under routed demand paging. Eager
 loading has zero modeled decode misses; demand paging's largest per-request
 p95 decode service estimate is **2.383 ms/token** at the bulk read rate.
-This is evidence for M4's partial retention before M5's expert paging, not a
+This is evidence for M6's partial retention before M7's expert paging, not a
 measured end-to-end speedup or a universal choice of cache policy.
 
 | Total budget GiB | Routed demand reads GiB | Retained-eager reads GiB | Whole-model reads GiB | Demand decode service: largest request p95 ms |
@@ -235,7 +235,7 @@ insufficient windows and matched **3,072/3,072** predictions from the full
 recomputation control. Replay never credits the old invalid
 default-SWA reuse and chooses captured full-prompt routes for affected Gemma
 spill returns. It still charges the unsuccessful restore attempt's I/O.
-See [RE-007](../../rough-edges.md). This is a concrete requirement for M4:
+See [RE-007](../../rough-edges.md). This is a concrete requirement for M6:
 retention metadata must describe restore coverage, and a failed coverage test
 must select an earlier valid checkpoint or recomputation. Byte equality alone
 is not a continuation-correctness test.
@@ -415,21 +415,21 @@ end-to-end generation stalls remain later implementation evidence.
 
 ## Consequences for the implementation plan
 
-Keep M4's partial weight retention and state management ahead of M5's routed
+Keep M6's partial weight retention and state management ahead of M7's routed
 expert paging. Measure an eager active-model load that preserves inactive
 extents as the first policy; the small-workload curves show it can capture
 most of the demand policy's byte savings without generation-time misses.
 Keep the measured full-swap/recompute path as a fallback comparison.
-On two nodes, M4a must compare configured placement before paying these paging
+On two nodes, M6a must compare configured placement before paying these paging
 costs. Capturing models on different Sparks is not a distributed-serving or
 placement benchmark.
 
-M4 state tests must cover rendered-prompt rollback, insufficient sliding-window
+M6 state tests must cover rendered-prompt rollback, insufficient sliding-window
 coverage, recurrent state, expiry, and recovery from an unusable snapshot.
 Round-trip bytes and one successful short continuation are insufficient exit
 checks. Preserve or restore a valid earlier prefix, or explicitly recompute.
 
-M5 must distinguish prefill from decode and test batch unions. Small-budget
+M7 must distinguish prefill from decode and test batch unions. Small-budget
 global LRU can repeatedly fetch nearly the entire prefill working set; paging
 must not be assumed beneficial merely because one routed layer fits. Evaluate
 prefill admission and loading policy with the existing full-swap floor.

@@ -496,6 +496,34 @@ documentation; none of its code or patches ran or entered this repository.
 No weights are redistributed, and neither study clears a container's full
 component closure or approves any of these for jitLLM's core.
 
+## Fast-swap models and baselines (M3, M4): owed
+
+D-087's models and baselines. No code below is cleared; each code item is
+to do before its first use, and the found terms come from a read-only
+survey on 2026-09-27.
+
+**Model weights are informational (owner, 2026-09-28; D-087).** jitLLM
+never distributes model weights: users supply checkpoints, and artifacts
+are made locally from them. A weight license therefore blocks no import,
+execution, baseline or support; the rows below record it for information,
+and the support matrix may note it for users. Code licenses (kernels,
+runtimes, and scripts or recipes we incorporate or run) still follow
+D-002, D-017 and D-080.
+
+| Item | Found | To do |
+| --- | --- | --- |
+| `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark` (M3 baseline) | HEAD `b8439110`, 93 tracked paths; root `LICENSE` AGPL-3.0, README AGPL-3.0-or-later; SPDX AGPL-3.0-or-later headers on the 4 files checked (`download.sh`, `start.sh`, `files/patch_ple_offload.py`, `files/build_ple_packed_table.py`). Its vLLM image tag has no digest, and `download.sh` pins no checkpoint revision | Pin a revision; inventory all 93 paths as for the pinned repositories below; the owner decides whether its AGPL scripts may be run as a baseline recipe (the MiMo recipe was read, not run) |
+| `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4` (M3's Qwen3.8; weights, informational) | Read at `925d7be6`. The card says Apache-2.0; the base `Qwen/Qwen3.8-Flash-Next` is under the Qwen Community License 1.0 (the base's terms are expected to govern; not a legal finding) | Pin it; record both declarations |
+| `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93` (M3's DeepSeek; weights, informational) | MIT; replaces the `e3aa0d6a` revision in `experiments/paging-feasibility/full-pins.json` | Record its pins and license hashes the same way |
+| Qwen-Image-2.1 BF16 (M3's image; weights, informational) | Qwen Research License, non-commercial research and evaluation ([BF16 study](experiments/image-reference/README.md)); stable-diffusion.cpp's GGUFs are under the same terms | Pin the revision jitLLM imports; record the license |
+| TensorFold (M3, M4 baseline) | MIT; `d7470ed` assessed, HEAD `beddbb7b`. Checkpoint licenses (`Vontra/*-MLX-4bit`) not verified | Pin a commit and its checkpoints; record the checkpoints' licenses for information |
+| Qwen3.8 Dual repository | Our pin `d2f54b78` (below); HEAD `2c86a1d0` | Re-audit only if its configuration becomes a baseline |
+| `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
+| DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |
+| Kernels from Mia's recipes (M4) | E3 fat-expert and cooperative MoE: AGPL or mixed provenance (below) | Under D-080 once copyleft is confirmed; mixed provenance blocks until clarified |
+| Wider GGML closure (M3) | llama.cpp MIT at the locked pin | A D-057 source-lock change on the heavy path, with the compiled closure audited |
+| stable-diffusion.cpp graph code (M3) | MIT at `c92d73c4`; its GGML fork's patches are separate | Audit the ported code; audit the fork's patches before any is used |
+
 ## Pinned reference inventory
 
 The links below identify the exact trees inspected; moving branch names are
@@ -643,7 +671,9 @@ profile must exclude the optional implementation's entire source/header/
 generator/generated-code/binary closure from fetching and building, while
 retaining an independently useful scheduler and allocator (D-002/D-017).
 Tools and platform runtimes are recorded separately under D-017, and model
-weights remain user-supplied and outside project licensing scope per D-002.
+weights remain user-supplied and outside project licensing scope per D-002;
+since 2026-09-28 (D-087) a weight license gates nothing in jitLLM and is
+recorded for information only.
 
 ## Adoption gate and verification handoff
 

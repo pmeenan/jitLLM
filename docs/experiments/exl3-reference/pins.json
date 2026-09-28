@@ -308,7 +308,7 @@
     "native_support_validated": false,
     "cross_implementation_tolerances_established": false,
     "held_out_seed_executed": false,
-    "measurement_scope": "Direct Model API resident compute, with pinned CPU embedding staging for decode; full Generator serving control remains M3 work",
+    "measurement_scope": "Direct Model API resident compute, with pinned CPU embedding staging for decode; full Generator serving control remains M5 work",
     "prior_kernel_instability": "kernel-repeat-control.json; retained despite a quieter final repeat; require a stable matched reference/candidate comparison before native acceptance",
     "prior_model_instability": "prior-run-controls.json; the first complete 9-trial model set exceeded 10% at 145-token prefill in all four profiles; 145-token prefill remains flagged for a stable matched reference/candidate comparison before native acceptance",
     "held_out_trajectory": {

@@ -12,7 +12,7 @@ harness is a stdlib-only Python reference model of the format:
 - it pages artifacts back in with direct reads and compares the bytes
   against the source.
 
-It is the accept/reject oracle for the M3 C++ importer and verifier, not
+It is the accept/reject oracle for the M5 C++ importer and verifier, not
 jitLLM's runtime parser. `results.json` holds the aggregates. The built
 artifacts and raw outputs stay outside Git in
 `~/.local/share/jitllm/artifact-layout-20260922/` on `spark`.

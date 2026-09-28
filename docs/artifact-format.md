@@ -11,8 +11,9 @@ small MoE have passed import, execution, eviction and restoration. The
 executable reference is the M0 prototype in
 [experiments/artifact-layout](experiments/artifact-layout/README.md). It
 built, verified and page-checked real artifacts from the D-051/D-052 fixtures
-and Gemma 4, and planned three more MoE models. It is not the M3 C++
-importer or verifier.
+and Gemma 4, and planned three more MoE models. It is not the M5 C++
+importer or verifier; until then it writes M3's and M4's artifacts
+(D-087).
 
 ## Terms
 
@@ -173,7 +174,7 @@ made before canonical form, `canonical`, or the field's rule.
 | `model` | Architecture, expert count (equals every expert array's count), sorted representation families present (`ggml`, `exl3`, `plain`), which must equal the families the index uses |
 | `source` | Every source file's name, size and SHA-256. They must match the identity recorded at download (D-054) |
 | `transformations` | Lossless import transformations: `dedupe-identical` (resource, role, and the digest that proved identity) and `expert-slice` (tensor, count). They must describe the index exactly: one per tied role, one per expert array |
-| `converter` | Importer name and version; M3 adds its build identity and an options digest |
+| `converter` | Importer name and version; M5 adds its build identity and an options digest |
 | `files` | Path, role (`index`, `shard`, `source-metadata`), size and SHA-256 of every other file; exactly one `index.json` |
 
 ## index.json
@@ -300,7 +301,7 @@ binds tensors by role and representation, never by these labels.
   read per chunk, at depth 4 through the zone, in ~30% fewer requests
   ([backend proof](experiments/backend-proof/README.md#bp-p1-coalesced-reads)).
   So the reader reads one chunk per request by default, and coalescing
-  is an option; the run size stays a tuning value for M4.
+  is an option; the run size stays a tuning value for M3's swap path.
 - **No hashing at page-in.** Integrity is established when a file enters
   the installed store: at import/publish, at install from an archive or a
   peer, and by explicit `verify` (D-054). After that it rests on the local
@@ -496,8 +497,8 @@ reservation, EXL3 variants and closure, closure and row bounds, and
 coalescing limits. The oracle is exact because Python integers do not
 overflow; the C++ verifier must check every product and sum for overflow
 (for example, a shape of `[2^32, 2^32+1]` wraps in unchecked 64-bit
-arithmetic). The M3 C++ verifier (the standalone verification tool in
-features.md) must match these accept/reject decisions. The M3 importer must
+arithmetic). The M5 C++ verifier (the standalone verification tool in
+features.md) must match these accept/reject decisions. The M5 importer must
 also apply D-009's input validation to the source. Page-in helpers reject
 out-of-range groups, chunks, byte ranges and row IDs: token IDs are
 untrusted input.
@@ -535,18 +536,23 @@ one and removes it. The source must remain available (D-018).
   and measured, not assumed free. The file format serves all of these. The
   comparison should use the closure size distribution above and a
   cross-model swap trace.
-- **Expert dispatch:** pointer-table patch versus uniform-stride remapping,
-  decided with the M5 GGML proof. The dense EXL3 proof is M2.
+- **Expert dispatch:** pointer-table patch versus uniform-stride remapping.
+  The initial binding is chosen per format in M3, where resident repacked
+  expert groups need views that GGML's `mul_mat_id` and the NVFP4 grouped
+  GEMM accept, proven bit-identical to the reference layout on one layer.
+  Compaction and demand-paged dispatch stay with the M7 GGML proof. The
+  dense EXL3 proof is M2.
 - **Companion and multi-component artifacts** (D-068). A speculative
   drafter that uses its target's embedding table, and a pipeline of text
   encoder, denoiser and decoder, need manifest references to another
   artifact by ID, with shared resources counted once. Stored MTP layers are
   ordinary tensors in their checkpoints and group like any layer. Settled
-  before M7 execution.
+  in M3, before Qwen-Image-2.1's pipeline and DeepSeek V4's DSpark drafter
+  are imported (D-087; an open question in plan.md).
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
-  sliced at load) is deferred with a deadline of M6 entry. It depends on
-  M6's sharding design, and v0 artifacts are whole-model. File shards are
-  not model shards.
+  sliced at load) is deferred with a deadline of M4 entry, where each node
+  holds its own shard on disk. It depends on M4's sharding design, and v0
+  artifacts are whole-model. File shards are not model shards.
 - **Backing reuse beyond a chunk.** A 2 MiB handle holding a chunk
   shorter than 2 MiB has bytes that reloads never write. They may host
   other data only under the general suballocation rules (architecture.md):
@@ -554,9 +560,9 @@ one and removes it. The source must remain available (D-018).
   unprotected pool. Small state blocks never inherit the 2 MiB chunk size.
 - **Page-in policy tuning:** max run size, in-flight depth and 128 KiB
   device splits (`max_sectors_kb`) are measured with native asynchronous I/O
-  in M2/M4.
-- **Out of scope:** mutable spill (D-055/M4), alternative layouts per resource
-  (deferred to M7), row-granular reads, packed-sign EXL3 derivation, a
+  in M2 and M3.
+- **Out of scope:** mutable spill (D-055/M6), alternative layouts per resource
+  (deferred to M9), row-granular reads, packed-sign EXL3 derivation, a
   binary index. The largest planned index is Qwen3.8's at 6.33 MB, which
   the prototype's strict Python parser loads in 0.048–0.050 s (3 runs). The
   C++ parser cost is not measured.

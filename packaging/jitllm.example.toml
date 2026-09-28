@@ -40,5 +40,5 @@ schema_version = 2
 # profile = "initial-v2"
 
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
-# are written by cluster enrollment, which arrives in M4a; this build
+# are written by cluster enrollment, which arrives in M6a; this build
 # refuses to run as a member.

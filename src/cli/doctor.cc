@@ -100,7 +100,7 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   if (loaded->membership) {
     report.problems.emplace_back(
         "configuration: this build has no cluster support, so the runtime refuses a "
-        "cluster member's configuration (cluster membership arrives in M4a)");
+        "cluster member's configuration (cluster membership arrives in M6a)");
   }
   struct stat anchor{};
   if (::lstat(load.anchor.c_str(), &anchor) == 0) {

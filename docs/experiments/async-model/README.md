@@ -50,7 +50,7 @@ does not prove atomic publication, sleep/wakeup correctness, ARM concurrency,
 provider queue capacity, actual cancellation, timeouts or GPU/transport error
 recovery. It models one phase per task, not task trees, shared page-in waiter
 coalescing, output backpressure, full model dependencies, mutable spill or
-admission envelopes. Those remain M2/M4/M4a/M6 gates in the design; no measured
+admission envelopes. Those remain M2/M6/M6a/M8 gates in the design; no measured
 latency, throughput, model correctness or memory-budget claim follows here.
 
 ## Reproduction

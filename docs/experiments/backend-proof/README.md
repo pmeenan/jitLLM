@@ -24,7 +24,8 @@ and failure) and P6 (the contract, recorded as D-086).
 BP-F2 (EXL3 kernel timing) and the census protocol did not run: D-085
 replaces them with end-to-end parity once serving works and a loose
 process-level memory comparison. The owner moved BP-F3 and BP-F4's
-per-token half into that comparison, in M3 (2026-09-27). Page-in
+per-token half into that comparison (2026-09-27); under D-087 BP-F3 is in
+M5 and BP-F4's per-token half in M3, on M3's models. Page-in
 performance is in
 [pagein-perf](../pagein-perf/README.md).
 
@@ -112,7 +113,7 @@ violation).
   - EXL3's (24 extents, 48 MiB) wrote back in 11.5–54.3 ms and was
     restored in 3.5–7.8 ms.
   - The writes go to a newly created file and are slower than reads;
-    nothing here was tuned (M4 schedules spill writes).
+    nothing here was tuned (M3 and M6 schedule spill writes).
 
 **GPU unit tests** (`gpu`, `spark-b`; not labeled `gpu-discrete` until
 run on the discrete GPU):
@@ -449,8 +450,8 @@ default. When on, the span is 64 MiB, a tuning value
 | BP-V1–V3 | Pass (above) | above |
 | BP-F1 | Passed on device VMM (rule v2) | P1 |
 | BP-F2 | Not run (D-085) | — |
-| BP-F3 | Moved to M3 by the owner (2026-09-27): part of M3's end-to-end comparison of each engine with its reference (D-085) | — |
-| BP-F4 | Per-launch host cost reported; per-token against upstream's decode moved to M3 with BP-F3 by the owner | [launch-overhead](../launch-overhead/README.md) |
+| BP-F3 | Moved to M5 by the owner (2026-09-27): part of M5's end-to-end comparison of each engine with its reference (D-085) | — |
+| BP-F4 | Per-launch host cost reported; per-token against upstream's decode moved to M3, on M3's models, by the owner | [launch-overhead](../launch-overhead/README.md) |
 | BP-S1, S2, S4 | Pass | P1, P2 |
 | BP-S3 | Passes: FP16 and EXL3 alternate in one process, each evicting the other's weights, every evaluation equal to rung 3 | above |
 
@@ -474,7 +475,7 @@ Each M2 row, with the tests that carry it
     (`…ALiveRegistrationOutlivesACancelledPhase`, new);
   - an admitted request suspended indefinitely keeps its allowance
     (`unit.Admission.APausedRequestKeepsItsAllowanceHoweverLongItWaits`,
-    new; expiry itself is M4's retention);
+    new; expiry itself is M6's retention);
   - unknown provider completion and budget reduction
     (`unit.SchedulerTest.*`, `unit.CommitmentLedger.*`).
 - **Moved to the milestones that build the feature** (owner, 2026-09-27;
@@ -482,19 +483,19 @@ Each M2 row, with the tests that carry it
   [M2's exit criterion](../../m2-record.md#exit-criteria-and-the-gate) covers only
   the rest):
   - state growth through branch or copy-on-write, and a fork's divergent
-    growth: M4 (retention's branches and sharing);
-  - many suballocation holes: M3 (state blocks, which bring suballocation
+    growth: M6 (retention's branches and sharing);
+  - many suballocation holes: M5 (state blocks, which bring suballocation
     within extents);
-  - envelope upgrade racing cached-state promotion: M4 (retention);
-  - repeated speculation with prefetch: M7 (prefetch is a deferred
+  - envelope upgrade racing cached-state promotion: M6 (retention);
+  - repeated speculation with prefetch: M9 (prefetch is a deferred
     optimization);
-  - a slow or disconnected client's termination: M3 (the front door;
+  - a slow or disconnected client's termination: M5 (the front door;
     output limits exist in `OutputBuffer`);
   - a closure or rounded allocation over its bound detected at runtime
-    before submission: M5 (the routing boundary; planning refuses it now);
-  - faulting on injected capacity loss: M3 (the first serving under a
+    before submission: M7 (the routing boundary; planning refuses it now);
+  - faulting on injected capacity loss: M5 (serving the fixtures under a
     real memory budget; owner, 2026-09-27);
-  - every queue full at once during cancellation: M3 (the front door's
+  - every queue full at once during cancellation: M5 (the front door's
     output queues; each queue is covered alone now).
 
 ## Reproduction

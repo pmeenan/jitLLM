@@ -1759,11 +1759,12 @@ beside the candidate)
 - **BP-F2:** EXL3 kernel parity on the 176 declared cases (the D-052 M2
   gate).
 - **BP-F3:** Resident full-model timings for all three fixtures, reported
-  for M3's gates. *Moved to M3 by the owner (2026-09-27):* part of M3's
+  for M5's gates. *Moved to M5 by the owner (2026-09-27):* part of M5's
   end-to-end comparison of each engine with its reference (D-085).
 - **BP-F4:** Dispatch overhead: host submission per launch and per token,
-  against upstream's captured decode. *The per-token half moved to M3
-  with BP-F3 by the owner (2026-09-27);* the per-launch half is reported.
+  against upstream's captured decode. *The per-token half moved to M3,
+  measured on M3's models, by the owner (2026-09-27, D-087);* the
+  per-launch half is reported.
 
 **Coexistence and swapping**
 
@@ -1824,7 +1825,7 @@ Evaluate these slab-hole policies:
 transfers, compare serial with bounded asynchronous submission. Measure the
 effect of scheduling order and depth, the time to the last required
 completion, and consumer stalls. The M0 I/O spike did not measure these
-mixes. M4 extends this to simultaneous demand reads and state write-back,
+mixes. M6 extends this to simultaneous demand reads and state write-back,
 with dependency safety and bounded queues.
 
 **Inputs and open prerequisites.**
@@ -1848,11 +1849,12 @@ with dependency safety and bounded queues.
   replaying the trace on the fake backend. Measure costs on `spark` with the
   M2 memory manager and synthetic extents. Report end-to-end restore on the
   real fixtures. This uses synthetic extents only,
-  not MoE execution, which stays in M5.
+  not MoE execution, which runs resident in M3 and demand-paged in M7.
 - **Expert compaction is partial at M2.** Relocation without VA remapping
-  assumes pointer-table dispatch. For experts, the M5 GGML proof decides
-  that. M2 evaluates compaction for dense groups, and the expert
-  case is completed in M5.
+  assumes pointer-table dispatch. For experts, M3 makes the initial
+  dispatch choice per format, and the M7 GGML proof revisits it for
+  compaction. M2 evaluates compaction for dense groups, and the expert
+  case is completed in M7.
 
 **Criteria** (pre-registered on 2026-09-26 under D-079, before any design
 has run on the trace; frozen). D-033 stays unless a slab or hybrid design
@@ -2034,8 +2036,8 @@ Raw logits, traces and logs stay outside Git. The operation contract,
 implementation registry and patch set become a decision entry when M2
 closes.
 
-Out of scope: MoE and routed closures (M5), sharding (M6), multimodal
-components, tokenizer/sampling/API (M3), spill format and retention (M4),
-other EXL3 variants, other GPUs, and CUDA graph capture beyond explicit
+Out of scope: MoE (M3) and routed closures (M7), sharding (M4), multimodal
+components, tokenizer/sampling (M3), API (M3–M5), spill format and
+retention (M6), other EXL3 variants, other GPUs, and CUDA graph capture beyond explicit
 rejection or a completed relocation proof. Passing this proof establishes
 the small dense fixtures only, not model support.

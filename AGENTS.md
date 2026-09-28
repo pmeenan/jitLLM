@@ -185,7 +185,7 @@ the commit gate.
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
-| [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M3 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
+| [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M5 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
 
 ## Rules for all agents
@@ -243,7 +243,8 @@ proof) are done** ([docs/m0-record.md](docs/m0-record.md),
 [docs/m1-record.md](docs/m1-record.md), [docs/m2-record.md](docs/m2-record.md)).
 The runtime starts, checks and waits; it serves nothing yet, though test
 harnesses run native FP16 and EXL3 models paged into device VMM. **M3
-(one resident model, end to end) is next** ([docs/plan.md](docs/plan.md)).
-The owner's first real work after M2 is fast model swapping; its plan is
-being drafted. Keep this paragraph short and current when plan.md
-milestone status changes (rule 4).
+(single-Spark fast full swap) is next** ([docs/plan.md](docs/plan.md)):
+DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
+in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. D-087 moved the
+later milestones back two places (the old M3 is M5). Keep this paragraph
+short and current when plan.md milestone status changes (rule 4).

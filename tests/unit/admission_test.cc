@@ -234,7 +234,7 @@ TEST(Admission, ASecondPauseIsNotTakenWhileOneIsOpen) {
 }
 
 // D-050's "continuation expires while an admitted request is suspended"
-// (its M2 lifetime part; expiry itself is M4's retention): nothing in
+// (its M2 lifetime part; expiry itself is M6's retention): nothing in
 // admission ages an admitted request's allowance out. However long a
 // pause lasts, the paused request's retained allowance stays committed, a
 // newcomer that would need it waits, and the paused request resumes.

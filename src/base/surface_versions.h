@@ -17,7 +17,7 @@ namespace jitllm::surface {
 
 // The representation inside the opaque signature of a reasoning block that
 // jitLLM signs (D-047). The signature carries this version with jitLLM's
-// identity; M3 fixes what version 1 holds. A runtime cannot verify a
+// identity; M5 fixes what version 1 holds. A runtime cannot verify a
 // signature of a version it does not implement, and treats it as any
 // signature it cannot verify (docs/client-api-baseline.md).
 inline constexpr std::uint32_t kReasoningSignatureVersion = 1;

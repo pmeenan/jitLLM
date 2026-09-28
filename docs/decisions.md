@@ -31,9 +31,204 @@ Seed entries D-001 through D-014 record the directions the owner stated in
 the owner's M0 triage answers and review fixes (2026-09-20) and the
 feature-matrix triage of 2026-09-21 (D-028 onward).
 
+**Milestones renumbered (D-087, 2026-09-27).** Entries before D-087 use
+the milestone numbers current when they were written, from 2026-09-23 on
+those of that day's ladder: its M3 → M5, M4 → M6, M4a → M6a, M5 → M7,
+M6 → M8, M7 → M9, M8 → M10. The new M3 and M4 are the fast full swap on
+one Spark and on two.
+
 ---
 
-## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof)
+## D-087: Fast full model swap first: M3 on one Spark, M4 on two; the later milestones move back two places  (2026-09-27, status: accepted by the owner in the interview on 2026-09-27; re-sequences the 2026-09-23 ladder; amends D-068's execution timing for speculation, D-052's EXL3 milestone gates, D-082's discrete-GPU timing and D-036's first runs of its canonical pair; triggers D-086's graph-capture reopen condition; the owner's decisions of 2026-09-28 added: Qwen-Image in BF16, model weight licenses gate nothing, M4's conductor development-only; an outside review's additions of 2026-09-28 noted)
+
+**Decision.** After M2, the owner's first real work is fast swapping of
+whole large models. The owner decided, in an interview on 2026-09-27:
+
+- **The ladder.** The new M3 is a fast full swap on one Spark, and the new
+  M4 is a fast full swap on two. Every later milestone moves back two
+  places, and the old M4a becomes M6a:
+
+  | 2026-09-23 ladder | Now |
+  | --- | --- |
+  | M3 One resident model | M5 |
+  | M4 First useful product | M6 |
+  | M4a Configured placement | M6a |
+  | M5 Demand-paged MoE | M7 |
+  | M6 Sharding | M8, sharding under pressure and failure |
+  | M7 Performance and new decoding modes | M9 |
+  | M8 Product and release | M10 |
+
+- **M3's models,** in order, each in its reference's quantization:
+  DeepSeek V4 Flash 0731 GGUF UD-Q2_K_XL
+  (`unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93`, adopted over the
+  `e3aa0d6a` revision on the Sparks, a new ~97 GB download per node);
+  Qwen3.8 Flash Next in NVFP4 and MXFP8, like Mia's single-Spark build
+  (`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4`, to be pinned); and Qwen-Image-2.1
+  in BF16, like diffusers (below).
+  Qwen3.8's kernels are the fastest correct from any source under
+  jitLLM's dispatch (D-053), chosen per operation by a quick A/B: GGML's
+  NVFP4 matmul, vLLM, FlashInfer or CUTLASS kernels, or our own, with
+  licenses per D-080.
+- **M4's models:** GLM-5.3 Flash first
+  (`MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks@c1b7d4c`, EXL3), then
+  DeepSeek v4.1 Flash, sharded across both Sparks, each node holding its
+  shard on disk and the conductor loading both at once.
+- **The cycle:** A→B→A, driven by a native CLI harness in
+  `jitllm-runtime` (tokenize, prefill, decode, detokenize).
+- **The swap time:** the goal is about 10 s from the swap request to the
+  first token of a short prompt, in a running process, including page-in,
+  setup and graph and tuning restore. The owner: "10s is aspirational and
+  we should get as close as possible but even 20s would be a massive win."
+  So the exit criterion is at most about 20 s, and the report gives each
+  measured swap against both numbers.
+- **What is resident:** large sparse lookup tables (Qwen3.8's PLE, later
+  v4.1's Engram tables) may stay on the SSD with rows paged on demand
+  (D-035); everything else is resident before the first token.
+- **Conversation state:** A's KV is spilled on swap-out through M2's
+  write-back path and restored on return, with no re-prefill; its cost
+  counts in the swap time.
+- **Import:** M0's Python prototype importer makes the D-056 artifacts
+  for now; the C++ importer and verifier stay in M5.
+- **Baselines,** installed and run on the Sparks by us: MiaAI's
+  configurations, TensorFold, llama.cpp for the GGUF, and vLLM or SGLang
+  where they support these models. Mia's Qwen3.8 cold start runs once and
+  is recorded as a measurement; its prefill and decode are then measured
+  on the same warm server. For the image, diffusers is the speed and
+  format reference, and stable-diffusion.cpp's GGUFs an additional quality
+  and format comparison.
+- **Correctness, coarse:** for the LLMs, greedy tokens match the
+  same-format reference on a short prompt set, with small logit
+  differences allowed, and perplexity on a fixed text is within a few
+  percent. Our own swap and restore cycles are bit-identical. The image
+  output is close to the reference pipeline's for fixed prompts and seeds
+  (a simple image-similarity bound), swaps in and out with the text
+  models, and is not more than 10% slower.
+- **Performance and memory** (D-085): prefill and decode are not more than
+  10% slower than the reference, and peak memory is at most about 1.1×
+  the reference's.
+- **Pulled into M3:** the native tokenizer and chat templates (from the
+  old M3); CUDA graphs for decode, restored at fixed VAs across swaps;
+  speculative decoding in the core (MTP, DSpark or DFlash2, as each model
+  supports; from the old M7), because every published Mia and TensorFold
+  decode number uses it; the MoE execution each model needs, resident (from
+  the old M5; no demand-paged experts); the models' new attention and
+  mixing layers (sparse attention with an indexer, hyper-connections,
+  Gated DeltaNet and linear attention); and, at the end, a minimal
+  OpenAI-compatible `/v1/chat/completions` once the swap floor is proven.
+  The service hardening (the io_uring system-call filter and the single
+  job reaper) stays with the old M3's content in M5.
+- **Pulled into M4:** the needed parts of the old M4a (a configured
+  conductor that loads both shards at once) and of the old M6 (sharded
+  execution).
+- **Discrete GPUs** (D-082): fast-swap work there comes after the two-Spark
+  swap, as a later slice or milestone, not in M3 or M4.
+
+The owner added three decisions on 2026-09-28:
+
+- **Qwen-Image-2.1 runs BF16 weights, like diffusers.** Diffusers is both
+  the speed and the format reference for jitLLM's image run.
+  stable-diffusion.cpp's GGUFs stay an additional quality and format
+  comparison. GGUF quantizations may come later if memory matters.
+- **Model weight licenses do not gate jitLLM.** The owner: "Allow DFlash2.
+  We never ship weights for anything ourselves so the model licenses don't
+  matter." jitLLM never distributes model weights: users supply
+  checkpoints, and artifacts are made locally from them. So a model's
+  weight license does not block import, execution, baselines or support in
+  jitLLM; it is recorded for information only, and the support matrix may
+  note it for users. This makes D-002's 2026-09-20 scope note an explicit
+  rule. GLM-5.3's DFlash2 drafter (CC BY-NC-ND 4.0) is allowed: M4's
+  speculation may use DFlash2 or MTP, whichever is faster and correct, as
+  with Mia. Code licenses are unchanged (D-002, D-017, D-080): kernels,
+  runtimes, and scripts or recipes we incorporate or run, such as MiaAI's
+  AGPL files, stay under D-080's policy.
+- **M4's minimal conductor is development-only.** It runs over the direct
+  Spark-to-Spark link, trusted like loopback, is off by default, and is
+  documented as development-only, not a supported deployment. Mutual TLS
+  (D-038) arrives with M6a (D-014).
+
+**Note (2026-09-28): an outside review's additions.** Scope and order are
+unchanged; plan.md's M3 and M4 fill these gaps:
+
+- **Speculation's targeted checks move with it** from M9 to M3's exit, and
+  to M4's by inheritance: forced rejections leave no stale state, output
+  after a rejection equals non-speculative greedy output bit for bit,
+  rollback composes with a swap, and sampled speculation passes a coarse
+  distribution check. M9 keeps the new modes, tuning and the broader gates.
+- **M4's minimal coordinated readiness:** both ranks ready before any
+  collective, and a bounded abort on either rank's preparation failure.
+  M8 keeps general recovery and the pressure and failure matrix.
+- **The initial resident expert layout** (pointer table or uniform stride,
+  per format) is chosen and proven in M3; compaction and demand paging
+  stay in M7.
+- **Oracles and comparators:** each model has a same-format correctness
+  oracle; TensorFold and other cross-quantization comparisons report speed
+  and memory only.
+- **Swap acceptance tables** in M3 and M4, whose defaults are
+  owner-adjustable: every ordered pair run as A→B→A, the worst LLM↔LLM
+  swap the headline; A's 8K-token state spilled and restored and counted,
+  with a 0-context swap also reported; the ~10 s goal and ~20 s bound for
+  swaps whose graphs and tuning were prepared earlier in the process, and
+  first use no worse than about 2× the bound; the LLM endpoint at B's first
+  generated token, the image endpoint at the first denoising step's output,
+  with full image generation timed against diffusers under D-085; bytes
+  read, read throughput and peak memory per swap. Also owner-adjustable:
+  M4's 30 s readiness timeout, and the sampled-speculation check's size
+  (4 prompts × 256 seeds × 8 tokens) and bound (total variation ≤ 0.1).
+
+**Context.** Research notes for the interview (not in the repository)
+gathered the facts that shaped this; plan.md's M3 and M4 carry the ones
+that drive work, with their provenance.
+- The load times to beat are long. Mia's vLLM Qwen3.8 takes 10 min 51 s
+  to `/health` and 12.2–14.1 min on another lane; TensorFold loads
+  Qwen3.8 in about 90 s and Mia's GLM loads in 65–70 s cold (all
+  creator-reported). In our M0 run of the pinned llama.cpp server,
+  switches between DeepSeek V4 and Qwen3.8 took 75–93 s to first token,
+  after a 99.5 s initial load (measured, one run;
+  [full study](experiments/paging-feasibility/full-study.md)).
+- At the measured ~13.3 GB/s at-rest read rate, DeepSeek V4's 96.83 GB is
+  about 7.3 s of pure transfer (computed), so ~10 s holds only if
+  eviction, backing, mapping, setup and warm-up overlap the read or fit in
+  the remaining 2–3 s. Creating and mapping backing costs about 5 s of
+  serial work per such model (computed from measured per-extent medians),
+  which reusing the evicted model's backing (D-033, D-081) avoids.
+- Every model in scope has attention and mixing layers that jitLLM's
+  build does not compile, and every reference decode number uses
+  speculation, so matching the references needs both in M3.
+
+**Consequences.**
+- plan.md's ladder, M3 and M4 sections, and every forward-looking
+  milestone number in the living docs, code comments and tests follow the
+  new numbering. The M0–M2 records and the decision entries before this
+  one keep theirs; the preamble above and a note in each record give the
+  map. Decisions whose status lines name a milestone carry a note.
+- D-068's speculation executes in M3 and M4 for their models; the
+  remaining speculative and block-diffusion shapes stay in M9.
+- D-052's resident EXL3 gates on the small fixtures move with the old M3
+  to M5 and its switching evidence to M6; flagship EXL3 serving comes
+  first in M4.
+- D-086's reopen condition ("M3's serving needs graph capture") is met:
+  decode graphs need the relocation proof before they run.
+- D-036's canonical pair (DeepSeek V4 Flash and Qwen3.8) first runs in M3
+  as full swaps; its benefit target stays in M9.
+- Widening the narrowed GGML build to the models' operations is a
+  source-lock change on the heavy path (D-057, D-084).
+- The new recipes, kernels and other code are pinned and audited before
+  use ([licensing.md](licensing.md)); none is cleared by this entry. The
+  new checkpoints are pinned, and their licenses recorded for information.
+- The owner, 2026-09-28: "Gate on same format for now but add
+  TensorFold's format for future implementation and optimization." In M3
+  and M4, D-085's speed and memory bounds are gated only against each
+  model's same-format comparator. TensorFold (MLX affine 4-bit) and other
+  cross-quantization comparators are reported, not gated. TensorFold's
+  format is an M9 item. Once jitLLM runs it, TensorFold becomes a
+  same-format oracle and a gated comparator for those models.
+
+**Reopen if.** The 20 s bound proves structurally out of reach (the read
+plus the work that cannot overlap it exceeds it), a model's reference
+format cannot be supported under D-017 and D-080, or the owner moves the
+product milestones ahead of the swap work.
+
+## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs)
 
 **Decision.** What M2's backend proof built and checked becomes the
 internal contract M3 builds on
@@ -345,7 +540,7 @@ package may take them); a libstdc++ update replaces or redefines the
 macro (a hardened mode or C++26 contracts); or a third-party component
 cannot build with it.
 
-## D-082: Discrete NVIDIA GPUs are a secondary target: device memory and the SSD, one active model, fast whole-model swaps; system RAM as a tier is designed for, not built  (2026-09-27, status: accepted; amends D-004's single hardware target and D-072's GB10-only judgment; sharpens D-026's posture on Apple silicon; assumes D-081's device-VMM residency and host-VMM landing zone)
+## D-082: Discrete NVIDIA GPUs are a secondary target: device memory and the SSD, one active model, fast whole-model swaps; system RAM as a tier is designed for, not built  (2026-09-27, status: accepted; amends D-004's single hardware target and D-072's GB10-only judgment; sharpens D-026's posture on Apple silicon; assumes D-081's device-VMM residency and host-VMM landing zone; its M4 and M5 are M6 and M7 under D-087, and fast-swap work there follows the two-Spark swap)
 
 **Decision.** The owner, on 2026-09-27, added discrete NVIDIA GPUs (first
 the workstation's RTX 3080 Ti) as a target "to keep the code flexible
@@ -1758,7 +1953,7 @@ adversarial challenge of this decision found those two conditions.
 **Reopen if.** M4's measurements show the default mis-serves the primary
 workload, or pausing causes reload traffic that cancels its latency benefit.
 
-## D-068: Design now for speculative (MTP) and block-diffusion decoding and for uncovered model shapes; execute them in M7  (2026-09-23, status: accepted; confirms the speculative-decoding scope deferred at the 2026-09-21 triage; constrains D-050's phases, D-053's operation contract, D-055's state adapters and D-056's open artifact items)
+## D-068: Design now for speculative (MTP) and block-diffusion decoding and for uncovered model shapes; execute them in M7  (2026-09-23, status: accepted; confirms the speculative-decoding scope deferred at the 2026-09-21 triage; constrains D-050's phases, D-053's operation contract, D-055's state adapters and D-056's open artifact items; speculation for M3's and M4's models executes there, and the rest in M9, by D-087)
 
 **Decision.** Owner's answer on 2026-09-23, after the first architecture
 draft:
@@ -2254,7 +2449,7 @@ file or a Unix socket with group permissions), a browser-hosted dashboard
 must call the API directly, or an embedding customer needs a supported
 library.
 
-## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md)
+## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087)
 
 **Decision.** Owner's answers on 2026-09-23 chose TOML configuration and
 `/var/lib/jitllm` as the default data directory. The packaged layout is
@@ -2497,7 +2692,7 @@ device-node permissions change so the service user needs groups; a data role
 must live on a filesystem the direct-I/O probe rejects; or users need
 per-user (non-service) installs.
 
-## D-062: SemVer 0.x product versions, independent public-surface versions and a maintained changelog  (2026-09-23, status: accepted; implements D-016's versioning consequence and D-045's extension naming, moving individual names from M1 to M3)
+## D-062: SemVer 0.x product versions, independent public-surface versions and a maintained changelog  (2026-09-23, status: accepted; implements D-016's versioning consequence and D-045's extension naming, moving individual names from M1 to M3, which is M5 under D-087)
 
 **Decision.** Owner's answer on 2026-09-23:
 
@@ -3070,7 +3265,7 @@ provider's backing cannot take a group from a 4 KiB-aligned run; tooling or
 parser evidence favours another container; or D-018's gate records a
 compatibility policy.
 
-## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036)
+## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087)
 
 **Decision.** Reusable conversation state follows the
 [retention policy](retention-policy.md):
@@ -3406,7 +3601,7 @@ ExLlamaV3's wrappers are PyTorch-bound, so the EXL3 plan already rewrote them.
 - A requirement emerges to load kernels without rebuilding. That would also
   reopen D-028.
 
-## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051)
+## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051; its M3 and M4 gates are M5's and M6's under D-087, and flagship EXL3 serving comes first in M4)
 
 **Decision.** Keep the first GGML/FP16 control, and require native EXL3
 execution alongside it in M2, before settling the operation contract and
@@ -3770,7 +3965,7 @@ versioning names any jitLLM `format` value. No implementation is claimed.
 the schema under a pinned client version, or fallback is accepted under
 D-042 and needs the reserved spelling made concrete.
 
-## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064; the context-compacted release check moved from M3 to M4 in the 2026-09-23 milestone ladder, plan.md)
+## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064; the context-compacted release check moved from M3 to M4 in the 2026-09-23 milestone ladder, plan.md, which are M5 and M6 under D-087)
 
 **Decision.** At the owner's direction after review of the D-040–D-044
 documents, the inference front door adopts these public-interface rules:
@@ -4024,7 +4219,7 @@ failure cases to test before implementation acceptance.
 **Reopen if.** A named client requires additional Ollama semantics, or discovery,
 close or job behavior cannot preserve bounded admission and completion safety.
 
-## D-040: Serve Chat Completions, Responses and Messages in the M3 baseline  (2026-09-22, status: accepted; follows D-022/D-030; front-door contract in D-045)
+## D-040: Serve Chat Completions, Responses and Messages in the M3 baseline  (2026-09-22, status: accepted; follows D-022/D-030; front-door contract in D-045; that baseline is M5's under D-087, after a minimal Chat Completions route at the end of M3)
 
 **Decision.** M3 serves `GET /v1/models`, `POST /v1/chat/completions`,
 `POST /v1/responses`, `POST /v1/messages` and
@@ -4230,7 +4425,7 @@ public API, wire format or implementation is introduced by this decision.
 host, or measured coordination contention justifies a sidecar. Preserve the
 single front door and authoritative local admission if process placement changes.
 
-## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025; M4 workload named in D-055)
+## D-036: Workload-scoped switching benefit and generation-stall targets  (2026-09-22, status: accepted; specializes D-021 and D-025; M4 workload named in D-055; its M4, M5 and M7 are M6, M7 and M9 under D-087, and its canonical pair first runs in M3 as full swaps)
 
 *Refined the same day at the owner's direction after review: the benefit
 comparator, the switch/continuation distinction, which reference arm sets
@@ -4764,7 +4959,7 @@ without a fork; the flagship recipes need kernels GGML cannot host; or an
 out-of-tree, differently licensed backend must load without rebuilding the
 core.
 
-## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md; core-only default install amended by D-080)
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087; core-only default install amended by D-080)
 
 **Decision.** The user-facing installation path is the platform's package
 manager. For DGX Spark that is apt with a project-hosted, signed repository

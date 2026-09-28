@@ -349,7 +349,7 @@ staging is needed for the tested host-VMM path.
 Expose spill bytes/s and bytes/day and bound retained spill capacity/lifetime;
 do not adopt 12 GB/s as a sustainable-write allowance. NAND/SLC exhaustion,
 mixed read/write tails, full state-publication durability, and the device's
-applicable endurance rating remain inputs to M4's spill policy. No endurance
+applicable endurance rating remain inputs to M6's spill policy. No endurance
 permission or lifetime-write budget is invented from this short test.
 
 ### Interrupt coalescing: a large small-read latency improvement

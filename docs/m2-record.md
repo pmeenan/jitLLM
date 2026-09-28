@@ -3,6 +3,10 @@
 
 # M2 record — Resource core and backend proof
 
+*Milestones renumbered (D-087, 2026-09-27): numbers here are those of
+their date; the 2026-09-23 ladder's M3–M8 are now M5–M10, and M4a is M6a.
+plan.md says which hand-offs moved to the new M3 and M4.*
+
 M2 ran from 2026-09-24, on M1's exit, to 2026-09-27 and exited on the
 owner's word on 2026-09-27, after its gate (below). This is its
 item-by-item record, moved out of [plan.md](plan.md) at exit so the plan

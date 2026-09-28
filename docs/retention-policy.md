@@ -1,13 +1,15 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Conversation-state retention and the M4 acceptance trace
+# Conversation-state retention and the M6 acceptance trace
 
 D-055 defines the bounded retention policy that D-024 and D-031 require
-before M4, and names M4's A→B→A acceptance workload under D-036. It says how
+before M6, and names M6's A→B→A acceptance workload under D-036. It says how
 reusable state outlives the request that produced it, who may reuse it, what
-ends it, how it is bounded and what M4 must demonstrate. It does not
+ends it, how it is bounded and what M6 must demonstrate. It does not
 implement a cache, choose a durable spill format or report measurements.
+M3 spills and restores one model's state across a full swap through M2's
+write-back path; the policy here arrives in M6.
 D-050's [reservation policy](reservation-policy.md) remains the authority for
 admitted work, and D-048's [completion protocol](async-model.md) for
 lifetimes.
@@ -68,7 +70,7 @@ never an incompatible hit.
 Each state representation's adapter declares where state can resume and what
 coverage a resume needs; entries record enough to check it.
 
-- **Full-attention KV** (both M4 models): state for positions below `n`
+- **Full-attention KV** (both M6 models): state for positions below `n`
   supports resuming at any `m ≤ n`. Positions from `m` on are never attended;
   the partly reused block is copied before appending, with only positions
   below `m` kept and the rest zeroed.
@@ -179,7 +181,7 @@ Ending an entry drops its claims. It never frees blocks that other entries
 claim or admitted work uses, and ending one class's entries never ends the
 other's.
 
-**Release** (D-041, D-045; wire names remain M4 API design):
+**Release** (D-041, D-045; wire names remain M6 API design):
 
 - At admission, a request that may leave a continuation entry receives an
   opaque, server-issued handle for the lineage it continues or starts, bound
@@ -223,7 +225,7 @@ describe a hosted cache's pricing tiers, not a request to discard state, and
 are ignored rather than shortening the owner's idle cap. `prompt_cache_key`,
 `session_id` and Claude Code's session and agent IDs are recorded on
 continuation entries only as fixed-size keyed hashes, counted in the
-metadata bound: for release lookup now and for placement in M4a. `user` and
+metadata bound: for release lookup now and for placement in M6a. `user` and
 `metadata` are not stored. Claude Code's `auxiliary` request class publishes no
 continuation entry by default: such side requests are typically one-shot and
 would displace conversations that continue. Ollama's `keep_alive` governs
@@ -249,11 +251,11 @@ capacity (D-050) or a cap is exceeded, the initial rule is:
 
 Candidates are ordered by their own refresh times, so the class-specific
 refresh rules carry through, and each is credited only with the bytes it
-actually frees. This is a baseline to measure in M4, not a tuned policy;
+actually frees. This is a baseline to measure in M6, not a tuned policy;
 cost-aware alternatives are compared on recorded traces before replacing it
-(features.md). M4's state is small next to its weights, so it cannot show
-whether idle state within a large `M_state` starves weight residency. M5
-and M7 measure that on their larger workloads. Entry caps also bound each
+(features.md). M6's state is small next to its weights, so it cannot show
+whether idle state within a large `M_state` starves weight residency. M7
+and M9 measure that on their larger workloads. Entry caps also bound each
 caller scope's share of metadata; they do not isolate resident or spill
 capacity, whose global pressure may evict another scope's entries.
 Spill is lazy: an entry is written only when demoted, never merely because
@@ -298,20 +300,20 @@ destination for admitted demand inherits that demand's priority (D-050).
 
 ## Bounds and defaults
 
-Only the idle caps are fixed now. The capacity values are pinned at M3 exit,
-before M4 implementation, from jitLLM's measured state bytes for its
+Only the idle caps are fixed now. The capacity values are pinned at M5 exit,
+before M6 implementation, from jitLLM's measured state bytes for its
 supported models and the node's measured headroom, and recorded here with
 their provenance.
 
 | Parameter | Meaning | Rule | Pinned |
 | --- | --- | --- | --- |
 | `T_cont`, `T_prefix` | Maximum idle age per class | 24 hours each (owner decision); configurable downward | Now |
-| `M_state` | Resident retained-state cap | At most `B − F − J − max_m(R_m + E_m)`, so idle state never stops the node from holding its largest supported request | M3 exit |
-| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054) | M3 exit |
-| Spill write budget | Bytes spilled per rolling 24 hours | From the drive's rated endurance, with its source recorded, and the measured M4 workload; past it, entries are dropped instead of spilled and the event is reported | M4 entry |
-| `N_prefix`, `N_cont` | Entry-count caps per class, with a per-scope share of each | Worst-case index metadata (token IDs, block digests and maps at maximum context) fits inside `F` | M3 exit |
-| `L_prefix` | Minimum shared-prefix length | Below it, recomputation costs less than an entry's metadata and lookup | M3 exit |
-| Maintenance interval | Maximum delay before expiry and release are processed | Bounded maintenance work, independent of inference queues | M3 exit |
+| `M_state` | Resident retained-state cap | At most `B − F − J − max_m(R_m + E_m)`, so idle state never stops the node from holding its largest supported request | M5 exit |
+| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054) | M5 exit |
+| Spill write budget | Bytes spilled per rolling 24 hours | From the drive's rated endurance, with its source recorded, and the measured M6 workload; past it, entries are dropped instead of spilled and the event is reported | M6 entry |
+| `N_prefix`, `N_cont` | Entry-count caps per class, with a per-scope share of each | Worst-case index metadata (token IDs, block digests and maps at maximum context) fits inside `F` | M5 exit |
+| `L_prefix` | Minimum shared-prefix length | Below it, recomputation costs less than an entry's metadata and lookup | M5 exit |
+| Maintenance interval | Maximum delay before expiry and release are processed | Bounded maintenance work, independent of inference queues | M5 exit |
 
 `B`, `F`, `J`, `R_m` and `E_m` follow D-050: the execution budget, fixed
 overhead, non-revocable maintenance work such as spill writes and expiry,
@@ -323,7 +325,7 @@ For scale, not measurement: Qwen2.5-0.5B's F16 KV state is 2 × 24 layers ×
 with the EXL3 reference's 50,331,648-byte cache at 4,096 tokens. A full
 8,192-token context is 96 MiB. The published weight files are 1,266,425,696
 bytes (FP16) and 588,951,098 bytes (EXL3 4.0 bpw); prepared artifacts will
-differ by padding and deduplication. M4's pair therefore exercises the policy
+differ by padding and deduplication. M6's pair therefore exercises the policy
 with state small next to weights; state-dominated budgets arrive with longer
 contexts and larger models. The paging study's 8 GiB spill ceiling was a
 scenario allowance with replayed peaks of 551.75 MiB (small models) and
@@ -349,21 +351,21 @@ hits, resident and spilled bytes, spill traffic and demotions. Clients see
 a scope mismatch as an ordinary miss. Token IDs, prompts and state contents
 are never logged (D-014).
 
-## M4 acceptance workload
+## M6 acceptance workload
 
 ### Models, orientations and budgets
 
 The owner named the pair on 2026-09-22: Qwen2.5-0.5B-Instruct FP16 GGUF
-(D-051) and its EXL3 4.0 bpw quant (D-052), both contexts M3 must support.
+(D-051) and its EXL3 4.0 bpw quant (D-052), both contexts M5 must support.
 Every measurement runs in both orientations: **o1**, A = FP16 and B = EXL3;
-**o2**, A = EXL3 and B = FP16. The mixed-rate 4.5 bpw fixture, also in M2/M3
+**o2**, A = EXL3 and B = FP16. The mixed-rate 4.5 bpw fixture, also in M2/M5
 scope, is not part of this workload.
 
 At these sizes, a physical pressure holder cannot safely force displacement,
 so pressure is policy-forced on both sides, as in the reference cycle's
 zero-pressure arms. The reference keeps one model loaded at a time, plus
 whatever page cache the OS keeps; jitLLM gets a configured execution budget,
-less memory than the reference can use. Budgets use M4-entry measurements
+less memory than the reference can use. Budgets use M6-entry measurements
 of `F`, `J`, `R_m` and `E_m` for the pinned plans and trace, with `W_m` the
 weight part of `E_m` and `S_m` the retained-entry bytes at the switch points,
 all rounded up to whole extents:
@@ -375,7 +377,7 @@ all rounded up to whole extents:
   outgoing model's weights stays resident. Neither whole-model placement
   fits.
 
-The M4-entry record shows, for each arm and direction, how many of the
+The M6-entry record shows, for each arm and direction, how many of the
 outgoing model's weight bytes `B_half` displaces. Arms without resident
 entries gain their bytes as weight headroom, and a returning request's own
 entry already sits inside its `R_m`, so displacement differs by arm. An
@@ -388,7 +390,7 @@ before any acceptance run.
 A frozen, message-level transcript is fixed before any run, rendered
 separately for each model with that model's authoritative tokenizer and
 template, and pinned by hash per model. It uses synthetic text, like the
-reference cycle's notebook. Let `C` be the smaller M3-validated context limit
+reference cycle's notebook. Let `C` be the smaller M5-validated context limit
 of the two models.
 
 1. **History (untimed):** three A turns under a system prompt that ends at a
@@ -481,14 +483,14 @@ as jitLLM's spill write counts inside its own.
   baseline outside it, and whole-node reads are at least the ledger's weight
   and spill reads. J-spill and J-whole-spill returns hold no resident copy of
   A's entry at timer start and read every spilled block required by the
-  validated reused prefix, with its physical byte count pinned at M4 entry.
+  validated reused prefix, with its physical byte count pinned at M6 entry.
   Blocks belonging only to the rewritten generated tail need not be read.
   J-partial reads nothing from spill.
 
 ### Statistics and pass rule
 
 Run **72 accepted repetitions** per arm, orientation and cache condition,
-with the count and a single analysis pinned at M4 entry; no trials are added
+with the count and a single analysis pinned at M6 entry; no trials are added
 after looking at results. At n = 72, the sample maximum is a one-sided
 97.5% distribution-free upper bound on the 95th percentile
 (0.95^72 < 0.025).
@@ -506,9 +508,9 @@ arm is inconclusive. Anything else is a failure or inconclusive, and neither
 passes (D-036).
 
 Report every arm's median and p95 with their bounds, J-whole's and
-J-whole-spill's differences from the retained arms (the baseline for M7's
+J-whole-spill's differences from the retained arms (the baseline for M9's
 benefit target), bytes moved, peaks and token counts. Inter-token gaps are
-reported; D-036's generation limits start at M5.
+reported; D-036's generation limits start at M7.
 
 ### Correctness gates
 
@@ -525,12 +527,12 @@ reported; D-036's generation limits start at M5.
   declared before these runs (first-slice.md); a declared bound applies to
   both gates.
 - Reuse against recomputation is judged only against a cross-schedule bound
-  declared from M2/M3 controls. Without one, the difference is reported and no
+  declared from M2/M5 controls. Without one, the difference is reported and no
   equivalence is claimed (RE-008).
 - Reference arms must match their own frozen-output controls, or they cannot
   set the floor.
 - J-partial and J-spill returns reuse exactly the longest common prefix of
-  the return prompt and A's entry, recorded per model and plan at M4 entry,
+  the return prompt and A's entry, recorded per model and plan at M6 entry,
   and process the rest; J-recompute reuses nothing. J-partial's return
   reads only the weight extents its outward switch displaced, and the ledger
   shows the rest of A's extents stayed resident throughout. J-whole reads
@@ -538,7 +540,7 @@ reported; D-036's generation limits start at M5.
 
 ### Functional and adversarial cases
 
-These run on the M4 pair unless marked; fake-backend cases also run
+These run on the M6 pair unless marked; fake-backend cases also run
 without a vendor SDK, as M2's did.
 
 | Case | Required result |
@@ -568,9 +570,9 @@ without a vendor SDK, as M2's did.
 | A request for B arrives while A is still generating, at a budget where they cannot run as a cohort; repeated under each D-069 policy with B interactive and A background, and with both interactive | Queue delay, paging/switch time and first-token compute are reported separately, with pause counts and reloaded bytes; a paused A keeps its admitted state and resumes correctly; outputs match serial controls. These results decide D-069's default |
 | An unmodified named client builds a conversation on A, switches to B and resumes A, returning its own generated replies | Completes without session extensions; diagnostics show continuation reuse including the returned tail, less any template rewrite |
 
-### What M4 entry pins
+### What M6 entry pins
 
-Before any acceptance run: the M3-exit capacity values above and the spill
+Before any acceptance run: the M5-exit capacity values above and the spill
 write budget; the transcript, per-model token-array hashes, output caps,
 decoding mode and seed, the expected reuse and required spill-read bytes per
 model and plan; `F`, `J`,
@@ -585,5 +587,5 @@ an edited pin.
 
 Crash durability, spill encryption (rejected), cross-node state transfer and
 early spill writing are outside this policy. Physical-pressure and
-state-dominated evidence waits for larger supported models: M5's named
-Gemma/Ornith configuration and M7's larger-than-memory library.
+state-dominated evidence waits for larger supported models: M7's named
+Gemma/Ornith configuration and M9's larger-than-memory library.

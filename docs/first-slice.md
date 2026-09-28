@@ -4,7 +4,7 @@
 # First dense checkpoint and numerical reference
 
 D-051 selects **Qwen2.5-0.5B-Instruct, the official FP16 GGUF**, for M2's
-GGML backend proof and M3's first end-to-end model. D-052 adds a required
+GGML backend proof and M5's end-to-end fixture parity. D-052 adds a required
 [EXL3 companion](exl3-bringup.md) in M2, including upstream performance gates.
 Use the already pinned
 llama.cpp reference on Spark. This resolves M0 question 4; it does not
@@ -58,7 +58,7 @@ EOS ID 151645, and automatic BOS insertion disabled. The chat template's
 UTF-8 SHA-256 is
 `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`.
 Render/tokenize using that identity, preserving tool/message branches as
-they are enabled by the M3 client contract. Arbitrary checkpoint code or
+they are enabled by the M5 client contract. Arbitrary checkpoint code or
 templates cannot execute unchecked in the native runtime.
 
 The GGUF declares an **8,192-token context**, whereas the pinned base config
@@ -66,7 +66,7 @@ declares 32,768. Its template also differs byte-for-byte from the base
 tokenizer config. Do not silently substitute the base template, advertise
 32K for this artifact, or apply RoPE overrides. The initial reference smoke
 uses a 512-token context and just 76 actual tokens; it does not validate the
-8K ceiling. M2/M3 choose and validate finite request/context profiles within
+8K ceiling. M2/M5 choose and validate finite request/context profiles within
 that ceiling under D-050. Context increases need new numerical and envelope
 evidence.
 
@@ -97,12 +97,13 @@ reference record.
 
 Use fixed teacher-forced token IDs and positions, identical prefill chunks
 and decode steps, and **raw logits before sampling or penalties**. M2 can
-consume fixed IDs without implementing a tokenizer. M3 separately proves
-rendered bytes, token IDs, special-token handling, stop rules and seeded
-sampling, including tool round trips. Matching a short generated string or
+consume fixed IDs without implementing a tokenizer. M5 separately proves
+this fixture's rendered bytes, token IDs, special-token handling, stop
+rules and seeded sampling, including tool round trips, on M3's native
+tokenizer. Matching a short generated string or
 only top-1 predictions is insufficient to validate inference.
 
-M2/M3 comparisons must cover:
+M2/M5 comparisons must cover:
 
 - Exact tensor values, shapes, types and alias identity after import and
   restoration; exact rendered bytes/token IDs at the tokenizer boundary.

@@ -31,24 +31,31 @@ and caveats. Everything M0 left open is owned by the milestone exits below.
 ## Milestone ladder
 
 Rewritten from the provisional ladder at the end of M0 (2026-09-23; see the
-[M0 record](m0-record.md)) and ordered by risk: the substrate; the resource core with the backend proof; one
-resident model end to end; the first useful product at M4 (A→B→A with
-retention); configured placement at M4a; demand-paged MoE with the first
-daily-driver models at M5; sharding at M6; performance and the new decoding
-modes at M7; and the remaining product scope with the first tagged release at
-M8. Each milestone leaves a usable, testable result. None has a promised date.
+[M0 record](m0-record.md)), then re-sequenced after M2 by the owner on
+2026-09-27 (D-087): the fast full model swap, the owner's first real work,
+comes first, on one Spark at M3 and on two at M4, and everything after moved
+back two places (the old M3 is M5, M4 is M6, M4a is M6a, and so on to M8,
+now M10). After the swap work the order is by risk: one resident model end
+to end, with the importer and the full front door, at M5; the first useful
+product at M6 (A→B→A with retention); configured placement at M6a;
+demand-paged MoE with the first daily-driver models at M7; sharding under
+pressure and failure at M8; performance and the remaining decoding modes at
+M9; and the remaining product scope with the first tagged release at M10.
+Each milestone leaves a usable, testable result. None has a promised date.
 
 | Milestone | Result | Needs |
 | --- | --- | --- |
 | M1 Bootstrap | Pinned SDK, builds, local check gate, package skeleton, confined-job proof | M0 (done) |
-| M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 |
-| M3 One resident model | Import, native GGML/EXL3 serving and the three client protocols on the small fixtures | M2 |
-| M4 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M3 |
-| M4a Configured placement | Conductor, enrolled nodes, whole-model placement and routing | M4 |
-| M5 Demand-paged MoE | Exact expert paging; Gemma 4 and Ornith as daily drivers with reasoning and constrained output | M4 |
-| M6 Sharding | A flagship model sharded across both Sparks | M4a, M5 |
-| M7 Performance | D-036's benefit target on a library larger than memory; speculative and diffusion decoding | M5; M6 before exit |
-| M8 Product and release | Dashboard, remaining API scope, signed apt repository, first tagged 0.x release | M7, for the release |
+| M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
+| M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
+| M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle | M3 |
+| M5 One resident model | Importer, verifier, the three client protocols, TLS and management on the small fixtures | M4 |
+| M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
+| M6a Configured placement | Conductor, enrolled nodes, whole-model placement and routing | M6 |
+| M7 Demand-paged MoE | Exact expert paging; Gemma 4 and Ornith as daily drivers with reasoning and constrained output | M6 |
+| M8 Sharding under pressure | Sharded execution correct under asymmetric pressure, cancellation and failure, with coordinated admission | M6a, M7 |
+| M9 Performance | D-036's benefit target on a library larger than memory; the remaining speculative and diffusion decoding | M7; M8 before exit |
+| M10 Product and release | Dashboard, remaining API scope, signed apt repository, first tagged 0.x release | M9, for the release |
 
 How to read the milestones below:
 
@@ -68,7 +75,7 @@ How to read the milestones below:
 - **Support is earned per checkpoint.** From M3 the support matrix records
   what each exit validated; a milestone exit names its configurations.
 - **Release.** The first tagged 0.x release (an owner-signed tag, D-062) is
-  cut at M8's exit, after every milestone has exited (owner, 2026-09-23). The
+  cut at M10's exit, after every milestone has exited (owner, 2026-09-23). The
   repository is already public (D-061); until then it carries only `-dev`
   builds.
 
@@ -85,10 +92,11 @@ delegated cgroups (D-074), validated on `spark`. The
 [M1 record](m1-record.md) keeps each item's outcome, verification and
 hand-offs. What it handed on: the GPU, VMM, I/O and ARM stress suites in
 `check:spark`, a system-call filter with io_uring, and a single reaper for jobs
-started from other threads (M2; the last two moved to M3); front-door, TLS and switching-policy keys
-(M3, M4); the importer on the confined-job mechanism and spill file names
-(M3); cluster-member checks of credential files and enrollment records
-(M4a); drain-before-restart upgrades and the apt repository (M8).
+started from other threads (M2; the last two moved to M5); front-door, TLS and switching-policy keys
+(M5, M6); the importer on the confined-job mechanism and spill file names
+(M5); cluster-member checks of credential files and enrollment records
+(M6a); drain-before-restart upgrades and the apt repository (M10).
+Milestone numbers here follow D-087's renumbering.
 
 ## M2 — Resource core and backend proof  `done`
 
@@ -107,29 +115,342 @@ node. D-086 records the operation contract; D-033 is retained; D-068's
 shapes are expressible; the `native` build also targets discrete `sm_86`
 GPUs (D-082); and D-085 made performance and memory coarse end-to-end
 checks, so BP-F2 did not run. The [M2 record](m2-record.md) keeps each
-item's outcome, evidence and caveats, and the gate. What it handed on:
-end-to-end parity of each engine with its reference (BP-F3, BP-F4's
-per-token half), the importer, suballocation with state blocks, D-050's
-moved rows (suballocation holes, stalled-client termination, every queue
-full at once, capacity-loss injection), and M1's io_uring system-call
-filter and single job reaper (M3); victim selection on a miss with the
-D-033 handoff of a victim's backing, spill as retention with D-055's spill
+item's outcome, evidence and caveats, and the gate. What it handed on,
+in D-087's numbering: BP-F4's per-token host cost, the D-033 handoff of an
+evicted model's backing, and ReconGemm's descriptors prepared once per
+bound GEMM (the swap work, M3 and M4); end-to-end parity of each engine
+with its reference on the small fixtures (BP-F3), the importer,
+suballocation with state blocks, D-050's moved rows (suballocation holes,
+stalled-client termination, every queue full at once, capacity-loss
+injection), and M1's io_uring system-call filter and single job reaper
+(M5); victim selection on a miss, spill as retention with D-055's spill
 format, the cohort pause with several paused peers, fork and
 copy-on-write, cached-state promotion and fast-swap validation on the
-discrete GPU (M4); the runtime closure-excess check (M5); repeated
-speculation with prefetch (M7); and, with no milestone yet, `spark-native`
+discrete GPU (M6); the runtime closure-excess check (M7); repeated
+speculation with prefetch (M9); and, with no milestone yet, `spark-native`
 sanitizer presets and the EXL3 memory outside the catalog in the paged
 harness.
 
-## M3 — One resident model, end to end  `pending`
+## M3 — Single-Spark fast full swap  `pending`
+
+Goal: one user swaps among three large models on one Spark, A→B→A, and each
+swap reaches its first token in about 10 s: as close to that as we can
+get, and at most about 20 s at exit. A's conversation state comes back
+without a re-prefill, and each model is as correct, as fast and as lean as
+its reference. A full swap: the outgoing model leaves, and no expert is
+demand-paged. The owner's first real work after M2 (D-087).
+
+**Entry:** M2 exit. Before a model's first native evaluation, its
+checkpoint, reference engines and their configurations are pinned and their
+licenses recorded ([licensing.md](licensing.md); a model's weight license
+is recorded for information and gates nothing, D-087), and its prompt set,
+perplexity text, or image prompts and seeds, are fixed with the bounds
+below. The provenance of llama.cpp's generated Unicode tables is cleared
+under D-017 before the native tokenizer is adopted
+([first-slice.md](first-slice.md)).
+
+**Models, in this order.** Each runs its reference's quantization.
+
+1. **DeepSeek V4 Flash 0731**, GGUF UD-Q2_K_XL
+   (`unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93`, MIT; 96,832,508,352 B
+   in 3 shards). It replaces the `e3aa0d6a` revision on the Sparks, which
+   the M0 baselines and artifact-format.md's example used: same shard sizes,
+   new hashes, a download of about 97 GB per node. 0731 has no usable MTP
+   (llama.cpp PR #25784), so its drafter is DSpark.
+2. **Qwen3.8 Flash Next** as Mia's single-Spark build: NVFP4 routed
+   experts, MXFP8 attention and shared expert
+   (`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4`, read at `925d7be6`, to be pinned;
+   about 105.9 GB, 26.8 GiB of it the packed PLE table).
+3. **Qwen-Image-2.1** in BF16, like diffusers: text encoder (Qwen3-VL-8B),
+   single-stream DiT and VAE (Qwen Research License, non-commercial,
+   recorded for information). GGUF quantizations may follow later if
+   memory matters (owner, 2026-09-28).
+
+**Oracles and comparators.** Each model's correctness is judged only
+against its same-format oracle. A cross-quantization comparison reports
+speed and memory only, never correctness, and is labeled as such wherever
+it appears.
+
+| Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
+| --- | --- | --- | --- |
+| DeepSeek V4 Flash 0731 | llama.cpp on the same GGUF | llama.cpp | vLLM or SGLang where they support it, unless on the same GGUF |
+| Qwen3.8 Flash Next | Mia's vLLM on the same NVFP4 checkpoint | Mia's vLLM | TensorFold (MLX 4-bit); llama.cpp on a GGUF |
+| Qwen-Image-2.1 | diffusers, BF16 | diffusers, BF16 | stable-diffusion.cpp's GGUFs, also for image quality |
+
+**Scope:**
+
+- [ ] **Provenance and licenses** (D-017, D-080): pin and audit
+      `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark` (only 4 of its 93
+      tracked paths are checked; AGPL-3.0 files) and decide whether its
+      AGPL scripts may be run as a baseline recipe; record each
+      checkpoint's pins and license hashes, the 0731 GGUF's among them,
+      and the Qwen NVFP4 card's Apache-2.0 beside the base model's Qwen
+      Community License 1.0 (weight licenses are recorded for information
+      and gate nothing, D-087); pin TensorFold and its checkpoint.
+- [ ] **Baselines,** installed and run on the Sparks by us: MiaAI's
+      configurations, TensorFold, llama.cpp for the GGUF, and vLLM or SGLang
+      where they support these models; for the image, diffusers in BF16 as
+      the speed and format reference (the fastest measured), and
+      stable-diffusion.cpp's GGUFs as an additional quality and format
+      comparison. Each reference's load or swap, prefill, decode
+      and peak memory are measured on the same prompts as jitLLM's. Mia's
+      Qwen3.8 cold start (creator-reported 10 min 51 s to `/health`) runs
+      once, stated as needed under D-085, and is recorded as a measurement;
+      its prefill and decode are then measured on the same warm server.
+- [ ] **Import:** M0's Python prototype importer writes the D-056 artifacts
+      for the three models, including NVFP4 and MXFP8 tensors and the image
+      pipeline's BF16 components. The C++ importer and verifier stay in M5.
+- [ ] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
+      llama.cpp has much of what the models need (quantized matmul and
+      `mul_mat_id`, MoE routing, the lightning indexer, `dsv4-hc`, gated
+      delta net and `ssm-conv`, prefill flash attention at head dimensions
+      256 and 512, and the image's 3D convolution and VAE operations), but
+      the narrowed GGML build compiles none of it. Widening it is a
+      source-lock change on the heavy path, with D-057's gates and the
+      workstation tier D-084 requires. Qwen3.8's NVFP4 and MXFP8 matrix
+      products take the fastest correct implementation from any source,
+      chosen per operation by a quick A/B (D-085): GGML's NVFP4 MMQ (MXFP8
+      in GGML is not verified), vLLM, FlashInfer or CUTLASS kernels, or our
+      own, with licenses handled per D-080.
+- [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
+      compressed sparse attention with its indexer (CSA/HCA) and mHC;
+      Qwen3.8's QSA, hyper-connections and Gated DeltaNet layers; the
+      resident MoE execution both need (pulled from M7; no demand-paged
+      experts); Qwen-Image's text encoder, DiT and VAE, releasing each
+      component outside its phases. Each model's KV, indexer and recurrent
+      state has a state adapter with spill and restore coverage (RE-004,
+      RE-007).
+- [ ] **Resident expert layout** (the initial choice pulled from M7):
+      repacked expert groups get executable views that GGML's `mul_mat_id`
+      and the NVFP4 path's grouped GEMM accept with every expert resident.
+      Pointer-table or uniform-stride dispatch is chosen per format, by a
+      quick A/B where both are viable (D-085), and proven by one MoE layer
+      whose output is bit-identical to the reference layout's. Compaction
+      and demand-paged dispatch stay in M7.
+- [ ] **Tokenizer and chat templates** (pulled from M5; D-067): the native
+      tokenizer, renderers for each model's pinned template (DeepSeek's
+      upstream ships Python encoding scripts, not a template), stop rules,
+      and greedy and seeded sampling.
+- [ ] **Speculative decoding in the core** (pulled from M9; D-068): Qwen3.8's
+      MTP layer and DeepSeek's DSpark drafter, with verify and rollback that
+      keep only the accepted prefix, and forced draft rejection for the
+      exit's speculation checks (moved from M9). Every published Mia and
+      TensorFold decode number uses speculation.
+- [ ] **The swap path:** evict the outgoing model and hand its backing to
+      the incoming one (D-033's handoff, pulled from M6; D-081), with
+      page-in through the landing zone overlapping the rest. Creating and
+      mapping backing costs about 70–76 µs (`cuMemCreate`) and 40–43 µs
+      (`cuMemSetAccess`) per 2 MiB extent (measured medians), about 5 s of
+      serial work for DeepSeek's ~46.2k extents (computed), so reusing the
+      evicted model's backing matters; unmapping the outgoing extents and
+      one access call per contiguous range are not yet measured. Large
+      sparse lookup tables (Qwen3.8's PLE) may stay on the SSD with rows
+      paged on demand (D-035); everything else is resident before the first
+      token. A's KV and recurrent state are spilled on swap-out through M2's
+      write-back path and restored on return, with no re-prefill; that cost
+      counts in the swap time. D-055's named spill format and the retention
+      policy stay in M6.
+- [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
+      plan and replayed after swaps that restore every extent at the same
+      virtual addresses, with setup and tuning state restored the same way.
+      This reopens D-086 and needs the relocation proof first. BP-F4's
+      per-token host cost is measured on these models (about 1.9 µs per
+      launch measured on the fixtures; several milliseconds per MoE token
+      is an estimate).
+- [ ] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
+      on the GB10, one `cuDeviceGetAttribute` call. Mia's
+      `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`
+      then blocking the host's next launch (creator-reported). The answer
+      decides how page-in copies and phases share the submission lane
+      during a swap.
+- [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
+      A→B→A in a running process (tokenize, prefill, decode, detokenize) and
+      reports each part of the swap time.
+- [ ] Start the model support matrix (moved from M5), recording template
+      hashes.
+- [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible
+      `/v1/chat/completions` on loopback (D-014), with numeric intake
+      bounds fixed before it accepts input
+      ([client-api-baseline.md](client-api-baseline.md#shared-correctness-and-limits)).
+      The full front door stays in M5.
+
+**Exit criteria:**
+
+- **Swap time,** in a running process, with page-in, setup, graph and
+  tuning restore and A's state spill and restore counted. Defaults are
+  owner-adjustable (D-087):
+
+  | Item | Rule |
+  | --- | --- |
+  | Pairs | Every ordered pair of the three models, each run as A→B→A: DeepSeek↔Qwen3.8 both ways, and each LLM↔Qwen-Image both ways. Each swap is reported separately; the headline is the worst LLM↔LLM swap |
+  | Saved context | An LLM A holds 8K tokens of conversation; its KV, recurrent and indexer state are spilled on swap-out and restored on return. The bound applies here; a 0-context swap is reported too |
+  | Graphs | Previously prepared: B ran earlier in this process, and its graphs and tuning are restored. First use: nothing is prepared for B in this process. The ~10 s goal and the ~20 s bound apply to previously prepared swaps; first use has its own target, no worse than about 2× the bound (~40 s) |
+  | LLM endpoint | From the swap request to B's first generated token for a short prompt |
+  | Image endpoint | From the swap request to the pipeline ready: the first denoising step's output produced. Full generation for a fixed prompt, size, step count and seed is timed separately under the Image criterion |
+  | Also per swap | Bytes read, read throughput, peak memory, and each part of the swap time |
+
+  The report gives each swap against the ~10 s goal and the ~20 s bound,
+  and beside the baselines: Mia's vLLM Qwen3.8 at 11–14 min to load,
+  TensorFold at about 90 s (both creator-reported), and the pinned
+  llama.cpp at 75–93 s per switch to first token in our M0 run (measured,
+  one run).
+- **LLM correctness:** on a short prompt set, greedy tokens match the
+  model's same-format oracle (table above), with small logit differences
+  allowed, and perplexity on a fixed text is within a few percent of the
+  oracle's. Greedy decoding with speculation gives the same tokens as
+  without.
+- **Speculation correctness** (moved from M9, D-068), per drafter:
+  - forced draft rejections at varied positions, all-reject and partial
+    accept among them, leave no stale KV, recurrent (Gated DeltaNet or
+    linear-attention), drafter or MTP, or indexer state, checked against a
+    control that drafted only the accepted tokens;
+  - after each rejection, the output equals non-speculative greedy
+    decoding's bit for bit, in the same engine with the same kernels;
+  - rollback composes with swap: after rejected drafts, A is swapped out
+    mid-conversation and restored, and continues exactly as the unswapped
+    control;
+  - where sampled speculation is enabled, it preserves the token
+    distribution: on 4 fixed prompts, seeds 0–255 and the first 8
+    generated tokens (8,192 sampled tokens per mode, sized to stay within
+    D-085's 10 minutes), each prompt's pooled histogram over its 16 most
+    frequent tokens plus an "other" bin is within a total-variation
+    distance of 0.1 of plain sampling's (about twice the sampling noise
+    expected at this size, estimated).
+- **Swap correctness:** our own swap and restore cycles are bit-identical:
+  A resumed after B gives the same logits and tokens as A never swapped out.
+- **Image:** for fixed prompts and seeds, output is within a simple
+  image-similarity bound of diffusers' BF16 pipeline's; the pipeline swaps in
+  and out with the text models; and full generation for a fixed prompt,
+  size, step count and seed is not more than 10% slower than diffusers
+  (D-085).
+- **Performance and memory** (D-085): prefill and decode are not more than
+  about 10% slower than the same-format performance comparator, and peak
+  memory is at most about 1.1× the comparator's. Cross-quantization
+  comparators are reported beside them for speed and memory, not gated.
+  Each comparison names the comparator, its format and whether both sides
+  speculated.
+- A standard OpenAI-compatible client completes a chat with each LLM
+  through the minimal route, swapping between them.
+- The source-lock widening, the swap path and the chat route's request
+  parser pass their adversarial challenge (heavy path).
+
+**Open questions** (for the owner):
+
+- TensorFold's group size: its recipe says 32, and
+  [tensorfold-assessment.md](tensorfold-assessment.md) says 64 (from
+  `qmm.py`). Reconcile before comparing against it.
+- The image pipeline, and a drafter that shares its target's tables, need
+  manifest references to another artifact, with shared resources counted
+  once ([artifact-format.md](artifact-format.md#deliberately-open)). Settle
+  this format change before the pipeline is imported.
+
+## M4 — Two-Spark fast full swap  `pending`
+
+Goal: the same cycle for models too big for one Spark, sharded across both.
+Each node holds its shard on disk, and the conductor loads both shards at
+once.
+
+**Entry:** M3 exit. By entry, model-parallel artifact partitioning is
+decided ([artifact-format.md](artifact-format.md#deliberately-open); moved
+from M8's entry), and each model's checkpoint, recipe and baselines are
+pinned and audited as in M3.
+
+**Models, in this order:**
+
+1. **GLM-5.3 Flash** (`MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks@c1b7d4c`;
+   EXL3 at about 4 bpw, TP2, about 80 GiB of weights per node,
+   creator-reported): KDA linear attention, DSA sparse MLA with an indexer,
+   mHC, and 288 routed experts.
+2. **DeepSeek v4.1 Flash** (Mia's EXL3 at 2.9 bpw, TP2, 99.5 GiB of weights
+   per node, creator-reported): a 552B encoder-decoder with CSA2 attention
+   and a hierarchical indexer, which no GGML code covers. Its ~190 GiB of
+   Engram lookup tables may stay row-paged from each node's SSD (D-035).
+
+**Oracles and comparators,** under M3's rule (cross-quantization is speed
+and memory only):
+
+| Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
+| --- | --- | --- | --- |
+| GLM-5.3 Flash | Mia's EXL3 configuration | Mia's configuration | TensorFold (MLX 4-bit) |
+| DeepSeek v4.1 Flash | Mia's configuration | Mia's configuration | none |
+
+**Scope:**
+
+- [ ] **Provenance and licenses:** re-audit the GLM recipe if its baseline
+      moves past the pin (HEAD is 65 commits ahead); record the GLM
+      checkpoint mirror's license and the DFlash2 drafter's (CC BY-NC-ND
+      4.0) for information (D-087); Mia's E3 and cooperative MoE kernels
+      (AGPL or mixed, D-080); and whether Mia's ExLlamaV3 revisions'
+      formats match our `6b84a21`.
+- [ ] **Baselines:** Mia's two-Spark configurations and TensorFold, run by
+      us, measured as in M3.
+- [ ] **Conductor, minimal** (pulled from M6a): one configured two-node
+      topology that loads both shards at once and runs each phase on both
+      ranks. Discovery, enrollment, cluster trust and general placement
+      stay in M6a. It is development-only (owner, 2026-09-28; D-087): it
+      runs over the direct Spark-to-Spark link, trusted like loopback, is
+      off by default, and is documented as development-only, not a
+      supported deployment. Mutual TLS (D-038) arrives with M6a (D-014).
+- [ ] **Sharded execution** (pulled from M8): TP2 over NCCL with
+      conductor-issued distributed phase IDs, a separately budgeted
+      communication-buffer pool that honors NCCL's registration and
+      threading contracts, ordered collective submission and completion
+      fences, and per-step collective latency measured before bandwidth.
+- [ ] **Coordinated readiness, minimal** (the start of M8's coordinated
+      admission): no collective or execution of B begins until both ranks
+      report ready, their shard loaded and its memory obtained. A
+      preparation failure on either rank, or no report within the stated
+      timeout (default 30 s, owner-adjustable), aborts the swap: the other
+      rank releases or rolls back what it prepared within that timeout, no
+      rank enters a collective alone, and the swap reports failure cleanly.
+      Memory a rank has not confirmed released stays counted as held; no
+      timeout proves reclaim. General recovery, prepare/commit and the
+      broader pressure and failure matrix stay in M8.
+- [ ] **Kernels:** EXL3 MoE, the codebooks and rates these checkpoints use,
+      sparse MLA decode and prefill on `sm_121`, KDA, the DSA indexer, CSA2
+      and Engram row gathers, each the fastest correct implementation under
+      D-053, chosen by a quick A/B.
+- [ ] **Per model,** as in M3: graphs, state adapters, templates, the
+      resident expert layout for EXL3 MoE, and speculation with M3's
+      forced-rejection checks where the model supports it (for GLM, MTP or the
+      DFlash2 drafter that Mia's GLM configuration uses, whichever is faster
+      and correct; the
+      nextn layers or DSpark head for v4.1). ReconGemm prepares its
+      cuBLASLt descriptors once per bound GEMM (M2's hand-off).
+- [ ] The minimal `/v1/chat/completions` serves the sharded models.
+
+**Exit criteria:**
+
+- **Swap time,** as in M3 across both nodes, with its owner-adjustable
+  defaults:
+
+  | Item | Rule |
+  | --- | --- |
+  | Pairs | GLM→v4.1→GLM and v4.1→GLM→v4.1, each swap reported separately; the headline is the worse |
+  | Saved context | A holds 8K tokens; its KV, recurrent and indexer state on both ranks are spilled and restored, and count. The bound applies here; a 0-context swap is reported too |
+  | Graphs | As in M3: the ~10 s goal and ~20 s bound apply to previously prepared swaps; first use no worse than about 2× the bound |
+  | Endpoint | From the swap request to B's first generated token for a short prompt |
+  | Also per swap | Per node: bytes read, read throughput and peak memory; the time between the two ranks' ready reports |
+
+  The report sets each swap beside the baselines, Mia's GLM among them at
+  65–70 s cold (creator-reported).
+- M3's correctness, speculation, performance and memory criteria against
+  each model's oracle and comparators above, with memory judged per node.
+  Swap and restore are bit-identical on both ranks.
+- **Readiness:** a load failure and a memory failure injected on one rank,
+  each on either rank in turn, start no collective, the other rank rolls
+  back within the timeout, the swap reports failure cleanly, neither
+  catalog keeps a lease, grant or backing from B, and the next swap
+  succeeds.
+
+## M5 — One resident model, end to end  `pending`
 
 Goal: import the small fixtures, serve them resident through native GGML and
 EXL3 execution, and complete chats from named clients over the three
 baseline protocols, with bounded, explainable memory.
 
-**Entry:** M2 exit with its operation-contract decision. The provenance of
-llama.cpp's generated Unicode tables is cleared under D-017 before the native
-tokenizer is adopted ([first-slice.md](first-slice.md)).
+**Entry:** M4 exit. The native tokenizer, stop rules and sampling come from
+M3.
 
 **Scope:**
 
@@ -153,14 +474,14 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
       direct-I/O probe (D-054).
 - [ ] **Resident execution:** the FP16 and both EXL3 fixtures under jitLLM
       dispatch, finite context and chunk profiles within the 8K context,
-      and state block sizes and KV layouts for each adapter. Graph capture
-      enters here, behind a relocation proof, only if BP-F4 shows parity
-      needs it.
-- [ ] **Tokenization and output:** the native tokenizer, D-067 renderers for
-      both template hashes, the tool-call parser, stop rules and seeded
-      sampling; host versus device sampling is settled against D-052's
-      decode gates.
-- [ ] **Front door** ([M3 surface](client-api-baseline.md#m3-surface)):
+      and state block sizes and KV layouts for each adapter. Decode graphs
+      and their relocation proof come from M3.
+- [ ] **Tokenization and output:** D-067 renderers for both fixture
+      template hashes on M3's native tokenizer, stop rules and sampling
+      (moved to M3), and the tool-call parser; host versus device sampling
+      is settled against D-052's decode gates.
+- [ ] **Front door** ([M5 surface](client-api-baseline.md#m5-surface)),
+      growing from M3's minimal Chat Completions:
       Chat Completions, stateless Responses, Messages with token counting,
       `/v1/models` in both shapes with D-046's metadata, and the discovery
       document (D-041); D-045's listener, authentication, CORS, `Host`,
@@ -183,7 +504,7 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
 - [ ] **Surface definitions:** front-door, alias and TLS configuration keys;
       the individual `jitllm-` header and body-field names (D-062); the
       HTTP, TLS and JSON libraries, chosen under D-017, D-057 and D-066.
-- [ ] Start the model support matrix, recording template hashes.
+- [ ] Add the fixtures to the model support matrix (started in M3).
 
 **Exit criteria:**
 
@@ -198,17 +519,17 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
   tradeoff (D-052).
 - Each engine, served resident, is at least as fast as its reference end
   to end (GGML against llama.cpp, EXL3 against ExLlamaV3; D-085's coarse
-  comparison), with BP-F3's resident timings and BP-F4's per-token host
-  cost against upstream's decode reported in it (moved from M2 by the
-  owner, 2026-09-27).
-- The [M3 acceptance cases](client-api-baseline.md#acceptance-owed-in-m3)
+  comparison), with BP-F3's resident timings reported in it (moved from M2
+  by the owner, 2026-09-27; BP-F4's per-token host cost is measured in
+  M3).
+- The [M5 acceptance cases](client-api-baseline.md#acceptance-owed-in-m5)
   pass as scoped there. At least one named client completes a chat
   unmodified with each representation, and Cursor stays an explicit gap
-  unless resolved. The context-compacted release moves to M4, which
-  delivers D-041's close, and the Ollama-native checks move to M8 with the
+  unless resolved. The context-compacted release moves to M6, which
+  delivers D-041's close, and the Ollama-native checks move to M10 with the
   Ollama profile.
 - Finite default context and output bounds bound every admitted request,
-  and the M3 rows of D-050's matrix pass, with the parts moved to M3
+  and the M5 rows of D-050's matrix pass, with the parts moved to M5
   (suballocation holes, stalled-client termination, every queue full at
   once, capacity-loss injection). Memory use is bounded and
   explained by the memory breakdown.
@@ -219,15 +540,17 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
   contexts' state bytes, from which D-055's
   [capacity values](retention-policy.md#bounds-and-defaults) are pinned.
 
-## M4 — First useful product: A→B→A with partial retention  `pending`
+## M6 — First useful product: A→B→A with partial retention  `pending`
 
 Goal: two small model contexts share one local budget. Switching to B
 displaces only what B needs, retained conversation state lets A resume
 without a full re-prefill, and the switching policy is chosen from
-measurement. Useful without MoE or sharding.
+measurement. Useful without MoE or sharding. M3 already restores one
+model's state across a full swap; M6 adds partial retention and the
+retention policy around it.
 
-**Entry:** M3 exit with its capacity values pinned, plus everything
-[M4 entry pins](retention-policy.md#what-m4-entry-pins): the frozen
+**Entry:** M5 exit with its capacity values pinned, plus everything
+[M6 entry pins](retention-policy.md#what-m6-entry-pins): the frozen
 transcript, budgets and reference paths among them, and the spill write
 budget from the drive's rated endurance. EXL3 switching budgets come from
 new matched controls ([exl3-bringup.md](exl3-bringup.md)).
@@ -262,7 +585,8 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 - [ ] **Storage scheduling:** demand reads mixed with spill write-back,
       inside the pinned write budget.
 - [ ] Add the A→B→A workload and its regression thresholds to `check:spark`.
-- [ ] **Discrete GPU, secondary** (D-082): the A→B→A fast swap, one model
+- [ ] **Discrete GPU, secondary** (D-082; after the two-Spark swap, D-087):
+      the A→B→A fast swap, one model
       active and partial retention within device memory, on the
       workstation's discrete GPU (`mise run test -- native --gpu`), with
       its PCIe restore rate reported, within a configured device budget and
@@ -272,7 +596,7 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 
 **Exit criteria:**
 
-- D-055's [timed workload](retention-policy.md#m4-acceptance-workload)
+- D-055's [timed workload](retention-policy.md#m6-acceptance-workload)
   passes its pass rule: Qwen2.5-0.5B FP16 and EXL3 4.0 bpw in both
   orientations, six jitLLM arms against fresh interleaved references, 72
   accepted repetitions per arm, orientation and cache condition. For each
@@ -282,19 +606,19 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
   reference arms; a comparison with no valid reference arm does not pass
   (D-036). The report covers latency distributions, bytes read and written,
   peak memory and spill, prompt tokens reused versus recomputed, and deltas
-  against jitLLM's whole-model control (M7's comparator).
+  against jitLLM's whole-model control (M9's comparator).
 - The [correctness gates](retention-policy.md#correctness-gates) pass: exact
   outputs and bit-identical teacher-forced logits against
   provenance-matched controls, and catalog state and events show that only
   selected extents were displaced.
 - The [functional and adversarial cases](retention-policy.md#functional-and-adversarial-cases)
-  and the M4 rows of D-050's matrix, with the parts moved to M4 (fork and
+  and the M6 rows of D-050's matrix, with the parts moved to M6 (fork and
   copy-on-write, cached-state promotion), pass
   with an EXL3 context in the
   matrix; cache expiry never destroys admitted suspended work.
 - Through at least one unmodified named client: a long conversation on A,
   B under pressure, then A resumed, over both resident reuse and forced
-  spill/restore. The context-compacted release case deferred from M3
+  spill/restore. The context-compacted release case deferred from M5
   passes.
 - B arriving while A is still generating is measured under each D-069
   policy, with queue delay reported apart from paging and switch time and
@@ -303,14 +627,15 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 - An all-resident control shows concurrent progress when both complete
   envelopes fit.
 
-## M4a — Configured placement across nodes  `pending`
+## M6a — Configured placement across nodes  `pending`
 
 Goal: one configured conductor places whole models on enrolled nodes and
 routes requests with retained-state affinity, so a subagent's model runs on
-the other Spark while the main model stays resident. It follows M4,
-independently of M5; sharding is M6.
+the other Spark while the main model stays resident. It follows M6,
+independently of M7, and grows M4's minimal two-node conductor into the
+cluster's placement layer; sharding under pressure and failure is M8.
 
-**Entry:** M4 exit.
+**Entry:** M6 exit.
 
 **Scope:**
 
@@ -330,8 +655,8 @@ independently of M5; sharding is M6.
       prepared artifacts over the cluster link, archive to and install from
       the long-term store, and the explicit archive-or-delete choice when a
       node lacks space.
-- [ ] The package gains its rdma-core dependencies when M4a links them
-      (D-063).
+- [ ] The package gains its rdma-core dependencies when jitLLM first links
+      them (D-063).
 - [ ] Decide whether a worker node serves its own loopback management
       listener.
 
@@ -352,14 +677,14 @@ independently of M5; sharding is M6.
   D-065). A replicated or archived artifact is published only after
   verification against an identity held outside its source.
 
-## M5 — Demand-paged MoE and the first daily drivers  `pending`
+## M7 — Demand-paged MoE and the first daily drivers  `pending`
 
 Goal: exact demand-paged routed-expert execution on the named Gemma 4
 26B-A4B and Ornith 1.5 35B-A3B pair, and those two models usable day to day
 through the named clients, reasoning and constrained output included (owner,
-2026-09-23).
+2026-09-23). Resident MoE execution arrives earlier, with M3's full swaps.
 
-**Entry:** M4 exit; M4a is independent. The pair's checkpoints and
+**Entry:** M6 exit; M6a is independent. The pair's checkpoints and
 representations are pinned, and their GGML source closures, tokenizers and
 chat templates are selected and audited (D-013, D-057, D-067). Approved
 before measurement: the performance protocols; a resident-performance bound
@@ -380,13 +705,14 @@ sustained-use schedule and duration.
 - [ ] **Loading policies:** eager active-model loading that keeps inactive
       extents (the feasibility study's recommended first policy) and routed
       demand paging, both selectable, compared at the named budgets.
-- [ ] **Expert layout:** the pointer-table or uniform-stride dispatch
-      decision and expert compaction from the M5 GGML proof, and the MoE
-      mapping in v0 artifacts.
+- [ ] **Expert layout:** expert compaction and demand-paged dispatch from
+      the M7 GGML proof, building on M3's initial pointer-table or
+      uniform-stride choice per format, and the MoE mapping in v0 artifacts.
 - [ ] **Shapes that come with these models:** hybrid sliding-window and
       global attention (Gemma 4) and recurrent or linear-attention layers
       (Ornith), with their state adapters and explicit restore coverage
-      (RE-004, RE-007). M4's retention matrix extends to them.
+      (RE-004, RE-007), building on M3's Gated DeltaNet layers and state
+      adapters. M6's retention matrix extends to them.
 - [ ] **Traces:** native routing-trace capture and policy replay, checked
       against the M0 reference experiment; captured traces stay outside Git
       and replay by verified hash in the gate.
@@ -401,9 +727,10 @@ sustained-use schedule and duration.
       pair with repeated switches, branches, cancellations (during I/O and
       while paused included), expiry by capacity and by test-shortened idle
       caps, and spill and restore.
-- [ ] EXL3 MoE only if claimed, with its own routed-expert closure, kernel,
-      quality and performance baselines (D-052).
-- [ ] Assess artifact compatibility guarantees with M4's dense and M5's
+- [ ] Demand-paged EXL3 MoE only if claimed, with its own routed-expert
+      closure, kernel, quality and performance baselines (D-052); resident
+      EXL3 MoE arrives with M4's models.
+- [ ] Assess artifact compatibility guarantees with M6's dense and M7's
       MoE evidence, in a separate decision (D-018).
 
 **Exit criteria:**
@@ -418,14 +745,14 @@ sustained-use schedule and duration.
   no expert is substituted or its contribution dropped, verified from
   catalog state and events.
 - Numerics stay correct against the pinned references after eviction and
-  restoration and across within-step misses, and the M5 rows of D-050's
-  matrix, with the runtime closure-excess check moved to M5, pass with
+  restoration and across within-step misses, and the M7 rows of D-050's
+  matrix, with the runtime closure-excess check moved to M7, pass with
   real routes.
 - D-036's generation limits hold on the pair: at most 10% added generation
   time, continuation time to first token included, and at most 20 ms p95 /
   100 ms p99 added token gaps against a resident control with matched state
   provenance, at every named budget, the miss-forcing ones included. Pause
-  gaps are reported separately (D-069). M4's switching floor still holds.
+  gaps are reported separately (D-069). M6's switching floor still holds.
 - Resident prefill, time to first token and decode inter-token p50/p95/p99
   on both models meet the approved bound against the pinned llama.cpp
   reference, or the owner approves an explicit tradeoff, as D-052 requires
@@ -447,32 +774,31 @@ sustained-use schedule and duration.
   claim rests on D-046's pinned-client run. The support matrix records the
   client versions.
 
-## M6 — Sharded model execution (two Sparks)  `pending`
+## M8 — Sharded execution under pressure and failure (two Sparks)  `pending`
 
 Goal: a flagship model sharded across both Sparks, correct under asymmetric
-pressure, cancellation and controlled failure. Placement-only use already
-works at M4a.
+pressure, cancellation and controlled failure. M4 already runs TP2 sharded
+full swaps (its communication-buffer pool, collective ordering and
+collective latency moved there, with a minimal ready-before-collective rule
+and bounded abort), and placement-only use works at M6a.
 
-**Entry:** M4a and M5 exits. By entry: model-parallel artifact partitioning
-is decided ([artifact-format.md](artifact-format.md#deliberately-open)); the
-flagship checkpoint and its validated parallelism recipe are named (the
-MiMo-V2.6-Flash-RL TP=2/EP=2 reference and the MiaAI-Lab recipes are the
-candidates); and the two-node admission design chooses between
-prepare/commit and the deferred mirrored-ledger shortcut (features.md).
+**Entry:** M6a and M7 exits. By entry: the flagship checkpoint and its
+validated parallelism recipe are named (M4's models, and the
+MiMo-V2.6-Flash-RL TP=2/EP=2 reference, are the candidates); and the
+two-node admission design chooses between prepare/commit and the deferred
+mirrored-ledger shortcut (features.md). Model-parallel artifact
+partitioning is decided at M4's entry.
 
 **Scope:**
 
-- [ ] Explicit sharding with conductor-issued distributed phase IDs,
-      porting the recipe's parallelism first (TP, PP and EP are different
-      plans).
-- [ ] Coordinated admission: node-issued reservations and every rank ready
-      before commit, with prepare failures unwound; an unknown completion
-      never frees another rank's buffers.
-- [ ] A separately budgeted, stable communication-buffer pool that honors
-      NCCL's registration and threading contracts; ordered collective
-      submission and completion fences.
-- [ ] Per-step collective latency measured before bandwidth.
-- [ ] EXL3 sharded cases only if claimed (D-052).
+- [ ] Parallelism beyond M4's TP2, porting the recipe's first (TP, PP and
+      EP are different plans), with conductor-issued distributed phase IDs.
+- [ ] Coordinated admission, generalizing M4's minimal readiness rule:
+      node-issued reservations and every rank ready before commit, with
+      prepare failures unwound; an unknown completion never frees another
+      rank's buffers.
+- [ ] Sharded models under partial eviction and paging, not only full
+      swaps.
 
 **Exit criteria:**
 
@@ -483,39 +809,48 @@ prepare/commit and the deferred mirrored-ledger shortcut (features.md).
 - Sharded performance is reported against the recipe's reference deployment
   in both views.
 
-## M7 — Performance and new decoding modes  `pending`
+## M9 — Performance and new decoding modes  `pending`
 
 Goal: meet D-036's benefit target on a library larger than memory, and
 execute the speculative and block-diffusion shapes designed since M0
-(D-068).
+(D-068) that M3 and M4 did not.
 
-**Entry:** M5 exit. M7 may start before M6 exits, but MiMo's stored MTP
-layers run only on M6's sharded execution, so that work waits for M6 and M7
-exits after it. Before M7 planning, the bounded DiffusionGemma reference
+**Entry:** M7 exit. M9 may start before M8 exits, but MiMo's stored MTP
+layers run only on M8's sharded execution, so that work waits for M8 and M9
+exits after it. Before M9 planning, the bounded DiffusionGemma reference
 study measures the per-step expert closures of wide phases, and untriggered
 deferrals are reviewed ([features.md](features.md) and the table below).
-Before the new modes execute, manifest references to another artifact by
-ID, with shared resources counted once, are decided as a format change, and
-numerical and statistical bounds and trace protocols for speculative and
-diffusion decoding are declared. The named configurations, including the
-over-memory library, and the partial-retention benefit workload are pinned
-before acceptance runs (D-036).
+Before the new modes execute, numerical and statistical bounds and trace
+protocols for speculative sampling and diffusion decoding are declared;
+manifest references to another artifact by ID are settled in M3. The named
+configurations, including the over-memory library, and the
+partial-retention benefit workload are pinned before acceptance runs
+(D-036).
 
 **Scope:**
 
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
-      Next on one node is the canonical pair (D-036). It brings compressed
-      attention with an indexer, Qwen3.8's sparse n-gram rows and its
-      linear-attention layers. If the pair cannot be validated, name another
-      whose prepared weights exceed physical memory rather than pass M7 on
-      the small pair alone.
-- [ ] **Speculative decoding** (D-068): stored MTP layers (Ornith and
-      Qwen3.8; MiMo's once it runs sharded under M6) and Gemma 4 companion
-      drafters.
+      Next on one node is the canonical pair (D-036). M3 runs both, with
+      their compressed attention and indexers, Qwen3.8's sparse n-gram rows
+      and its linear-attention layers, as full swaps; M9 adds partial
+      retention and paging on them. If the pair cannot be validated, name
+      another whose prepared weights exceed physical memory rather than
+      pass M9 on the small pair alone.
+- [ ] **Speculative decoding** (D-068), beyond M3's and M4's: stored MTP
+      layers for Ornith (and MiMo's once it runs sharded under M8) and
+      Gemma 4 companion drafters, with speculative sampling at every
+      supported setting, and draft-length and acceptance tuning.
 - [ ] **Block diffusion** (D-068): DiffusionGemma-26B-A4B.
-- [ ] **Execution speed:** selective CUDA graphs behind a relocation proof,
-      further kernels and plans (D-053), and target-assisted import tuning
-      as an explicit, separately keyed mode.
+- [ ] **Execution speed:** CUDA graphs beyond M3's decode graphs, further
+      kernels and plans (D-053), and target-assisted import tuning as an
+      explicit, separately keyed mode.
+- [ ] **TensorFold's format** (owner, 2026-09-28; D-087): import and run
+      MLX-style affine 4-bit weights (TensorFold's checkpoints; reconcile
+      the group size, 32 or 64) for Qwen3.8 Flash and GLM-5.3 Flash, and
+      optimize them. TensorFold is then a same-format oracle and a gated
+      comparator for those models (D-085's ~10% and ~1.1× bounds). Until
+      then, in M3 and M4, it is a cross-quantization comparator: reported,
+      not gated.
 - [ ] **Victim policy:** compare global LRU, frequency/recency and the
       cost-aware heuristic on identical recorded traces, with the confirmed
       hysteresis, minimum-residency and reload-cost refinements
@@ -539,7 +874,10 @@ before acceptance runs (D-036).
   residency (D-055).
 - The speculative verify path's teacher-forced logits match plain decoding
   within declared bounds, with top-1 agreement reported and free-running
-  divergence reported at its first position (RE-008).
+  divergence reported at its first position (RE-008). These gates cover
+  M3's and M4's drafters too. The targeted checks those drafters need
+  (forced rejection, rollback across a swap and a coarse sampled
+  distribution) moved to M3's exit and apply to M9's drafters as well.
 - Speculative sampling preserves the target distribution. On recorded target
   and draft distributions, acceptance, rejection and residual resampling
   match a reference implementation of the rule exactly under fixed seeds;
@@ -559,18 +897,18 @@ before acceptance runs (D-036).
   or lifetime regression in any supported configuration.
 - If prefetch is built, the part of D-050's
   [matrix](reservation-policy.md#worked-cases-and-implementation-gates)
-  moved to M7 passes: repeated speculation keeps its full peak in `J` or
+  moved to M9 passes: repeated speculation keeps its full peak in `J` or
   the owning phase.
 
-## M8 — Product and first release  `pending`
+## M10 — Product and first release  `pending`
 
 Goal: the remaining confirmed product scope, and a first tagged 0.x release
 that a stranger can install from the project's package repository and run
 (owner, 2026-09-23).
 
-**Entry:** M7 exit. The owner may pull an item forward once its dependencies
-exist (for example the Ollama profile or tokenization endpoints after M3, or
-the dashboard after M4's management controls); the release itself waits for
+**Entry:** M9 exit. The owner may pull an item forward once its dependencies
+exist (for example the Ollama profile or tokenization endpoints after M5, or
+the dashboard after M6's management controls); the release itself waits for
 every earlier exit. Each model added for embeddings, reranking or file
 inputs is named at entry with its pinned reference engine and numerical
 bounds, declared before native evaluation.
@@ -586,8 +924,8 @@ bounds, declared before native evaluation.
       scopes for inference, read-only status and model administration.
 - [ ] **Session and hint extensions** (D-022, D-046): the optional session
       ID and release, client warm hints, and D-046's `session_id`, `user`
-      and `metadata` hints. M3's front door already accepts them as
-      advisory preferences, and M4 records `session_id` for release lookup.
+      and `metadata` hints. M5's front door already accepts them as
+      advisory preferences, and M6 records `session_id` for release lookup.
 - [ ] **Ollama subset** (D-041, D-045): listing, details, chat and
       generation with the `keep_alive` mapping, tested with a named
       Ollama-native client including its load-time bound.
@@ -638,16 +976,17 @@ dependency-group scoring, optimistic MoE) live in features.md.
 
 | Item | Earliest work / revisit trigger | Scope |
 | --- | --- | --- |
-| Load/temperature-aware GPU operating policy | Earliest M7 evaluation, or earlier diagnosis if reproducible throttling or unexplained shutdowns occur | [Proposed telemetry and optional adaptive clock ceiling](features.md#load--and-temperature-aware-operating-policy-proposal); measure stock/fixed/adaptive policies first, no assumed fault or automatic host changes |
+| Load/temperature-aware GPU operating policy | Earliest M9 evaluation, or earlier diagnosis if reproducible throttling or unexplained shutdowns occur | [Proposed telemetry and optional adaptive clock ceiling](features.md#load--and-temperature-aware-operating-policy-proposal); measure stock/fixed/adaptive policies first, no assumed fault or automatic host changes |
 | Ollama registry and other management compatibility | After the basic subset and relevant native management operation, when a named client needs them | Deferred D-041 candidate; lifecycle mapping needs separate proof |
 | Regex/grammar constrained output | After validated JSON/schema support, when a concrete client requires it | D-043 deferral; no automatic milestone delivery |
-| LoRA adapters | Earliest M7 planning after validated base-model execution, when a concrete adapter workload needs them | D-044 deferral; no automatic delivery |
-| Classification/reward/generic pooling APIs | Earliest M7 planning after validated base-model execution, when a concrete model/task workload needs them | D-044 deferral; not implied by embedding/reranking support |
-| Live audio/video input | Earliest M7 planning after initial file-input evidence, when a concrete workload establishes streaming/synchronization requirements | Deferred D-042 candidate; not an automatic M7 deliverable |
-| Batch/background inference jobs | Earliest M7 planning after validated request scheduling, when a concrete workload justifies scheduling/storage needs | Deferred D-042 candidate; ordinary background request priority is already confirmed |
-| Automatic membership changes | After M4a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M4a scope |
-| Conductor election | After M4a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
-| Automatic replica placement and balancing | After M4a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |
+| LoRA adapters | Earliest M9 planning after validated base-model execution, when a concrete adapter workload needs them | D-044 deferral; no automatic delivery |
+| Classification/reward/generic pooling APIs | Earliest M9 planning after validated base-model execution, when a concrete model/task workload needs them | D-044 deferral; not implied by embedding/reranking support |
+| Live audio/video input | Earliest M9 planning after initial file-input evidence, when a concrete workload establishes streaming/synchronization requirements | Deferred D-042 candidate; not an automatic M9 deliverable |
+| Batch/background inference jobs | Earliest M9 planning after validated request scheduling, when a concrete workload justifies scheduling/storage needs | Deferred D-042 candidate; ordinary background request priority is already confirmed |
+| Automatic membership changes | After M6a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M6a scope |
+| Conductor election | After M6a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
+| Automatic replica placement and balancing | After M6a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |
+| Discrete-GPU fast swap of large models | After the two-Spark swap (D-087); small models only fit a 12 GB card | M6 validates the A→B→A fast swap on the workstation's RTX 3080 Ti (D-082); a later slice or milestone takes the swap path further there |
 
-Review untriggered items during M7 and M8 planning; they do not
+Review untriggered items during M9 and M10 planning; they do not
 automatically enter either milestone's scope or block earlier milestone exits.

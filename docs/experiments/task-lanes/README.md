@@ -126,7 +126,7 @@ Four provider workers were slower at every size. On the Spark they managed
      path, such as a decode step's kernels or a page-in the running phase
      needs, and sleep on the wake flag when idle.
    - **What is not settled:** the polling window and its bound are settings
-     for M3/M4 to tune against measured per-token latency. No default is
+     for M3 onward to tune against measured per-token latency. No default is
      chosen here.
 2. **Keep each lane queue to four workers or fewer.** One mutex-guarded
    queue stops scaling beyond two workers for trivial commands, and beyond

@@ -54,6 +54,12 @@ one can delay page-ins.
   lane for the zone's copies, or phases split into jobs that fit the
   queue. Measure before choosing.
 
+Lead, not verified: MiaAI-Lab's `patch_ple_offload.py` states that the
+GB10 reports `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS = 0` and that a
+`cuStreamWaitValue32` then makes the next launch block the host
+(creator-reported). Our gate was such a wait. M3 checks the attribute with
+one `cuDeviceGetAttribute` call.
+
 ## RE-028: cuBLAS's handle keeps a 64 MiB default workspace pool that `cublasSetWorkspace` does not free, and nsys's memory trace hides who allocated it  (2026-09-27, status: worked-around)
 
 Environment: `spark` and `spark-b` (GB10, kernel 7.0.0-1019-nvidia, driver

@@ -9,7 +9,7 @@ cache restoration. The baseline includes 4.0 bpw and mixed-rate 4.5 bpw,
 optimized Model API execution, an attention-graph control, and 176
 real/synthetic projection cases. This is external reference evidence for the
 [early EXL3 contract](../../exl3-bringup.md); native jitLLM execution, paging
-and performance parity remain M2–M4 work.
+and performance parity remain M2–M6 work.
 
 [Aggregates](aggregates.json) contain statistics, numerical controls, memory
 observations, selected kernel symbols and raw-result receipts.
@@ -128,7 +128,7 @@ in reusable pinned buffers and owns scheduling/sampling. Our `batch_shape`
 route uses its default metadata construction instead. Kernel cache-table
 capacity matches Generator for this decode range, but host preparation and
 metadata uploads differ. A normal Generator serving control remains required
-before M3 claims end-to-end upstream parity.
+before M5 claims end-to-end upstream parity.
 
 Prefill excludes the output head. The TTFT proxy adds separately timed
 prefix prefill and a final prompt-token forward including CPU token
@@ -255,8 +255,8 @@ variability. No samples or failing numerical cases were dropped.
 This baseline establishes executable packing and upstream measurements early.
 Native M2 still must prove prepared-artifact execution on jitLLM-owned VMM,
 complete dependency closures, bounds, relocation/cancellation/restore and
-per-kernel parity. M3 adds actual request TTFT and resident serving parity;
-M4 adds switching under pressure. Dense K=4/5/6/8 `mcg` success does not
+per-kernel parity. M5 adds actual request TTFT and resident serving parity;
+M6 adds switching under pressure. Dense K=4/5/6/8 `mcg` success does not
 validate other codebooks, fractional rates, MoE, batching or sharding.
 
 ## Reproduction
