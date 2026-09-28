@@ -193,6 +193,16 @@ std::expected<void, KernelFailure> CheckHcPost(const ggml_tensor* node);
 // column tiles, which ops_ext.h checks against the mask's rows.
 std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node);
 
+// The same kernels at head dimension 128 without head grouping (ncols2 1),
+// as upstream takes them for multi-head attention without a mask
+// (fattn.cu:170-268: no mask means no GQA grouping): F32 Q [128, rows,
+// heads, 1], F16 K and V [128, cells, heads, 1] with any number of cells
+// (the last KV tile is bounds-checked, fattn-mma-f16.cuh:1316-1340), no
+// mask and no sinks, no ALiBi and no logit soft-capping, every non-first
+// stride a multiple of 16 bytes, into the packed F32 output [128, heads,
+// rows, 1]. Qwen-Image-2.1's denoiser attends this way.
+std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node);
+
 }  // namespace jitllm::kernels::ggml
 
 #endif  // JITLLM_KERNELS_GGML_VALIDATE_EXT_H_

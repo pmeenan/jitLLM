@@ -82,7 +82,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 47> kKernels = {{
+constexpr std::array<Kernel::Entry, 48> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -407,6 +407,14 @@ constexpr std::array<Kernel::Entry, 47> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
+    {.name = "ggml.flash_attn_ext.mma_d128",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, 8, 16, 32 or 64, 1> as "
+                "switch_ncols1 picks, no mask, launch_fattn with stream-k and its fixup; upstream "
+                "launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnMma128(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma128(launch, n[0]); }},
     // jitLLM's own (jitllm_ops.h), for Qwen3.8's MXFP8 and NVFP4 tensors.
     {.name = "jitllm.mxfp8.mul_mat_vec",
      .operation = execution::Operation::kMatMul,

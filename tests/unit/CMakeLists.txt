@@ -342,6 +342,13 @@ if(JITLLM_CUDA)
   target_link_libraries(qwen38_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(qwen38_ops_test)
 
+  # jitLLM's Qwen-Image kernels (kernels/image) against host references.
+  add_executable(image_kernels_test image_kernels_test.cc)
+  target_include_directories(image_kernels_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(image_kernels_test PRIVATE jitllm_image_kernels)
+  jitllm_gpu_gtest(image_kernels_test)
+
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -371,6 +378,22 @@ add_dependencies(artifact_test artifact_corpus)
 # CTest runs it here, beside the corpus (remote runs map this directory).
 jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The composition reader (D-089): each rule of the prototype's
+# verify_composition on compositions built here, and the installed
+# Qwen-Image-2.1 composition where the M3 store holds it (a Spark).
+add_executable(composition_test composition_test.cc)
+target_link_libraries(composition_test PRIVATE jitllm_artifact)
+jitllm_gtest(composition_test TEST_PREFIX unit.
+             PROPERTIES LABELS unit
+                        ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The Qwen-Image-2.1 adapter (model/qwen_image.h): schedule, tensor lists
+# and binding, the VAE's plan, rotary tables, sinusoid and pixels; the
+# installed components bound where the M3 store holds them (a Spark).
+add_executable(qwen_image_test qwen_image_test.cc)
+target_link_libraries(qwen_image_test PRIVATE jitllm_model jitllm_artifact)
+jitllm_gtest(qwen_image_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The locked ExLlamaV3 subset: the device context's sizes and the
 # launchers' host checks in every profile; the kernels' tables and lookups

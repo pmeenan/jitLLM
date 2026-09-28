@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -1434,6 +1435,89 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
   }
 }
 
+// Qwen-Image-2.1's denoiser attention on GGML's kernels: D = 128, one query
+// head per KV head, no mask, cells not a multiple of 256 (the last KV tile
+// bounds-checked). The A/B its native kernel won (docs/experiments/
+// qwen-image-native); kept so that the comparison reruns.
+TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReference) {
+  struct Case {
+    std::int64_t heads, rows, cells;
+    int columns;
+  };
+  const std::array<Case, 5> cases = {
+      {{4, 1, 77, 8}, {4, 12, 300, 16}, {3, 20, 1000, 32}, {2, 100, 257, 64}, {2, 300, 4121, 64}}};
+  const auto n = [](std::int64_t count) { return static_cast<std::size_t>(count); };
+  constexpr std::int64_t kHead = 128;
+  for (const Case& test : cases) {
+    const std::string name =
+        std::format("{} heads, {} rows, {} cells", test.heads, test.rows, test.cells);
+    const std::vector<float> q = Normal(171, n(kHead * test.rows * test.heads));
+    const std::vector<ggml_fp16_t> k16 = Halves(Normal(172, n(kHead * test.cells * test.heads)));
+    const std::vector<ggml_fp16_t> v16 = Halves(Normal(173, n(kHead * test.cells * test.heads)));
+    ggml_tensor* tq =
+        Place(ggml_new_tensor_4d(c(), GGML_TYPE_F32, kHead, test.rows, test.heads, 1), q);
+    ggml_tensor* tk =
+        Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, kHead, test.cells, test.heads, 1), k16);
+    ggml_tensor* tv =
+        Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, kHead, test.cells, test.heads, 1), v16);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(kHead));
+    ggml_tensor* node = Place(ggml_flash_attn_ext(c(), tq, tk, tv, nullptr, scale, 0.0f, 0.0f));
+    ASSERT_TRUE(kg::CheckFlashAttnMma128(node).has_value()) << name;
+    const auto plan = kg::PlanFlashAttnMma128(launch(), node);
+    ASSERT_TRUE(plan.has_value()) << name << ": " << plan.error().detail;
+    EXPECT_EQ(plan->columns, test.columns) << name;
+    launch().ResetScratchPeak();
+    Launched(kg::FlashAttnMma128(launch(), node), name);
+    EXPECT_LE(launch().scratch_peak().value(), plan->scratch) << name;
+    const auto got = Download(node);
+    std::vector<double> want(n(kHead * test.heads * test.rows));
+    std::vector<double> logits(n(test.cells));
+    for (std::int64_t h = 0; h < test.heads; ++h) {
+      for (std::int64_t r = 0; r < test.rows; ++r) {
+        double max = -std::numeric_limits<double>::infinity();
+        for (std::int64_t cell = 0; cell < test.cells; ++cell) {
+          double dot = 0.0;
+          for (std::int64_t d = 0; d < kHead; ++d) {
+            dot += static_cast<double>(q[n((((h * test.rows) + r) * kHead) + d)]) *
+                   ggml_fp16_to_fp32(k16[n((((h * test.cells) + cell) * kHead) + d)]);
+          }
+          logits[n(cell)] = dot * scale;
+          max = std::max(max, logits[n(cell)]);
+        }
+        double sum = 0.0;
+        std::vector<double> out(n(kHead));
+        for (std::int64_t cell = 0; cell < test.cells; ++cell) {
+          const double p = std::exp(logits[n(cell)] - max);
+          sum += p;
+          for (std::int64_t d = 0; d < kHead; ++d) {
+            out[n(d)] += p * ggml_fp16_to_fp32(v16[n((((h * test.cells) + cell) * kHead) + d)]);
+          }
+        }
+        for (std::int64_t d = 0; d < kHead; ++d) {
+          want[n((((r * test.heads) + h) * kHead) + d)] = out[n(d)] / sum;
+        }
+      }
+    }
+    ExpectNmse(got, want, kFlashAttnNmse, name);
+  }
+  // The checks: a mask, grouped heads, sinks or another head size are the
+  // other kernels' (or none).
+  const auto build = [this](std::int64_t head, std::int64_t heads, std::int64_t kv_heads,
+                            bool mask) {
+    ggml_tensor* q = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F32, head, 2, heads, 1));
+    ggml_tensor* k = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, head, 300, kv_heads, 1));
+    ggml_tensor* m = mask ? Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, 300, 2, 1, 1)) : nullptr;
+    return Place(ggml_flash_attn_ext(c(), q, k, k, m, 0.1f, 0.0f, 0.0f));
+  };
+  EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, false)).has_value());
+  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 4, 4, true))), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 8, 2, false))), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(256, 4, 4, false))), KernelError::kRejected);
+  ggml_tensor* sinks = build(128, 4, 4, false);
+  ggml_flash_attn_ext_add_sinks(sinks, Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 4)));
+  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(sinks)), KernelError::kRejected);
+}
+
 TEST_F(GgmlExtOpsTest, FlashAttentionChecksRefuseWhatTheKernelsWouldNotTake) {
   const auto build = [this](std::int64_t head, std::int64_t heads, std::int64_t kv_heads,
                             std::int64_t cells, float max_bias) {
@@ -1807,7 +1891,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   using jitllm::execution::Operation;
   const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
   const auto registry = jitllm::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 27> expected = {{
+  const std::array<std::pair<const char*, Operation>, 28> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
@@ -1835,6 +1919,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
       {"ggml.dsv4_hc_pre", Operation::kHcPre},
       {"ggml.dsv4_hc_post", Operation::kHcPost},
       {"ggml.flash_attn_ext.mma", Operation::kFlashAttn},
+      {"ggml.flash_attn_ext.mma_d128", Operation::kFlashAttn},
   }};
   for (const auto& [name, operation] : expected) {
     const std::size_t index = registry.Find(name).value_or(registry.size());

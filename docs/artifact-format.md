@@ -481,6 +481,53 @@ MoE models. The smallest is Gemma's 4,096-byte `global` group. Gemma stores no s
 own group. On disk the tail is padded only to 4 KiB. With 2 MiB handles,
 memory holds the rest of the handle. It is charged but never read.
 
+## Compositions
+
+A model of several components, such as an image pipeline's text encoder,
+denoiser and VAE, is one ordinary artifact per component and a
+**composition** that names them (D-089). Components keep this format
+unchanged; nothing is copied between artifacts, so a component two
+compositions share is one artifact, stored and verified once.
+
+```text
+<installed store>/<composition-id>/     composition-id = SHA-256 of manifest.json bytes
+  manifest.json                         format "jitllm-composition", version 0
+  meta/model_index.json ...             the pipeline's metadata, verbatim
+```
+
+| Key | Content |
+| --- | --- |
+| `format`, `format_version`, `experimental` | `"jitllm-composition"`, `0`, `true` |
+| `model` | `{architecture}`: the pipeline's, model_index.json's `_class_name` |
+| `components` | 1–16 of `{role, artifact, architecture}`, sorted by role: the model_index.json entry (`[a-z][a-z0-9_]{0,63}`), the component artifact's ID and its manifest's `model.architecture` |
+| `source` | Every kept file's name, size and SHA-256, as recorded at download |
+| `converter` | As an artifact's |
+| `files` | Every kept file, `meta/<name>` with role `source-metadata`; model_index.json is required |
+
+The rules are an artifact manifest's where they apply: strict canonical
+JSON, the directory named by the manifest digest, regular singly linked
+files, lists in canonical order, each kept file a verbatim recorded source
+(and each source kept), the 64 MiB and 128 MiB metadata caps. A
+composition has no `index.json` and no `data/`. Its kept files are small,
+so opening one always checks their digests. Each component is opened as an
+artifact by its ID and its architecture compared with the recorded one.
+D-054's installer (M5) is to refuse removing a component a composition
+names, and installing or replicating a composition without its
+components; nothing enforces that yet.
+
+**Qwen-Image-2.1** (imported on `spark`, 2026-09-28,
+[qwen-image-native](experiments/qwen-image-native/README.md)): composition
+`eca21baa…` binds `text_encoder` (`qwen3_vl`, 38 groups, 17.53 GB in 5
+shards: the token table, 36 layers, and a head group holding the vision
+tower and `lm_head`, which the text-to-image path never reads),
+`transformer` (`QwenImage21Transformer2DModel`, 33 groups: 32 blocks and a
+global group, 14.23 GB in 4 shards) and `vae` (`AutoencoderKLQwenImage21`,
+F32 as the checkpoint stores it, 6 groups: the decoder's up blocks and a
+global group with the encoder, 1.35 GB), and keeps model_index.json, the
+scheduler's config and the processor's nine files. The importer's grouping
+policy per component (the prototype's layer pattern and row tables) is
+`import_m3.py`'s, and the layout rules above are otherwise unchanged.
+
 ## Verification and rejection
 
 `verify` treats the artifact as untrusted input. It parses every document
@@ -600,13 +647,13 @@ one and removes it. The source must remain available (D-018).
   GEMM accept, proven bit-identical to the reference layout on one layer.
   Compaction and demand-paged dispatch stay with the M7 GGML proof. The
   dense EXL3 proof is M2.
-- **Companion and multi-component artifacts** (D-068). A speculative
-  drafter that uses its target's embedding table, and a pipeline of text
-  encoder, denoiser and decoder, need manifest references to another
-  artifact by ID, with shared resources counted once. Stored MTP layers are
-  ordinary tensors in their checkpoints and group like any layer. Settled
-  in M3, before Qwen-Image-2.1's pipeline and DeepSeek V4's DSpark drafter
-  are imported (D-087; an open question in plan.md).
+- **Companion artifacts** (D-068). A pipeline of text encoder, denoiser
+  and decoder is settled as a composition ([above](#compositions), D-089).
+  A speculative drafter that uses its target's embedding table is to be a
+  composition of its own artifact and its target's, binding the shared
+  table from the target's artifact; how a drafter's binding names that
+  table is settled with DeepSeek V4's DSpark import. Stored MTP layers are
+  ordinary tensors in their checkpoints and group like any layer.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M4 entry, where each node
   holds its own shard on disk. It depends on M4's sharding design, and v0

@@ -57,6 +57,9 @@
 //   ggml.lightning_indexer.wmma  {lightning_indexer}     ops_ext.h LightningIndexer
 //   ggml.dsv4_hc_comb, _pre, _post                       ops_ext.h HcComb, HcPre, HcPost
 //   ggml.flash_attn_ext.mma      {flash_attn_ext}        ops_ext.h FlashAttnMma
+// For Qwen-Image-2.1's denoiser (M3): multi-head attention at D = 128,
+// unmasked, any number of cells:
+//   ggml.flash_attn_ext.mma_d128 {flash_attn_ext}        ops_ext.h FlashAttnMma128
 // and jitLLM's own operations on GGML tensors, for Qwen3.8's MXFP8 and
 // NVFP4 tensors (jitllm_ops.h), each a GGML_OP_CUSTOM node:
 //   jitllm.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec

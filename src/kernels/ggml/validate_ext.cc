@@ -1065,4 +1065,59 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node) ||
+      !Bound(node->src[0]) || !Bound(node->src[1]) || !Bound(node->src[2]) ||
+      node->src[3] != nullptr || node->src[4] != nullptr) {
+    return Rejected("not a bound flash_attn_ext node without mask or sinks");
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const ggml_tensor* v = node->src[2];
+  if (!IsF32(q) || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16) {
+    return Rejected("F32 Q, F16 K and V, into F32");
+  }
+  if (ParamF32(node, 1) != 0.0f || ParamF32(node, 2) != 0.0f || node->op_params[4] != 0) {
+    return Rejected("no ALiBi, no logit soft-capping and no sparse bound");
+  }
+  if (q->ne[0] != 128 || k->ne[0] != 128 || v->ne[0] != 128) {
+    return Rejected("head dimension 128 for Q, K and V");
+  }
+  std::initializer_list<const ggml_tensor*> operands = {node, q, k, v};
+  if (AnyEmpty(operands) || !AllSane(operands)) {
+    return Rejected("flash attention on an empty or unmeasurable tensor");
+  }
+  // One query head per KV head, one sample.
+  if (!ggml_are_same_shape(k, v) || q->ne[2] != k->ne[2] || q->ne[3] != 1 || k->ne[3] != 1 ||
+      node->ne[0] != 128 || node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] ||
+      node->ne[3] != 1) {
+    return Rejected("multi-head attention whose shapes do not follow ggml_flash_attn_ext's");
+  }
+  if (q->nb[0] != sizeof(float) || k->nb[0] != sizeof(ggml_fp16_t) ||
+      v->nb[0] != sizeof(ggml_fp16_t) || !AlignedEverywhere(q, 16) || !AlignedEverywhere(k, 16) ||
+      !AlignedEverywhere(v, 16) || !Packed(node) || !Aligned(node, 16)) {
+    return Rejected("contiguous rows at 16-byte strides, and a packed output");
+  }
+  if (Span(node) > kInt32Max) {
+    return Rejected("flash attention output beyond the kernel's 32-bit indexing");
+  }
+  for (const ggml_tensor* tensor : {q, k, v}) {
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+      if (std::cmp_greater(tensor->ne[i], kInt32Max) ||
+          ((tensor == q || i < 3) && tensor->nb[i] > kInt32Max)) {
+        return Rejected("flash attention beyond the kernel's 32-bit extents and strides");
+      }
+    }
+  }
+  if (!AllCurrent(operands)) {
+    return Rejected("a stale view");
+  }
+  for (const ggml_tensor* tensor : {q, k, v}) {
+    if (!Disjoint(node, tensor, /*in_place=*/false)) {
+      return Rejected("an output overlapping an operand");
+    }
+  }
+  return {};
+}
+
 }  // namespace jitllm::kernels::ggml

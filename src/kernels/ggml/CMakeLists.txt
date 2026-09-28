@@ -54,7 +54,8 @@ if(JITLLM_CUDA)
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu fattn_mma.cu
-                                         fattn_mma_d256.cu fattn_mma_d512.cu jitllm_ops.cu
+                                         fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
+                                         jitllm_ops.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
@@ -105,7 +106,8 @@ if(JITLLM_CUDA)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_graph.cc dsv4_graph.h executor.cc
                    executor.h fattn.cu fattn_mma.cu
-                   fattn_mma.h fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_shape.cuh fusion.cc
+                   fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
+                   fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h jitllm_ops.cc jitllm_ops.cu jitllm_ops.h launch.cu launch.h
                    module_digest.cmake mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
@@ -147,7 +149,8 @@ if(JITLLM_CUDA)
   # (third_party/patches/ggml/0002): the tensor-core flash-attention
   # instances and the sparse gather, the quantized products' host code, and
   # the other launchers' wrappers.
-  set_source_files_properties(fattn_mma.cu fattn_mma_d256.cu fattn_mma_d512.cu mul_mat_q.cu
+  set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
+                              mul_mat_q.cu
                               ops_ext.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

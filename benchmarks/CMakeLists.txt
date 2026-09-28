@@ -87,6 +87,20 @@ if(JITLLM_CUDA)
                                                    jitllm_artifact jitllm_model jitllm_warnings)
   target_link_options(jitllm_qwen38_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # M3's third model slice: the Qwen-Image-2.1 BF16 pipeline, native, from
+  # its component artifacts and their composition
+  # (docs/experiments/qwen-image-native/). The native tokenizer and the
+  # prompt renderer link as test support until D-088.
+  add_executable(jitllm_qwen_image_exec qwen_image_exec.cc)
+  target_include_directories(jitllm_qwen_image_exec SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_qwen_image_exec PRIVATE jitllm_image_kernels jitllm_ggml_kernels
+                                                       jitllm_cuda_device_memory jitllm_artifact
+                                                       jitllm_model jitllm_tokenizer jitllm_chat
+                                                       jitllm_warnings)
+  target_link_options(jitllm_qwen_image_exec PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # The paged model runners: the FP16 fixture and an EXL3 fixture, each a
   # model on a paged node (tests/support/paged_node.h), so one process can
   # hold either or both (BP-S3). Their binaries link the launch recorder

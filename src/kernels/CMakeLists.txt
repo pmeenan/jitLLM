@@ -5,3 +5,4 @@
 # (D-053; docs/architecture.md#layers-and-dependency-rules).
 add_subdirectory(ggml)
 add_subdirectory(exl3)
+add_subdirectory(image)

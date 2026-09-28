@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Internal to the GGML module: what the tensor-core flash-attention
-// instance units (fattn_mma_d256.cu, fattn_mma_d512.cu) tell the dispatcher
+// instance units (fattn_mma_d128.cu, fattn_mma_d256.cu, fattn_mma_d512.cu) tell the dispatcher
 // (fattn_mma.cu) about the kernels they compile. Each unit instantiates
 // ggml_cuda_flash_attn_ext_mma_f16_case<D, D, columns, 8> for columns 1, 2,
 // 4 and 8, as GGML's template-instances/fattn-mma-f16-instance-*.cu do for
@@ -38,6 +38,12 @@ std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, boo
 using MmaCase = void (*)(ggml_backend_cuda_context& context, ggml_tensor* node);
 MmaCase FlashAttnMmaCase256(int columns);
 MmaCase FlashAttnMmaCase512(int columns);
+
+// Head dimension 128 without grouping (ncols2 1: multi-head attention, the
+// Qwen-Image denoiser's), for columns 8, 16, 32 or 64
+// (fattn_mma_d128.cu).
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape128(int columns, int device);
+MmaCase FlashAttnMmaCase128(int columns);
 
 }  // namespace jitllm::kernels::ggml::detail
 

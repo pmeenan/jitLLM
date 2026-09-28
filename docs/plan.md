@@ -242,7 +242,12 @@ it appears.
       artifact `67617f87…`, 103.9 GB, 24,627 groups, in 9 min 16 s on
       `spark-b` ([qwen38-native](experiments/qwen38-native/README.md),
       [artifact-format.md](artifact-format.md#qwen38-flash-next-modelopt-nvfp4-and-mxfp8)).
-      Open: the image pipeline.
+      *Qwen-Image-2.1:* one artifact per component and a composition naming
+      them (D-089; [artifact-format.md](artifact-format.md#compositions)):
+      `import_m3.py component` wrote the text encoder (17.53 GB), denoiser
+      (14.23 GB) and VAE (1.35 GB, F32) and `compose` their composition
+      `eca21baa…` on `spark` in under three minutes; `artifact/composition.h`
+      reads it natively ([qwen-image-native](experiments/qwen-image-native/README.md)).
 - [ ] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
       llama.cpp has much of what the models need (quantized matmul and
       `mul_mat_id`, MoE routing, the lightning indexer, `dsv4-hc`, gated
@@ -274,11 +279,22 @@ it appears.
       GB10. CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3) builds for `sm_121a`
       and was about 1.4–2.2× MMQ at prefill widths in scratch; it is not
       incorporated (a new lock component and the MoE's device-side setup),
-      and is the prefill lever. Open: the vector attention at D = 256, which
+      and is the prefill lever.
+      *The image pipeline's* (Qwen-Image-2.1, BF16, chosen per operation by
+      speed): cuBLAS BF16 products, jitLLM's own FlashAttention-2 kernel
+      (3.37 ms per denoiser block, as PyTorch's flash kernel; GGML's
+      tensor-core kernel, built for D = 128 without head grouping, took
+      19.9 ms) and jitLLM's fused BF16 kernels for the norms, modulation,
+      rotary embeddings, residuals and the VAE, each rounding where
+      diffusers rounds (`kernels/image`,
+      [qwen-image-native](experiments/qwen-image-native/README.md)); the
+      VAE's convolutions are im2col and cuBLAS (its causal 3D convolutions
+      are 2-D at one frame), so GGML's were not needed. No source-lock
+      change.
+      Open: the vector attention at D = 256, which
       upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
-      runs it meanwhile); the image's operations; and whether to admit CUB,
-      which the build leaves out (top-k takes GGML's radix select;
-      [licensing.md](licensing.md)).
+      runs it meanwhile); and whether to admit CUB, which the build leaves
+      out (top-k takes GGML's radix select; [licensing.md](licensing.md)).
 - [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
       compressed sparse attention with its indexer (CSA/HCA) and mHC;
       Qwen3.8's QSA, hyper-connections and Gated DeltaNet layers; the
@@ -324,7 +340,24 @@ it appears.
       0.37×, which fails D-085's 10% gate; peak memory 0.97× at a 4,096-token
       context against vLLM's 262,144
       ([qwen38-native](experiments/qwen38-native/README.md)). Open: prefill
-      speed, device jobs over leased closures, the image pipeline.
+      speed, device jobs over leased closures.
+      *Qwen-Image-2.1, native* (`model/qwen_image.h`,
+      `jitllm_qwen_image_exec`): the text encoder (Qwen3-VL's text path, the
+      system turn dropped), the block-causal DiT with its text K/V prefix
+      cache and the flow-matching Euler scheduler, and the VAE decoder, from
+      the composition on `spark`, each phase bounded and, with
+      `--phases released`, each component loaded for its phase and freed
+      after it. Against diffusers BF16 at the fixed teapot prompt (1024², 40
+      steps, seed 42, diffusers' initial latents), every pre-registered
+      bound passes: the image at PSNR 41.8 dB and SSIM 0.996 (bounds 32 dB,
+      0.98; an FP32 DiT gives 38.8 dB); full generation 36.9–37.0 s against
+      diffusers' 52.6 s, 0.89 s per step against 1.26 s, peak memory 31.2
+      GiB against 43.4 GiB resident and 15.9 GiB released
+      ([qwen-image-native](experiments/qwen-image-native/README.md)).
+      Open: running each phase as a device job over leased closures on the
+      paged node (D-086; the harness is resident on `cudaMalloc` memory,
+      like the backend proof's rung 3), and the image path's operations in
+      the registry and a bound plan (D-053).
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
@@ -484,8 +517,12 @@ it appears.
 
 - The image pipeline, and a drafter that shares its target's tables, need
   manifest references to another artifact, with shared resources counted
-  once ([artifact-format.md](artifact-format.md#deliberately-open)). Settle
-  this format change before the pipeline is imported.
+  once ([artifact-format.md](artifact-format.md#deliberately-open)).
+  *Settled by D-089 (2026-09-28, accepted under the owner's overnight
+  delegation; the owner may amend):* one
+  artifact per component and a composition naming them by ID; the
+  pipeline is imported that way, and a drafter is to be a composition with
+  its target, its binding settled with the DSpark import.
 
 ## M4 — Two-Spark fast full swap  `pending`
 

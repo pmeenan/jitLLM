@@ -121,6 +121,15 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
                                                                 const ggml_tensor* node);
 std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tensor* node);
 
+// The same kernels at head dimension 128 without grouping and without a
+// mask (validate_ext.h CheckFlashAttnMma128): the instance
+// ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, columns, 1>, columns 8,
+// 16, 32 or 64 as upstream's switch_ncols1 picks them for one query head
+// per tile, stream-k over the cells and its fixup buffer from the pool.
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
+                                                                   const ggml_tensor* node);
+std::expected<void, KernelFailure> FlashAttnMma128(LaunchContext& launch, ggml_tensor* node);
+
 }  // namespace jitllm::kernels::ggml
 
 #endif  // JITLLM_KERNELS_GGML_OPS_EXT_H_

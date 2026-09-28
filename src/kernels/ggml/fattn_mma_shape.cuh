@@ -23,9 +23,10 @@
 
 namespace jitllm::kernels::ggml::detail {
 
-template <int D, int kColumns, bool kSparse>
+// kGroup is ncols2: query heads per KV head in a tile (8 for the grouped
+// kernels, 1 for multi-head attention).
+template <int D, int kColumns, bool kSparse, int kGroup = 8>
 std::expected<MmaKernelShape, std::string> MmaShape(int device) {
-  constexpr int kGroup = 8;  // ncols2
   constexpr int ncols = kColumns * kGroup;
   const int cc = ggml_cuda_info().devices[device].cc;
   const int nthreads = ggml_cuda_fattn_mma_get_nthreads(D, D, ncols, cc);

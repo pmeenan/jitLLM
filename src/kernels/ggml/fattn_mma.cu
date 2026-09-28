@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's tensor-core flash attention for head dimensions 256 and 512 under
-// jitLLM's dispatch (ops_ext.h FlashAttnMma). jitLLM does not compile
+// jitLLM's dispatch (ops_ext.h FlashAttnMma), and at 128 without head
+// grouping or a mask (FlashAttnMma128). jitLLM does not compile
 // GGML's fattn.cu, whose dispatcher names every head size's and K/V type's
 // instance; this unit has, from fattn.cu at llama.cpp b29c606e2:
 //
@@ -266,6 +267,80 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
     plan.scratch = (plan.scratch > 0 ? Round(plan.scratch) : 0) + meta;
   }
   return plan;
+}
+
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
+                                                                   const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnMma128(node); !checked) {
+    return std::unexpected(checked.error());
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const auto& device = ggml_cuda_info().devices[launch.device()];
+  const int cc = device.cc;
+  if (!GGML_CUDA_CC_IS_NVIDIA(cc) || !turing_mma_available(cc)) {
+    return Rejected("the MMA flash-attention kernels need Turing or later");
+  }
+  FlashAttnMmaPlan plan;
+  plan.head = 128;
+  // switch_ncols1 for ncols2 = 1 (fattn.cu:146-166).
+  if (q->ne[1] <= 8) {
+    plan.columns = 8;
+  } else if (q->ne[1] <= 16) {
+    plan.columns = 16;
+  } else if (q->ne[1] <= 32 || ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_TURING) {
+    plan.columns = 32;
+  } else {
+    plan.columns = 64;
+  }
+  auto shape = detail::FlashAttnMmaShape128(plan.columns, launch.device());
+  if (!shape) {
+    return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = shape.error()});
+  }
+  // launch_fattn<128, columns, 1> with stream-k (fattn-common.cuh:1085-1180);
+  // no mask, so no pre-pass.
+  const std::int64_t ncols = plan.columns;
+  const std::int64_t ntiles_x = (q->ne[1] + plan.columns - 1) / plan.columns;
+  const std::int64_t ntiles_dst = ntiles_x * q->ne[2] * q->ne[3];
+  if (ntiles_dst > INT32_MAX) {
+    return Rejected("flash attention beyond the launcher's tile count");
+  }
+  const std::int64_t ntiles_kv = (k->ne[1] + shape->kv_batch - 1) / shape->kv_batch;
+  const std::int64_t max_blocks = static_cast<std::int64_t>(shape->blocks_per_sm) * device.nsm;
+  bool stream_k = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE;
+  if (!stream_k) {
+    const std::int64_t waves = (ntiles_dst + max_blocks - 1) / max_blocks;
+    stream_k = 100 * ntiles_dst / (max_blocks * waves) < 75;
+  }
+  std::int64_t blocks = ntiles_dst;
+  if (stream_k) {
+    const std::int64_t raw = std::min(max_blocks, ntiles_kv * ntiles_dst);
+    const std::int64_t rounded = raw / ntiles_dst * ntiles_dst;
+    const std::int64_t loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
+    blocks = loss <= 5 ? rounded : raw;
+  }
+  if (blocks <= 0 || blocks > INT32_MAX) {
+    return Rejected("flash attention beyond the launcher's grid");
+  }
+  plan.blocks = static_cast<int>(blocks);
+  if (ntiles_dst % blocks != 0) {
+    plan.scratch = static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(ncols) *
+                   static_cast<std::uint64_t>(2 + (plan.head / 2)) * sizeof(float2);
+  }
+  return plan;
+}
+
+std::expected<void, KernelFailure> FlashAttnMma128(LaunchContext& launch, ggml_tensor* node) {
+  auto plan = PlanFlashAttnMma128(launch, node);
+  if (!plan) {
+    return std::unexpected(plan.error());
+  }
+  const detail::MmaCase run = detail::FlashAttnMmaCase128(plan->columns);
+  if (run == nullptr) {
+    return Rejected("no MMA case for this column count");
+  }
+  return launch.Run(base::Bytes(plan->scratch),
+                    [node, run](ggml_backend_cuda_context& context) { run(context, node); });
 }
 
 std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tensor* node) {
