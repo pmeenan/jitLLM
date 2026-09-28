@@ -696,7 +696,7 @@
       "index_digest": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
       "arm64_digest": "sha256:3b0e188ffceb3d07e09c3cb5215433a0020eacf02d7f882ed3a8bfd15454477e",
       "created": "2026-08-26T09:14:37Z",
-      "vllm_commit": "unknown (image labels: local build)",
+      "vllm_commit": "8e685d198 (abbreviated; vllm/_version.py in the image pulled 2026-09-28: 0.1.dev20073+g8e685d198; image labels: local build)",
       "flashinfer": "0.6.17 (flashinfer-jit-cache)",
       "cuda": "13.0.1",
       "nccl": "2.30.7"

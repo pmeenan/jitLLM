@@ -176,7 +176,7 @@ it appears.
 | Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | llama.cpp on the same GGUF | llama.cpp | vLLM or SGLang where they support it, unless on the same GGUF |
-| Qwen3.8 Flash Next | Mia's vLLM on the same NVFP4 checkpoint | Mia's vLLM | TensorFold (MLX 4-bit); llama.cpp on a GGUF |
+| Qwen3.8 Flash Next | Mia's vLLM on the same NVFP4 checkpoint, in the recipe's deterministic mode (its default launch is not repeatable) | Mia's vLLM | TensorFold (MLX 4-bit); llama.cpp on a GGUF |
 | Qwen-Image-2.1 | diffusers, BF16 | diffusers, BF16 | stable-diffusion.cpp's GGUFs, also for image quality |
 
 **Scope:**
@@ -198,8 +198,8 @@ it appears.
       CuTe-DSL kernel's runtime among them under NVIDIA's proprietary
       terms. The checkpoints are on both Sparks' NVMe, TensorFold's on
       `spark` only ([environment.md](environment.md#m3-model-store-2026-09-28)).
-      Left for the baselines item: the default vLLM image's own commit,
-      read once it is pulled, and which kernels its engine log selects.
+      The default vLLM image's commit (`8e685d198`) and the kernels its
+      engine log selects were read in the baselines item.
 - [ ] **Baselines,** installed and run on the Sparks by us: MiaAI's
       configurations, TensorFold, llama.cpp for the GGUF, and vLLM or SGLang
       where they support these models; for the image, diffusers in BF16 as
@@ -210,6 +210,23 @@ it appears.
       Qwen3.8 cold start (creator-reported 10 min 51 s to `/health`) runs
       once, stated as needed under D-085, and is recorded as a measurement;
       its prefill and decode are then measured on the same warm server.
+      *Measured 2026-09-28 on `spark`*
+      ([baselines](experiments/fast-swap/baselines.md), on the fixed
+      [prompt set](experiments/fast-swap/prompts.json)): llama.cpp on
+      DeepSeek 0731 (load 92–104 s, prefill ~350 tok/s at 8K, decode 19.9
+      tok/s, 30.8–31.9 with DSpark, peak 93–105 GiB) and one llama.cpp swap
+      cycle with Qwen3.8's GGUF; Mia's vLLM (cold start 13 min 11 s, prefill
+      2,066 tok/s at 8K, decode 37.9 tok/s with MTP 3 and 25.1–25.3 without,
+      peak ~103 GiB); TensorFold and llama.cpp on Qwen3.8 as
+      cross-quantization comparators; diffusers on Qwen-Image (1.26 s per
+      step, 52.6 s per 1024², 40-step generation). Greedy and top-5 logprob
+      references for both LLMs are saved beside the report, and the
+      reference image on both Sparks by hash. Mia's default launch is not repeatable under greedy decoding,
+      so Qwen3.8's oracle is the recipe's deterministic mode (MTP off,
+      `VLLM_QSA_DET_TOPK=1`, `VLLM_MOE_DET_FINALIZE=1`), which took a second
+      launch (10 min 52 s). vLLM or SGLang on DeepSeek 0731 is not
+      available on one Spark (no GGUF path for this quantization; the
+      native checkpoint does not fit). Open: stable-diffusion.cpp's GGUFs.
 - [ ] **Import:** M0's Python prototype importer writes the D-056 artifacts
       for the three models, including NVFP4 and MXFP8 tensors and the image
       pipeline's BF16 components. The C++ importer and verifier stay in M5.
@@ -355,10 +372,13 @@ it appears.
   | Also per swap | Bytes read, read throughput, peak memory, and each part of the swap time |
 
   The report gives each swap against the ~10 s goal and the ~20 s bound,
-  and beside the baselines: Mia's vLLM Qwen3.8 at 11–14 min to load,
-  TensorFold at about 90 s (both creator-reported), and the pinned
-  llama.cpp at 75–93 s per switch to first token in our M0 run (measured,
-  one run).
+  and beside the baselines ([measured](experiments/fast-swap/baselines.md),
+  cold page cache, one run each): Mia's vLLM Qwen3.8 at 13 min 13 s from
+  start to first token (11–14 min creator-reported), TensorFold at 141 s
+  (about 90 s creator-reported), the pinned llama.cpp at 77 s from DeepSeek
+  0731 to Qwen3.8's GGUF and 104 s back with A's 8K state restored (75–93 s
+  per switch in M0's run of the older revision), and diffusers at 212 s
+  from process start to Qwen-Image's first denoising step.
 - **LLM correctness:** on a short prompt set, greedy tokens match the
   model's same-format oracle (table above), with small logit differences
   allowed, and perplexity on a fixed text is within a few percent of the

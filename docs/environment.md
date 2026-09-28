@@ -373,7 +373,9 @@ application configuration.
 | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` | yes | no |
 
 Every file was checked on each host against the pinned SHA-256 (or Git
-blob, for small files) and size. The older store,
+blob, for small files) and size. Binary reference outputs kept out of Git
+(the diffusers reference image, [baselines](experiments/fast-swap/baselines.md))
+live on both Sparks under `~/.local/share/jitllm/references/`. The older store,
 `~/.local/share/jitllm/reference-models/`, keeps M0's GGUFs, including
 DeepSeek V4 Flash at `e3aa0d6a` (`D/`) and Qwen3.8's UD-IQ3_XXS (`Q/`).
 

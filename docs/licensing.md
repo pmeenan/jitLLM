@@ -663,10 +663,15 @@ is the dense Qwen3.8-27B family's.
 ### Mia's NVFP4 and MXFP8 path: vLLM, FlashInfer and CUTLASS
 
 Identified at the v0.30 lane's pins (vLLM `ced6857a`, FlashInfer v0.6.17
-`a0a6b019` and v0.6.18.post1 `8bc3b578`, CUTLASS v4.7.1 `cb424739`); the
-default image's vLLM commit is unknown until the image is pulled. Which
-candidate runs on the GB10 is read from the engine log in the baselines
-item. No reuse decision is made here.
+`a0a6b019` and v0.6.18.post1 `8bc3b578`, CUTLASS v4.7.1 `cb424739`). The
+default image, pulled on 2026-09-28, reports vLLM `0.1.dev20073+g8e685d198`
+(commit `8e685d198`, abbreviated; not audited at that commit). Its engine
+log on the GB10 selects vLLM's Marlin weight-only kernel for the NVFP4
+linear layers (`MarlinNvFp4LinearKernel`; the drafter's MoE also uses
+Marlin), FlashInfer's CUTLASS kernels for the MXFP8 linear layers and the
+routed-expert NVFP4 MoE, and Triton/FLA and CUDA Gated DeltaNet kernels
+([baselines](experiments/fast-swap/baselines.md#qwen38-flash-next-mias-vllm-nvfp4)).
+Marlin's license is not recorded here yet. No reuse decision is made here.
 
 | Part | What it does | License, as found |
 | --- | --- | --- |
