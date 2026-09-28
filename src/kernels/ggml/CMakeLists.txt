@@ -56,8 +56,10 @@ if(JITLLM_CUDA)
                                jitllm_cublas jitllm_cublaslt jitllm_execution
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE jitllm_cuda_device_memory jitllm_warnings)
-  set(architectures 121a-real)
-  set_target_properties(jitllm_ggml_kernels PROPERTIES CUDA_ARCHITECTURES ${architectures})
+  # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
+  # the profile's discrete GPUs (D-082).
+  set(architectures 121a-real ${JITLLM_CUDA_DISCRETE_SASS})
+  set_target_properties(jitllm_ggml_kernels PROPERTIES CUDA_ARCHITECTURES "${architectures}")
   # What each implementation's identity records of the build (D-053): the
   # prepared GGML tree the build used, as the source receipt records it
   # (D-057), the SDK, the target, the device architectures, the build type
@@ -82,8 +84,9 @@ if(JITLLM_CUDA)
     message(FATAL_ERROR "The source receipt has no GGML tree digest for the registry's identities")
   endif()
   string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
+  list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
-    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architectures}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
+    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
 
   # And jitLLM's own code in the module: every file in this directory, whose
   # digest a build-time command writes into a generated source

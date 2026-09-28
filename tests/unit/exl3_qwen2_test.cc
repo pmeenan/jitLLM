@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // One phase of the native EXL3 plan under jitLLM's dispatch
-// (kernels/exl3/qwen2.h) on a GB10 (label `gpu`), over synthetic weights
-// of the model's shapes (all zero, which every kernel accepts):
+// (kernels/exl3/qwen2.h) on a GB10 (label `gpu`; all but the GEMV-choice
+// test also on a discrete GPU the build targets, `gpu-discrete`, D-082),
+// over synthetic weights of the model's shapes (all zero, which every
+// kernel accepts):
 // - a prefill and a single-token step bind and run, every operation
 //   launching on the one stream, with finite (zero) logits;
 // - Bind refuses a registry without an implementation the plan names

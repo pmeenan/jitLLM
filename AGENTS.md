@@ -11,7 +11,8 @@ capacity is needed, and brings missing weights or state back on demand from
 prepared on-disk artifacts. The primary workload is one user switching among
 a library of models larger than memory, with conversation state preserved
 across switches (D-019). Initial target: one or two NVIDIA DGX Sparks,
-developed from an x86-64 Linux workstation. Almost all code is written by AI
+developed from an x86-64 Linux workstation, whose discrete NVIDIA GPU is a
+secondary target (D-082). Almost all code is written by AI
 agents working from the project documentation, directed and reviewed by a
 human.
 
@@ -100,16 +101,21 @@ affected docs. Until then, these govern.
   correctness and speed. No runtime plugin ABI. (D-028, D-052, D-053, D-080)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
-  interfaces, with CUDA VMM the only implementation for now. Apple silicon
-  and AMD are plausible later single-machine targets: do nothing for them,
-  sacrifice nothing on NVIDIA, but don't foreclose them. The CPU-only build
-  and the fake backend are the guardrail. (D-026)
+  interfaces, with CUDA VMM the only implementation for now. Discrete
+  NVIDIA GPUs are a secondary target: one device-memory domain plus the
+  SSD, fast swaps with one model active; host RAM is not a tier (designed
+  for as a separate domain, not built). Apple silicon is in scope later and
+  AMD is plausible: do nothing for them, sacrifice nothing on the GB10, but
+  don't foreclose them. Intel is out. The CPU-only build and the fake
+  backend are the guardrail. (D-026, D-082)
 - **Develop on x86-64 Linux, cross-build, test on Spark over SSH.** Native
   builds and CPU tests, including AArch64 CPU tests under qemu-user, run on
   the workstation; ARM concurrency, VMM, kernel, GPU, RDMA/NCCL, and
   distributed tests run on the Sparks, which in the owner's environment
   are `spark` and `spark-b` (inventory in environment.md; those names are
-  not application configuration). Explicit CPU/GPU targets only, never
+  not application configuration); `gpu-discrete` tests also run on the
+  workstation's GPU, only when asked (`mise run test -- native --gpu`).
+  Explicit CPU/GPU targets only, never
   `-march=native` or autodetection. Toolchain provisioning is declarative and
   pinned. Agents never invent compiler pins, measured numbers, supported
   model combinations, or license permissions. Each slice's check builds
@@ -144,7 +150,7 @@ affected docs. Until then, these govern.
 | `mise.toml`, `mise.lock` | mise tasks (`setup`, `prepare`, `doctor`, `build`, `test`, `deploy`) and the pinned Python that runs `tools/` (D-070) |
 | `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057), and in `patches/` the reviewed changes to them (GGML's and ExLlamaV3's, D-077) |
-| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native`, `cpu`, `cross` and `spark-native` use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native` (CUDA for `sm_121` and the discrete `sm_86`, D-082; test preset `native-gpu` runs its `gpu-discrete` tests on the workstation's GPU), `cpu`, `cross` and `spark-native` (GB10 only) use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
 | `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag, SHA-256), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe, a raw io_uring ring), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning) and `scheduler/` (admission and switching, the completion board, lanes, task trees, the storage, device and CPU lanes over the providers, and the scheduler thread's turn loop) of the resource core, `model/` (state representations with their capabilities, a request's live state, model contexts composed of components, D-068, and architecture adapters: the Qwen2 profile, its binding to an artifact and each chunk's host-built inputs, and the EXL3 binding and native operation plan), `execution/` (the implementation registry and plans that name one implementation per operation, D-053; phase kinds, decoding modes and request programs with their envelopes, D-050, D-068) and `artifact/` (the v0 prepared-artifact reader: strict JSON, validation as untrusted input, groups, chunks and direct-read plans, D-056) of the model layer, `kernels/ggml/` (GGML tensor descriptors over jitLLM memory, the K-C launch context, jitLLM's cuBLAS handle and GGML-derived operations, cuBLAS matrix multiplication and the forced vector attention among them, upstream's fusion gates, their registry declarations, the Qwen2 chunk graph, graph planning with activation placement, and the executor of bound plans, D-053, D-077), `kernels/exl3/` (jitLLM's launchers of ExLlamaV3's locked kernels under their launch contract, host checks, the reconstruction GEMM on cuBLASLt, the EXL3 linear's paths and their registry declarations, D-080, and the executor of a native EXL3 phase), `runtime/` (`jitllm-runtime`, the node runtime process, D-074) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
 | `packaging/` | `jitllm.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
@@ -248,9 +254,10 @@ behind a landing-zone copy (D-081), where BP-F1's rerun passed; D-080
 sets the license policy. The
 scheduler now pages through that zone into device VMM and releases
 backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
-relocated) are bit-identical. Open: census rule v2 (measurement-accuracy
-allowances and an instrumented pass, at the owner's request), write-back
-and state spill, the EXL3 census, and P4–P6. D-033 is retained; per
-D-085, BP-F2 does not run and each engine is held to its reference's
-speed end to end once operational. Keep this
+relocated) are bit-identical. The x86-64 build's CUDA code and kernels
+also target the workstation's discrete GPU (D-082), where the providers,
+the page-in path and a kernel smoke pass. Open: the loose memory check
+against each reference (D-085), write-back and state spill, and P4–P6.
+D-033 is retained; per D-085, BP-F2 does not run and each engine is held
+to its reference's speed end to end once operational. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

@@ -36,7 +36,7 @@ description = "Configure and build CMake presets with the SDK (default: this hos
 run = "python3 tools/build build"
 
 [tasks.test]
-description = "Build presets and run their tests; --host runs a cross build's tests on a Spark over SSH"
+description = "Build presets and run their tests; --host runs a cross build's tests on a Spark over SSH, --gpu the native build's discrete-GPU tests here"
 run = "python3 tools/build test"
 
 [tasks.deploy]

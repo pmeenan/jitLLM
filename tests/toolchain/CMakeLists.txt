@@ -3,7 +3,8 @@
 
 # The toolchain contract, tested in what each profile produces (D-011, D-026,
 # D-032, D-057, D-059, D-060, D-066, D-083). Every test carries the `toolchain` label; `gpu`
-# marks those that need a GB10, which run only on a Spark.
+# marks those that need a GB10, which run only on a Spark, and `gpu-discrete`
+# those that also run on a discrete GPU the build targets (D-082).
 
 string(REGEX MATCH "^[^-]+" target_arch "${JITLLM_TARGET_TRIPLE}")
 # Spark binaries must run on the Sparks' glibc, which the cross build's
@@ -76,8 +77,15 @@ endif()
 
 if(JITLLM_CUDA)
   add_executable(cuda_contract_test cuda_contract_test.cu)
+  # The compute capabilities it has SASS for, which it requires of device 0,
+  # as "/121/86/" (NVCC splits a definition at commas).
+  string(REPLACE ";" "/" sass "121;${JITLLM_CUDA_DISCRETE_ARCHITECTURES}")
+  target_compile_definitions(cuda_contract_test PRIVATE "JITLLM_CUDA_SASS=\"/${sass}/\"")
   jitllm_toolchain_test(cuda_contract_test)
   set_property(TEST toolchain.cuda_contract_test APPEND PROPERTY LABELS gpu)
+  if(JITLLM_CUDA_DISCRETE_SASS)
+    set_property(TEST toolchain.cuda_contract_test APPEND PROPERTY LABELS gpu-discrete)
+  endif()
 else()
   add_test(NAME toolchain.cpu_only
            COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${PROJECT_BINARY_DIR}

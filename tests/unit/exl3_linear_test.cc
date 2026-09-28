@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's EXL3 launchers on a GB10 (label `gpu`; docs/backend-proof.md,
-// P3), on a synthetic linear shaped like Qwen2.5-0.5B's q_proj (896 × 896,
-// K = 4, mcg; random trellis words and ±1 side vectors, as P0's synthetic
-// kernel cases):
+// jitLLM's EXL3 launchers on a GB10 (label `gpu`; all but the pinned
+// reconstruction GEMM's tests also on a discrete GPU the build targets,
+// `gpu-discrete`, D-082; docs/backend-proof.md, P3), on a synthetic linear
+// shaped like Qwen2.5-0.5B's q_proj (896 × 896, K = 4, mcg; random trellis
+// words and ±1 side vectors, as P0's synthetic kernel cases):
 // - every path of the linear (packed through the GEMM and the GEMV, the
 //   fused gate/up multi-GEMM, the reconstruction path and its fused form)
 //   gives identical bits with its operands in cudaMalloc memory and in

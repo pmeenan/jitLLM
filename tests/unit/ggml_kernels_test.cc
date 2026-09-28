@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // GGML's CUDA launchers under jitLLM's launch context on a GB10 (label
-// `gpu`; docs/backend-proof.md, P1):
+// `gpu`; docs/backend-proof.md, P1), the memory and launch-context tests
+// also on a discrete GPU the build targets (`gpu-discrete`, D-082):
 // - operands in cudaMalloc memory (the control), device VMM and host VMM
 //   give identical results (BP-N3, D-034), each close to a CPU reference;
 // - runtime-API launches bind to the provider's context and run in order

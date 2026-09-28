@@ -100,7 +100,7 @@ and write to `build/<preset>/`:
 
 | Preset | Builds | Tests run |
 | --- | --- | --- |
-| `native` | x86-64, CUDA for `sm_121` | On the workstation, GPU tests skipped |
+| `native` | x86-64, CUDA for `sm_121` and the workstation's discrete `sm_86` (D-082) | On the workstation, GPU tests skipped; its discrete-GPU tests only with `--gpu` |
 | `cpu` | x86-64 with no CUDA toolkit | On the workstation |
 | `cross` | AArch64 for DGX Spark, CUDA for `sm_121` | Under qemu-user, GPU tests skipped; or on a Spark with `--host` |
 | `spark-native` | AArch64, built on a Spark (each slice's check, D-084) | On that Spark |
@@ -116,19 +116,34 @@ profile, and arguments after a second `--` go to CTest
 and binary inspections stay on the workstation. `mise run deploy --
 --host <spark>` builds and copies without running tests. Neither ever picks
 a host for you. Deploying needs `ssh` and `rsync` on the workstation and
-`rsync` on the Spark.
+`rsync` on the Spark. `mise run test -- native --gpu` runs only the `native`
+build's `gpu-discrete` tests (test preset `native-gpu`), one at a time, on
+the workstation's discrete GPU with its driver (D-082): the device-memory
+and device-execution providers, the lanes, the page-in path through the
+landing zone into device VMM (D-081), a GGML kernel smoke, the EXL3
+kernels' loading, jitLLM's EXL3 launchers and a phase of the native EXL3
+plan, and `jitllm doctor`. Tests that compare with GB10 records stay
+GB10-only. Nothing runs them by default; on a shared machine, run them
+under its lock for GPU work.
 
 A CUDA build's binaries need the NVIDIA driver (`libcuda.so.1`) to start: a
 hard requirement, which every Spark meets (D-072). The build links NVIDIA's
 stub from the SDK, so building needs no driver. The workstation presets'
 tests skip GPU tests and always load that stub from `build/<preset>/cuda-stub/`,
-so they also run where there is no driver; only Spark runs use the driver. On
-a host without the driver, run the `cpu` preset's `jitllm` by hand instead.
+so they also run where there is no driver; only Spark runs and `--gpu` runs
+use the driver. On a host without the driver, run the `cpu` preset's
+`jitllm` by hand instead.
 
 A built `jitllm doctor` (in `build/<preset>/src/cli/`) reports what a host
 offers that build: the driver, each GPU's compute capability, VMM support and
-backing granularity, and RDMA ports. It exits 1 when the host cannot run the
-build: anything but a GB10 with VMM and host-backed VMM (D-072).
+backing granularity, and RDMA ports, and whether each GPU is unified (the
+GB10) or discrete. jitLLM uses one GPU, device 0 (`CUDA_VISIBLE_DEVICES`
+selects it), and doctor judges only that one. It exits 1 when the host cannot
+run the build: a GPU 0 the build has no code for, or one without VMM and
+host-backed VMM or of the other class than the build's code for it assumes
+(D-072, D-082).
+Spark builds have code only for the GB10; the `native` build also has it for
+the workstation's discrete RTX 3080 Ti.
 
 ## The package and the runtime
 

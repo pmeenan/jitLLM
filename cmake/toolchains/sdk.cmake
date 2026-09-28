@@ -10,6 +10,10 @@
 #   JITLLM_TARGET_MARCH   the explicit target CPU baseline (never `native`)
 #   JITLLM_LINK_FLAGS     how the SDK's Clang links for this target
 #   JITLLM_SYSROOT        cross builds only: the sysroot, relative to the SDK
+#   JITLLM_CUDA_DISCRETE_ARCHITECTURES
+#                         x86-64 only, optional: the discrete NVIDIA GPUs a
+#                         CUDA build also targets beside the GB10 (D-082), as
+#                         compute capabilities without the dot (86 for sm_86)
 #
 # Compilers and build tools come from the SDK that `mise run setup` provisions;
 # Spark-native also uses the host's declared GNU linker. JITLLM_SDK names the
@@ -23,7 +27,8 @@ cmake_path(GET _jitllm_cmake_dir PARENT_PATH JITLLM_SOURCE_ROOT)
 
 # CMake re-reads the toolchain file in every try_compile project; these carry
 # the settings there.
-list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES JITLLM_SDK JITLLM_CUDA JITLLM_TOOLCHAIN_DIR)
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES JITLLM_SDK JITLLM_CUDA JITLLM_TOOLCHAIN_DIR
+     JITLLM_CUDA_DISCRETE_ARCHITECTURES)
 
 # The SDK -----------------------------------------------------------------------
 
@@ -131,7 +136,7 @@ list(JOIN JITLLM_LINK_FLAGS " " CMAKE_EXE_LINKER_FLAGS_INIT)
 # CUDA ----------------------------------------------------------------------------
 
 if(NOT DEFINED JITLLM_CUDA)
-  set(JITLLM_CUDA ON CACHE BOOL "Build CUDA code for sm_121. OFF is the CPU-only profile, which uses no CUDA SDK (D-026).")
+  set(JITLLM_CUDA ON CACHE BOOL "Build CUDA code for sm_121 (and the profile's discrete GPUs, D-082). OFF is the CPU-only profile, which uses no CUDA SDK (D-026).")
 endif()
 if(NOT JITLLM_TOOLCHAIN_DIR)
   set(JITLLM_TOOLCHAIN_DIR "${CMAKE_BINARY_DIR}/toolchain")
@@ -148,10 +153,34 @@ if(JITLLM_CUDA)
     message(FATAL_ERROR "The SDK lacks CUDA for ${JITLLM_CUDA_TARGET_DIR}; remove ${JITLLM_SDK} and run `mise run setup`.")
   endif()
   set(CMAKE_CUDA_FLAGS_INIT "--target-directory ${JITLLM_CUDA_TARGET_DIR}")
-  # GB10 only, as SASS: no PTX to JIT (D-011, D-032).
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 121-real)
+  # The GB10, and the discrete GPUs the profile names (D-082), as SASS: no
+  # PTX to JIT (D-011, D-032). Each is named explicitly, never detected.
+  # Spark builds stay GB10-only. JITLLM_CUDA_DISCRETE_SASS is the discrete
+  # part, which the kernel modules' own architecture lists add to theirs.
+  set(JITLLM_CUDA_DISCRETE_SASS "")
+  if(JITLLM_CUDA_DISCRETE_ARCHITECTURES AND NOT JITLLM_TARGET_TRIPLE STREQUAL "x86_64-linux-gnu")
+    message(FATAL_ERROR "The ${JITLLM_PROFILE} profile targets the GB10 only; discrete GPUs "
+                        "(JITLLM_CUDA_DISCRETE_ARCHITECTURES) are an x86-64 target (D-082).")
   endif()
+  foreach(_jitllm_arch IN LISTS JITLLM_CUDA_DISCRETE_ARCHITECTURES)
+    if(NOT _jitllm_arch MATCHES "^[1-9][0-9]+$" OR _jitllm_arch STREQUAL "121")
+      message(FATAL_ERROR "JITLLM_CUDA_DISCRETE_ARCHITECTURES: '${_jitllm_arch}' is not a "
+                          "discrete GPU's compute capability, such as 86 (D-082)")
+    endif()
+    list(APPEND JITLLM_CUDA_DISCRETE_SASS "${_jitllm_arch}-real")
+  endforeach()
+  list(REMOVE_DUPLICATES JITLLM_CUDA_DISCRETE_SASS)
+  # One list for jitLLM's code, the kernel modules, the probe that `jitllm
+  # doctor` reports and the test labels, so CMAKE_CUDA_ARCHITECTURES is not
+  # a separate knob (try_compile projects pass on the same list).
+  set(_jitllm_cuda_architectures 121-real ${JITLLM_CUDA_DISCRETE_SASS})
+  if(DEFINED CMAKE_CUDA_ARCHITECTURES
+     AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "${_jitllm_cuda_architectures}")
+    message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}', but this "
+                        "profile builds '${_jitllm_cuda_architectures}': name discrete GPUs with "
+                        "JITLLM_CUDA_DISCRETE_ARCHITECTURES instead (D-082).")
+  endif()
+  set(CMAKE_CUDA_ARCHITECTURES ${_jitllm_cuda_architectures})
 
   # NVCC takes a host compiler path but no arguments for it, and runs it for
   # preprocessing, compiling and CMake's link checks. This wrapper adds the

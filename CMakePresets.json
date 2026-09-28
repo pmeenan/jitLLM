@@ -4,7 +4,8 @@
     "Build profiles (D-011, D-026, D-032). Every preset needs JITLLM_SDK, the pinned SDK's root, and that SDK's cmake; `mise run build`, `test` and `deploy` (tools/build) supply both.",
     "Test presets skip the `gpu` label except where a GB10 is present: spark-native, and cross-remote, with which `mise run test -- cross --host HOST` runs the deployed cross build's tests on a Spark over SSH.",
     "The test and development presets (native, cpu, spark-native, the per-slice test build of D-084, and the sanitizer presets) build everything with libstdc++'s assertions, JITLLM_LIBSTDCXX_ASSERTIONS (D-083); only cross, which builds the package, does not.",
-    "CUDA builds link the driver's libcuda.so.1 (D-072). Where GPU tests are skipped, the tests always load NVIDIA's stub from build/<preset>/cuda-stub instead, so they also run on hosts without the driver; only Spark runs use the driver."
+    "native-gpu runs only the `gpu-discrete` tests, on the workstation's discrete GPU with its driver (D-082): `mise run test -- native --gpu`. Nothing runs it by default.",
+    "CUDA builds link the driver's libcuda.so.1 (D-072). Where GPU tests are skipped, the tests always load NVIDIA's stub from build/<preset>/cuda-stub instead, so they also run on hosts without the driver; only Spark runs and native-gpu use the driver."
   ],
   "cmakeMinimumRequired": {"major": 4, "minor": 4, "patch": 3},
   "configurePresets": [
@@ -18,7 +19,7 @@
     {
       "name": "native",
       "inherits": "base",
-      "displayName": "x86-64 native, CUDA for sm_121",
+      "displayName": "x86-64 native, CUDA for sm_121 and the discrete sm_86",
       "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-linux-gnu-native.cmake",
       "cacheVariables": {"JITLLM_CUDA": "ON", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
     },
@@ -91,6 +92,12 @@
       "environment": {"LD_LIBRARY_PATH": "${sourceDir}/build/${presetName}/cuda-stub"}
     },
     {"name": "native", "inherits": "no-gpu-cuda", "configurePreset": "native"},
+    {
+      "name": "native-gpu",
+      "inherits": "base",
+      "configurePreset": "native",
+      "filter": {"include": {"label": "^gpu-discrete$"}}
+    },
     {"name": "cpu", "inherits": "no-gpu", "configurePreset": "cpu"},
     {"name": "cross", "inherits": "no-gpu-cuda", "configurePreset": "cross"},
     {"name": "cross-remote", "inherits": "base", "configurePreset": "cross"},

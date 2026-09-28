@@ -653,7 +653,13 @@ Each memory domain has one execution budget `B`: the physical memory jitLLM
 may use after OS and external headroom. A Spark is one domain shared by CPU
 allocations, GPU backing and page cache (D-004). The ledgers are keyed by
 domain from the start, so for the ledgers a discrete-GPU platform is a data
-difference, not a redesign (D-026). Two ledgers stay separate
+difference, not a redesign (D-026). On a discrete GPU (D-082) the domain is
+the device's memory, with a configured `B` (not all of it: the GPU may
+drive a desktop) and the SSD as the only second tier. Host memory holds the
+runtime and the landing zone for direct reads, a bounded pool declared
+outside the device ledger and reported on its own, and is not a tier (host
+RAM as one would be a second domain, designed for but not built). jitLLM
+uses one GPU, device 0. Two ledgers stay separate
 ([reservation-policy.md](reservation-policy.md#admission-rule-and-separate-ledgers)):
 
 - **Commitment:** fixed overhead `F`, admitted retained state `R(G)`,
@@ -1741,7 +1747,8 @@ error is not a pass (D-050).
 CMake 4.4.3 presets with Ninja drive the native x86-64 and cross AArch64
 builds, linked with LLD, plus D-032's native Spark diagnostic profile with
 GNU binutils (D-032, D-058, D-059). Every build names
-explicit CPU and GPU targets (`sm_121` for GB10), never `-march=native`
+explicit CPU and GPU targets (`sm_121` for GB10, and in the x86-64 `native`
+build the discrete `sm_86`, D-082), never `-march=native`
 (D-011). The C++ and CUDA runtimes link statically, so a binary needs only
 glibc and, in CUDA builds, the NVIDIA driver's `libcuda.so.1` at run time
 (D-060, D-072). The driver is a hard requirement; the build links NVIDIA's

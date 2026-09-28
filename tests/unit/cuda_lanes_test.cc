@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler thread and its lanes over the real providers on a Spark
-// (label `gpu`; D-034, D-048): io_uring reads a direct-I/O file into CUDA
+// (label `gpu`), and on a discrete GPU the build targets (`gpu-discrete`,
+// D-082) (D-034, D-048): io_uring reads a direct-I/O file into CUDA
 // host VMM, the device lanes copy it to device memory and back on a CUDA
 // stream, observed only by fence queries, a CPU worker checks the result,
 // and everything retires. Cancellation while a read is in flight drains

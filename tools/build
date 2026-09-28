@@ -4,7 +4,7 @@
 """Configures, builds, tests and deploys jitLLM with the pinned SDK (D-011, D-012, D-061).
 
     tools/build build [PRESET...] [--fresh] [--locked]
-    tools/build test [PRESET...] [--host HOST] [--fresh] [--locked] [-- CTEST_ARGS...]
+    tools/build test [PRESET...] [--host HOST | --gpu] [--fresh] [--locked] [-- CTEST_ARGS...]
     tools/build deploy --host HOST [PRESET] [--fresh] [--locked]
     tools/build package [--fresh]
 
@@ -18,8 +18,12 @@ into build/<PRESET>.
 skipped except on a Spark, and cross-built tests run under qemu-user. With
 --host, a cross build (`cross`, `cross-asan` or `cross-tsan`) is deployed to
 HOST and its tests, GPU tests included, run there over SSH; `cross-tsan`
-runs only that way. `deploy` copies a cross build's executables and test
-files to HOST under ~/.cache/jitllm/deploy/. Remote hosts are never implied
+runs only that way. With --gpu, a native build (`native`) runs only its
+`gpu-discrete` tests, one at a time, on this host's discrete GPU with its
+driver (test preset `native-gpu`, D-082); nothing runs them by default, and
+on a shared host they belong under its lock for GPU work. `deploy` copies a
+cross build's executables and test files to HOST under
+~/.cache/jitllm/deploy/. Remote hosts are never implied
 (D-012): name one.
 
 `package` builds the `cross` preset --locked and makes the arm64 Debian
@@ -208,7 +212,10 @@ def main() -> int:
         sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
         sub.add_argument("--locked", action="store_true", help="the core profile from locked sources only")
         if name == "test":
-            sub.add_argument("--host", help="run the cross build's tests on this host over SSH")
+            where = sub.add_mutually_exclusive_group()
+            where.add_argument("--host", help="run the cross build's tests on this host over SSH")
+            where.add_argument("--gpu", action="store_true",
+                               help="run only the native build's gpu-discrete tests on this host's GPU")
     sub = commands.add_parser("deploy", help="build, then copy the cross build to a host")
     sub.add_argument("preset", nargs="?", default="cross", metavar="PRESET")
     sub.add_argument("--host", required=True, help="the SSH host to copy to")
@@ -241,6 +248,8 @@ def main() -> int:
     elif args.command == "test":
         local_tests = test_presets()
         for preset in presets:
+            if args.gpu and f"{preset}-gpu" not in local_tests:
+                parser.error(f"{preset} has no discrete GPU tests; --gpu runs native's")
             if preset not in local_tests:
                 parser.error(f"{preset}'s tests run only on a Spark: add --host HOST")
 
@@ -258,6 +267,8 @@ def main() -> int:
                     env["JITLLM_TARGET_SSH_CONTROL"] = control
                 run([ctest, "--preset", REMOTE_TEST_PRESET[preset], "--parallel", REMOTE_TEST_JOBS,
                      *ctest_args], env)
+            elif args.gpu:
+                run([ctest, "--preset", f"{preset}-gpu", "--parallel", 1, *ctest_args], sdk_env(sdk))
             else:
                 run([ctest, "--preset", preset, "--parallel", os.cpu_count() or 1, *ctest_args], sdk_env(sdk))
     return 0

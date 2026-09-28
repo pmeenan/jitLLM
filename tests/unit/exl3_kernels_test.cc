@@ -3,10 +3,11 @@
 
 // The locked ExLlamaV3 GEMM kernels on a GB10 (label `gpu`;
 // docs/backend-proof.md, P1): every kernel of the tables
-// (exl3_tables_test.cc) loads from SASS built for sm_121, and each kernel
-// the P0 launch record names uses the registers per thread recorded there.
-// No kernel is launched: jitLLM's launchers come with the first native EXL3
-// linear.
+// (exl3_tables_test.cc) loads from SASS built for the device (sm_121 on a
+// GB10; on a discrete GPU the build targets, label `gpu-discrete` too,
+// its own, D-082), and each kernel the P0 launch record names uses the
+// registers per thread recorded there (GB10 only). No kernel is launched:
+// jitLLM's launchers come with the first native EXL3 linear.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -60,13 +61,21 @@ bool HaveDevice() {
   return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
 }
 
-TEST(Exl3KernelsGpuTest, EveryKernelLoadsFromSm121Sass) {
+// Device 0's compute capability as the SASS number, such as 121 for 12.1.
+int DeviceArchitecture() {
+  cudaDeviceProp prop{};
+  return cudaGetDeviceProperties(&prop, 0) == cudaSuccess ? (prop.major * 10) + prop.minor : 0;
+}
+
+TEST(Exl3KernelsGpuTest, EveryKernelLoadsFromTheDevicesSass) {
   ASSERT_TRUE(HaveDevice());
+  const int architecture = DeviceArchitecture();
+  ASSERT_GT(architecture, 0);
   for (const void* kernel : AllKernels()) {
     cudaFuncAttributes attributes{};
     ASSERT_EQ(cudaFuncGetAttributes(&attributes, kernel), cudaSuccess);
-    EXPECT_EQ(attributes.binaryVersion, 121);
-    EXPECT_EQ(attributes.ptxVersion, 121);
+    EXPECT_EQ(attributes.binaryVersion, architecture);
+    EXPECT_EQ(attributes.ptxVersion, architecture);
     EXPECT_GE(attributes.maxThreadsPerBlock, 256);
   }
 }

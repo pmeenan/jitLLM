@@ -4,10 +4,10 @@ project. It compiles only the files it names, with GGML_JITLLM defined.
 
 diff --git a/jitllm/CMakeLists.txt b/jitllm/CMakeLists.txt
 new file mode 100644
-index 0000000..f5e9f37
+index 0000000..7aa26be
 --- /dev/null
 +++ b/jitllm/CMakeLists.txt
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,88 @@
 +# SPDX-FileCopyrightText: 2026 jitLLM contributors
 +# SPDX-License-Identifier: Apache-2.0
 +
@@ -21,14 +21,17 @@ index 0000000..f5e9f37
 +#   jitllm_ggml_base  GGML's tensor, allocator and backend-buffer code, for
 +#                     tensor descriptors over jitLLM memory. Every profile.
 +#   jitllm_ggml_cuda  ggml-cuda operation launchers and their kernels, for
-+#                     sm_121a. CUDA profiles only; elsewhere an empty
-+#                     placeholder, so the lock's targets exist in every build.
++#                     sm_121a and the discrete GPUs jitLLM's toolchain names
++#                     (JITLLM_CUDA_DISCRETE_SASS, D-082). CUDA profiles only;
++#                     elsewhere an empty placeholder, so the lock's targets
++#                     exist in every build.
 +#
 +# GGML_JITLLM selects the reviewed adaptations in the patches beside this
 +# one. The flags reproduce the FP16 toolchain bridge's (P0,
 +# docs/experiments/backend-proof-p0/): -O3, C11/C++17 with GNU extensions
 +# for the host code, C++17 CUDA with -use_fast_math and -extended-lambda,
-+# SASS for sm_121a only. Not reproduced: the bridge's GGML_CUDA_USE_GRAPHS
++# SASS for sm_121a (the bridge's only architecture; a discrete target adds
++# its own SASS beside it and leaves sm_121a's unchanged). Not reproduced: the bridge's GGML_CUDA_USE_GRAPHS
 +# and flash-attention instance definitions, which no file here reads.
 +cmake_minimum_required(VERSION 4.4.3)
 +project(jitllm_ggml LANGUAGES C CXX)
@@ -70,6 +73,7 @@ index 0000000..f5e9f37
 +  foreach(ncols RANGE 1 16)
 +    list(APPEND instances "${cuda}/template-instances/mmf-instance-ncols_${ncols}.cu")
 +  endforeach()
++  set(architectures 121a-real ${JITLLM_CUDA_DISCRETE_SASS})
 +  add_library(jitllm_ggml_cuda STATIC
 +    "${cuda}/binbcast.cu"
 +    "${cuda}/convert.cu"
@@ -88,7 +92,7 @@ index 0000000..f5e9f37
 +  target_link_libraries(jitllm_ggml_cuda PUBLIC jitllm_ggml_base)
 +  target_compile_options(jitllm_ggml_cuda PRIVATE -O3 -use_fast_math -extended-lambda -compress-mode=size)
 +  set_target_properties(jitllm_ggml_cuda PROPERTIES
-+    CUDA_ARCHITECTURES 121a-real CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++    CUDA_ARCHITECTURES "${architectures}" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
 +else()
 +  add_library(jitllm_ggml_cuda INTERFACE)
 +endif()

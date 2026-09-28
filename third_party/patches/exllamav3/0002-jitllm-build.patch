@@ -7,10 +7,10 @@ jitllm/jitllm_exl3_kernels.h.
 
 diff --git a/jitllm/CMakeLists.txt b/jitllm/CMakeLists.txt
 new file mode 100644
-index 0000000..8d48ca7
+index 0000000..0c4a382
 --- /dev/null
 +++ b/jitllm/CMakeLists.txt
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,72 @@
 +# SPDX-FileCopyrightText: 2026 jitLLM contributors
 +# SPDX-License-Identifier: Apache-2.0
 +
@@ -38,17 +38,18 @@ index 0000000..8d48ca7
 +#                     transforms), the input and output Hadamard kernels and
 +#                     the FP16 bias add, instantiated from the kept kernel
 +#                     sources, and lookups of every kernel
-+#                     (jitllm_exl3_kernels.h). CUDA profiles only; elsewhere
-+#                     an empty placeholder, so the lock's targets exist in
-+#                     every build.
++#                     (jitllm_exl3_kernels.h). For sm_121 and the discrete
++#                     GPUs jitLLM's toolchain names (JITLLM_CUDA_DISCRETE_SASS,
++#                     D-082). CUDA profiles only; elsewhere an empty
++#                     placeholder, so the lock's targets exist in every build.
 +#
 +# The flags reproduce what upstream's extension builds with, as the P0
 +# reference was built (docs/experiments/backend-proof-p0/): NVCC -O3
-+# --use_fast_math, SASS for sm_121 (not sm_121a), C++20, and the half and
-+# bfloat16 macros and --expt-relaxed-constexpr that PyTorch's extension
-+# builder adds. Not reproduced: -lineinfo, PyTorch's include paths and
-+# extension-name macros, which no file here reads and which leave the SASS
-+# unchanged.
++# --use_fast_math, SASS for sm_121 (not sm_121a; a discrete target adds its
++# own SASS beside it), C++20, and the half and bfloat16 macros and
++# --expt-relaxed-constexpr that PyTorch's extension builder adds. Not
++# reproduced: -lineinfo, PyTorch's include paths and extension-name macros,
++# which no file here reads and which leave the SASS unchanged.
 +cmake_minimum_required(VERSION 4.4.3)
 +project(jitllm_exl3 LANGUAGES CXX)
 +
@@ -67,6 +68,7 @@ index 0000000..8d48ca7
 +    list(APPEND units "${ext}/quant/comp_units/exl3_comp_unit_${bits}_cb1.cu")
 +  endforeach()
 +  list(APPEND units "${CMAKE_CURRENT_SOURCE_DIR}/jitllm_exl3_kernels.cu")
++  set(architectures 121-real ${JITLLM_CUDA_DISCRETE_SASS})
 +  add_library(jitllm_exl3_cuda STATIC ${units})
 +  target_link_libraries(jitllm_exl3_cuda PUBLIC jitllm_exl3_headers)
 +  target_compile_definitions(jitllm_exl3_cuda
@@ -77,7 +79,7 @@ index 0000000..8d48ca7
 +  target_compile_options(jitllm_exl3_cuda PRIVATE -O3 --use_fast_math --expt-relaxed-constexpr
 +                                                  --diag-suppress=177,20012)
 +  set_target_properties(jitllm_exl3_cuda PROPERTIES
-+    CUDA_ARCHITECTURES 121-real CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++    CUDA_ARCHITECTURES "${architectures}" CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
 +else()
 +  add_library(jitllm_exl3_cuda INTERFACE)
 +endif()

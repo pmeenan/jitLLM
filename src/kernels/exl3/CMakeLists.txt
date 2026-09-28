@@ -38,7 +38,7 @@ if(JITLLM_CUDA)
                         PRIVATE jitllm_warnings)
   # What each implementation's identity records of the build (D-053): the
   # prepared ExLlamaV3 tree the build used, as the source receipt records
-  # it (D-057), the SDK, the target, the kernels' device architecture, the
+  # it (D-057), the SDK, the target, the kernels' device architectures, the
   # build type and any sanitizers. A missing receipt, entry or digest fails
   # configure: never an identity without the tree.
   get_property(sources GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
@@ -58,8 +58,15 @@ if(JITLLM_CUDA)
     message(FATAL_ERROR "The source receipt has no ExLlamaV3 tree digest for the registry's identities")
   endif()
   string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
+  # The kernels' architectures as their target builds them: sm_121, and in
+  # the native profile its discrete GPUs' too (D-082).
+  get_target_property(architectures jitllm_exl3_cuda CUDA_ARCHITECTURES)
+  if(NOT architectures)
+    message(FATAL_ERROR "jitllm_exl3_cuda names no CUDA architectures for the registry's identities")
+  endif()
+  list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
-    "JITLLM_EXL3_SOURCE_TREE=\"${exl3_tree}\";JITLLM_EXL3_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_EXL3_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_EXL3_CUDA_ARCHITECTURES=\"121-real\";JITLLM_EXL3_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_EXL3_SANITIZE=\"${sanitize}\"")
+    "JITLLM_EXL3_SOURCE_TREE=\"${exl3_tree}\";JITLLM_EXL3_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_EXL3_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_EXL3_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_EXL3_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_EXL3_SANITIZE=\"${sanitize}\"")
 
   # And jitLLM's own code in the module: every file in this directory,
   # hashed at build time into a generated source (module_digest.cmake), as

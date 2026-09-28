@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The CUDA device-memory provider on a real device (label `gpu`): the
-// shared rules hold under the driver, device and host classes exist on a
-// GB10, host backing given access is the CPU's at the same address, and
-// direct file reads land in it with no copy (D-034).
+// The CUDA device-memory provider on a real device (label `gpu`, and
+// `gpu-discrete` on a discrete GPU the build targets, D-082): the shared
+// rules hold under the driver, device and host classes exist on every GPU
+// `jitllm doctor` accepts, host backing given access is the CPU's at the
+// same address, and direct file reads land in it with no copy (D-034).
 
 #include "providers/cuda/cuda_device_memory.h"
 
@@ -57,7 +58,7 @@ std::size_t ClassOf(const VmmProvider& memory, BackingKind kind) {
 TEST(CudaDeviceMemory, HostBackingIsTheCpusAtTheSameAddress) {
   const std::unique_ptr<VmmProvider> memory = Open();
   ASSERT_NE(memory, nullptr);
-  ASSERT_EQ(memory->Classes().size(), 2U);  // a GB10 has host-NUMA VMM (D-034)
+  ASSERT_EQ(memory->Classes().size(), 2U);  // host-NUMA VMM, which doctor requires
   const Bytes granule = memory->Granularity();
   ASSERT_GT(granule.value(), 0U);
   const auto reservation = memory->Reserve(Bytes(granule.value() * 4)).value();

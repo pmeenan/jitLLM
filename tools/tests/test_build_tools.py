@@ -132,7 +132,15 @@ class Presets(unittest.TestCase):
                 preset = tests[preset["inherits"]]
 
         self.assertEqual({n for n in tests if not tests[n].get("hidden") and not excludes_gpu(n)},
-                         {"cross-remote", "cross-asan-remote", "cross-tsan-remote", "spark-native"})
+                         {"cross-remote", "cross-asan-remote", "cross-tsan-remote", "spark-native",
+                          "native-gpu"})
+        # native-gpu runs only the discrete GPU's tests, with the host's
+        # driver rather than the stub (D-082).
+        gpu = tests["native-gpu"]
+        self.assertEqual(gpu["configurePreset"], "native")
+        self.assertEqual(gpu["filter"], {"include": {"label": "^gpu-discrete$"}})
+        self.assertNotIn("environment", gpu)
+        self.assertEqual(gpu["inherits"], "base")
 
 
 class ConfiguredSdk(unittest.TestCase):
@@ -208,6 +216,23 @@ class TestDriverEnvironment(unittest.TestCase):
             calls, _ = self.run_driver("--host", "new-host", "--locked", preset=preset)
             self.assertIn("-DJITLLM_REQUIRE_LOCKED_SOURCES=ON", calls[0].args[0])
             self.assertEqual(calls[-1].args[0][1:3], ["--preset", f"{preset}-remote"])
+
+    def test_gpu_runs_the_native_builds_discrete_gpu_tests_one_at_a_time(self):
+        calls, deploy = self.run_driver("--gpu", preset="native")
+        deploy.assert_not_called()
+        self.assertEqual(calls[-1].args[0][1:5], ["--preset", "native-gpu", "--parallel", 1])
+
+    def test_gpu_needs_a_preset_with_discrete_gpu_tests_and_no_host(self):
+        for argv, message in ((["cross", "--gpu"], "cross has no discrete GPU tests"),
+                              (["native", "--gpu", "--host", "h"], "not allowed with argument")):
+            stderr = io.StringIO()
+            with mock.patch.object(sys, "argv", ["build", "test", *argv]), \
+                    mock.patch.object(build, "ready_sdk", return_value=types.SimpleNamespace(arch="x86_64")), \
+                    mock.patch.object(build, "run") as run, contextlib.redirect_stderr(stderr), \
+                    self.assertRaises(SystemExit):
+                build.main()
+            run.assert_not_called()
+            self.assertIn(message, stderr.getvalue())
 
     def test_thread_sanitizer_tests_need_a_spark(self):
         stderr = io.StringIO()

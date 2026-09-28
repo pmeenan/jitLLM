@@ -21,7 +21,7 @@ for this before choosing pins; it is a baseline, not a pin.
 | Kernel | 7.0.0-31-generic (Ubuntu-packaged) |
 | CPU / RAM | 16 logical CPUs, 62 GiB |
 | NVIDIA driver | 595.91.07, open kernel module |
-| GPU | NVIDIA GeForce RTX 3080 Ti, 12 GiB, compute capability 8.6 (not a GB10; useful for local CUDA smoke tests, not as a Spark proxy) |
+| GPU | NVIDIA GeForce RTX 3080 Ti, 12 GiB, compute capability 8.6 (not a GB10 and not a Spark proxy; a secondary discrete target since D-082, whose `gpu-discrete` tests run on it when asked). On 2026-09-27 (driver 595.91.07): not integrated, VMM, 2 MiB device-local and host NUMA node 0 granularity; its PCI NUMA node reads -1 |
 | CUDA toolkit | not installed (no `/usr/local/cuda*`, no `nvcc`) |
 | Clang / LLD / clang-tidy | not installed |
 | GCC | 13.3.0 (system) |

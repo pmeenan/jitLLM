@@ -80,6 +80,15 @@ std::string ComputeModeText(const std::optional<CudaComputeMode>& mode) {
   return "other";
 }
 
+std::string ClassText(const std::optional<CudaDeviceClass>& device_class) {
+  if (!device_class) {
+    return "unknown";
+  }
+  return *device_class == CudaDeviceClass::kUnified
+             ? "unified (integrated: one memory budget with the host)"
+             : "discrete (its own device memory)";
+}
+
 std::string ArchitecturesText(const std::vector<int>& architectures) {
   std::string text;
   for (const int architecture : architectures) {
@@ -125,7 +134,7 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
   section.Add("compute capability",
               std::format("{}.{} (sm_{}{}{})", device.major, device.minor, device.major,
                           device.minor, targeted ? "" : ", which this build has no code for"));
-  section.Add("integrated", YesNo(device.integrated, "yes", "no"));
+  section.Add("class", ClassText(DeviceClassOf(device)));
   section.Add("memory", device.memory_bytes ? base::FormatBytes(*device.memory_bytes) : "unknown");
   section.Add("compute mode", ComputeModeText(device.compute_mode));
   section.Add("virtual memory management", YesNo(device.vmm, "supported", "not supported"));
@@ -143,9 +152,32 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
                                    : std::string("host NUMA backing");
   section.Add(host_key, host);
   section.Add("GPUDirect RDMA", YesNo(device.gpu_direct_rdma, "supported", "not supported"));
-
+  // Multi-GPU hosts are out of scope (D-082): jitLLM uses GPU 0 alone, so
+  // only it is judged.
+  if (device.ordinal != kUsedDevice) {
+    section.Add("use", "none: jitLLM uses GPU 0 only (D-082)");
+    return;
+  }
   if (!targeted) {
     return;
+  }
+  // The build's code for this architecture assumes its class of memory:
+  // the GB10's unified budget (D-004) or a discrete GPU's own (D-082).
+  const int architecture = (device.major * 10) + device.minor;
+  if (const auto device_class = DeviceClassOf(device); !device_class) {
+    report.problems.push_back(std::format(
+        "GPU {} does not report whether it is integrated, so whether its memory is unified or "
+        "discrete is unknown (D-082)",
+        device.ordinal));
+  } else if (*device_class != TargetClass(architecture)) {
+    report.problems.push_back(
+        TargetClass(architecture) == CudaDeviceClass::kUnified
+            ? std::format("GPU {} is sm_{} but discrete, and this build's sm_{} code is for the "
+                          "GB10's unified memory (D-004)",
+                          device.ordinal, architecture, architecture)
+            : std::format("GPU {} is sm_{} but integrated, and this build targets sm_{} as a "
+                          "discrete GPU (D-082)",
+                          device.ordinal, architecture, architecture));
   }
   if (device.compute_mode == CudaComputeMode::kProhibited) {
     report.problems.push_back(std::format(
@@ -164,7 +196,8 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
         std::format("GPU {}: device-local VMM backing: {}", device.ordinal, fault));
   }
   // D-034, D-081: every direct read of weights and state lands in host VMM
-  // backing (the landing zone), and there is no other path (owner, 2026-09-24).
+  // backing (the landing zone), from which the GPU copies each extent into
+  // device VMM, on both classes; there is no other path (owner, 2026-09-24).
   std::string why;
   if (device.host_numa) {
     why = GranularityFault(*device.host_numa);
@@ -178,8 +211,8 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
   }
   if (!why.empty()) {
     report.problems.push_back(
-        std::format("GPU {}: no host-backed VMM ({}), which D-034's direct file I/O into host VMM "
-                    "requires",
+        std::format("GPU {}: no host-backed VMM ({}), which direct file reads need as their "
+                    "landing zone (D-034, D-081)",
                     device.ordinal, why));
   }
 }
@@ -212,6 +245,17 @@ std::string CudaVersionText(int version) {
   return std::format("{}.{}", version / 1000, version % 1000 / 10);
 }
 
+std::optional<CudaDeviceClass> DeviceClassOf(const CudaDeviceFacts& device) {
+  if (!device.integrated) {
+    return std::nullopt;
+  }
+  return *device.integrated ? CudaDeviceClass::kUnified : CudaDeviceClass::kDiscrete;
+}
+
+CudaDeviceClass TargetClass(int architecture) {
+  return architecture == 121 ? CudaDeviceClass::kUnified : CudaDeviceClass::kDiscrete;
+}
+
 void DescribeCuda(const CudaFacts& facts, base::Report& report) {
   DescribeDriver(facts, report);
   // A driver older than the toolkit's major version cannot run its code;
@@ -238,6 +282,12 @@ void DescribeCuda(const CudaFacts& facts, base::Report& report) {
         std::format("the CUDA driver reports {} GPUs; doctor checks at most {}", facts.device_count,
                     kMaxProbedDevices));
   }
+  if (facts.device_count > 1) {
+    report.warnings.push_back(
+        std::format("the CUDA driver reports {} GPUs; jitLLM uses only GPU 0, which "
+                    "CUDA_VISIBLE_DEVICES selects (D-082)",
+                    facts.device_count));
+  }
   if (facts.devices.empty()) {
     report.problems.emplace_back("the CUDA driver reports no GPU");
   } else if (std::ranges::none_of(facts.devices, [&](const CudaDeviceFacts& device) {
@@ -245,6 +295,12 @@ void DescribeCuda(const CudaFacts& facts, base::Report& report) {
              })) {
     report.problems.push_back(std::format("no GPU here is one this build has code for ({})",
                                           ArchitecturesText(facts.built_architectures)));
+  } else if (facts.devices.front().ordinal != kUsedDevice ||
+             !Targeted(facts, facts.devices.front())) {
+    report.problems.push_back(std::format(
+        "GPU 0 is not one this build has code for ({}), and jitLLM uses only GPU 0: select one it "
+        "has code for with CUDA_VISIBLE_DEVICES (D-082)",
+        ArchitecturesText(facts.built_architectures)));
   }
 }
 

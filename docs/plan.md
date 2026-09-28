@@ -908,6 +908,20 @@ reservation policy) were recorded in M0.
       slab per 2 MiB extent. The breakdown now reconciles against
       `MemAvailable` and shows that bookkeeping as its own line
       ([measurement](experiments/vmm-counters/README.md)).
+- [x] **Discrete NVIDIA target** (D-082, owner 2026-09-27): build and
+      smoke only; no model runs on it in M2.
+      *Landed:* the `native` build compiles every CUDA unit for `sm_121`
+      and `sm_86`, GGML's and ExLlamaV3's included (a GB10-only diagnostic
+      benchmark excepted; about +46% CPU time for its CUDA objects when
+      measured before P2; Spark builds stay GB10-only). `jitllm doctor`
+      reports each GPU as unified or discrete and judges a targeted
+      discrete GPU as it does the GB10, GPU 0 only (multi-GPU hosts are
+      out of scope). The `gpu-discrete` tests (`mise run test -- native
+      --gpu`: the providers, the lanes, D-081's page-in path, a GGML
+      kernel smoke, EXL3 kernel loading, jitLLM's EXL3 launchers and a
+      native EXL3 phase, the CUDA contract and `smoke.doctor.discrete`)
+      pass on the workstation's RTX 3080 Ti; tests that compare with GB10
+      records stay GB10-only. Fast-swap validation on it is M4's.
 - [ ] Record the operation contract, registry, patch set, phase envelopes
       and `F` per profile in a decision entry, and the aggregate report in
       `experiments/backend-proof/`.
@@ -1065,6 +1079,13 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 - [ ] **Storage scheduling:** demand reads mixed with spill write-back,
       inside the pinned write budget.
 - [ ] Add the A→B→A workload and its regression thresholds to `check:spark`.
+- [ ] **Discrete GPU, secondary** (D-082): the A→B→A fast swap, one model
+      active and partial retention within device memory, on the
+      workstation's discrete GPU (`mise run test -- native --gpu`), with
+      its PCIe restore rate reported, within a configured device budget and
+      with the landing zone reported apart from it. Whole-model swaps and
+      paging within device memory only; no on-demand expert paging from the
+      SSD there. Not an exit criterion.
 
 **Exit criteria:**
 

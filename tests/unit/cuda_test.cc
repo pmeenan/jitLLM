@@ -69,12 +69,14 @@ CudaDeviceFacts Gb10() {
   return device;
 }
 
+// What it reads on the workstation (RTX 3080 Ti, driver 595.91.07).
 CudaDeviceFacts Rtx3080Ti() {
   CudaDeviceFacts device = Gb10();
   device.name = "NVIDIA GeForce RTX 3080 Ti";
   device.major = 8;
   device.minor = 6;
   device.integrated = false;
+  device.memory_bytes = std::uint64_t{12163481} * 1024;
   return device;
 }
 
@@ -87,6 +89,18 @@ CudaFacts SparkFacts() {
   facts.nvidia = {.loaded = true, .version = "580.178.04"};
   facts.device_count = 1;
   facts.devices = {Gb10()};
+  return facts;
+}
+
+// The native x86-64 build on the workstation: code for the GB10 and for
+// the discrete sm_86 (D-082).
+CudaFacts WorkstationFacts() {
+  CudaFacts facts = SparkFacts();
+  facts.built_architectures = {121, 86};
+  facts.library = "/lib/x86_64-linux-gnu/libcuda.so.1";
+  facts.driver_version = 13020;
+  facts.nvidia = {.loaded = true, .version = "595.91.07"};
+  facts.devices = {Rtx3080Ti()};
   return facts;
 }
 
@@ -126,7 +140,8 @@ TEST(DescribeCuda, Spark) {
   EXPECT_EQ(Value(report, "NVIDIA driver", "GPUDirect Storage"),
             "nvidia_fs not loaded (no native GDS)");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "compute capability"), "12.1 (sm_121)");
-  EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "integrated"), "yes");
+  EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "class"),
+            "unified (integrated: one memory budget with the host)");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "memory"), "121.7 GiB");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "virtual memory management"), "supported");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "device-local backing"),
@@ -134,6 +149,117 @@ TEST(DescribeCuda, Spark) {
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "host NUMA node 0 backing"),
             "granularity 2 MiB minimum, 2 MiB recommended");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "GPUDirect RDMA"), "not supported");
+}
+
+// A discrete GPU the build targets is judged as a GB10 is: VMM, both
+// backing classes and the compute mode (D-082).
+TEST(DescribeCuda, Workstation) {
+  const jitllm::base::Report report = Describe(WorkstationFacts());
+  EXPECT_THAT(report.problems, IsEmpty());
+  EXPECT_THAT(report.warnings, IsEmpty());
+  EXPECT_EQ(Value(report, "NVIDIA driver", "GPU code (this build)"), "sm_121, sm_86");
+  const std::string_view gpu = "GPU 0: NVIDIA GeForce RTX 3080 Ti";
+  EXPECT_EQ(Value(report, gpu, "compute capability"), "8.6 (sm_86)");
+  EXPECT_EQ(Value(report, gpu, "class"), "discrete (its own device memory)");
+  EXPECT_EQ(Value(report, gpu, "memory"), "11.6 GiB");
+  EXPECT_EQ(Value(report, gpu, "device-local backing"),
+            "granularity 2 MiB minimum, 2 MiB recommended");
+  EXPECT_EQ(Value(report, gpu, "host NUMA node 0 backing"),
+            "granularity 2 MiB minimum, 2 MiB recommended");
+
+  CudaFacts facts = WorkstationFacts();
+  facts.devices[0].vmm = false;
+  facts.devices[0].device_local.reset();
+  EXPECT_THAT(Describe(facts).problems,
+              ElementsAre("GPU 0 does not report CUDA virtual memory management, which jitLLM "
+                          "requires (D-006)"));
+  facts = WorkstationFacts();
+  facts.devices[0].host_numa_vmm = false;
+  facts.devices[0].host_numa.reset();
+  EXPECT_THAT(Describe(facts).problems,
+              ElementsAre("GPU 0: no host-backed VMM (the device does not support it), which "
+                          "direct file reads need as their landing zone (D-034, D-081)"));
+  facts = WorkstationFacts();
+  facts.devices[0].device_local =
+      CudaGranularity{.minimum = 4 << 20, .recommended = 4 << 20, .error = ""};
+  ASSERT_EQ(Describe(facts).problems.size(), 1U);
+  EXPECT_THAT(Describe(facts).problems[0], HasSubstr("GPU 0: device-local VMM backing: "));
+}
+
+// jitLLM uses GPU 0 only (D-082): another GPU, even one the build has code
+// for, is reported but not judged, and a host with more than one is warned.
+TEST(DescribeCuda, OnlyGpu0IsUsed) {
+  CudaFacts facts = WorkstationFacts();
+  facts.devices.insert(facts.devices.begin(), Gb10());
+  facts.devices[1].ordinal = 1;
+  facts.devices[1].host_numa_vmm = false;
+  facts.devices[1].host_numa.reset();
+  facts.device_count = 2;
+  const jitllm::base::Report report = Describe(facts);
+  const std::string_view other = "GPU 1: NVIDIA GeForce RTX 3080 Ti";
+  EXPECT_EQ(Value(report, other, "compute capability"), "8.6 (sm_86)");
+  EXPECT_EQ(Value(report, other, "use"), "none: jitLLM uses GPU 0 only (D-082)");
+  EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "use"), std::nullopt);
+  EXPECT_THAT(report.problems, IsEmpty());
+  EXPECT_THAT(report.warnings,
+              ElementsAre("the CUDA driver reports 2 GPUs; jitLLM uses only GPU 0, which "
+                          "CUDA_VISIBLE_DEVICES selects (D-082)"));
+}
+
+// GPU 0 must be one the build has code for, even when another GPU is.
+TEST(DescribeCuda, Gpu0MustBeTargeted) {
+  CudaFacts facts = SparkFacts();
+  CudaDeviceFacts gb10 = Gb10();
+  gb10.ordinal = 1;
+  facts.devices = {Rtx3080Ti(), gb10};
+  facts.device_count = 2;
+  EXPECT_THAT(Describe(facts).problems,
+              ElementsAre("GPU 0 is not one this build has code for (sm_121), and jitLLM uses "
+                          "only GPU 0: select one it has code for with CUDA_VISIBLE_DEVICES "
+                          "(D-082)"));
+}
+
+// The code for each architecture assumes its class of memory: sm_121 the
+// GB10's unified budget, anything else a discrete GPU's own.
+TEST(DescribeCuda, ClassMustMatchTheTargetedArchitecture) {
+  using jitllm::providers::cuda::CudaDeviceClass;
+  using jitllm::providers::cuda::DeviceClassOf;
+  using jitllm::providers::cuda::TargetClass;
+  EXPECT_EQ(TargetClass(121), CudaDeviceClass::kUnified);
+  EXPECT_EQ(TargetClass(86), CudaDeviceClass::kDiscrete);
+  EXPECT_EQ(TargetClass(120), CudaDeviceClass::kDiscrete);
+  EXPECT_EQ(DeviceClassOf(Gb10()), CudaDeviceClass::kUnified);
+  EXPECT_EQ(DeviceClassOf(Rtx3080Ti()), CudaDeviceClass::kDiscrete);
+
+  CudaFacts facts = SparkFacts();
+  facts.devices[0].integrated = false;
+  jitllm::base::Report report = Describe(facts);
+  EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "class"), "discrete (its own device memory)");
+  EXPECT_THAT(report.problems,
+              ElementsAre("GPU 0 is sm_121 but discrete, and this build's sm_121 code is for the "
+                          "GB10's unified memory (D-004)"));
+
+  facts = WorkstationFacts();
+  facts.devices[0].integrated = true;
+  EXPECT_THAT(Describe(facts).problems,
+              ElementsAre("GPU 0 is sm_86 but integrated, and this build targets sm_86 as a "
+                          "discrete GPU (D-082)"));
+
+  facts.devices[0].integrated.reset();
+  EXPECT_EQ(DeviceClassOf(facts.devices[0]), std::nullopt);
+  report = Describe(facts);
+  EXPECT_EQ(Value(report, "GPU 0: NVIDIA GeForce RTX 3080 Ti", "class"), "unknown");
+  EXPECT_THAT(report.problems,
+              ElementsAre("GPU 0 does not report whether it is integrated, so whether its memory "
+                          "is unified or discrete is unknown (D-082)"));
+
+  // An untargeted GPU's class is reported, not judged.
+  facts = SparkFacts();
+  CudaDeviceFacts other = Rtx3080Ti();
+  other.ordinal = 1;
+  other.integrated = true;
+  facts.devices.push_back(other);
+  EXPECT_THAT(Describe(facts).problems, IsEmpty());
 }
 
 TEST(DescribeCuda, SameOrNewerDriver) {
@@ -188,11 +314,12 @@ TEST(DescribeCuda, UntargetedDevicesAreNotJudged) {
   other.device_local.reset();
   other.host_numa.reset();
   facts.devices.push_back(other);
+  facts.device_count = 2;
   const jitllm::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 1: NVIDIA GeForce RTX 3080 Ti", "virtual memory management"),
             "not supported");
   EXPECT_THAT(report.problems, IsEmpty());
-  EXPECT_THAT(report.warnings, IsEmpty());
+  EXPECT_THAT(report.warnings, ElementsAre(HasSubstr("reports 2 GPUs")));
 }
 
 TEST(DescribeCuda, NoVmm) {
@@ -224,7 +351,7 @@ TEST(DescribeCuda, NoHostBacking) {
   EXPECT_THAT(report.warnings, IsEmpty());
   EXPECT_THAT(report.problems,
               ElementsAre("GPU 0: no host-backed VMM (the device does not support it), which "
-                          "D-034's direct file I/O into host VMM requires"));
+                          "direct file reads need as their landing zone (D-034, D-081)"));
 
   facts.devices[0].host_numa_vmm = true;
   facts.devices[0].host_numa_id = -1;

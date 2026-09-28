@@ -319,8 +319,10 @@ OpenAI-shaped routes, no fourth protocol. Execution evidence is still owed.
 | Platform | Status | Notes |
 | --- | --- | --- |
 | NVIDIA DGX Spark, one or more nodes | confirmed | D-004; the primary target |
-| Other NVIDIA CUDA hardware for development and tests | confirmed | the workstation's RTX 3080 Ti for local smoke tests; supported-target status is earned separately and may use more direct transfer paths |
-| Apple silicon, single machine | deferred | D-026: not until demand; boundaries kept portable at no cost; memory API verified when a port is considered |
+| Discrete NVIDIA GPU on x86-64 (first: the workstation's RTX 3080 Ti, `sm_86`) | confirmed | D-082, a secondary target: one device-memory domain plus the SSD, fast whole-model swaps with one model active, partial paging within device memory, a configured budget, one GPU (device 0); direct reads land in a bounded host-VMM zone outside the device ledger and are copied in (D-081). On-demand expert paging from the SSD during a run is not in the first discrete round. The `native` build targets it, `jitllm doctor` judges it, and its `gpu-discrete` tests run on request. Fast-swap validation joins M4's single-Spark stage; exactness stays GB10-referenced |
+| Host RAM as a second tier on a discrete GPU | deferred | D-082: designed for as a separate memory domain with no core special case; not built. Trigger: the owner asks for it (D-082's reopen) |
+| Apple silicon, single machine | deferred | D-082: in scope later in the project (unified memory like the Spark's, a different runtime); D-026's boundaries kept portable at no cost; memory API verified when the port starts |
+| Intel GPUs | rejected | D-082: out for now |
 | AMD, single machine | deferred | D-026: same posture |
 
 ## Load- and temperature-aware operating policy (proposal)

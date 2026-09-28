@@ -55,9 +55,10 @@ so the audience is anyone with the problem, not just the owner.
    without losing conversation state, warm-generation performance, or the
    ability to explain what the runtime did.
 2. **Owners of other hardware with a similar memory-versus-storage gap**,
-   other CUDA hardware first, and possibly Apple silicon or AMD single
-   machines later if demand appears (D-026), once a validated path makes
-   their configuration a supported one.
+   other CUDA hardware first (discrete NVIDIA GPUs are a secondary target
+   for fast model swaps, D-082), Apple silicon later in the project's life
+   (D-082), and possibly AMD single machines if demand appears (D-026),
+   once a validated path makes their configuration a supported one.
 3. **Inference-systems developers** interested in a memory-first runtime
    whose catalog, reservation/lease, and paging subsystems are usable and
    inspectable independently of any one engine's kernels.

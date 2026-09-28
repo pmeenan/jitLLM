@@ -117,8 +117,10 @@ TEST(RuntimeArguments, Parse) {
   }
 }
 
-// A development host has no GB10, so a CUDA build refuses at the platform
-// step there; the CPU-only build and a Spark get to readiness.
+// A host without a GPU this build targets (or, as in the workstation
+// presets' tests, without the driver: they load its stub) refuses at the
+// platform step; the CPU-only build, a Spark and a targeted discrete GPU
+// (D-082) get to readiness.
 TEST(RuntimeStart, CreatesItsRolesAndTakesTheLock) {
   const Scratch scratch;
   const Outcome outcome = StartWith(scratch.Options());

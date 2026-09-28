@@ -3,13 +3,20 @@
 
 // The CUDA toolchain contract (D-032, D-060, D-066): NVCC with the SDK's
 // Clang as host compiler, C++23 in host and device code, no exceptions in
-// the host pass, sm_121 SASS and a static CUDA runtime. Needs a GB10, so it
-// carries the `gpu` label and runs only on a Spark.
+// the host pass, SASS only (sm_121, and the build's discrete targets such as
+// sm_86, D-082) and a static CUDA runtime. Needs a GPU the build has SASS
+// for: a GB10 (label `gpu`), or a discrete target (`gpu-discrete` too).
 
 #include <cuda_runtime.h>
 
 #include <array>
 #include <cstdio>
+#include <string>
+#include <string_view>
+
+#ifndef JITLLM_CUDA_SASS
+#error "the build defines JITLLM_CUDA_SASS (tests/toolchain/CMakeLists.txt)"
+#endif
 
 static_assert(__cplusplus >= 202302L, "C++23 in CUDA code too (D-032)");
 #if !defined(__CUDA_ARCH__) && (defined(__cpp_exceptions) || defined(__EXCEPTIONS))
@@ -19,6 +26,8 @@ static_assert(__cplusplus >= 202302L, "C++23 in CUDA code too (D-032)");
 namespace {
 
 constexpr int kCount = 257;
+// The compute capabilities this build has SASS for, such as "/121/86/".
+constexpr std::string_view kSass = JITLLM_CUDA_SASS;
 
 // `if consteval` needs C++23 in both passes.
 __host__ __device__ constexpr int Offset() {
@@ -52,9 +61,11 @@ int main() {
   if (!Ok(cudaGetDeviceProperties(&prop, 0), "cudaGetDeviceProperties")) {
     return 1;
   }
-  if (prop.major != 12 || prop.minor != 1) {
-    std::fprintf(stderr, "FAIL: needs a GB10 (compute capability 12.1), found %s %d.%d\n",
-                 prop.name, prop.major, prop.minor);
+  const std::string sass = "/" + std::to_string((prop.major * 10) + prop.minor) + "/";
+  const bool targeted = prop.minor >= 0 && prop.minor <= 9 && kSass.contains(sass);
+  if (!targeted) {
+    std::fprintf(stderr, "FAIL: needs a GPU this build has SASS for, found %s %d.%d\n", prop.name,
+                 prop.major, prop.minor);
     return 1;
   }
   std::array<int, kCount> host{};

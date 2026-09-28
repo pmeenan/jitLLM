@@ -19,10 +19,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   same version, with its Debian form (`X.Y.Z~dev.N+g<commit>-1`).
 - `jitllm doctor`, a capability probe: the build, the host (kernel, glibc,
   memory), RDMA ports, the NVIDIA driver and each GPU's compute capability,
-  compute mode, VMM support and backing granularity. It exits 1 when the
-  host cannot run the build, which needs a GB10 with VMM and host-backed
+  compute mode, VMM support and backing granularity, and whether it is
+  unified (the GB10) or discrete. It exits 1 when the host cannot run the
+  build: a GPU the build has code for is needed, with VMM and host-backed
   VMM.
 - CUDA builds of `jitllm` need the NVIDIA driver (`libcuda.so.1`) to start.
+- Discrete NVIDIA GPUs are a secondary target (D-082): the x86-64 build
+  also has code for compute capability 8.6 (`sm_86`), and `jitllm doctor`
+  and the runtime accept such a GPU with VMM and host-backed VMM. Arm64
+  builds stay GB10-only. jitLLM uses one GPU, device 0: `jitllm doctor`
+  judges only it and warns on a host with more.
 - The node's configuration, `schema_version = 2`: `/etc/jitllm/jitllm.toml`
   and the fragments in `/etc/jitllm/jitllm.d/`, strict TOML 1.0 in which
   every key has one owning file, with the `[storage]` roles, `[limits]` and

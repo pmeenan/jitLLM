@@ -147,19 +147,43 @@ function(jitllm_gtest target)
   gtest_discover_tests(${target} DISCOVERY_MODE PRE_TEST ${ARGN})
 endfunction()
 
-# A GoogleTest executable that runs only on a GB10 and loads cuBLAS
-# (D-076). Where GPU tests are skipped it may not even load (qemu-user has
-# no libgcc_s for cuBLAS), so CTest never runs it to list its tests: they
-# are read from its sources (gtest_add_tests) and labeled `gpu`. It finds
-# the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH relative to
-# itself, which a deployed copy of the build tree keeps.
+# A GoogleTest executable that needs a GPU (label `gpu`): a GB10, and for
+# the tests DISCRETE names (Suite.Name, or ALL) also the discrete GPUs a
+# build targets (label `gpu-discrete` as well, where the build has any;
+# D-082). It may load cuBLAS (D-076). Where GPU tests are skipped it may
+# not even load (qemu-user has no libgcc_s for cuBLAS), so CTest never runs
+# it to list its tests: they are read from its sources (gtest_add_tests).
+# It finds the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH
+# relative to itself, which a deployed copy of the build tree keeps.
+# ENVIRONMENT sets its tests' environment.
 function(jitllm_gpu_gtest target)
+  cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "DISCRETE;ENVIRONMENT")
+  if(arg_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "jitllm_gpu_gtest(${target}): unexpected ${arg_UNPARSED_ARGUMENTS}")
+  endif()
   target_link_libraries(${target} PRIVATE GTest::gmock_main jitllm_test_expected jitllm_warnings)
   jitllm_test_executable(${target})
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   gtest_add_tests(TARGET ${target} TEST_PREFIX unit. TEST_LIST tests)
   set_tests_properties(${tests} PROPERTIES LABELS gpu)
+  if(arg_ENVIRONMENT)
+    set_tests_properties(${tests} PROPERTIES ENVIRONMENT "${arg_ENVIRONMENT}")
+  endif()
+  set(discrete "")
+  if(arg_DISCRETE STREQUAL "ALL")
+    set(discrete ${tests})
+  else()
+    foreach(name IN LISTS arg_DISCRETE)
+      if(NOT "unit.${name}" IN_LIST tests)
+        message(FATAL_ERROR "jitllm_gpu_gtest(${target}): no test ${name}")
+      endif()
+      list(APPEND discrete "unit.${name}")
+    endforeach()
+  endif()
+  if(discrete AND JITLLM_CUDA_DISCRETE_SASS)
+    set_tests_properties(${discrete} PROPERTIES LABELS "gpu;gpu-discrete")
+  endif()
 endfunction()
 
 add_subdirectory(src)

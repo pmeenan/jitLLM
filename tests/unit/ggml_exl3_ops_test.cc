@@ -3,7 +3,8 @@
 
 // The GGML operations the native EXL3 plan adds (kernels/ggml/ops.h;
 // docs/backend-proof.md, "Native EXL3 operation plan") under jitLLM's
-// launch context on a GB10 (label `gpu`):
+// launch context on a GB10 (label `gpu`; the over-read probe and the host
+// checks also on a discrete GPU the build targets, `gpu-discrete`, D-082):
 // - the casts (ggml.convert): F32 to F16 rounds to nearest even and F16 to
 //   F32 widens, bit for bit as the host does;
 // - the embedding (ggml.get_rows over a BF16 table) widens exactly;

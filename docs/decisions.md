@@ -222,6 +222,187 @@ package may take them); a libstdc++ update replaces or redefines the
 macro (a hardened mode or C++26 contracts); or a third-party component
 cannot build with it.
 
+## D-082: Discrete NVIDIA GPUs are a secondary target: device memory and the SSD, one active model, fast whole-model swaps; system RAM as a tier is designed for, not built  (2026-09-27, status: accepted; amends D-004's single hardware target and D-072's GB10-only judgment; sharpens D-026's posture on Apple silicon; assumes D-081's device-VMM residency and host-VMM landing zone)
+
+**Decision.** The owner, on 2026-09-27, added discrete NVIDIA GPUs (first
+the workstation's RTX 3080 Ti) as a target "to keep the code flexible
+while we're building it", scoped as: "I'd keep the SSD as the only second
+tier and strictly focus on the fast swapping of models case, assuming only
+one will be active at a time (selective paging could still be valuable if
+both models don't use all of the RAM). That keeps the design clean as
+well. We can architect for later supporting separate system RAM but I
+wouldn't tackle that at this point."
+
+- **What a discrete GPU is to jitLLM.** One memory domain, the GPU's own
+  memory, with its own budget `B`, and the SSD behind it as the only
+  second tier. The workload there is a fast swap of whole models with one
+  model active at a time; partial eviction and paging within device memory
+  (D-008) still apply, so extents of the previous model that fit beside the
+  active one stay resident. Host memory holds the runtime, the OS and the
+  bounded landing zone that direct reads land in before the GPU copies
+  each extent into device VMM over PCIe (D-034, D-081): the same path
+  as on the GB10, so the discrete target needs no second storage design.
+- **First-round scope.** Whole-model swaps, and selective retention and
+  paging within device memory when two models partly fit. On-demand MoE
+  expert paging from the SSD during a run (D-008's routing-driven page-in)
+  is not in the first discrete round; it stays a Spark capability (M5).
+- **The landing zone on a discrete GPU** is a declared host-memory pool
+  outside the device domain's ledger: host memory is not a paging domain
+  in the first round. It is bounded as on the GB10 (2 × depth × 2 MiB,
+  8–16 MiB, D-081), and accounted and reported on its own, not in `B`.
+- **The device budget `B` is configured** in the node configuration, never
+  "all of the GPU's memory", since the GPU may also drive a desktop. The
+  runtime and `jitllm doctor` are to report the device's free memory at
+  start once `B` is configured for a device (neither is built yet: today
+  doctor reports total memory, and the runtime opens no device). Memory
+  that other processes take from under `B` is a fault, reported, not
+  something jitLLM pages around.
+- **One GPU per host.** Multi-GPU hosts are out of scope: jitLLM uses the
+  driver's device 0 (`CUDA_VISIBLE_DEVICES` selects which GPU that is;
+  CUDA's default order is fastest first, not `nvidia-smi`'s). `jitllm
+  doctor` and the runtime judge GPU 0 only: a host whose GPU 0 the build
+  has no code for fails even when another GPU would pass, other GPUs are
+  reported with `use: none` and not judged, and more than one GPU is a
+  warning.
+- **System RAM as a tier is designed for, not built.** When it comes, it
+  is a second memory domain with its own ledger and budget, and a transfer
+  between domains is an explicit copy (as between two Sparks, D-004). The
+  core gets no special case for it, no "CPU offload" branch: the ledgers
+  are already keyed by domain (D-026). Nothing is built for it now.
+- **Build.** The x86-64 `native` profile compiles its CUDA code for
+  `sm_121` and `sm_86` (a GB10-only diagnostic benchmark excepted), as
+  SASS only, from an explicit list
+  (`JITLLM_CUDA_DISCRETE_ARCHITECTURES` in its toolchain file, overridable
+  with `-D`; never detected, D-011). GGML keeps `sm_121a` and ExLlamaV3
+  (upstream's GEMM units and jitLLM's instance unit alike) `sm_121` for
+  the GB10, each with `sm_86` beside it. The GB10's code is
+  compiled as before, and GGML's dispatch, which picks the highest compiled
+  architecture at or below the device's, chooses the same code on a GB10;
+  the native build's `sm_121` SASS was not compared byte for byte with a
+  GB10-only build's. Spark profiles (`cross`, its sanitizer builds,
+  `spark-native`) stay GB10-only, and configure refuses a discrete
+  architecture for an AArch64 target. `CMAKE_CUDA_ARCHITECTURES` is not a
+  second knob: configure refuses a value other than the profile's list, so
+  jitLLM's code, the kernel modules, what doctor reports and the test
+  labels always agree. The added architecture goes into `native` rather than a
+  preset of its own: the workstation tiers, which build `native` for each host-only change
+  and before a package ships (D-084, D-085), then compile every
+  kernel for the discrete target, which is what keeps the code flexible,
+  and the GPU tests need no second build tree. The Spark check set of a
+  slice (D-084) does not build `sm_86`, so a kernel that stops compiling
+  for it is caught at the next workstation build, not in the slice.
+- **`jitllm doctor`.** Each GPU section reports its class: *unified*
+  (integrated, one budget with the host, the GB10) or *discrete* (its own
+  device memory), from the driver's integrated attribute. A GPU the build
+  has code for is judged by what it needs. Both classes need a compute mode
+  other than prohibited, device VMM whose device-local granularity can back
+  2 MiB chunks (where weights and state live, D-081) and host-NUMA VMM
+  that can (the landing zone, D-034, D-081). The build's `sm_121` code is
+  for the GB10's unified memory, and every other architecture a build
+  targets is a discrete GPU's, so a targeted GPU of the other class, or
+  one whose class the driver does not report, is a problem. (This holds
+  because discrete architectures are x86-64 targets only, and NVIDIA's
+  other integrated GPUs are AArch64 Jetson parts.) Only GPU 0 is judged,
+  as above; a host whose GPU 0 the build has no code for fails. The runtime
+  refuses to start on the same judgment. The command, its arguments and its exit statuses are unchanged
+  (D-072's public surface), so no surface version changes; which hosts
+  pass is what changed.
+- **Tests.** GPU tests that also hold on a discrete GPU carry the label
+  `gpu-discrete` beside `gpu`: the device-memory and device-execution
+  providers, the lanes, D-081's page-in path (direct reads through the
+  host-VMM landing zone, copied into device VMM, evicted and reloaded), a
+  GGML kernel smoke (identical results across `cudaMalloc`, device VMM and
+  host VMM, and the launch context's rules), EXL3's GEMM kernels loading
+  from the device's own SASS, jitLLM's EXL3 launchers (the registry, the
+  co-resident and lock-slot limits, faults, the over-read probe at the
+  fixtures' shapes, two contexts at the co-resident limit), a phase of the
+  native EXL3 plan binding and running, the EXL3 plan's GGML operations'
+  over-read probe and host checks, the CUDA toolchain contract and
+  `jitllm doctor` (`smoke.doctor.discrete`). The test preset `native-gpu`
+  runs only those, one at a time, with the host's driver: `mise run test
+  -- native --gpu`. No other preset and no check tier runs them; on the
+  shared workstation they run under its lock for GPU work. Tests that
+  compare with GB10 records (recorded plans and launches, cuBLAS paths,
+  cuBLASLt algorithms pinned on the GB10, register counts, upstream's
+  choices as the GB10 sweep saw them) stay GB10-only, and a GB10-only test
+  fails rather than skips on a discrete GPU: the Spark's doctor smoke,
+  the recorded registers, the pinned reconstruction GEMM, the recorded
+  decode-step start and the attention's recorded launches all failed on
+  the 3080 Ti.
+- **Exactness.** The backend proof's exactness gates stay referenced to
+  the GB10. On a discrete GPU, results are judged by tolerance against CPU
+  references, as the kernel smoke's oracles are, unless references are
+  recorded on that architecture; bit-identity across memory kinds on one
+  device still holds there.
+- **Other platforms.** Intel is out for now. Apple silicon is in scope
+  later in the project's life (owner: it "shares the same unified memory
+  architecture as the sparks with similar challenges (but a completely
+  different runtime and architecture)"): D-026's portable boundaries now
+  serve a planned port, not only a possible one, though nothing is built
+  for it yet. AMD keeps D-026's posture.
+
+**Context.** Until now the Spark was the only target (D-004), and D-072
+made `jitllm doctor` fail on anything but a GB10; on the workstation it
+reported that the build had no code for `sm_86`. D-081 moves weights and
+state into device VMM on the GB10 and lands direct reads in a small
+host-VMM zone. That is also the natural shape for a discrete GPU, which is
+what makes this target cheap now.
+
+**Evidence** (workstation: RTX 3080 Ti, driver 595.91.07, CUDA driver API
+13.2, SDK toolkit 13.4).
+- The GB10-only `jitllm doctor` reported, for the 3080 Ti: not integrated,
+  11.6 GiB, compute mode default, VMM supported, device-local and host
+  NUMA node 0 backing both 2 MiB minimum and recommended. So the landing
+  zone is available on this discrete GPU as on the GB10, although the
+  device's PCI NUMA node reads -1.
+- Every GGML and ExLlamaV3 unit jitLLM builds compiles for `sm_86`
+  unchanged, jitLLM's EXL3 instance unit (P3) included. Before P2, rebuilding
+  the `native` build's 38 CUDA objects took 1,092–1,126
+  s of user CPU time with `sm_86` against 751–753 s without it (two rounds
+  each, 16 threads, workstation shared with other builds, so wall times are
+  not comparable): +46%. CUDA objects were about 47% of the per-job time of
+  a full `native` build, so the whole build costs roughly a fifth more CPU
+  time; the `cpu` and `cross` builds are unchanged. Not re-measured since
+  P3 added the EXL3 instance unit.
+- The `native` build's `jitllm doctor` on the workstation: `sm_86`
+  targeted, class discrete, no problems. Its 29 `gpu-discrete` tests
+  passed there (2026-09-27, after P3 and D-081's page-in path), among them
+  GGML's RMSNorm, MMF and MMVF bit-identical across `cudaMalloc`, device
+  VMM and host VMM and within the CPU oracles' bounds, direct reads landing
+  in host VMM, extents paged through the landing zone into device VMM,
+  evicted and reloaded with the same bytes, and a phase of the native
+  EXL3 plan. Of the 23 GB10-only GPU tests, run there once by hand, 16
+  also passed; they keep the GB10-only label for now, as they compare with
+  GB10 records or are GGML plan, operation and cuBLAS tests this entry
+  left GB10-only (giving the label to those that hold no GB10 record is
+  open). 7 failed there as they should (the Spark's doctor smoke, the recorded registers, the three
+  that run the pinned reconstruction GEMM, the recorded decode-step start
+  and the attention's recorded launches). On `spark-b` the `spark-native`
+  build's 559 tests passed, 51 GPU tests among them.
+
+**Consequences.**
+- The `native` build's implementation identities record the architectures
+  it compiled: GGML's `121a-real,86-real` and ExLlamaV3's
+  `121-real,86-real` (read from the kernels' target); the Spark builds'
+  still record `121a-real` and `121-real`. The two build patches
+  (`third_party/patches/{ggml,exllamav3}/0002`) take the discrete list, so
+  the prepared trees' digests change, and with them every build's GGML and
+  ExLlamaV3 identities, and every checkout runs `mise run prepare` once.
+- On a discrete GPU the storage-to-device copy crosses PCIe, whose
+  bandwidth and the copy's effect on a concurrently running model are not
+  measured; fast-swap validation on the discrete target joins the
+  single-Spark A→B→A stage (M4) as a secondary configuration, without
+  changing its exit criteria.
+- Placement across a Spark and a workstation GPU, mixed-traffic
+  concurrency, multi-GPU hosts and host RAM as a tier are not in scope.
+
+**Reopen if.** The discrete target measurably costs the GB10 build time,
+clarity or performance (the GB10 wins, D-026); the owner wants host RAM
+as a tier; a discrete GPU without host-NUMA VMM must be supported (the
+landing zone would need another backing); a host must use more than one
+GPU; on-demand expert paging from the SSD is wanted on a discrete GPU; or
+Intel or AMD GPUs are taken up.
+
 ## D-081: Weights and state live in device VMM; direct reads land in a bounded host-VMM zone and the GPU copies each extent in  (2026-09-27, status: accepted; amends D-034's in-place consumption, and so D-034's amendment of D-004's staging copy)
 
 **Decision.** The owner, on 2026-09-27: "If it fixes the L2 cache issue
@@ -986,7 +1167,7 @@ measurements), the workstation's on Btrfs.
 TOML 1.1 or a toml++ release is adopted; or a user needs to share a
 configuration directory with a group.
 
-## D-072: `jitllm doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries)
+## D-072: `jitllm doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries; its GB10-only judgment amended by D-082)
 
 **Decision.** Owner's answers on 2026-09-24 settled the driver binding, what
 fails, and what is stable. How M1's Smoke binary item probes a host:
@@ -4482,7 +4663,7 @@ signing keys are an M7 decision.
 **Reopen if.** The primary platform stops being Debian-based, or users need
 container-only distribution instead.
 
-## D-026: NVIDIA and DGX Spark first; keep the memory, paging, and transport boundaries portable when it costs nothing  (2026-09-20, status: accepted)
+## D-026: NVIDIA and DGX Spark first; keep the memory, paging, and transport boundaries portable when it costs nothing  (2026-09-20, status: accepted; discrete NVIDIA GPUs and Apple silicon's later scope in D-082)
 
 **Decision.** The primary target is NVIDIA hardware, DGX Spark first. The
 base concepts apply to Apple silicon and AMD equivalents on single machines,
@@ -5155,7 +5336,7 @@ must not silently revert to a vLLM-controlled process architecture.
 **Reopen if.** A hosted engine exposes a memory-management contract that
 satisfies D-006, D-007, and D-008 without owning the process.
 
-## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted; staging-copy requirement amended by D-034, and a GPU copy through a host-VMM landing zone restored by D-081)
+## D-004: Target platform is NVIDIA DGX Spark, one or two nodes, treated as unified-memory domains over a network  (2026-09-20, status: accepted; staging-copy requirement amended by D-034, and a GPU copy through a host-VMM landing zone restored by D-081; discrete NVIDIA GPUs added as a secondary target by D-082)
 
 **Decision.** The initial target is local inference on one or two DGX Sparks
 (Arm CPU, GB10 GPU at compute capability 12.1, 128 GB unified memory). A

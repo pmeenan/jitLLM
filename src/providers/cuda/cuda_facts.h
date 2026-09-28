@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // What the CUDA device probe found, in plain types, and the judgment of it
-// (D-006, D-026, D-033, D-034). ProbeCuda() (cuda_probe.h) fills CudaFacts
-// from the driver; DescribeCuda() needs no driver, so tests give it any
-// facts.
+// (D-006, D-026, D-033, D-034, D-081, D-082). ProbeCuda() (cuda_probe.h)
+// fills CudaFacts from the driver; DescribeCuda() needs no driver, so tests
+// give it any facts.
 
 #ifndef JITLLM_PROVIDERS_CUDA_CUDA_FACTS_H_
 #define JITLLM_PROVIDERS_CUDA_CUDA_FACTS_H_
@@ -26,6 +26,12 @@ struct CudaGranularity {
   std::uint64_t minimum = 0;
   std::uint64_t recommended = 0;
   std::string error;
+};
+
+// How a GPU's memory relates to the host's (D-004, D-082).
+enum class CudaDeviceClass : std::uint8_t {
+  kUnified,   // integrated: one physical budget with the host, as the GB10's
+  kDiscrete,  // its own device memory, a separate budget from the host's
 };
 
 // Whether processes may create contexts on the device (nvidia-smi -c).
@@ -73,6 +79,10 @@ struct CudaFacts {
 
 inline constexpr int kMaxProbedDevices = 64;
 
+// The one GPU jitLLM uses: the driver's device 0, after CUDA_VISIBLE_DEVICES
+// (D-082). Multi-GPU hosts are out of scope; other GPUs are reported only.
+inline constexpr int kUsedDevice = 0;
+
 // The largest backing granularity a targeted GPU may have: D-056's
 // artifacts page in 2 MiB chunks.
 inline constexpr std::uint64_t kPagingChunkBytes = std::uint64_t{2} << 20;
@@ -85,8 +95,16 @@ std::vector<int> ParseCudaArchitectures(std::string_view architectures);
 // "13.4" for 13040.
 std::string CudaVersionText(int version);
 
+// The device's class from its integrated attribute; nullopt if unknown.
+std::optional<CudaDeviceClass> DeviceClassOf(const CudaDeviceFacts& device);
+
+// The class of GPU this build's code for `architecture` is for: sm_121 is
+// the GB10's, unified; every other architecture a build targets is a
+// discrete GPU's (D-082).
+CudaDeviceClass TargetClass(int architecture);
+
 // Adds the `NVIDIA driver` section and one section per GPU, with the
-// problems and warnings they show.
+// problems and warnings they show. Only GPU 0 (kUsedDevice) is judged.
 void DescribeCuda(const CudaFacts& facts, base::Report& report);
 
 }  // namespace jitllm::providers::cuda

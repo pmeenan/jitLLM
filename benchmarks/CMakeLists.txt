@@ -115,7 +115,9 @@ if(JITLLM_CUDA)
   # Why host VMM slowed BP-F1's products, and what the alternatives cost:
   # microkernels over each kind of memory, copies between them, and GGML
   # products with each buffer group placed separately
-  # (docs/experiments/host-vmm-diagnosis/). Diagnostic, not a gate.
+  # (docs/experiments/host-vmm-diagnosis/). Diagnostic, not a gate. Its
+  # kernels are the GB10's alone, sm_121a in every profile: the diagnosis
+  # is of the GB10's L2, so no discrete target builds them (D-082).
   add_executable(jitllm_vmm_diag_bench vmm_diag_bench.cc vmm_diag_kernels.cu)
   target_include_directories(jitllm_vmm_diag_bench SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")

@@ -94,8 +94,9 @@ add_executable(device_execution_test device_execution_test.cc)
 target_link_libraries(device_execution_test PRIVATE jitllm_fake_providers)
 jitllm_gtest(device_execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The CUDA device-memory provider against a real device: label `gpu`, so
-# only on a Spark.
+# The CUDA device-memory and device-execution providers against a real
+# device: label `gpu`, and `gpu-discrete` too, so on a Spark and on a
+# discrete GPU the build targets (D-082).
 if(JITLLM_CUDA)
   add_executable(cuda_device_execution_test cuda_device_execution_test.cc)
   target_include_directories(cuda_device_execution_test SYSTEM PRIVATE
@@ -104,23 +105,24 @@ if(JITLLM_CUDA)
   jitllm_gtest(cuda_device_execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   # The scheduler and its lanes over io_uring, CUDA host VMM and CUDA
-  # streams (label `gpu`).
+  # streams.
   add_executable(cuda_lanes_test cuda_lanes_test.cc)
   target_link_libraries(cuda_lanes_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
-  jitllm_gtest(cuda_lanes_test TEST_PREFIX unit. PROPERTIES LABELS gpu
-               ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  jitllm_gpu_gtest(cuda_lanes_test DISCRETE ALL
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # The D-081 page-in path over io_uring, a host-VMM landing zone and
-  # device VMM (label `gpu`).
+  # device VMM, the same on both classes (D-082). Each test runs both
+  # instantiations (the VMM work on the device lane or its own).
   add_executable(cuda_pagein_test cuda_pagein_test.cc)
   target_link_libraries(cuda_pagein_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
-  jitllm_gtest(cuda_pagein_test TEST_PREFIX unit. PROPERTIES LABELS gpu
-               ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  jitllm_gpu_gtest(cuda_pagein_test DISCRETE ALL
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)
   target_link_libraries(cuda_device_memory_test PRIVATE jitllm_cuda_device_memory jitllm_storage)
-  jitllm_gtest(cuda_device_memory_test TEST_PREFIX unit. PROPERTIES LABELS gpu
-               ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  jitllm_gpu_gtest(cuda_device_memory_test DISCRETE ALL
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
 
 # The executed-plan recording's JSON lines (tests/support/plan_record.h),
@@ -148,7 +150,11 @@ jitllm_gtest(shapes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # GGML tensor descriptors over jitLLM memory, in every profile, and GGML's
 # CUDA launchers and the cuBLAS path under jitLLM's launch context on a
-# real device (label `gpu`, so only on a Spark).
+# real device (label `gpu`, so only on a Spark). On a discrete GPU the
+# build targets (`gpu-discrete`, D-082), the launchers' smoke: identical
+# results across cudaMalloc, device VMM and host VMM, and the launch
+# context's rules. The plan, operation and cuBLAS tests compare with GB10
+# records and stay GB10-only.
 add_executable(ggml_tensors_test ggml_tensors_test.cc)
 target_link_libraries(ggml_tensors_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_tensors_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -181,7 +187,12 @@ if(JITLLM_CUDA)
   target_include_directories(ggml_kernels_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_kernels_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(ggml_kernels_test)
+  jitllm_gpu_gtest(ggml_kernels_test
+                   DISCRETE GgmlMemoryTest.HostAndDeviceVmmMatchCudaMallocBitForBit
+                            GgmlKernelsTest.LaunchesUseTheProvidersContextAndStreamOrder
+                            GgmlKernelsTest.AnUnknownSubmissionFaultsTheContext
+                            GgmlKernelsTest.AnErrorPendingOnTheThreadRefusesOneContext
+                            GgmlKernelsTest.WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault)
 
   # The module's implementation identities follow every one of its source
   # files (src/kernels/ggml/module_digest.cmake). A script on the build
@@ -214,7 +225,12 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_exl3_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
                                                    jitllm_launch_recorder)
-  jitllm_gpu_gtest(ggml_exl3_ops_test)
+  # On a discrete GPU too (`gpu-discrete`, D-082): the over-read probe and
+  # the host checks; the casts, embedding and attention hold to launches
+  # recorded on a GB10.
+  jitllm_gpu_gtest(ggml_exl3_ops_test
+                   DISCRETE GgmlExl3OpsTest.OperationsReadAndWriteOnlyTheirTensors
+                            GgmlExl3OpsTest.AttentionChecksRefuseWhatTheLauncherWouldNotTake)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
@@ -250,7 +266,11 @@ jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_
 # launchers' host checks in every profile; the kernels' tables and lookups
 # link in every CUDA profile, and on a GB10 (label `gpu`) every kernel loads,
 # the recorded ones use the P0 launch record's registers, and jitLLM's
-# launchers run each path of the native linear.
+# launchers run each path of the native linear. On a discrete GPU the build
+# targets (`gpu-discrete`, D-082) every GEMM kernel loads from its own SASS
+# and the launchers and the native plan run; what compares with GB10 records
+# (registers, cuBLASLt pins, recorded launches, upstream's GB10 choices)
+# stays GB10-only.
 add_executable(exl3_context_test exl3_context_test.cc)
 target_link_libraries(exl3_context_test PRIVATE jitllm_exl3)
 jitllm_gtest(exl3_context_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -260,26 +280,46 @@ target_link_libraries(exl3_validate_test PRIVATE jitllm_exl3)
 jitllm_gtest(exl3_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(JITLLM_CUDA)
+  # The tables and instances alone (jitllm_exl3_cuda), not the launchers:
+  # this test runs in every CUDA profile, where CTest runs it to list its
+  # tests, and so must load without cuBLAS (which the launchers link and
+  # the workstation and qemu-user runs cannot find).
   add_executable(exl3_tables_test exl3_tables_test.cc)
-  target_link_libraries(exl3_tables_test PRIVATE jitllm_exl3_kernels)
+  target_include_directories(exl3_tables_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(exl3_tables_test PRIVATE jitllm_exl3 jitllm_exl3_cuda)
   jitllm_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(exl3_kernels_test exl3_kernels_test.cc)
   target_link_libraries(exl3_kernels_test PRIVATE jitllm_exl3_kernels)
-  jitllm_gpu_gtest(exl3_kernels_test)
+  jitllm_gpu_gtest(exl3_kernels_test DISCRETE Exl3KernelsGpuTest.EveryKernelLoadsFromTheDevicesSass)
 
   # The launchers, the linear's paths and the registry on a GB10: operands
   # in cudaMalloc memory and device VMM alike, every operand flush against
   # unmapped VMM granules (the over-read probe), and every refusal.
   add_executable(exl3_linear_test exl3_linear_test.cc)
   target_link_libraries(exl3_linear_test PRIVATE jitllm_exl3_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(exl3_linear_test)
+  # On a discrete GPU too (`gpu-discrete`, D-082), all but what runs the
+  # reconstruction GEMM with its cuBLASLt algorithms pinned on a GB10.
+  jitllm_gpu_gtest(exl3_linear_test
+                   DISCRETE Exl3LinearTest.TheRegistryBindsEachPathToItsOwnCalls
+                            Exl3LinearTest.RefusesGridsThatAreNotCoresident
+                            Exl3LinearTest.NoTwoLiveContextsShareLockSlots
+                            Exl3LinearTest.AFaultReturnsAsAFaultAndStopsTheContext
+                            Exl3LinearTest.NoPackedKernelReadsOutsideItsOperandsAtTheFixturesShapes
+                            Exl3LinearTest.TwoContextsAtTheCoresidentLimitBothComplete
+                            Exl3ImplementationsTest.IdentitiesRecordTheLibraryAssertions)
 
   # One phase of the native EXL3 plan (kernels/exl3/qwen2.h) over zeroed
   # weights of the model's shapes: binding, refusals and a run.
   add_executable(exl3_qwen2_test exl3_qwen2_test.cc)
   target_link_libraries(exl3_qwen2_test PRIVATE jitllm_exl3_qwen2 jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(exl3_qwen2_test)
+  # On a discrete GPU too (`gpu-discrete`, D-082), all but the check of
+  # upstream's GEMV choice as the per-linear sweep saw it on a GB10.
+  jitllm_gpu_gtest(exl3_qwen2_test
+                   DISCRETE Exl3Qwen2Test.APrefillAndAStepBindAndRunOnOneStream
+                            Exl3Qwen2Test.BindRefusesAMissingOrStaleImplementationAndShortMemory
+                            Exl3Qwen2Test.TablesWhoseRewriteFailedPartwayRefuseTheMultiGemm)
 
   # The module's implementation identities follow every one of its source
   # files (src/kernels/exl3/module_digest.cmake), checked as the GGML

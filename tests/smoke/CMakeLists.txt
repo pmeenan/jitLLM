@@ -7,10 +7,12 @@
 #
 # smoke.doctor runs `jitllm doctor` on whatever host runs the tests and
 # checks that it reports and that its exit status matches its summary; a
-# host without the driver or a GB10 reports problems, which is correct. In
-# the CPU-only profile it must also pass, with no device provider.
-# smoke.doctor.gpu (label `gpu`, so only on a Spark) requires no problems
-# and a GB10 this build targets, with VMM (D-006).
+# host without the driver or a GPU this build targets reports problems,
+# which is correct. In the CPU-only profile it must also pass, with no
+# device provider. smoke.doctor.gpu (label `gpu`, so only on a Spark)
+# requires no problems and a GB10 this build targets, with VMM (D-006). In
+# a build that also targets discrete GPUs, smoke.doctor.discrete (labels
+# `gpu` and `gpu-discrete`) requires the same of a discrete GPU 0 (D-082).
 set(emulator "$<JOIN:$<TARGET_PROPERTY:cli_test,CROSSCOMPILING_EMULATOR>,|>")
 if(JITLLM_CUDA)
   set(mode report)
@@ -38,4 +40,10 @@ if(JITLLM_CUDA)
            COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:jitllm> "-DEMULATOR=${emulator}" -DMODE=gb10
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_doctor.cmake)
   set_tests_properties(smoke.doctor.gpu PROPERTIES LABELS "smoke;gpu")
+endif()
+if(JITLLM_CUDA_DISCRETE_SASS)
+  add_test(NAME smoke.doctor.discrete
+           COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:jitllm> "-DEMULATOR=${emulator}"
+                   -DMODE=discrete -P ${CMAKE_CURRENT_SOURCE_DIR}/check_doctor.cmake)
+  set_tests_properties(smoke.doctor.discrete PROPERTIES LABELS "smoke;gpu;gpu-discrete")
 endif()

@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The D-081 page-in path over the real providers on a Spark (label `gpu`):
+// The D-081 page-in path over the real providers on a Spark (label `gpu`)
+// and on a discrete GPU the build targets (`gpu-discrete`, D-082):
 // io_uring reads a direct-I/O file into a host-VMM landing zone, the device
 // lane (or, in the second instantiation, a VMM lane of its own) creates and
 // maps device-VMM backing for each extent, the device lane copies the
