@@ -208,6 +208,12 @@ add_executable(ggml_validate_test ggml_validate_test.cc)
 target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The checks of the operations DeepSeek V4 Flash and Qwen3.8 Flash add
+# (kernels/ggml/validate_ext.h), in every profile.
+add_executable(ggml_ext_validate_test ggml_ext_validate_test.cc)
+target_link_libraries(ggml_ext_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(ggml_ext_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 if(JITLLM_CUDA)
   add_executable(ggml_kernels_test ggml_kernels_test.cc)
   target_include_directories(ggml_kernels_test SYSTEM PRIVATE
@@ -257,6 +263,15 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(ggml_exl3_ops_test
                    DISCRETE GgmlExl3OpsTest.OperationsReadAndWriteOnlyTheirTensors
                             GgmlExl3OpsTest.AttentionChecksRefuseWhatTheLauncherWouldNotTake)
+
+  # The operations DeepSeek V4 Flash and Qwen3.8 Flash add
+  # (kernels/ggml/ops_ext.h), against FP64 references within upstream's
+  # test-backend-ops bounds, at small cases of the models' shapes.
+  add_executable(ggml_ext_ops_test ggml_ext_ops_test.cc)
+  target_include_directories(ggml_ext_ops_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_ext_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(ggml_ext_ops_test)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE

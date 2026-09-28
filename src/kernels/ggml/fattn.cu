@@ -13,12 +13,9 @@
 //
 // PlanFlashAttnVec is a recorded copy of launch_fattn's host arithmetic
 // (fattn-common.cuh:1106-1197, stream-k off, not sparse), so the pool
-// scratch the launch draws is known and checked before it is queued.
-//
-// ggml_cuda_flash_attn_ext_compact_mask is jitLLM's definition of the
-// fattn.cu function launch_fattn names for sparse attention, which this
-// case never takes (use_sparse is false): it records an error and
-// launches nothing, where upstream's would compact the mask.
+// scratch the launch draws is known and checked before it is queued. This
+// case never compacts the mask (use_sparse is false); the function
+// launch_fattn names for that is fattn_mma.cu's.
 
 #include <algorithm>
 #include <cstdint>
@@ -32,13 +29,6 @@
 #include "kernels/ggml/validate.h"
 
 DECL_FATTN_VEC_CASE(64, GGML_TYPE_F16, GGML_TYPE_F16);
-
-void ggml_cuda_flash_attn_ext_compact_mask(const ggml_tensor* mask, int32_t* indices,
-                                           int32_t n_kv_max, cudaStream_t stream) {
-  GGML_UNUSED_VARS(mask, indices, n_kv_max, stream);
-  ggml_cuda_error("ggml_cuda_flash_attn_ext_compact_mask", __func__, __FILE__, __LINE__,
-                  "sparse flash attention is not built into jitLLM");
-}
 
 namespace jitllm::kernels::ggml {
 namespace {

@@ -28,6 +28,29 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
+
+Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s
+`fattn-mma-f16.cuh` under jitLLM's dispatch (`kernels/ggml/fattn_mma*.cu`),
+SDK CUDA 13.4.
+
+Observed: with sinks, 24 query heads over 2 KV heads (12 per KV head, as
+Qwen3.8's QSA) and D = 256, the kernel faulted with an illegal address when
+the 24-float sinks tensor ended flush against an unmapped VMM granule (the
+over-read probe in `tests/unit/ggml_ext_ops_test.cc`). The kernel groups 8
+query heads per tile (`ncols2`) and reads `sinks_f[jc % ncols2]` from each
+group's first head (`fattn-mma-f16.cuh:1402`, `1889`) with no bound, so the
+last KV head's second group reads 4 floats past the tensor; the Q loads and
+output writes of those padded heads are bounded, the sinks are not. In
+llama.cpp a sinks tensor sits inside a larger weight buffer, so the
+over-read goes unnoticed and only feeds heads that are discarded.
+
+Expected: sinks read for existing heads only.
+
+Impact: `CheckFlashAttnMma` refuses sinks unless the heads per KV head are
+a multiple of 8 (DeepSeek V4's 64 are). A model with sinks and another GQA
+ratio needs a padded sinks tensor, or a kernel fix upstream.
+
 ---
 
 ## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: open)

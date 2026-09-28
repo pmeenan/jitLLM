@@ -207,6 +207,9 @@ class Exl3Qwen2Test : public ::testing::Test {
         cudaMemcpy(reinterpret_cast<void*>(tables_), words.data(), words.size() * 8,  // NOLINT
                    cudaMemcpyHostToDevice),
         cudaSuccess);
+    // A pageable copy may return before its DMA lands, on the legacy stream,
+    // which the provider's non-blocking stream does not wait for.
+    EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     return m;
   }
 

@@ -60,7 +60,21 @@ and the YaRN attribution from its RoPE kernel, and jitLLM's
 `src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
 `src/kernels/ggml/fattn.cu`, which instantiates GGML's vector
 flash-attention case and copies `launch_fattn`'s host arithmetic, keep
-GGML's notice in their headers. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
+GGML's notice in their headers, as do the M3 units that instantiate or
+copy from GGML (`fattn_mma.cu` with `fattn.cu`'s sparse-mask kernel,
+`fattn_mma_d256.cu`, `fattn_mma_d512.cu`, `fattn_mma_shape.cuh`,
+`mul_mat_q.cu`, `ops_ext.cu`). The M3 widening compiles more of the kept
+tree (the lock's `license.scope` lists it); every added file is under the
+root MIT license with no header of its own (checked 2026-09-28). Upstream's
+`argsort.cu` and `top-k.cu` would include CUB directly, which the rule
+below does not admit without a D-017 decision, so jitLLM's patch builds
+them without it (bitonic argsort; top-k's radix select, upstream's HIP
+path). Whether to admit CUB, and take upstream's CUDA top-k, is the
+owner's call. D-080 cleared libcu++ only. CUB's own headers in the SDK's
+CCCL are BSD-3-Clause, Apache-2.0 or Apache-2.0 WITH LLVM-exception, but
+what `argsort.cu` and `top-k.cu` would include also reaches two BSL-1.0
+Thrust headers, `thrust/detail/preprocessor.h` and `type_deduction.h`
+(checked 2026-09-28). ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)).
 
@@ -521,7 +535,7 @@ D-002, D-017 and D-080.
 | `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
 | DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |
 | Kernels from Mia's recipes (M4) | E3 fat-expert and cooperative MoE: AGPL or mixed provenance (below) | Under D-080 once copyleft is confirmed; mixed provenance blocks until clarified |
-| Wider GGML closure (M3) | llama.cpp MIT at the locked pin | A D-057 source-lock change on the heavy path, with the compiled closure audited |
+| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`); audit again for the image pipeline's operations and any NVFP4/MXFP8 kernel source |
 | stable-diffusion.cpp graph code (M3) | MIT at `c92d73c4`; its GGML fork's patches are separate | Audit the ported code; audit the fork's patches before any is used |
 
 ## Pinned reference inventory

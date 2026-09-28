@@ -18,8 +18,12 @@
 #                        in the implementation registry
 #                        (implementations.h), and the executor of planned
 #                        graphs (executor.h). CUDA builds only.
+#                        The M3 models' operations add their checks
+#                        (validate_ext.h) here and their implementations
+#                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, fattn_mma*.cu)
+#                        to jitllm_ggml_kernels.
 add_library(jitllm_ggml_tensors STATIC fusion.cc graph_plan.cc qwen2_graph.cc tensors.cc
-                                       validate.cc)
+                                       validate.cc validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model PRIVATE jitllm_warnings)
@@ -47,7 +51,9 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu cublas.cc executor.cc implementations.cc)
+                                         fattn.cu ops_ext.cu mul_mat_q.cu fattn_mma.cu
+                                         fattn_mma_d256.cu fattn_mma_d512.cu cublas.cc
+                                         executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -95,11 +101,13 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fattn.cu fusion.cc
+  set(module_files CMakeLists.txt cublas.cc cublas.h executor.cc executor.h fattn.cu fattn_mma.cu
+                   fattn_mma.h fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h launch.cu launch.h module_digest.cmake mul_mat_cublas.cu
-                   ops.cu ops.h qwen2_graph.cc qwen2_graph.h tensors.cc tensors.h validate.cc
-                   validate.h)
+                   mul_mat_q.cu ops.cu ops.h ops_ext.cu ops_ext.h qwen2_graph.cc qwen2_graph.h
+                   tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
+                   validate_util.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)
@@ -129,5 +137,13 @@ if(JITLLM_CUDA)
   # of GGML's flags for its files, as GGML's own instance unit
   # (template-instances/fattn-vec-instance-f16-f16.cu) builds in the bridge.
   set_source_files_properties(fattn.cu PROPERTIES COMPILE_OPTIONS
+                              "-use_fast_math;-extended-lambda")
+  # The M3 units that compile or launch GGML's kernels take GGML's device
+  # flags too, as GGML's own files and instance units build
+  # (third_party/patches/ggml/0002): the tensor-core flash-attention
+  # instances and the sparse gather, the quantized products' host code, and
+  # the other launchers' wrappers.
+  set_source_files_properties(fattn_mma.cu fattn_mma_d256.cu fattn_mma_d512.cu mul_mat_q.cu
+                              ops_ext.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

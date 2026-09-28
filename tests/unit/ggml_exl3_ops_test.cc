@@ -132,6 +132,10 @@ class GgmlExl3OpsTest : public ::testing::Test {
       EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), data.data(), size,  // NOLINT
                            cudaMemcpyHostToDevice),
                 cudaSuccess);
+      // A copy from pageable memory may return before its DMA lands, and
+      // the provider's stream does not wait for the legacy stream
+      // (CU_STREAM_NON_BLOCKING): wait for it before any launch reads it.
+      EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     }
     return tensor;
   }

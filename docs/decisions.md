@@ -1012,7 +1012,10 @@ before patching and hashing. Two reviewed patches in
 - `0001` adapts three upstream behaviours, only when `GGML_JITLLM` is
   defined: `ggml_abort` never forks or executes a debugger;
   `ggml_cuda_error` is no longer `[[noreturn]]`; the `GGML_CUDA_PDL`
-  environment switch is no longer read.
+  environment switch is no longer read. M3 added three more under the same
+  rule: MMQ's type switch names only the compiled instance units, weights
+  without a backend buffer skip the padding clear, and the build takes no
+  CUB (top-k uses GGML's radix select; licensing.md).
 - `0002` adds `jitllm/CMakeLists.txt`, jitLLM's own build of the selected
   files with the bridge's flags. GGML's CMake never runs.
 
@@ -1057,7 +1060,10 @@ launchers need only five `ggml-cuda.cu` symbols.
   list and file list reviewed, and the support file re-derived.
 - Adding a GGML operation adds its files to `jitllm/CMakeLists.txt`.
 - cuBLAS and every quantized kernel family stay outside the build until an
-  operation needs them.
+  operation needs them. M3 brought in MMQ (for DeepSeek V4 Flash's GGUF
+  types only) and MMVQ, and, for the tensor-core flash-attention cases it
+  instantiates, the sparse-mask functions of `fattn.cu`, which
+  `src/kernels/ggml/fattn_mma.cu` copies (MIT AND Apache-2.0).
 
 **Reopen if.** An upgrade makes the patches or the support file costlier
 to keep than vendored copies; a needed launcher depends on more of

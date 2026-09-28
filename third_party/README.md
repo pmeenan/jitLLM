@@ -14,8 +14,12 @@ ExLlamaV3's kernels for the native EXL3 linear; all but toml++ link only
 into tests and benchmarks so far (`use: test`). The last two are adapted
 sources: each is its upstream archive narrowed by `archive.keep`, with the
 reviewed patches in [patches/](patches/)`<id>/` that add jitLLM's build of
-the files it compiles (and, for ExLlamaV3, reduce three of them to their
-kernels). [licensing.md](../docs/licensing.md) records their audits.
+the files it compiles (and, for GGML, link only the quantized kernels of
+the types it compiles and build without CUB; for ExLlamaV3, reduce three
+of them to their kernels). GGML's build compiles the operations of the
+backend proof's models and of M3's DeepSeek V4 Flash and Qwen3.8 Flash,
+not all of GGML (the lock's `license.scope` lists the files).
+[licensing.md](../docs/licensing.md) records their audits.
 
 | Step | Where | Does |
 | --- | --- | --- |

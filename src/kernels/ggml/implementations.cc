@@ -17,8 +17,10 @@
 #include "ggml.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
+#include "kernels/ggml/validate_ext.h"
 
 // The build's part of each identity, from CMakeLists.txt.
 #if !defined(JITLLM_GGML_SOURCE_TREE) || !defined(JITLLM_GGML_SDK) ||           \
@@ -79,7 +81,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 17> kKernels = {{
+constexpr std::array<Kernel::Entry, 44> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -211,6 +213,199 @@ constexpr std::array<Kernel::Entry, 17> kKernels = {{
      .arity = 3,
      .check = [](ConstNodes n) { return CheckMulMatVecGlu(n[0], n[1], n[2]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecGlu(launch, n[0], n[1], n[2]); }},
+    // DeepSeek V4 Flash and Qwen3.8 Flash (ops_ext.h).
+    {.name = "ggml.mul_mat.mmvq",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_mul_mat_vec_q: quantize_row_q8_1_cuda, then mul_mat_vec_q<type, "
+                "ncols_dst> as upstream selects; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQ(launch, n[0]); }},
+    {.name = "ggml.mul_mat.mmq",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_mul_mat_q: quantize_mmq_q8_1_cuda (or the native FP4 quantization for "
+                "MXFP4 on Blackwell), then mul_mat_q<type, J, fallback> with J and stream-k as "
+                "upstream selects, and its fixup; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatQ(launch, n[0]); }},
+    {.name = "ggml.mul_mat.fwht",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_op_fwht for GGML_HINT_SRC0_IS_HADAMARD: fwht_cuda<n>, the weights "
+                "never read; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatHadamard(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatHadamard(launch, n[0]); }},
+    {.name = "ggml.mul_mat_id.mmvq",
+     .operation = execution::Operation::kMulMatId,
+     .variant =
+         "ggml_cuda_mul_mat_vec_q with ids: quantize_row_q8_1_cuda, then mul_mat_vec_q<type, "
+         "tokens> over each token's selected experts; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQ(launch, n[0]); }},
+    {.name = "ggml.mul_mat_id.mmq",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "ggml_cuda_mul_mat_q with ids: ggml_cuda_launch_mm_ids_helper, the activations "
+                "quantized (or scattered) per selected expert, then mul_mat_q<type, J, fallback> "
+                "over each expert's tokens and its fixup; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatQ(launch, n[0]); }},
+    {.name = "ggml.sub",
+     .operation = execution::Operation::kSub,
+     .variant = "ggml_cuda_op_sub: k_bin_bcast<op_sub, float, float, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_SUB); },
+     .run = [](LaunchContext& launch, Nodes n) { return Sub(launch, n[0]); }},
+    {.name = "ggml.div",
+     .operation = execution::Operation::kDiv,
+     .variant = "ggml_cuda_op_div: k_bin_bcast<op_div, float, float, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_DIV); },
+     .run = [](LaunchContext& launch, Nodes n) { return Div(launch, n[0]); }},
+    {.name = "ggml.scale",
+     .operation = execution::Operation::kScale,
+     .variant = "ggml_cuda_op_scale: scale_f32; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckScale(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Scale(launch, n[0]); }},
+    {.name = "ggml.unary",
+     .operation = execution::Operation::kUnary,
+     .variant = "ggml_cuda_op_<function> for abs, sgn, neg, silu, tanh, relu, sigmoid, exp, "
+                "softplus and sqrt: unary_op_kernel<op_<function>, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckUnary(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Unary(launch, n[0]); }},
+    {.name = "ggml.clamp",
+     .operation = execution::Operation::kClamp,
+     .variant = "ggml_cuda_op_clamp: op_clamp_kernel<float>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckClamp(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Clamp(launch, n[0]); }},
+    {.name = "ggml.fill",
+     .operation = execution::Operation::kFill,
+     .variant = "ggml_cuda_op_fill: fill_kernel<float or half>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFill(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Fill(launch, n[0]); }},
+    {.name = "ggml.repeat",
+     .operation = execution::Operation::kRepeat,
+     .variant = "ggml_cuda_op_repeat: k_bin_bcast<op_repeat, float, float, float>; upstream "
+                "launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckRepeat(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Repeat(launch, n[0]); }},
+    {.name = "ggml.concat",
+     .operation = execution::Operation::kConcat,
+     .variant = "ggml_cuda_op_concat: concat_cont<T, dim> per sample for contiguous operands, two "
+                "copies along the samples, else concat_non_cont<T, dim>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckConcat(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Concat(launch, n[0]); }},
+    {.name = "ggml.sum_rows",
+     .operation = execution::Operation::kSumRows,
+     .variant = "ggml_cuda_op_sum_rows: reduce_rows_f32<false>, 512 threads per row below two "
+                "rows per multiprocessor, else 32 or 128; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSumRows(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SumRows(launch, n[0]); }},
+    {.name = "ggml.argsort.bitonic",
+     .operation = execution::Operation::kArgsort,
+     .variant = "ggml_cuda_op_argsort for rows of at most 1,024 that fit shared memory: "
+                "k_argsort_f32_i32<order>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckArgsort(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Argsort(launch, n[0]); }},
+    {.name = "ggml.top_k.radix",
+     .operation = execution::Operation::kTopK,
+     .variant = "ggml_cuda_op_top_k without CUB: top_k_radix_cuda (8-bit radix select, unordered) "
+                "for rows over 1,024, else k_argsort_f32_i32<DESC> and a pitched copy of the first "
+                "k; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckTopK(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return TopK(launch, n[0]); }},
+    {.name = "ggml.swiglu_clamp",
+     .operation = execution::Operation::kSwiGluClamp,
+     .variant = "ggml_cuda_op_swiglu_clamp: swiglu_clamp_kernel<float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSwiGluClamp(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SwiGluClamp(launch, n[0]); }},
+    {.name = "ggml.rope.ext",
+     .operation = execution::Operation::kRope,
+     .variant = "ggml_cuda_op_rope or ggml_cuda_op_rope_back: rope_norm, rope_neox or rope_multi "
+                "<forward, false, float, float> by the node's mode, with its offset and YaRN; "
+                "upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckRopeExt(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RopeExt(launch, n[0]); }},
+    {.name = "ggml.get_rows.ext",
+     .operation = execution::Operation::kGetRows,
+     .variant = "ggml_cuda_op_get_rows: k_get_rows<qk, qr, dequantize> for Q8_0, k_get_rows_kq<"
+                "dequantize_type> for the k- and i-quants and MXFP4, k_get_rows_float<int32_t, "
+                "int32_t> for I32; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGetRowsExt(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return GetRowsExt(launch, n[0]); }},
+    {.name = "ggml.set_rows.ext",
+     .operation = execution::Operation::kSetRows,
+     .variant = "ggml_cuda_op_set_rows: k_set_rows<src, I32 or I64, dst> for F32 into F32 or F16 "
+                "and F16 into F16; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSetRowsExt(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SetRowsExt(launch, n[0]); }},
+    {.name = "ggml.ssm_conv",
+     .operation = execution::Operation::kSsmConv,
+     .variant = "ggml_cuda_op_ssm_conv unfused: ssm_conv_f32<false, 128, conv> up to 32 tokens, "
+                "else ssm_conv_long_token_f32<false, 128, conv, 32>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSsmConv(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SsmConv(launch, n[0]); }},
+    {.name = "ggml.gated_delta_net",
+     .operation = execution::Operation::kGatedDeltaNet,
+     .variant = "ggml_cuda_op_gated_delta_net: gated_delta_net_cuda<S, KDA, snapshots>; upstream "
+                "launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGatedDeltaNet(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return GatedDeltaNet(launch, n[0]); }},
+    {.name = "ggml.lightning_indexer.wmma",
+     .operation = execution::Operation::kLightningIndexer,
+     .variant = "ggml_cuda_lightning_indexer on tensor cores: lightning_indexer_kernel_wmma<8, 32, "
+                "128, heads, F16>; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckLightningIndexer(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return LightningIndexer(launch, n[0]); }},
+    {.name = "ggml.dsv4_hc_comb",
+     .operation = execution::Operation::kHcComb,
+     .variant = "ggml_cuda_op_dsv4_hc_comb: dsv4_hc_comb_f32; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcComb(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return HcComb(launch, n[0]); }},
+    {.name = "ggml.dsv4_hc_pre",
+     .operation = execution::Operation::kHcPre,
+     .variant = "ggml_cuda_op_dsv4_hc_pre: dsv4_hc_pre_f32; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcPre(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return HcPre(launch, n[0]); }},
+    {.name = "ggml.dsv4_hc_post",
+     .operation = execution::Operation::kHcPost,
+     .variant = "ggml_cuda_op_dsv4_hc_post: dsv4_hc_post_f32; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckHcPost(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return HcPost(launch, n[0]); }},
+    {.name = "ggml.flash_attn_ext.mma",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ggml_cuda_flash_attn_ext_mma_f16_case<D, D, 1, 2, 4 or 8, 8> for D 256 and 512 as "
+                "switch_ncols1 picks, the sparse gather at D 512 as upstream decides, launch_fattn "
+                "with stream-k and its fixup; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,

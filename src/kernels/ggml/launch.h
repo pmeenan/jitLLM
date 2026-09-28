@@ -6,11 +6,14 @@
 // jitLLM fills with the stream to launch on and a scratch pool over
 // workspace the caller declared and charged. GGML creates nothing of its
 // own: no stream, pool, cuBLAS handle, workspace or process-wide setting
-// (ggml_support.cu), except that soft_max raises the dynamic shared memory
-// limit of its own kernels to the device's opt-in maximum, once per kernel
-// and device (cudaFuncSetAttribute; softmax.cu). It keeps only unlocked
-// host-side caches: which kernels may use programmatic dependent launch,
-// and which soft_max limits it has raised. A context may also lend GGML a cuBLAS
+// (ggml_support.cu), except that soft_max, the quantized tile products
+// (MMQ) and the tensor-core flash attention raise the dynamic shared memory
+// limit of their own kernels, once per kernel and device
+// (cudaFuncSetAttribute; softmax.cu, mmq.cuh, fattn-mma-f16.cuh; ops_ext.h's
+// flash-attention plan raises it too, as the launcher will, before it
+// queries the kernel's occupancy). It keeps only unlocked host-side caches:
+// which kernels may use programmatic dependent launch, and which of those
+// limits it has raised. A context may also lend GGML a cuBLAS
 // handle jitLLM created for the same stream (cublas.h); without one, an
 // operation that needs cuBLAS is refused. Run checks an operation's scratch bound against the
 // workspace, calls its launchers, and reports the first CUDA error they

@@ -131,7 +131,7 @@ speculation with prefetch (M9); and, with no milestone yet, `spark-native`
 sanitizer presets and the EXL3 memory outside the catalog in the paged
 harness.
 
-## M3 — Single-Spark fast full swap  `pending`
+## M3 — Single-Spark fast full swap  `in progress`
 
 Goal: one user swaps among three large models on one Spark, A→B→A, and each
 swap reaches its first token in about 10 s: as close to that as we can
@@ -212,6 +212,20 @@ it appears.
       chosen per operation by a quick A/B (D-085): GGML's NVFP4 MMQ (MXFP8
       in GGML is not verified), vLLM, FlashInfer or CUTLASS kernels, or our
       own, with licenses handled per D-080.
+      *GGML widened for the two LLMs* (`kernels/ggml/ops_ext.h`): quantized
+      MMVQ and MMQ products and `mul_mat_id` for DeepSeek's GGUF types (Q8_0,
+      Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS, MXFP4); tensor-core flash attention
+      at head dimensions 256 and 512, 8 query heads per KV head, with sinks
+      and DeepSeek's sparse gather; the lightning indexer, hyper-connections,
+      gated delta net and `ssm_conv`; RoPE with offsets, YaRN and IMROPE,
+      forward and back; argsort, top-k and the elementwise and row
+      operations. Each is checked on the host in every profile and matches
+      an FP64 reference on a GB10 within upstream's test-backend-ops bounds.
+      Open: the NVFP4/MXFP8 A/B; the vector attention at D = 256, which
+      upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
+      runs it meanwhile); the image's operations; and whether to admit CUB,
+      which the build leaves out (top-k takes GGML's radix select;
+      [licensing.md](licensing.md)).
 - [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
       compressed sparse attention with its indexer (CSA/HCA) and mHC;
       Qwen3.8's QSA, hyper-connections and Gated DeltaNet layers; the

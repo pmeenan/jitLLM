@@ -9,7 +9,293 @@ defines it):
   returns and its caller reports the error instead of the process aborting.
 - ggml-cuda/common.cuh: kernel launches use programmatic dependent launch
   as the build decides, without reading GGML_CUDA_PDL from the environment.
+- ggml-cuda/common.cuh, top-k.cu: no CUB (GGML_CUDA_USE_CUB stays
+  undefined), which jitLLM's license policy does not yet admit for direct
+  use (docs/licensing.md): argsort takes its bitonic kernel, and top_k the
+  radix select upstream builds for HIP for rows over 1,024, else the
+  bitonic argsort.
+- ggml-cuda/mmq.cu: the type switch has a case only for the types whose MMQ
+  instance units the build compiles, each named by a GGML_JITLLM_MMQ_<type>
+  definition, so the other instances are not linked.
+- ggml-cuda/mmq.cu, mmvq.cu: a weight tensor without a backend buffer (all
+  of jitLLM's) skips the compute-buffer padding clear, which would otherwise
+  assert on the missing buffer.
 
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 2e78ae4..ace9419 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -111,7 +111,10 @@
+ #define GGML_CUDA_CC_IS_QY2(cc)      (cc >= GGML_CUDA_CC_QY2 && cc < GGML_CUDA_CC_PH1)
+ #define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1)
+ 
+-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
++// jitLLM builds without CUB, which its license policy does not yet admit
++// for direct use (docs/licensing.md): argsort takes its bitonic kernel and
++// top_k its radix select (top-k.cu).
++#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070 && !defined(GGML_JITLLM)
+ #    define GGML_CUDA_USE_CUB
+ #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+ 
+@@ -187,7 +190,11 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
+ 
+ #define GGML_CUDA_MAX_STREAMS 8
+ 
++// jitLLM defines ggml_cuda_error to record the error and return, so that
++// the launcher returns and its caller reports the failure (D-053, D-066).
++#if !defined(GGML_JITLLM)
+ [[noreturn]]
++#endif
+ void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg);
+ 
+ #define CUDA_CHECK_GEN(err, success, error_fn)                                      \
+@@ -1700,8 +1707,13 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
+ #if defined(GGML_CUDA_USE_PDL)
+ 
+     static const bool env_pdl_enabled = []() {
++#if defined(GGML_JITLLM)
++        // jitLLM: launch attributes are fixed by the build, not the environment.
++        return true;
++#else
+         const char * env = getenv("GGML_CUDA_PDL");
+         return env == nullptr || std::atoi(env) != 0;
++#endif
+     }();
+ 
+     if (env_pdl_enabled && ggml_cuda_kernel_can_use_pdl(reinterpret_cast<const void *>(kernel))) {
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 9b6038a..635e476 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -5,77 +5,150 @@
+ 
+ #include <cstdint>
+ 
++// jitLLM compiles the MMQ instance units (template-instances/mmq-instance-*.cu)
++// of only the types its models use, each named by a GGML_JITLLM_MMQ_<type>
++// definition (jitllm/CMakeLists.txt); a type without one has no case here, and
++// jitLLM's launchers refuse it before it reaches this switch.
++#if !defined(GGML_JITLLM)
++#define GGML_JITLLM_MMQ_Q1_0
++#define GGML_JITLLM_MMQ_Q2_0
++#define GGML_JITLLM_MMQ_Q4_0
++#define GGML_JITLLM_MMQ_Q4_1
++#define GGML_JITLLM_MMQ_Q5_0
++#define GGML_JITLLM_MMQ_Q5_1
++#define GGML_JITLLM_MMQ_Q8_0
++#define GGML_JITLLM_MMQ_Q2_K
++#define GGML_JITLLM_MMQ_Q3_K
++#define GGML_JITLLM_MMQ_Q4_K
++#define GGML_JITLLM_MMQ_Q5_K
++#define GGML_JITLLM_MMQ_Q6_K
++#define GGML_JITLLM_MMQ_IQ1_S
++#define GGML_JITLLM_MMQ_IQ2_XXS
++#define GGML_JITLLM_MMQ_IQ2_XS
++#define GGML_JITLLM_MMQ_IQ2_S
++#define GGML_JITLLM_MMQ_IQ3_XXS
++#define GGML_JITLLM_MMQ_IQ3_S
++#define GGML_JITLLM_MMQ_IQ4_XS
++#define GGML_JITLLM_MMQ_IQ4_NL
++#define GGML_JITLLM_MMQ_MXFP4
++#define GGML_JITLLM_MMQ_NVFP4
++#endif // !defined(GGML_JITLLM)
++
+ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
+     switch (args.type_x) {
++#if defined(GGML_JITLLM_MMQ_Q1_0)
+         case GGML_TYPE_Q1_0:
+             mul_mat_q_case<GGML_TYPE_Q1_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q2_0)
+         case GGML_TYPE_Q2_0:
+             mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q4_0)
+         case GGML_TYPE_Q4_0:
+             mul_mat_q_case<GGML_TYPE_Q4_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q4_1)
+         case GGML_TYPE_Q4_1:
+             mul_mat_q_case<GGML_TYPE_Q4_1>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q5_0)
+         case GGML_TYPE_Q5_0:
+             mul_mat_q_case<GGML_TYPE_Q5_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q5_1)
+         case GGML_TYPE_Q5_1:
+             mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q8_0)
+         case GGML_TYPE_Q8_0:
+             mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, args, stream);
+             break;
++#endif
+ // -----------------------------------------------------------------------
++#if defined(GGML_JITLLM_MMQ_Q2_K)
+         case GGML_TYPE_Q2_K:
+             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q3_K)
+         case GGML_TYPE_Q3_K:
+             mul_mat_q_case<GGML_TYPE_Q3_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q4_K)
+         case GGML_TYPE_Q4_K:
+             mul_mat_q_case<GGML_TYPE_Q4_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q5_K)
+         case GGML_TYPE_Q5_K:
+             mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_Q6_K)
+         case GGML_TYPE_Q6_K:
+             mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, args, stream);
+             break;
++#endif
+ // -----------------------------------------------------------------------
++#if defined(GGML_JITLLM_MMQ_IQ1_S)
+         case GGML_TYPE_IQ1_S:
+             mul_mat_q_case<GGML_TYPE_IQ1_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ2_XXS)
+         case GGML_TYPE_IQ2_XXS:
+             mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ2_XS)
+         case GGML_TYPE_IQ2_XS:
+             mul_mat_q_case<GGML_TYPE_IQ2_XS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ2_S)
+         case GGML_TYPE_IQ2_S:
+             mul_mat_q_case<GGML_TYPE_IQ2_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ3_XXS)
+         case GGML_TYPE_IQ3_XXS:
+             mul_mat_q_case<GGML_TYPE_IQ3_XXS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ3_S)
+         case GGML_TYPE_IQ3_S:
+             mul_mat_q_case<GGML_TYPE_IQ3_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ4_XS)
+         case GGML_TYPE_IQ4_XS:
+             mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_IQ4_NL)
+         case GGML_TYPE_IQ4_NL:
+             mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, args, stream);
+             break;
++#endif
+ // -----------------------------------------------------------------------
++#if defined(GGML_JITLLM_MMQ_MXFP4)
+         case GGML_TYPE_MXFP4:
+             mul_mat_q_case<GGML_TYPE_MXFP4>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_JITLLM_MMQ_NVFP4)
+         case GGML_TYPE_NVFP4:
+             mul_mat_q_case<GGML_TYPE_NVFP4>(ctx, args, stream);
+             break;
++#endif
+         default:
+             GGML_ABORT("fatal error");
+             break;
+@@ -107,7 +180,13 @@ void ggml_cuda_mul_mat_q(
+     float       *  dst_d = (float       *)  dst->data;
+ 
+     // If src0 is a temporary compute buffer, clear any potential padding.
++#if defined(GGML_JITLLM)
++    // jitLLM's tensors carry no backend buffer and never lie in a compute
++    // buffer; its launchers take only rows that need no padding.
++    if (src0->buffer != nullptr && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#else
+     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#endif
+         const size_t size_data  = ggml_nbytes(src0);
+         const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
+         if (size_alloc > size_data) {
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 6305230..677ef13 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -1471,7 +1471,13 @@ void ggml_cuda_mul_mat_vec_q(
+     }
+ 
+     // If src0 is a temporary compute buffer, clear any potential padding.
++#if defined(GGML_JITLLM)
++    // jitLLM's tensors carry no backend buffer and never lie in a compute
++    // buffer; its launchers take only rows that need no padding.
++    if (src0->buffer != nullptr && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#else
+     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#endif
+         const size_t size_data  = ggml_nbytes(src0);
+         const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
+         if (size_alloc > size_data) {
+diff --git a/ggml/src/ggml-cuda/top-k.cu b/ggml/src/ggml-cuda/top-k.cu
+index c7a0c83..161c08d 100644
+--- a/ggml/src/ggml-cuda/top-k.cu
++++ b/ggml/src/ggml-cuda/top-k.cu
+@@ -48,7 +48,8 @@ static int next_power_of_2(int x) {
+ 
+ #endif                            // CUB_TOP_K_AVAILABLE
+ 
+-#if !defined(GGML_CUDA_USE_CUB) && defined(GGML_USE_HIP)
++// jitLLM, built without CUB, takes the radix select for long rows as HIP does.
++#if !defined(GGML_CUDA_USE_CUB) && (defined(GGML_USE_HIP) || defined(GGML_JITLLM))
+ 
+ static __device__ __forceinline__ uint32_t top_k_float_to_ordered(float value) {
+     const uint32_t bits = __float_as_uint(value);
+@@ -208,7 +209,7 @@ static void top_k_radix_cuda(
+             src, dst, states, ncols, k, blocks_per_row);
+ }
+ 
+-#endif // !defined(GGML_CUDA_USE_CUB) && defined(GGML_USE_HIP)
++#endif // !defined(GGML_CUDA_USE_CUB) && (defined(GGML_USE_HIP) || defined(GGML_JITLLM))
+ 
+ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * src0   = dst->src[0];
+@@ -258,18 +259,18 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+         dst_d  += k     * iter_nrows;
+     }
+ #else                             // GGML_CUDA_USE_CUB
+-#if defined(GGML_USE_HIP)
++#if defined(GGML_USE_HIP) || defined(GGML_JITLLM)
+     if (ncols > 1024) {
+         top_k_radix_cuda(pool, src0_d, dst_d, ncols, nrows, k, stream);
+     } else {
+-#endif // defined(GGML_USE_HIP)
++#endif // defined(GGML_USE_HIP) || defined(GGML_JITLLM)
+         ggml_cuda_pool_alloc<int> temp_dst_alloc(pool, ncols * nrows);
+         int *                     tmp_dst = temp_dst_alloc.get();
+         argsort_f32_i32_cuda_bitonic(src0_d, tmp_dst, ncols, nrows, GGML_SORT_ORDER_DESC, stream);
+         CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
+                                      cudaMemcpyDeviceToDevice, stream));
+-#if defined(GGML_USE_HIP)
++#if defined(GGML_USE_HIP) || defined(GGML_JITLLM)
+     }
+-#endif // defined(GGML_USE_HIP)
++#endif // defined(GGML_USE_HIP) || defined(GGML_JITLLM)
+ #endif
+ }
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
 index 5ef03e1..382d55f 100644
 --- a/ggml/src/ggml.c
@@ -33,33 +319,3 @@ index 5ef03e1..382d55f 100644
  }
  #else
  void ggml_print_backtrace(void) {
-diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 2e78ae4..5e7c7d7 100644
---- a/ggml/src/ggml-cuda/common.cuh
-+++ b/ggml/src/ggml-cuda/common.cuh
-@@ -187,7 +187,11 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
- 
- #define GGML_CUDA_MAX_STREAMS 8
- 
-+// jitLLM defines ggml_cuda_error to record the error and return, so that
-+// the launcher returns and its caller reports the failure (D-053, D-066).
-+#if !defined(GGML_JITLLM)
- [[noreturn]]
-+#endif
- void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg);
- 
- #define CUDA_CHECK_GEN(err, success, error_fn)                                      \
-@@ -1700,8 +1704,13 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
- #if defined(GGML_CUDA_USE_PDL)
- 
-     static const bool env_pdl_enabled = []() {
-+#if defined(GGML_JITLLM)
-+        // jitLLM: launch attributes are fixed by the build, not the environment.
-+        return true;
-+#else
-         const char * env = getenv("GGML_CUDA_PDL");
-         return env == nullptr || std::atoi(env) != 0;
-+#endif
-     }();
- 
-     if (env_pdl_enabled && ggml_cuda_kernel_can_use_pdl(reinterpret_cast<const void *>(kernel))) {

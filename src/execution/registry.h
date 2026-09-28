@@ -61,6 +61,26 @@ enum class Operation : std::uint8_t {
   kConvert,           // an element-type conversion of a dense tensor (a cast)
   kFlashAttn,         // masked, scaled attention over a K/V cache, never materializing scores
   kBiasAdd,           // a bias broadcast over rows, added in the operands' own type
+  // DeepSeek V4 Flash's and Qwen3.8 Flash's operations (M3).
+  kMulMatId,  // each token's rows times its selected experts' weights
+  kSub,
+  kDiv,
+  kScale,  // x * s + b
+  kUnary,  // an elementwise function of one tensor, named by the node
+  kClamp,
+  kFill,    // every element set to one value
+  kRepeat,  // a tensor tiled to a larger shape
+  kConcat,
+  kSumRows,
+  kArgsort,
+  kTopK,              // the indices of each row's k largest values
+  kSwiGluClamp,       // silu(min(gate, limit)) * clamp(up, -limit, limit)
+  kSsmConv,           // a depthwise causal convolution over tokens
+  kGatedDeltaNet,     // the gated delta rule's recurrence over tokens
+  kLightningIndexer,  // DeepSeek V4's sparse-attention cell scores
+  kHcComb,            // DeepSeek V4's hyper-connection mixing matrices
+  kHcPre,             // hyper-connection streams folded into one
+  kHcPost,            // one output spread back over the streams
 };
 
 std::string_view OperationName(Operation operation);

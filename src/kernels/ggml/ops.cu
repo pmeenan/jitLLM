@@ -128,9 +128,9 @@ std::expected<MulMatPath, KernelFailure> SelectMulMat(const LaunchContext& launc
   const ggml_tensor* src1 = node->src[1];
   // Only a quantized tensor is padded in a CUDA buffer, so upstream's
   // bad_padding_clear never holds for the others; quantized weights take
-  // MMVQ or MMQ, which are not implemented.
+  // MMVQ or MMQ, which ops_ext.h's SelectMulMatQ chooses between.
   if (ggml_is_quantized(src0->type)) {
-    return Rejected("quantized weights take MMVQ or MMQ, which are not implemented");
+    return Rejected("quantized weights take MMVQ or MMQ: ops_ext.h SelectMulMatQ");
   }
   if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32) {
     return MulMatPath::kCublas;

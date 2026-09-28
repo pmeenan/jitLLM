@@ -109,6 +109,44 @@ std::string_view OperationName(Operation operation) {
       return "flash_attn";
     case Operation::kBiasAdd:
       return "bias_add";
+    case Operation::kMulMatId:
+      return "mul_mat_id";
+    case Operation::kSub:
+      return "sub";
+    case Operation::kDiv:
+      return "div";
+    case Operation::kScale:
+      return "scale";
+    case Operation::kUnary:
+      return "unary";
+    case Operation::kClamp:
+      return "clamp";
+    case Operation::kFill:
+      return "fill";
+    case Operation::kRepeat:
+      return "repeat";
+    case Operation::kConcat:
+      return "concat";
+    case Operation::kSumRows:
+      return "sum_rows";
+    case Operation::kArgsort:
+      return "argsort";
+    case Operation::kTopK:
+      return "top_k";
+    case Operation::kSwiGluClamp:
+      return "swiglu_clamp";
+    case Operation::kSsmConv:
+      return "ssm_conv";
+    case Operation::kGatedDeltaNet:
+      return "gated_delta_net";
+    case Operation::kLightningIndexer:
+      return "lightning_indexer";
+    case Operation::kHcComb:
+      return "dsv4_hc_comb";
+    case Operation::kHcPre:
+      return "dsv4_hc_pre";
+    case Operation::kHcPost:
+      return "dsv4_hc_post";
   }
   return "unknown";
 }

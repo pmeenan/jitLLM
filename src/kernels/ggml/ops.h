@@ -53,8 +53,9 @@ std::expected<void, KernelFailure> Mul(LaunchContext& launch, ggml_tensor* node)
 // (ggml-cuda.cu:1823-1874): cuBLAS for other than F32 activations and
 // output, else MMVF, MMF or cuBLAS as upstream chooses. Refused where
 // upstream would take a path with no implementation here: the transposed
-// vector product, MMVQ and MMQ (quantized weights), or cuBLAS for a view
-// of a padded compute-buffer tensor.
+// vector product, or cuBLAS for a view of a padded compute-buffer tensor;
+// and for quantized weights, whose MMVQ and MMQ ops_ext.h's SelectMulMatQ
+// chooses between.
 std::expected<MulMatPath, KernelFailure> SelectMulMat(const LaunchContext& launch,
                                                       const ggml_tensor* node);
 

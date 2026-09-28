@@ -33,6 +33,33 @@
 // ggml.get_rows over its BF16 embedding table and
 //   ggml.convert                 {cpy}                   ops.h Convert
 //   ggml.flash_attn_ext.vec      {flash_attn_ext}        ops.h FlashAttnVec
+// For DeepSeek V4 Flash (GGUF) and Qwen3.8 Flash (M3; ops_ext.h,
+// validate_ext.h):
+//   ggml.mul_mat.mmvq            {mul_mat}               ops_ext.h MulMatVecQ
+//   ggml.mul_mat.mmq             {mul_mat}               ops_ext.h MulMatQ
+//   ggml.mul_mat.fwht            {mul_mat}               ops_ext.h MulMatHadamard
+//   ggml.mul_mat_id.mmvq         {mul_mat_id}            ops_ext.h MulMatVecQ
+//   ggml.mul_mat_id.mmq          {mul_mat_id}            ops_ext.h MulMatQ
+//   ggml.sub, ggml.div           {sub}, {div}            ops_ext.h Sub, Div
+//   ggml.scale                   {scale}                 ops_ext.h Scale
+//   ggml.unary                   {unary or sqrt}         ops_ext.h Unary
+//   ggml.clamp, ggml.fill        {clamp}, {fill}         ops_ext.h Clamp, Fill
+//   ggml.repeat, ggml.concat     {repeat}, {concat}      ops_ext.h Repeat, Concat
+//   ggml.sum_rows                {sum_rows}              ops_ext.h SumRows
+//   ggml.argsort.bitonic         {argsort}               ops_ext.h Argsort
+//   ggml.top_k.radix             {top_k}                 ops_ext.h TopK
+//   ggml.swiglu_clamp            {glu}                   ops_ext.h SwiGluClamp
+//   ggml.rope.ext                {rope or rope_back}     ops_ext.h RopeExt
+//   ggml.get_rows.ext            {get_rows}              ops_ext.h GetRowsExt
+//   ggml.set_rows.ext            {set_rows}              ops_ext.h SetRowsExt
+//   ggml.ssm_conv                {ssm_conv}              ops_ext.h SsmConv
+//   ggml.gated_delta_net         {gated_delta_net}       ops_ext.h GatedDeltaNet
+//   ggml.lightning_indexer.wmma  {lightning_indexer}     ops_ext.h LightningIndexer
+//   ggml.dsv4_hc_comb, _pre, _post                       ops_ext.h HcComb, HcPre, HcPost
+//   ggml.flash_attn_ext.mma      {flash_attn_ext}        ops_ext.h FlashAttnMma
+// The quantized products' two implementations are GGML's kernel families,
+// which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
+// ggml.unary and ggml.rope.ext compute the function the node names.
 // Which kernel variant each launches follows from its operands, as
 // upstream's launcher chooses it, so a variant names the launcher and its
 // rule rather than one kernel.

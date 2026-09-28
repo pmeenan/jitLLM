@@ -1,0 +1,44 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// Internal to the GGML module: what the tensor-core flash-attention
+// instance units (fattn_mma_d256.cu, fattn_mma_d512.cu) tell the dispatcher
+// (fattn_mma.cu) about the kernels they compile. Each unit instantiates
+// ggml_cuda_flash_attn_ext_mma_f16_case<D, D, columns, 8> for columns 1, 2,
+// 4 and 8, as GGML's template-instances/fattn-mma-f16-instance-*.cu do for
+// every head size, and can query its kernels' occupancy, which only the
+// unit that instantiates a kernel can name.
+
+#ifndef JITLLM_KERNELS_GGML_FATTN_MMA_H_
+#define JITLLM_KERNELS_GGML_FATTN_MMA_H_
+
+#include <expected>
+#include <string>
+
+struct ggml_backend_cuda_context;
+struct ggml_tensor;
+
+namespace jitllm::kernels::ggml::detail {
+
+// What launch_fattn's grid arithmetic needs of one MMA kernel on a device
+// (fattn-mma-f16.cuh:1966-2067): its KV batch and how many of its blocks
+// fit a multiprocessor, after raising its dynamic shared memory limit as
+// the case function does before launching it.
+struct MmaKernelShape {
+  int kv_batch = 0;       // nbatch_fa
+  int blocks_per_sm = 0;  // occupancy at the case's threads and shared memory
+};
+
+// For columns 1, 2, 4 or 8 (and, at 512, sparse only with one column).
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape256(int columns, int device);
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, bool sparse,
+                                                                int device);
+
+// The instantiated case for columns 1, 2, 4 or 8, or null.
+using MmaCase = void (*)(ggml_backend_cuda_context& context, ggml_tensor* node);
+MmaCase FlashAttnMmaCase256(int columns);
+MmaCase FlashAttnMmaCase512(int columns);
+
+}  // namespace jitllm::kernels::ggml::detail
+
+#endif  // JITLLM_KERNELS_GGML_FATTN_MMA_H_
