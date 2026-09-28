@@ -187,6 +187,7 @@ the commit gate.
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
 | [docs/runtime-serving.md](docs/runtime-serving.md) | How `jitllm-runtime` serves models (D-096): the engine module, `[models]` in the configuration, registration, the full swap, turns and the `chat` and `swap-table` commands |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
+| [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter jitLLM runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
 | [docs/tokenizer.md](docs/tokenizer.md) | The native tokenizer, chat renderers, stop tokens and sampling: pre-tokenizers, bounds, Unicode tables, agreement with the references, template hashes |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M5 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
@@ -294,8 +295,9 @@ graphs (which survive a swap) make its plain decode 1.01–1.03× Mia's
 without speculation; and the swap path in `jitllm-runtime` (D-096: an
 engine module, `[models]` in the configuration, `chat` and `swap-table`),
 its greedy tokens the harnesses', all 32 swaps of M3's table in one
-process under ~10 s with speculation on (worst LLM↔LLM 9.72 s). Next: the
-loopback chat route.
+process under ~10 s with speculation on (worst LLM↔LLM 9.72 s); and the
+[model support matrix](docs/model-support.md), with template hashes. Next:
+the loopback chat route.
 D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

@@ -1,0 +1,285 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# Model support matrix
+
+Which models jitLLM runs, from which prepared artifacts, with what, and on
+what evidence. Support is earned per checkpoint and configuration
+([vision](vision.md#success-criteria), [features](features.md)): a model
+not listed here is unsupported, and a row claims no more than its evidence
+links show. Where evidence is missing the row says "not verified". Started
+in M3 (moved from M5); every change that alters a row's capability or
+evidence updates it in the same change ([workflow](workflow.md)).
+
+## Status and level
+
+**Status** is how a user can run the model today:
+
+- **Served (M3):** registered by `jitllm-runtime` from `[models.<name>]`
+  and run by its `chat` and `swap-table` commands
+  ([runtime-serving](runtime-serving.md)). No endpoint exists yet, and
+  M3's exit has not been judged.
+- **Harness-only:** runs only in a benchmark harness under `benchmarks/`.
+- **Fixture:** a small M2 test model, harness-only, never served.
+
+**Level** is the highest rung of the ladder in
+[features.md](features.md) (unsupported, import-only, resident-correct,
+paged-correct, distributed-correct, performance-validated) that the linked
+evidence reaches. Performance-validated means a milestone exit judged it;
+no model is there yet, so measured speeds are given as headlines only.
+
+## Summary
+
+| Model | Role | Status | Level |
+| --- | --- | --- | --- |
+| [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
+| [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
+| [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one greedy step open (below) |
+| [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
+| [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
+| [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
+| [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
+
+Nothing is distributed-correct: two-node execution is M4's.
+
+## Chat templates
+
+A chat template is rendered only when a native renderer is registered for
+the SHA-256 of its exact UTF-8 bytes (D-067); no template text is ever
+evaluated. The registry is `kTemplates` in
+[src/chat/chat.cc](../src/chat/chat.cc); its hashes agree with
+[tokenizer.md](tokenizer.md#chat-templates) and with the unit tests
+(`chat_test`, and `tokenizer_models_test`, which hashes the model files on
+a Spark).
+
+| Model | SHA-256 the renderer is keyed on | The bytes hashed | Renderer, stop tokens |
+| --- | --- | --- | --- |
+| DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's `encoding_dsv4.py`), kept in the artifact's GGUF metadata | `deepseek-v4-flash-0731`; `<｜end▁of▁sentence｜>` |
+| Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
+| Qwen-Image-2.1 | none: the prompt is diffusers `8b3c707e`'s fixed text-to-image string, not a chat template | — | `RenderQwenImagePrompt`; drops the 14 system-turn tokens |
+
+Templates with no renderer, so no chat: the older DeepSeek `e3aa0d6a`
+GGUF's (`d05566eb…`, refused by test), the FP16 fixture GGUF's
+(`d5495a1e…`) and the EXL3 fixtures' (`cd8e9439…`). The checkpoint's
+`processor/chat_template.jinja` for Qwen-Image (`3636d0f0…`) is pinned but
+not used. The options each renderer supports and refuses are in
+[tokenizer.md](tokenizer.md#chat-templates).
+
+## DeepSeek V4 Flash 0731
+
+- **Architecture:** `deepseek4` (`model/dsv4.h`): hyper-connections,
+  window, CSA and HCA attention with the lightning indexer, 256 routed
+  experts, three hash-routed layers.
+- **Checkpoint:** `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93`,
+  UD-Q2_K_XL, three shards
+  ([pins.json](experiments/fast-swap/pins.json)).
+- **Artifact:** v0 `8a355bfb…`, from the GGUF by `import_m3.py`
+  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)).
+- **Components:** the target; optionally [DSpark](#dspark) as its drafter
+  (the configuration's `drafter` key).
+- **Template:** `e643c31f…` (above), read from the artifact.
+- **Tokenizer:** byte-level BPE from the artifact's kept GGUF metadata
+  (129,280 tokens, pre-tokenizer `joyai-llm`).
+- **Decoding:**
+
+  | Mode | Where |
+  | --- | --- |
+  | Greedy, plain | runtime (`--plain`) and harnesses |
+  | Greedy, speculative with DSpark | runtime (the default with a drafter) and `jitllm_spec_runner` |
+  | Seeded sampling, plain and speculative | harness only (`jitllm_spec_runner`) |
+  | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
+
+- **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
+  runtime's default (8,192 tokens of conversation in the swap table). The
+  configuration accepts 512 to 262,144; above 8,704 is not verified.
+- **Verified** (on `spark-b`):
+  - Exact mode, resident: bit-identical to llama.cpp `b29c606e` unfused
+    on the same GGUF, logits and perplexity
+    ([dsv4-native](experiments/dsv4-native/README.md#results-spark-b-2026-09-28)).
+  - The default fast plan against llama.cpp: greedy equal except
+    near-ties, perplexity within 0.5%
+    ([dsv4-decode](experiments/dsv4-decode/README.md#results)).
+  - Paged, swapped and restored, bit-identical to the unswapped run, with
+    decode graphs replayed across swaps
+    ([swap](experiments/fast-swap/swap.md), [graphs](experiments/fast-swap/graphs.md)).
+  - Native tokenizer and renderer: token for token with llama.cpp on the
+    corpus and the chat fixtures ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
+  - Through the runtime: greedy tokens equal the harnesses', speculative
+    and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+  - Speed headline: plain decode 1.07–1.09× llama.cpp's
+    ([dsv4-decode](experiments/dsv4-decode/README.md#results)).
+- **Known divergences:**
+  - The fast plan is not bit-identical to llama.cpp: 12 of 256 greedy
+    steps against the unfused arm and 6 against the fused arm are
+    near-ties; the recorded near-tie bound (6.11) is too loose to be a
+    test ([the bound, going forward](experiments/dsv4-decode/README.md#the-bound-going-forward)).
+  - Step 93 of `capital`'s forced-rejection run: a 3.62-nat disagreement
+    that passes only under 6.11, diagnosed as kernel noise amplified by
+    near-tied routing, not a defect
+    ([step 93](experiments/dsv4-decode/README.md#step-93-diagnosed)).
+  - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
+    2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
+    and serves the GGUF's.
+  - With a kept template of another hash the model still registers, and
+    each chat turn is then refused (Qwen3.8 refuses at registration).
+
+## DSpark
+
+- **Architecture:** `dflash` (`model/dspark.h`): 3 window-only DeepSeek
+  V4 blocks, MXFP4 experts, a Markov head; drafts 3 tokens a step.
+- **Checkpoint:** `dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf` in the same
+  pinned repository and revision.
+- **Artifact:** v0 `dd2d3f9c…`, its own artifact; it binds the target's
+  token table and head at load (no composition document, D-089's note).
+- **Components:** drafter only; runs with DeepSeek V4 Flash 0731.
+- **Template and tokenizer:** its target's.
+- **Decoding:** as its target's speculative rows above.
+- **Verified:** greedy speculation equal to plain greedy (bit for bit in
+  exact mode; near-ties on the fast plan); forced rejections leave no
+  stale state; rollback across a swap; sampled speculation within its
+  total-variation bound ([dspark](experiments/dspark/README.md#correctness),
+  [dsv4-decode](experiments/dsv4-decode/README.md#results)). Speed
+  headline: 1.03× / 1.07–1.08× llama.cpp's DSpark decode on `prose` /
+  `code`.
+- **Known divergences:** step 93 (above). A new weight type needs its row
+  kernel before exact-mode speculation runs on it (D-092).
+
+## Qwen3.8 Flash Next
+
+- **Architecture:** `qwen4exp` (`model/qwen38.h`): hyper-connections, the
+  n-gram (PLE) layer, Gated DeltaNet, QSA attention with its indexer, 512
+  routed experts top-10 plus a shared expert.
+- **Checkpoint:** `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (ModelOpt
+  NVFP4 experts, MXFP8 linears; [pins.json](experiments/fast-swap/pins.json)).
+- **Artifact:** v0 `c4fb47a9…`, routed experts in the CUTLASS layout
+  (the earlier GGML-layout `67617f87…` remains for harness options that
+  read that layout)
+  ([qwen38-native](experiments/qwen38-native/README.md#what-runs)). The
+  28.8 GB n-gram table is read by rows from the SSD (D-035).
+- **Components:** the target; optionally [its MTP drafter](#qwen38-mtp).
+- **Template:** `c3cf9e34…` (above). The artifact keeps neither template
+  nor tokenizer, so the configuration names the checkpoint's
+  `chat_template.jinja` and `tokenizer.json`.
+- **Tokenizer:** byte-level BPE from `tokenizer.json` (NFC, the `qwen35`
+  pre-tokenizer).
+- **Decoding:**
+
+  | Mode | Where |
+  | --- | --- |
+  | Greedy, plain | runtime (`--plain`) and harnesses |
+  | Greedy, speculative with MTP (depth 2, 65,536 draft rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec` |
+  | Seeded sampling, plain and speculative | harness only (`jitllm_qwen38_spec`) |
+  | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
+
+- **Context:** exercised to 8,704 (8,192-token prefill and the swap
+  table's 8K conversation). Above 8,704 is not verified.
+- **Verified:**
+  - Against Mia's vLLM (the same checkpoint, deterministic mode, MTP
+    off): greedy equal except near-ties on 191 of 192 steps, perplexity
+    −0.8 to −1.2%; state spill and restore bit-identical
+    ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass)).
+  - Paged (n-gram rows from the SSD), swapped and restored bit-identical;
+    decode graphs replayed across swaps
+    ([swap](experiments/fast-swap/swap.md#qwen38-flash-next-on-the-paged-node),
+    [qwen38-mtp](experiments/qwen38-mtp/README.md#correctness)).
+  - Native tokenizer and renderer: token for token with Hugging Face
+    tokenizers ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
+  - Through the runtime: greedy tokens equal the harnesses', speculative
+    and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+  - Speed headline: prefill 1.38–1.41× Mia's vLLM at 8K; plain decode
+    1.01–1.03× with speculation off on both sides.
+- **Known divergences:**
+  - `french` step 3: one greedy step of 192 outside the near-tie bound
+    (oracle margin 2.0, bound 1.0) on the default fast form; open, for
+    the owner to decide
+    ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass)).
+  - The near-tie bound was set after the first comparison with the
+    oracle, not pre-registered.
+  - The reference and unfused graphs' QSA top-k is not repeatable past
+    2,051 attended cells (RE-031); the default fast form breaks ties by
+    cell and repeats.
+  - The NVFP4 `tokenizer.json` normalizes to NFC, llama.cpp's Qwen3.8 GGUF
+    does not (6 corpus items differ); jitLLM follows the NVFP4 file, as
+    vLLM does.
+  - The CUTLASS grouped GEMM and MXFP8 GEMM are built for `sm_121a` only:
+    elsewhere this artifact's prefill is refused.
+
+## Qwen3.8 MTP
+
+- **Architecture:** `qwen4exp-mtp`: the checkpoint's one hybrid
+  full-attention MTP layer.
+- **Checkpoint:** the same pinned checkpoint (its last shard and
+  `config.json`).
+- **Artifact:** v0 `056a750e…`, its own artifact; binds the target's token
+  table and head at load.
+- **Components:** drafter only; runs with Qwen3.8 Flash Next.
+- **Template and tokenizer:** its target's.
+- **Verified:** greedy speculation equal to plain greedy except near-ties
+  (0 violations); forced rejections at depths 2 and 3 equal to their
+  control state for state; rollback across a swap; sampled speculation
+  within its bound ([qwen38-mtp](experiments/qwen38-mtp/README.md#correctness)).
+  Speed headline: 1.12× / 1.03× Mia's MTP-3 decode on `prose` / `code`.
+- **Known divergences:** the verify is batched, not row-invariant, so
+  speculation has no bit-exact mode; its own noise (p99 up to 2.37 on the
+  forced run) was measured after the comparison, and the rows it moves by
+  more than 2 are not diagnosed.
+
+## Qwen-Image-2.1
+
+- **Architecture:** composition `QwenImage21Pipeline` (`model/qwen_image.h`)
+  of a `qwen3_vl` text encoder (text path only), the
+  `QwenImage21Transformer2DModel` DiT and the `AutoencoderKLQwenImage21`
+  VAE decoder; a 40-step flow-matching Euler loop.
+- **Checkpoint:** `Qwen/Qwen-Image-2.1@790c9263`, BF16
+  ([pins.json](experiments/fast-swap/pins.json)).
+- **Artifacts:** composition `eca21baa…` (D-089) naming text encoder
+  `ed89ed27…`, denoiser `d1184efd…` and VAE `44c1a20a…`
+  ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs)).
+- **Template:** none; the fixed prompt string (above).
+- **Tokenizer:** byte-level BPE from the composition's `tokenizer.json`
+  (the processor's, Qwen3-VL-8B; NFC, the `qwen2` pre-tokenizer).
+- **Generation:** text to image only; no guidance, no condition images.
+  The initial latents come from a file (diffusers' for its seed); there is
+  no native seeded generator yet. The runtime serves one prompt a
+  process, fixed at setup.
+- **Verified:** one prompt, 1024², 40 steps, seed 42, against diffusers
+  `8b3c707e` BF16: tokens exact, every component and the image within its
+  pre-registered bounds; the paged node's and the runtime's pixels equal
+  the harness's, before and after swaps
+  ([qwen-image-native](experiments/qwen-image-native/README.md#results-spark-2026-09-28),
+  [swap](experiments/fast-swap/swap.md#qwen-image-21-on-the-paged-node)).
+  Speed headline: full generation 0.70× diffusers' time, weights resident.
+  Other sizes, step counts, prompts and seeds: not verified.
+- **Known divergences:** jitLLM rounds differently from diffusers'
+  BF16 (bounded, above). The image path's operations are called directly,
+  not declared in the registry or dispatched through a bound plan (D-053).
+
+## M2 fixtures
+
+Small dense models from the backend proof, kept as fixtures. They run
+only in the backend-proof harnesses (`jitllm_fp16_exec`,
+`jitllm_fp16_paged`, `jitllm_exl3_paged` and others), on recorded token
+IDs, and are never served. M5 serves them end to end and completes their
+rows ([plan](plan.md)).
+
+| | Qwen2.5-0.5B-Instruct FP16 | Qwen2.5-0.5B-Instruct EXL3 4.0 / 4.5 bpw |
+| --- | --- | --- |
+| Architecture | `qwen2` (`model/qwen2.h`), GGML FP16 | `qwen2` with EXL3 linears (`model/qwen2_exl3.h`) |
+| Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
+| Artifact | v0 `b93cdc32…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)) |
+| Template hash (no renderer) | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)) | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)) |
+| Tokenizer | the GGUF's Qwen2 BPE; the native tokenizer not verified on it | `tokenizer.json`; the native tokenizer not verified on it |
+| Decoding | teacher-forced trajectories only | teacher-forced trajectories only |
+| Context | short trajectories; the GGUF declares 8,192 | short trajectories; the config declares 32,768 |
+| Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with jitLLM's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)) |
+| Known divergences | the GGUF's template differs from the base checkpoint's, and its context from the base's 32,768 | ExLlamaV3's autotuner is part of its numerical plan; the oracle runs a frozen tuning cache ([P0](experiments/backend-proof-p0/README.md)) |
+
+Resident speed against each fixture's reference (BP-F3) is M5's, under
+D-085; not measured.
+
+## Pinned, not run by jitLLM
+
+Comparators only, for speed and swap time
+([baselines](experiments/fast-swap/baselines.md)): TensorFold's
+`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` and llama.cpp's
+Qwen3.8 UD-IQ3_XXS GGUF (both cross-quantization).

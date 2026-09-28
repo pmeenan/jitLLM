@@ -59,3 +59,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   `libcublasLt.so.13`, unmodified) in `/usr/lib/jitllm` for the runtime, and
   depends on `libgcc-s1`; its third-party notices now include GGML's and
   CUTLASS's, whose kernels the runtime links (D-076, D-096).
+- The model support matrix, `docs/model-support.md`: the models jitLLM
+  runs and serves (DeepSeek V4 Flash 0731 with DSpark, Qwen3.8 Flash Next
+  NVFP4 with its MTP drafter, Qwen-Image-2.1, and the M2 fixtures), each
+  with its checkpoint, artifact, chat template hash, decoding modes,
+  evidence and known divergences.

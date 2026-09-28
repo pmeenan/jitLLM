@@ -25,9 +25,10 @@ paging, and transport boundaries are kept portable so Apple silicon or AMD
 single-machine ports stay possible later.
 
 Initial target: one or two NVIDIA DGX Sparks, developed from an x86-64 Linux
-workstation. Model support is earned per checkpoint and tracked in a support
-matrix; see [docs/features.md](docs/features.md) for what is confirmed scope
-versus still being triaged.
+workstation. Model support is earned per checkpoint and tracked in the
+[support matrix](docs/model-support.md); see
+[docs/features.md](docs/features.md) for what is confirmed scope versus
+still being triaged.
 
 Key properties (confirmed scope):
 

@@ -66,7 +66,8 @@ so the audience is anyone with the problem, not just the owner.
 ## Success criteria
 
 Each of these is checkable, and each is scoped to a *supported configuration*
-in the model support matrix, not to arbitrary checkpoints.
+in the [model support matrix](model-support.md), not to arbitrary
+checkpoints.
 
 - **Switching is fast and state survives it.** With a library larger than
   memory, switching from a resident model A to model B and back reloads only

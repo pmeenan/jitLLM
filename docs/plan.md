@@ -72,7 +72,8 @@ How to read the milestones below:
   correctness.
 - **Heavy path.** Work in a [blast-radius area](workflow.md#blast-radius-changes-get-the-heavy-path-by-default)
   passes its adversarial challenge before the milestone exits.
-- **Support is earned per checkpoint.** From M3 the support matrix records
+- **Support is earned per checkpoint.** From M3 the
+  [support matrix](model-support.md) records
   what each exit validated; a milestone exit names its configurations.
 - **Release.** The first tagged 0.x release (an owner-signed tag, D-062) is
   cut at M10's exit, after every milestone has exited (owner, 2026-09-23). The
@@ -667,8 +668,12 @@ it appears.
       path). The package now ships cuBLAS and GGML's and CUTLASS's notices.
       Open: the image takes one prompt a process from a latents file (its
       runner fixes both at setup); the package check (`check:full`) is owed.
-- [ ] Start the model support matrix (moved from M5), recording template
-      hashes.
+- [x] Start the model support matrix (moved from M5), recording template
+      hashes. *Done 2026-09-28* ([model-support.md](model-support.md)):
+      each model and drafter jitLLM runs, the M2 fixtures among them, with
+      its checkpoint pin, artifact, template hash as `src/chat` keys it,
+      tokenizer, decoding modes, context exercised, evidence, known
+      divergences, status and level.
 - [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible
       `/v1/chat/completions` on loopback (D-014), with numeric intake
       bounds fixed before it accepts input
@@ -922,7 +927,8 @@ M3.
 - [ ] **Surface definitions:** front-door, alias and TLS configuration keys;
       the individual `jitllm-` header and body-field names (D-062); the
       HTTP, TLS and JSON libraries, chosen under D-017, D-057 and D-066.
-- [ ] Add the fixtures to the model support matrix (started in M3).
+- [ ] Move the fixtures' rows in the model support matrix (started in M3,
+      where they are listed as fixtures) to served, with their templates.
 
 **Exit criteria:**
 

@@ -1216,7 +1216,7 @@ protocol adapters stream whatever arrives, with keepalives covering the gaps
 
 Adapters, phase kinds, state capabilities and decoding modes are native C++
 compiled into the build. Support is earned per checkpoint and recorded in
-the support matrix (vision.md).
+the [support matrix](model-support.md) (vision.md).
 
 ### Model shapes
 

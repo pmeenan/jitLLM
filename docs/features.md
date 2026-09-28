@@ -28,8 +28,8 @@ brief reason; only load-bearing decisions need a D-NNN entry. Record a
 deferred item's trigger and earliest milestone here or in plan.md.
 
 A confirmed feature is scope, not a support promise: model support is earned
-per checkpoint and configuration and tracked in a support matrix (see
-"Testing and evidence").
+per checkpoint and configuration and tracked in the
+[support matrix](model-support.md) (see "Testing and evidence").
 
 The owner walked this matrix on 2026-09-21 (the M0 feature triage). Every
 status below reflects that pass; a dated note in a row records the call. A
@@ -133,7 +133,7 @@ client-supplied history when an idle cache entry is unavailable.
 | Multiple alternative backend layouts of the same resource per artifact | deferred | 2026-09-21. Earliest M9; trigger: measurement justifies storing alternatives' disk/import cost. D-052 already requires representation-aware descriptors and separate GGML/EXL3 prepared artifacts in M2; this deferral does not postpone EXL3 support |
 | Reuse a known container for the immutable blobs (GGUF- or safetensors-style aligned tensor data) and own only the manifest and resource index | confirmed | *agent-suggested*, confirmed 2026-09-21 as the principle; D-056 chooses safetensors shards (2026-09-22), with GGUF kept only as the carrier of GGUF sources' metadata. Re-packing experts into contiguous aligned extents is justified; inventing a container is not. Keeps tooling available while D-018 keeps the format experimental |
 | Standalone artifact verification tool (checksums, index bounds, manifest consistency) | confirmed | *agent-suggested*, confirmed 2026-09-21; delivered with the M5 importer. Cheap given per-chunk checksums (D-056); separates "bad artifact" from "pager bug" during bring-up |
-| Model support matrix per checkpoint: unsupported → import-only → resident-correct → paged-correct → distributed-correct → performance-validated | confirmed | ideation §19; kept from M3 |
+| Model support matrix per checkpoint: unsupported → import-only → resident-correct → paged-correct → distributed-correct → performance-validated | confirmed | ideation §19; kept from M3, started there as [model-support.md](model-support.md) |
 | Direct model download from the Hugging Face Hub in the importer and the management API | confirmed | owner request 2026-09-20; downloads are resumable and verified like any import input (D-009); an M5 import job |
 | Hugging Face token from a `.env` or config file tied to the user's HF account, also settable from the web management UI | confirmed | owner request 2026-09-20. Secret handling: never logged, restricted file permissions, `.env` git-ignored, management stays local by default (D-014). Gated repositories download only with a token whose account already has access; the tool cannot grant it. Config/`.env` in M5; the web UI with M10's dashboard |
 | Installed artifacts only on node-local storage that passes the direct-I/O probe; the runtime never pages from network or long-term storage | confirmed | owner request 2026-09-22, D-054; anything but a local block-device filesystem passing the probe (network, FUSE, memory-backed) is rejected at startup, never served through a slower path; installed files are opened without following links or crossing mounts |
