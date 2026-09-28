@@ -425,9 +425,13 @@ work, 5,052 before; no CUDA graphs yet, an M3 item).
   selection is exercised only by the perplexity text.
 - The oracle's tokens stand in for the native tokenizer's.
 - Resident on `cudaMalloc` here. On the paged node, as device jobs over
-  leased closures with the n-gram table read by rows, its logits equal this
-  harness's bit for bit on the six prompts' 32 steps
-  ([swap](../fast-swap/swap.md#qwen38-flash-next-on-the-paged-node)).
+  leased closures (one lease per request, D-093) with the n-gram table
+  read by rows, its logits equal this harness's bit for bit on the six
+  prompts' 32 steps, and from the CUTLASS-layout artifact it decodes at
+  23.71–23.81 tok/s, 0.94× the oracle's (the job's device span 40.8 ms a
+  step, and ~1.3 ms of host work outside the job: the rows read and the
+  inputs built; the lease's round trip 0.01 ms;
+  [swap](../fast-swap/swap.md#a-lease-per-request)).
 - Not repeatable past 2,051 attended cells: the QSA indexer's top-k (GGML's
   radix select) picks among tied scores nondeterministically (RE-031), so
   the perplexity run, whose positions pass 2,048, need not repeat bit for

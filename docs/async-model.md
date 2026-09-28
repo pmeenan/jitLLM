@@ -270,6 +270,20 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
 - Kernel work is a job the submission lane runs on one of its streams; the
   lane fences after it, and the job's lease holds until that fence is seen
   complete.
+- A request may hold one lease for all its steps (M3: a full-swap model's
+  closure is the whole model). The lease is the task's; each step is an
+  operation under it, with its own mailbox, lifetime hold and fence, but
+  no closure walk and no lease taken or released. The lease counts the
+  operations under it and is released only once the last one's terminal
+  result proves no further access: ending it, finishing the task and
+  cancelling the request all wait for that; a quarantined step keeps it.
+  A task that needs its extents evicted (a swap) waits on the lease's
+  release instead of retrying, unless it (or an ancestor) holds such a
+  lease itself, which is refused (no hold and wait). A task waiting for
+  its client's next step waits on a signal control (`SignalRequest`, an
+  ordinary control in the bounded control queue: a full queue refuses
+  it), which is kept if it comes first, so no wakeup is lost; signals do
+  not count, so the client hands over one step at a time.
 M4, M6a and M8 add transport registration, lost-node and collective-order validation.
 Shutdown must stop admission, cancel queued work, drain accepted operations
 and registrations, then release backing; unreconciled work faults shutdown

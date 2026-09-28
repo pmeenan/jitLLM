@@ -19,7 +19,7 @@
 //                     [--image-expect SHA256] [--release-first on|off]
 //                     [--prompts FILE --expect DIR --generate N]
 //                     [--poison-probe on|off] [--scrub-probe on|off]
-//                     [--graphs on|off]
+//                     [--graphs on|off] [--bench N] [--poll-us N]
 //
 // - An LLM A holds --context-tokens tokens (8,192) of --text, tokenized by
 //   the native tokenizer (DeepSeek's from its artifact's GGUF metadata,
@@ -62,6 +62,27 @@
 //   its decode graphs name them). --graphs (on by default) runs DeepSeek's
 //   decode steps as captured graphs (dsv4_runner.h); the other models run
 //   launch by launch.
+// - Requests (a lease per request, paged_node.h): each turn is one request
+//   that leases its model's whole closure once, and every chunk of it runs
+//   as a step under that lease: the controls (an LLM A's prefill and
+//   continuation; the image's whole generation), each cycle's prefill with
+//   its reference continuation, B's first output, and A's return (the
+//   image's rest of the generation, an LLM's continuation). A request's
+//   lease is taken within the timed first output. The checks around them
+//   (the state saved, restored and hashed; DeepSeek's hash-routing check,
+//   Qwen3.8's n-gram hash) run as jobs of their own.
+// - --bench N (an LLM A; needs --text): decode speed as llama-bench's tg-N
+//   measures it, N one-token greedy steps from an empty context (the
+//   context's first token), each step's lease taken per step (a job of its
+//   own, as before requests) or held by the request; for DeepSeek each
+//   launch by launch and replayed from decode graphs. A warm-up pass per
+//   arm, then three passes of each arm in turn; every pass's logits must
+//   equal the first warm-up's bit for bit. Per step: the wall, the job's
+//   host time, and the device's span of the step's work (CUDA events), so
+//   the round trip a step adds is the wall less the device's span.
+//   --poll-us sets how long the scheduler and the device lane poll after
+//   their last progress (RE-017; by default 100,000, the paged node's,
+//   longer than a decode step; the lanes' own is 200).
 // - Diagnostics: --poison-probe fills the shared workspace with 0x00, then
 //   0xFF, before each of A's prefill chunks; --scrub-probe fills Qwen3.8's
 //   weight extents' unwritten bytes so; a chunk whose logits then differ
@@ -261,6 +282,11 @@ class Model {
   virtual Status CheckPlaces() { return {}; }
   virtual std::string violations() const { return {}; }
   virtual std::string extra() const { return "{}"; }  // the model's own counters, JSON
+  // Decode graphs (DeepSeek's, D-090): whether it has them, on or off for
+  // the next chunks, and how its chunks ran so far.
+  virtual bool graphs() const { return false; }
+  virtual void set_graphs(bool /*on*/) {}
+  virtual jb::Dsv4GraphStats graph_stats() const { return {}; }
 
   // LLMs.
   virtual Status Clear() { return Error("not an LLM"); }
@@ -307,6 +333,9 @@ class Dsv4 final : public Model {
   std::vector<std::filesystem::path> data() const override { return {o_.artifact / "data"}; }
   Status AfterLoad() override { return r_.CheckHashRouting(); }
   Status CheckPlaces() override { return r_.CheckPlaces(); }
+  bool graphs() const override { return true; }
+  void set_graphs(bool on) override { r_.set_graphs(on); }
+  jb::Dsv4GraphStats graph_stats() const override { return r_.graph_stats(); }
   std::string violations() const override {
     return r_.coverage_violations() == 0
                ? ""
@@ -440,6 +469,8 @@ struct Options {
   std::filesystem::path prompts;
   std::filesystem::path expect;
   std::uint32_t generate = 32;
+  std::uint32_t bench = 0;
+  std::uint32_t poll_us = 100000;  // the node's poll window (RE-017)
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -512,6 +543,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.expect = v;
     } else if (a == "--generate") {
       ok = number(o.generate) && o.generate >= 1;
+    } else if (a == "--bench") {
+      ok = number(o.bench) && o.bench >= 1 && o.bench <= 1024;
+    } else if (a == "--poll-us") {
+      ok = number(o.poll_us) && o.poll_us <= 1000000;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -537,12 +572,15 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "[--dsv4-prompt FILE] [--qwen38-prompt FILE] [--context-tokens N] [--continue N] "
         "[--cycles N] [--zero-context on|off] [--handoff on|off] [--context N] "
         "[--image-expect SHA256] [--prompts FILE --expect DIR --generate N] "
-        "[--graphs on|off]");
+        "[--graphs on|off] [--bench N] [--poll-us N]");
   }
   const bool a_llm = o.a != "image";
-  if (a_llm && o.cycles > 0 &&
+  if (a_llm && (o.cycles > 0 || o.bench > 0) &&
       (o.text.empty() || (o.a == "qwen38" && o.qwen38_tokenizer.empty()))) {
     return Error("an LLM A needs --text (and Qwen3.8 --qwen38-tokenizer)");
+  }
+  if (o.bench > 0 && (!a_llm || o.bench >= o.context)) {
+    return Error("--bench needs an LLM A and a --context that holds its steps");
   }
   if ((o.b == "dsv4" && o.dsv4_prompt.empty() && o.cycles > 0) ||
       (o.b == "qwen38" && o.qwen38_prompt.empty() && o.cycles > 0)) {
@@ -647,7 +685,8 @@ class Swapper {
                .coalesce = false,
                .copy_lane = true,
                .slot_bytes = jb::kSlabSlotBytes,
-               .observer = &times_}) {
+               .observer = &times_,
+               .poll_window = std::chrono::microseconds(options.poll_us)}) {
     a_ = Make(o_.a, kA);
     b_ = Make(o_.b, kB);
   }
@@ -680,6 +719,14 @@ class Swapper {
   }
   Status Tokenize();
   Status Prompts();
+  // A request of `m` (a turn): its closure leased once, until End.
+  Status Begin(Model& m) {
+    return node_.BeginRequest(m.paged().stream(), m.everything(),
+                              std::format("{}'s request", m.name()));
+  }
+  Status End(Model& m) { return node_.EndRequest(m.paged().stream()); }
+  // --bench: decode, per-step leases against a request's (header).
+  Status Bench();
   // A diagnostic: A's prefill twice, the shared workspace filled with 0x00
   // then 0xFF (NaN in every float type) before each chunk; each chunk's
   // logits compared. A difference is a read of workspace bytes the chunk
@@ -735,6 +782,7 @@ class Swapper {
   std::vector<std::string> b_outputs_;
   std::vector<SwapTimes> swaps_;
   std::string prompts_;
+  std::string bench_;
   std::vector<std::string> problems_;
   // Determinism notes: a cycle's prefill against the control's.
   std::vector<std::string> notes_;
@@ -953,6 +1001,10 @@ Status Swapper::SwapToB(SwapTimes& t, bool with_state) {
   }
   const auto first = Clock::now();
   t.setup = Seconds(first - report.loaded) - t.release_wait;
+  // B's request: leased within its first output, ended after it.
+  if (auto r = Begin(*b_); !r) {
+    return r;
+  }
   if (b_->llm()) {
     if (auto r = b_->Clear(); !r) {
       return r;
@@ -966,6 +1018,9 @@ Status Swapper::SwapToB(SwapTimes& t, bool with_state) {
     return r;
   }
   const auto done = Clock::now();
+  if (auto r = End(*b_); !r) {
+    return r;
+  }
   t.first = Seconds(done - first);
   t.total = Seconds(done - requested);
   t.peak_bytes = available_before_ > memory_.low() ? available_before_ - memory_.low() : 0;
@@ -1034,6 +1089,11 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
   }
   const auto first = Clock::now();
   t.digest = Seconds(first - set_up);
+  // A's request: leased within its first output, ended after the rest of
+  // the turn (the generation, or the continuation).
+  if (auto r = Begin(*a_); !r) {
+    return r;
+  }
   std::vector<std::vector<float>> steps;
   if (!a_->llm()) {
     if (auto r = a_->FirstOutput(t.output); !r) {
@@ -1102,6 +1162,9 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
       notes_.push_back(std::format("{}: {} of {} continued steps differ from the control's", t.name,
                                    from_control, steps.size()));
     }
+  }
+  if (auto r = End(*a_); !r) {
+    return r;
   }
   if (auto r = Settle(t, *before, report.loaded); !r) {
     return r;
@@ -1255,6 +1318,9 @@ Status Swapper::Prompts() {
     std::ifstream file(o_.expect / (prompt.name + ".logits.f32"), std::ios::binary);
     std::vector<float> expected;
     std::vector<std::vector<float>> steps;
+    if (auto r = Begin(*a_); !r) {  // a request per prompt
+      return r;
+    }
     if (auto r = a_->Clear(); !r) {
       return r;
     }
@@ -1265,6 +1331,9 @@ Status Swapper::Prompts() {
     }
     if (auto r = Decode(o_.generate - 1, steps); !r) {
       return Error(std::format("{}: {}", prompt.name, r.error()));
+    }
+    if (auto r = End(*a_); !r) {
+      return r;
     }
     const std::size_t vocab = steps.front().size();
     expected.resize(std::size_t{o_.generate} * vocab);
@@ -1298,6 +1367,140 @@ Status Swapper::Prompts() {
           std::format("{}: the paged logits differ from the resident run's", prompt.name));
     }
   }
+  return {};
+}
+
+Status Swapper::Bench() {
+  if (context_.empty()) {
+    if (auto r = Tokenize(); !r) {
+      return r;
+    }
+  }
+  const std::uint32_t steps = o_.bench;
+  const auto n = static_cast<double>(steps);
+  struct Arm {
+    std::string name;
+    bool request = false;
+    bool graphs = false;
+  };
+  std::vector<Arm> arms = {{.name = "per-step lease", .request = false, .graphs = false},
+                           {.name = "request lease", .request = true, .graphs = false}};
+  if (a_->graphs()) {
+    arms.push_back({.name = "per-step lease, graphs", .request = false, .graphs = true});
+    arms.push_back({.name = "request lease, graphs", .request = true, .graphs = true});
+  }
+  struct Sum {
+    double tps = 0;
+    ts::StepTimes times;
+    std::uint64_t passes = 0;
+  };
+  std::vector<Sum> sums(arms.size());
+  std::vector<std::vector<float>> reference;
+  std::string passes;
+  const auto pass = [&](std::size_t arm_index, bool counted) -> Status {
+    const Arm& arm = arms[arm_index];
+    a_->set_graphs(arm.graphs);
+    if (arm.request) {
+      if (auto r = Begin(*a_); !r) {
+        return r;
+      }
+    }
+    if (auto r = a_->Clear(); !r) {
+      return r;
+    }
+    (void)node_.TakeTimes(kA);
+    const jb::Dsv4GraphStats before = a_->graph_stats();
+    std::vector<std::vector<float>> logits(steps);
+    std::vector<std::int32_t> history = {context_.front()};
+    const auto start = Clock::now();
+    for (std::uint32_t k = 0; k < steps; ++k) {
+      if (auto r = a_->Chunk(history, k, logits[k]); !r) {
+        return Error(std::format("bench {} step {}: {}", arm.name, k, r.error()));
+      }
+      history.push_back(jb::Argmax(logits[k]));
+    }
+    const double seconds = Seconds(Clock::now() - start);
+    const ts::StepTimes t = node_.TakeTimes(kA);
+    if (arm.request) {
+      if (auto r = End(*a_); !r) {
+        return r;
+      }
+    }
+    const jb::Dsv4GraphStats after = a_->graph_stats();
+    std::size_t differing = 0;
+    if (reference.empty()) {
+      reference = std::move(logits);
+    } else {
+      for (std::uint32_t k = 0; k < steps; ++k) {
+        differing += SameBits(logits[k], reference[k]) ? 0 : 1;
+      }
+    }
+    if (differing != 0) {
+      problems_.push_back(std::format("bench {}: {} of {} steps' logits differ from the first's",
+                                      arm.name, differing, steps));
+    }
+    const double per = t.steps > 0 ? 1e3 / static_cast<double>(t.steps) : 0.0;
+    passes += std::format(
+        R"({}{{"arm":"{}","counted":{},"seconds":{:.6f},"tokens_per_second":{:.3f},)"
+        R"("wall_ms":{:.4f},"dispatch_ms":{:.4f},"job_ms":{:.4f},"after_ms":{:.4f},)"
+        R"("device_ms":{:.4f},"round_trip_ms":{:.4f},"eager":{},"captured":{},"replayed":{},)"
+        R"("differing_steps":{}}})",
+        passes.empty() ? "" : ",\n  ", arm.name, counted ? "true" : "false", seconds, n / seconds,
+        t.wall * per, t.dispatch * per, t.job * per, t.after * per, t.device * per,
+        (t.wall - t.device) * per, after.eager - before.eager, after.captured - before.captured,
+        after.replayed - before.replayed, differing);
+    std::println(
+        "bench {}{}: {} steps in {:.3f} s ({:.2f} tok/s); per step: wall {:.3f} ms, device "
+        "{:.3f}, round trip {:.3f} (dispatch {:.3f}, job {:.3f}, after the job {:.3f}); {} "
+        "differ",
+        arm.name, counted ? "" : " (warm-up)", steps, seconds, n / seconds, t.wall * per,
+        t.device * per, (t.wall - t.device) * per, t.dispatch * per, t.job * per, t.after * per,
+        differing);
+    if (counted) {
+      Sum& sum = sums[arm_index];
+      sum.tps += n / seconds;
+      sum.times.steps += t.steps;
+      sum.times.wall += t.wall;
+      sum.times.dispatch += t.dispatch;
+      sum.times.job += t.job;
+      sum.times.after += t.after;
+      sum.times.device += t.device;
+      ++sum.passes;
+    }
+    return {};
+  };
+  for (std::size_t i = 0; i < arms.size(); ++i) {
+    if (auto r = pass(i, false); !r) {
+      return r;
+    }
+  }
+  for (int repeat = 0; repeat < 3; ++repeat) {
+    for (std::size_t i = 0; i < arms.size(); ++i) {
+      if (auto r = pass(i, true); !r) {
+        return r;
+      }
+    }
+  }
+  a_->set_graphs(o_.dsv4.graphs);
+  std::string summary;
+  for (std::size_t i = 0; i < arms.size(); ++i) {
+    const Sum& s = sums[i];
+    const double per = s.times.steps > 0 ? 1e3 / static_cast<double>(s.times.steps) : 0.0;
+    const double tps = s.passes > 0 ? s.tps / static_cast<double>(s.passes) : 0.0;
+    summary += std::format(
+        R"({}{{"arm":"{}","tokens_per_second":{:.3f},"wall_ms":{:.4f},"device_ms":{:.4f},)"
+        R"("round_trip_ms":{:.4f},"dispatch_ms":{:.4f},"job_ms":{:.4f},"after_ms":{:.4f}}})",
+        summary.empty() ? "" : ",\n  ", arms[i].name, tps, s.times.wall * per, s.times.device * per,
+        (s.times.wall - s.times.device) * per, s.times.dispatch * per, s.times.job * per,
+        s.times.after * per);
+    std::println(
+        "bench {}: {:.2f} tok/s (mean of {}); per step wall {:.3f} ms, device {:.3f}, round "
+        "trip {:.3f}, job {:.3f}",
+        arms[i].name, tps, s.passes, s.times.wall * per, s.times.device * per,
+        (s.times.wall - s.times.device) * per, s.times.job * per);
+  }
+  bench_ = std::format("{{\"steps\":{},\"arms\":[\n  {}],\n \"passes\":[\n  {}]}}", steps, summary,
+                       passes);
   return {};
 }
 
@@ -1380,14 +1583,25 @@ Status Swapper::Run() {
       return r;
     }
   }
+  if (o_.bench > 0) {
+    if (auto r = Bench(); !r) {
+      return r;
+    }
+  }
   if (!a_->llm() && (o_.cycles > 0 || !o_.image_expect.empty())) {
-    // The control: one full generation.
+    // The control: one full generation, one request.
     start = Clock::now();
     std::string first;
+    if (auto r = Begin(*a_); !r) {
+      return r;
+    }
     if (auto r = a_->FirstOutput(first); !r) {
       return r;
     }
     if (auto r = a_->Finish(control_pixels_); !r) {
+      return r;
+    }
+    if (auto r = End(*a_); !r) {
       return r;
     }
     control_prefill_seconds_ = Seconds(Clock::now() - start);
@@ -1399,7 +1613,11 @@ Status Swapper::Run() {
     }
   }
   if (a_->llm() && o_.cycles > 0) {
-    // The control: A's context, then its continuation, never swapped.
+    // The control: A's context, then its continuation, never swapped; one
+    // request.
+    if (auto r = Begin(*a_); !r) {
+      return r;
+    }
     if (auto r = a_->Clear(); !r) {
       return r;
     }
@@ -1414,6 +1632,9 @@ Status Swapper::Run() {
       return r;
     }
     control_decode_seconds_ = Seconds(Clock::now() - start);
+    if (auto r = End(*a_); !r) {
+      return r;
+    }
     // control_steps_[0] is the prefill's; the continued steps follow.
     control_steps_.erase(control_steps_.begin());
     control_tokens_.assign(history_.begin() + static_cast<std::ptrdiff_t>(context_.size()),
@@ -1427,6 +1648,10 @@ Status Swapper::Run() {
     const std::string held =
         a_->llm() ? std::format("{} context tokens", context_.size()) : std::string("image");
     if (a_->llm()) {
+      // One request: the prefill, and this state's own continuation.
+      if (auto r = Begin(*a_); !r) {
+        return r;
+      }
       if (auto r = a_->Clear(); !r) {
         return r;
       }
@@ -1460,6 +1685,9 @@ Status Swapper::Run() {
       ref_tokens_.assign(history_.begin() + static_cast<std::ptrdiff_t>(context_.size()),
                          history_.end());
       if (auto r = CopyState(false); !r) {
+        return r;
+      }
+      if (auto r = End(*a_); !r) {
         return r;
       }
       history_.resize(context_.size());
@@ -1569,13 +1797,13 @@ Status Swapper::Write() {
       "\"control_decode_seconds\":{:.6f},\"mem_available_before\":{},\"mem_available_low\":{},"
       "\"load_before\":\"{}\",\"load_after\":\"{}\","
       "\"a_files\":{},\"b_files\":{},\n \"a_model\":{},\n \"b_model\":{},\n \"problems\":[{}],\n"
-      " \"notes\":[{}],\n \"prompts\":[{}],\n \"swaps\":[\n  {}]}}\n",
+      " \"notes\":[{}],\n \"prompts\":[{}],\n \"bench\":{},\n \"swaps\":[\n  {}]}}\n",
       o_.a, o_.b, o_.handoff ? "true" : "false", o_.context, text_sha256_, context_.size(),
       context_sha256_, o_.continue_tokens, tokens, control_pixels_, initial_load_,
       a_->weight_read_bytes(), b_->weight_read_bytes(), a_->weights().size(), b_->weights().size(),
       control_prefill_seconds_, control_decode_seconds_, available_before_, low, load_before_,
       LoadAverage(), Ages(a_->data()), Ages(b_->data()), a_->extra(), b_->extra(), problems, notes,
-      prompts_, swaps);
+      prompts_, bench_.empty() ? "null" : bench_, swaps);
   std::println(
       "peak by MemAvailable: {:.2f} GiB; wrote {}",
       static_cast<double>(available_before_ > low ? available_before_ - low : 0) / (1ULL << 30U),

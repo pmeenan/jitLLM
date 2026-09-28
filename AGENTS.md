@@ -257,7 +257,9 @@ path's core (full swaps with the D-033 backing handoff, state spill and
 restore, a copy lane for RE-029) in a harness swap runner: DeepSeek↔the
 FP16 fixture A→B→A, bit-identical after the return; DeepSeek's decode
 steps replaying as CUDA graphs at pinned places that survive swaps
-(D-090), bit-identical to launch by launch; Qwen3.8 Flash
+(D-090), bit-identical to launch by launch, and with a request leasing
+its closure once (D-093) decoding at 1.02× llama.cpp's unfused speed;
+Qwen3.8 Flash
 Next native and resident from Mia's NVFP4 checkpoint (against Mia's vLLM:
 greedy within near-ties under a bound set after the first comparison,
 perplexity −1.5%; prefill, after fused kernels and CUTLASS's grouped

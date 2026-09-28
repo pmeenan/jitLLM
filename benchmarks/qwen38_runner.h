@@ -5,9 +5,11 @@
 // M3's swap path, docs/experiments/fast-swap/swap.md): its v0 prepared
 // artifact paged into device VMM through the node's landing zone, each
 // chunk run as one device job on the model's own stream under a lease on
-// its whole closure (D-086), with the graph, plan and kernels of the
-// resident harness (qwen38_exec.cc, via qwen38_common.h). The layout of
-// DeepSeek's runner (dsv4_runner.h), through paged_weights.h:
+// its whole closure (D-086): the request's, held from its start to its end
+// when the harness opens one on the model's stream (PagedNode::BeginRequest,
+// M3's lease per request), else the job's own. With the graph, plan and
+// kernels of the resident harness (qwen38_exec.cc, via qwen38_common.h).
+// The layout of DeepSeek's runner (dsv4_runner.h), through paged_weights.h:
 //
 // - Weights: every dense group but the n-gram table's in a 2 MiB-aligned
 //   region, a chunk an extent; each layer's routed experts a slab at the

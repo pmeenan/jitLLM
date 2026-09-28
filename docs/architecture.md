@@ -348,7 +348,11 @@ wakes slowly on the Spark (RE-017), so the scheduler, storage and device
 submission lanes poll for a bounded window (200 µs, not tuned) after their
 last progress before they sleep; page-in through the zone reached the
 in-place reads' bandwidth only with them
-([pagein-perf](experiments/pagein-perf/README.md)). Durations use
+([pagein-perf](experiments/pagein-perf/README.md)). The scheduler also
+polls while a request holds its lease; with a window longer than a decode
+step (the paged harness's 100 ms) no lane sleeps between a request's
+steps, which saved 0.26–0.65 ms a step
+([swap](experiments/fast-swap/swap.md#a-lease-per-request)). Durations use
 monotonic clocks.
 
 ## Request path
@@ -431,7 +435,13 @@ step names the owner of its decisions; the linked designs govern the details.
    (the sampler, and in M7 the routing report) have consumed its outputs,
    and every other consumer and registration of its resources has retired.
    Then its new state becomes retained request state and its leases end
-   (D-050).
+   (D-050). When every phase's closure is the model's whole closure, as
+   for a full-swap model (M3), the request leases it once, at its first
+   phase, and holds that lease to its end: each phase is then device work
+   under it, still ending on its own fence, with no closure walked and
+   nothing leased or released per phase (D-093, `scheduler.h` HoldLease). The
+   per-phase lease stays for closures that change from phase to phase (M7's
+   routed experts).
 8. **Sample and stream.** Sampling happens before that boundary, while the
    logits' workspace is still leased: the decoding mode's sampler reads the
    logits once the fence completes. The output parser detokenizes
@@ -439,7 +449,10 @@ step names the owner of its decisions; the linked designs govern the details.
    (D-067). The protocol adapter turns the result into wire events in the
    request's bounded output buffer.
 9. **Retire and hand off (scheduler).** At the request's end every consumer
-   of its resources retires. Its retained entries are published, and their
+   of its resources retires, and a lease it held for the whole request is
+   released once its last phase's fence is seen (so on a cancellation too);
+   its extents stay resident, now eligible for eviction. Its retained
+   entries are published, and their
    accounting moves atomically from the grant into the idle cache (D-055);
    transient working state is discarded.
    The switching policy passes the slot to the next eligible request,
@@ -756,6 +769,17 @@ and the catalog then marks the contents preserved at the same content
 generation, so a later load restores them (D-086). In M2 the place is a
 process-private unnamed file, and M3's swapped-out conversation state can
 use the same; D-055's spill role and retention arrive in M6.
+
+A request's lease (M3) is an ordinary catalog lease held longer, so no
+eviction of its extents can begin while it is held (invariant 6). A swap
+that needs them waits for its release (`AwaitRelease`: woken then, not
+retrying), which comes at the request's end, or earlier when the swap is
+asked for between the request's steps and the runtime ends the request
+first; the wait has no bound, and a task holding a request's lease (or
+whose ancestor does) is refused it, so holders never wait for each other
+in a cycle. Ending the lease, or cancelling the request, releases it only once
+the fence of the step in flight, if any, is seen (invariant 2); a step
+whose completion stays unknown keeps it, and its extents, for good.
 
 Storage backends sit behind one read/write completion interface. D-034 selects
 native direct-file I/O on validated Spark configurations, with bounded

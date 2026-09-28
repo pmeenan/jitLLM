@@ -495,7 +495,15 @@ and harness: [task-lanes](experiments/task-lanes/README.md). The storage and
 device submission lanes poll the same way: asleep between a load's reads
 and copies, they took ~100–200 µs, and at the tail ~380 µs, to
 wake for the next one, which kept the landing zone below depth
-([pagein-perf](experiments/pagein-perf/README.md)).
+([pagein-perf](experiments/pagein-perf/README.md)). On decode (2026-09-28,
+`spark-b`), a scheduler and device lane that slept between a request's
+steps added 0.26–0.65 ms a step (DeepSeek, Qwen3.8); polling for 100 ms,
+longer than a step, left 0.01 ms, at the cost of two cores (the
+scheduler's and the device submission lane's threads) spinning while a
+request steps and for 100 ms after its last step. That window is the
+paged harness's (`NodeSettings::poll_window`); the scheduler's and the
+lanes' defaults stay 200 µs
+([swap](experiments/fast-swap/swap.md#a-lease-per-request)).
 
 ## RE-016: Ubuntu's snapshot service has no ports archive, so arm64 packages cannot be pinned by date  (2026-09-24, status: worked-around)
 

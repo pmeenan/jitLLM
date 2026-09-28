@@ -380,8 +380,9 @@ it appears.
       GiB against 43.4 GiB resident and 15.9 GiB released
       ([qwen-image-native](experiments/qwen-image-native/README.md)).
       *On the paged node* (`benchmarks/qwen_image_runner.h`): each component
-      a set of extents, each phase a device job leasing only its own
-      component's closure; the image pixel for pixel the resident
+      a set of extents, each phase a device job over its own component's
+      closure, a generation one request leasing all three (D-093); the
+      image pixel for pixel the resident
       harness's, generated before and after swaps
       ([swap](experiments/fast-swap/swap.md)). Open: the image path's
       operations in the registry and a bound plan (D-053).
@@ -464,7 +465,7 @@ it appears.
       Graph restore: DeepSeek's decode graphs survive swaps (D-090).
       *M3's pairs* ([swap](experiments/fast-swap/swap.md#results-m3s-swap-pairs-spark-b-2026-09-28)):
       every ordered pair of DeepSeek, Qwen3.8 (its n-gram table paged by
-      rows, D-035) and Qwen-Image (each phase leasing only its component),
+      rows, D-035) and Qwen-Image (each phase over its own component),
       A→B→A with 8K and 0 context, first use and prepared, on `spark-b`:
       all 32 swaps under the ~10 s goal, the worst LLM↔LLM swap 9.38 s
       (8.76 s prepared and 9.04 s first use at 8K context; an earlier run
@@ -496,13 +497,25 @@ it appears.
       and graphs on, 20.04 with fusion off; the step's device time alone is
       48.3–48.6 ms, and the rest is the paged node's per-step round trip.
       The job's host time per token fell from ~41.5 ms (launches waiting on
-      a full stream) to 0.13–0.16 ms. Open: Qwen3.8's graphs (it runs on
-      the paged node now, its places pinned; its n-gram rows' gather reads
-      pinned staging a graph would name too), and the per-step round trip. The owner
-      (2026-09-28) questioned whether graphs are worth their complexity at
-      1.04–1.05×: re-measure them once leases are held per request rather
-      than per step, and remove capture and caching if the gain is a
-      rounding error; pinned places stay on their own merits (D-090).
+      a full stream) to 0.13–0.16 ms. The owner (2026-09-28) questioned
+      whether graphs are worth their complexity at 1.04–1.05×; re-measured
+      once a request leases its closure once (D-093, below), they are still
+      worth 1.046–1.055× and stay (D-090's note).
+      *A lease per request* (D-093, [swap](experiments/fast-swap/swap.md#a-lease-per-request)):
+      a request (a turn; for the image, one generation) leases its model's
+      closure once and runs every chunk under it; with the lanes polling
+      through a step the per-step round trip fell from 1.3–2.6 ms to
+      0.01 ms. DeepSeek decodes at 20.34–20.46 tok/s, 1.016–1.022×
+      llama.cpp's fusion-off, graphs-on tg64 (20.02) and 0.990–0.996× its
+      default (20.54), the same session (two runs); Qwen3.8 from the
+      CUTLASS-layout artifact at 23.71–23.81 tok/s paged, 0.94× Mia's vLLM
+      with speculation off: its job's device span alone is 1.03× vLLM's
+      step, and ~1.3 ms a step is host work outside the job (the n-gram
+      rows and inputs), not the lease. Everything stays bit for bit, and
+      the DeepSeek ↔ Qwen3.8 swaps (first artifact) did not move. A holder
+      of a request's lease is refused a wait for another's (no hold and
+      wait). Open: Qwen3.8's graphs (its row gather takes each step's row
+      count as a launch parameter).
 - [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
       on the GB10, one `cuDeviceGetAttribute` call. Mia's
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`

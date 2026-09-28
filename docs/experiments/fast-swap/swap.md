@@ -100,11 +100,13 @@ only the groups its phase reads: the text encoder's table and language
 layers, 15.14 GB; the denoiser, 14.23 GB; the VAE's decoder, 1.35 GB of
 F32), with the resident harness's kernels in its call order (copied from
 `qwen_image_exec.cc`, whose comparison with diffusers then needs no rerun).
-- **Phases lease only their component:** encode (one job over the text
+- **Phases run over only their component:** encode (one job over the text
   encoder's closure), denoise (a job per step over the denoiser's; the
   first also projects the text rows and fills the prefix K/V cache),
   decode (one job over the VAE's), each with the image's own memory, the
-  shared workspace, the cuBLAS workspace and the staging. The VAE's F32
+  shared workspace, the cuBLAS workspace and the staging. A generation is
+  one request, which leases all three components once (below); outside a
+  request each job leases its own component. The VAE's F32
   weights are paged as stored and rounded to BF16 by the decode job into
   its workspace (the resident harness rounds them on the host, as
   diffusers' `torch_dtype=bfloat16` load does; same rounding).
@@ -155,6 +157,156 @@ never fit together.
   when it registers them, graphs or not; after each swap the incoming
   model's are checked still pinned, DeepSeek's also against the sources
   its graphs name.
+- **Requests** (since the lease per request, below): each turn leases its
+  model's closure once, and its chunks run under that lease: the controls,
+  each cycle's prefill with its reference continuation, B's first output
+  (its lease taken inside the timed first output), A's return and its
+  continuation or the rest of its generation, each prompt of `--prompts`.
+
+## A lease per request
+
+M3's follow-up to the decode graphs ([graphs](graphs.md)): a decode step
+on the paged node paid 3–4 ms of round trip, most of it the scheduler
+walking and leasing the ~46,500-extent closure and releasing it again, per
+step. For a full-swap model the closure is the whole model, so a request
+(a prompt or turn; for the image, one generation) now leases it once
+(owner, 2026-09-28).
+
+**Design** (`scheduler.h`, `paged_programs.h` `RequestProgram`,
+`paged_node.h`):
+- The request's task materializes the closure and leases it
+  (`TaskContext::HoldLease`): an ordinary catalog lease, all or none at
+  the recorded contents, held by the task instead of by one operation.
+- Each step is device work under that lease (`SubmitLaunch(held, …)`):
+  no closure walked, nothing leased or released. It still takes a mailbox
+  and the task's lifetime hold, and still ends on its fence; the lease
+  counts the operations under it.
+- The lease is released by `EndLease` or by the task finishing (the
+  request's end, a failure, a cancellation), but only once the last
+  operation under it has concluded with proof of no further access; a
+  quarantined one keeps it for good. Release records the use and changes
+  eligibility, not residency (D-007).
+- While it is held no eviction of its extents can begin (the catalog
+  refuses a leased extent). A swap that needs them waits for the release
+  (`AwaitRelease`: the evicting task is woken then, and does not spin);
+  the harness's node, asked for a swap or an eviction between a request's
+  steps, ends the requests holding the outgoing extents first
+  (`SwapReport::requests_ended`).
+- The request's driver (the harness's thread) hands each step to the task
+  through a channel and a `SignalRequest` control; the task waits for it
+  with `AwaitSignal`, and a signal that comes first is kept. The control
+  queue orders what the driver wrote before the signal.
+- The per-step lease stays for work whose closure changes from step to
+  step (M7's routed experts); a job outside a request takes it as before.
+- **Does a step still need its own fence round trip?** Yes, with host
+  sampling: the greedy token is the next step's input, which the host
+  builds (DeepSeek's embedding rows are dequantized on the host), so the
+  logits must be on the host each step. Sampling on the device would not
+  remove the trip, only shrink what crosses it; host sampling stays.
+- **Polling through a step.** The scheduler (while a critical operation is
+  in flight or a request holds its lease) and the device lane poll for a
+  window after their last progress before they sleep (RE-017). At the
+  lanes' 200 µs a step still paid 0.26–0.46 ms of wakeups; the paged node
+  now polls for 100 ms, longer than a step, and the round trip is 0.01 ms.
+  It costs two cores (the scheduler's and the device submission lane's
+  threads) spinning while a request steps and for 100 ms after its last
+  step; the completion lane already polls while fences are out, and the
+  harness's driver spins on each step's result. The window is the paged
+  harness's (`NodeSettings::poll_window`, `--poll-us`); the scheduler's
+  and the lanes' defaults stay 200 µs, and the runtime sets none yet.
+- **No hold and wait.** A task holding a request's lease, or whose
+  ancestor does, is refused `AwaitRelease`, so no two holders can wait for
+  each other. The wait itself has no bound or priority: only the holder
+  ends a lease, which is why the node ends the requests in a swap's way
+  before posting it (the harness has one driver thread, so a swap is
+  never asked for with a step in flight). Ending a request only releases
+  its lease; the swap's own evictions write the state back (kPreserve at
+  a write-back place) before any backing goes.
+
+**Round trip and decode** (`spark-b`, GB10, driver 580.178.04,
+`spark-native`, `CUDA_DISABLE_PTX_JIT=1`, the artifacts above; the memory
+gate before each run; `jitllm_swap_pairs --bench N`, three passes per arm
+after a warm-up, two runs per poll window; raw outputs in
+`~/scratch/m3lease/r1`, `r2`). Round trip = a step's wall less the
+device's span of its work (CUDA events around the job):
+
+| Model, arm (100 ms poll) | tok/s | Round trip per step | Device per step |
+| --- | ---: | ---: | ---: |
+| DeepSeek, lease per step, graphs | 19.71–19.92 | 1.30–1.55 ms | 48.7–49.0 ms |
+| DeepSeek, lease per request, graphs | **20.34–20.46** | 0.009–0.013 ms | 48.7–49.0 ms |
+| DeepSeek, lease per request, launch by launch | 19.39–19.44 | 0.009–0.010 ms | 51.3–51.4 ms |
+| Qwen3.8, lease per step (128 steps) | 23.10 | 1.16 ms | 41.1 ms |
+| Qwen3.8, lease per request | **23.70** | 0.010 ms | 41.1 ms |
+| Qwen3.8 (`c4fb47a9…`), lease per step | 23.24–23.31 | 1.10–1.15 ms | 40.7–40.8 ms |
+| Qwen3.8 (`c4fb47a9…`), lease per request | **23.71–23.81** | 0.009–0.012 ms | 40.8 ms |
+
+DeepSeek's rows are two runs (r1, r2), each the mean of three passes;
+the review's re-run with its fixes (09:14, the same artifacts, one run)
+gave 20.41 tok/s for a lease per request with graphs and 19.82 per step
+(means of three passes), within them, and the 8 prompts again exact. The
+first two Qwen3.8 rows are one run (r1, passes 23.67–23.73 per request)
+from its first artifact (`67617f87…`) and runner, before the prefill
+slice; the last two are the review's one run (per pass) from the
+CUTLASS-layout artifact and the fused graph that slice landed, which
+the Qwen3.8 statements below use.
+
+At the lanes' 200 µs poll: DeepSeek's round trip 2.2–2.6 ms per step with
+a lease per step, 0.26–0.46 ms per request; Qwen3.8's (first artifact)
+1.4–1.8 and 0.40–0.65 ms. Against the references: DeepSeek at 1.016–1.022× llama.cpp's tg64 with
+fusion off and graphs on (20.02 ± 0.06, the same session) and 0.990–0.996×
+with fusion on (20.54 ± 0.06); graphs are still worth 1.046–1.055×, so they
+stay ([graphs](graphs.md#re-measured-with-a-lease-per-request-spark-b-2026-09-28)).
+Qwen3.8 (`c4fb47a9…`) at 0.94× Mia's vLLM with speculation off
+(23.71–23.81 against 25.12–25.33 tok/s, [baselines](baselines.md)), where
+its resident harness decodes at 0.99×. The lease is not the cause: a
+token takes 42.1 ms, of which the job's span on the device is 40.8 ms
+(itself 1.03× vLLM's whole 39.5–39.8 ms step) and about 1.3 ms is host
+work outside the job (the n-gram rows read on the caller's thread, the
+inputs built over the whole history); the round trip is 0.01 ms. Qwen3.8
+has no decode graphs yet (graphs.md's limits).
+
+**Bit-identity** (r2, graphs on, 100 ms poll; every check exact):
+
+| Check | Result |
+| --- | --- |
+| Paged DeepSeek against the resident harness (so llama.cpp with fusion off; context 4,096, the 8 dsv4-native prompts, prefill + 31 steps, a request per prompt) | 0 logits differ; 246 steps replayed, 1 captured, 9 launch by launch |
+| Paged Qwen3.8 against the resident harness (the six prompts, as above) | 0 logits differ |
+| The image, one request per generation | pixels `95fbcbc5…`, the resident harness's |
+| Every bench pass against the first warm-up (per step and per request, launch by launch and replayed; 32 passes) | 0 steps differ |
+| DeepSeek ↔ Qwen3.8, A→B→A (the protocol above, one run) | A's state digest and every continued step exact in both returns; B's output identical; DeepSeek's cycle prefills equal to the control's |
+
+**Swap times did not move** (DeepSeek ↔ Qwen3.8 from its first artifact,
+r2, seconds; before: this file's table): A→B 7.79 first use, 7.74 prepared, 7.72 at 0 context (8.79,
+7.67, 7.77 before); B→A 8.67, 8.65, 8.83 (9.04, 8.76, 8.85); page-in
+13.3–13.4 GB/s; the prepared return's first token 0.060 s, replayed from a
+graph captured before the swap. A request's lease is taken inside the
+first output: Materialize and the lease over the closure, once.
+
+**Tests.**
+- `unit.HeldLeaseTest.*` (fakes, managed backing): a request's steps run
+  under its one lease and its end leaves the closure resident and unleased
+  with its last use advanced; an eviction is refused while it is held and
+  an evicting program waits, without spinning, until it ends; a swap
+  waits for the request's end, then hands the backing over; a request
+  cancelled with a step in flight keeps its lease (no eviction can begin)
+  until that step's fence; ending with a step in flight waits for its
+  fence, a second end waits for the same release, and a step after the
+  end is refused; a signal after the request's end (or for no request)
+  wakes and keeps nothing; a task holding a lease, and its child, are
+  refused a wait for another's, and may wait once their own has ended; a
+  signal that comes before the wait is kept; only the holder submits
+  under or ends a lease, and
+  only a resident closure is leased; an unproven step keeps the lease for
+  good and faults the stop; and a threaded run (every lane on its own
+  thread) of 400 steps loses no signal, with a swap waiting throughout.
+  With the scheduler, page-in, lanes and acquisition tests, it passes
+  under ThreadSanitizer (`spark-native` with TSan, three runs).
+- `unit.CudaPagedNodeTest.ARequestLeasesOnceAndItsStepsRunUnderIt` (GB10):
+  steps under one lease per extent throughout, their bytes the file's; a
+  step over the other model's closure refused before it runs; the
+  model resident and unleased after the end; a swap between a request's
+  steps ends it first, and the incoming model reads back whole under its
+  own request.
 
 ## Results: M3's swap pairs (`spark-b`, 2026-09-28)
 
@@ -677,6 +829,7 @@ installed as qwen-image-native's are (copied to `spark-b` for these runs):
     jitllm_swap_pairs --a qwen38 --b dsv4 ... --cycles 0 --context 4096 \
       --prompts qwen38-native/prompts.tsv --expect RESIDENT --generate 32
     jitllm_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 95fbcbc5…
+    jitllm_swap_pairs --a dsv4|qwen38 --b ... --cycles 0 --bench 64|128 [--poll-us 200]
 
 where RESIDENT is `jitllm_qwen38_exec --context 4096 --max-rows 512
 --prompts qwen38-native/prompts.tsv --generate 32`'s output from the same

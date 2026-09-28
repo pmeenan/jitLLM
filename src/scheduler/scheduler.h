@@ -107,6 +107,29 @@
 //     hold on the task and a mailbox, and is recorded before its command is
 //     published. Its lease and hold are released only once its terminal
 //     result proves no further access.
+//   - Hold a request's lease (D-007's residency lease, taken once for a
+//     whole request rather than per step): a task that has materialized a
+//     closure leases it (HoldLease) and submits each step's device work
+//     under that lease, with no closure to walk and no lease to take or
+//     release per step. Each such operation still takes a mailbox and the
+//     task's lifetime hold, and still ends only on its fence: the lease
+//     counts the operations under it, and ending it (EndLease, or the task
+//     finishing, cancelled or not) releases it only once the last one's
+//     terminal result proves no further access. A quarantined one keeps
+//     it for good. Releasing it makes its extents eligible for eviction;
+//     it evicts nothing (D-007). While it is held no eviction of its
+//     extents can begin (the catalog refuses a held extent), and a task
+//     that wants one (a swap) waits for its release (AwaitRelease)
+//     instead of retrying; a task that holds one (or whose ancestor
+//     does) is refused that wait, so no cycle of holders waiting for
+//     each other can form. The wait is unbounded: nothing but its holder
+//     ends a lease. The per-step path, which leases the closure
+//     for each operation, stays for work whose closure changes from step
+//     to step (routed experts, M7).
+//   - Wait for the request's client (AwaitSignal): a task with nothing to
+//     do until the client sends more (a request's next step) waits for a
+//     SignalRequest control, which wakes it; a signal that comes first is
+//     kept for the next wait.
 //   - Spawn children, whose finishing wakes the parent.
 //   - Pin places (D-090): a captured graph names device addresses, so while
 //     it may replay, the places of the extents it reads must not move.
@@ -344,8 +367,13 @@ struct SchedulerSettings {
   // value overflows.
   static constexpr std::chrono::hours kLongest{1};
   // Polling after the last progress while a critical-path operation is in
-  // flight: the window the task-lanes measurement used, not a tuned value
-  // (RE-017; M3 onward tunes it against per-token latency). Zero never polls.
+  // flight, or a request holds its lease (its next step is imminent): the
+  // window the task-lanes measurement used, not a tuned value (RE-017; M3
+  // onward tunes it against per-token latency). Zero never polls. The
+  // scheduler's thread spins (yielding) for up to this long after each
+  // progress, so a window longer than a decode step keeps a core busy for
+  // as long as a request steps; the paged harness's 100 ms does, this
+  // default does not.
   std::chrono::microseconds poll_window{200};
   // The longest sleep: a timer tick, never needed for correctness. Positive.
   std::chrono::milliseconds tick{100};
@@ -386,7 +414,16 @@ struct StartRequest {
 struct CancelRequest {
   std::uint64_t request = 0;
 };
-using Control = std::variant<StartRequest, CancelRequest>;
+// The request's client has more for it (its next step): wakes the
+// request's root task if it waits for a signal (TaskContext::AwaitSignal),
+// or else is kept for its next wait. Signals do not count: one kept signal
+// stands for any number posted before the task took it. What the client
+// wrote for the task before posting this is visible to the task once it is
+// woken (the control queue orders them).
+struct SignalRequest {
+  std::uint64_t request = 0;
+};
+using Control = std::variant<StartRequest, CancelRequest, SignalRequest>;
 
 enum class StartError : std::uint8_t {
   kStopped,  // shutting down, faulted, or identities exhausted: admission has stopped
@@ -404,6 +441,11 @@ struct SchedulerStats {
   std::uint64_t parked = 0;
   std::uint64_t handed_off = 0;
   std::uint64_t released_unused = 0;
+  // Requests' leases (HoldLease): taken, released, and the operations
+  // submitted under one.
+  std::uint64_t leases_held = 0;
+  std::uint64_t leases_released = 0;
+  std::uint64_t held_operations = 0;
 };
 
 class Scheduler {
@@ -469,6 +511,13 @@ class Scheduler {
   // extents is destroyed, never before; the scheduler cannot see graphs.
   void UnpinPlaces(std::span<const catalog::ExtentId> extents);
   bool PlacePinned(catalog::ExtentId extent) const { return pinned_.contains(extent); }
+  // Requests' leases held now (HoldLease), including ones ending once
+  // their operations drain, and the operations under `lease` in flight.
+  std::size_t held() const { return held_.size(); }
+  std::uint32_t HeldOperations(catalog::LeaseId lease) const {
+    const auto found = held_.find(lease);
+    return found == held_.end() ? 0 : found->second.operations;
+  }
   // The source registered for an extent, if any: where its next load puts
   // its contents, and where its backing is mapped while it is resident.
   const PageSource* SourceOf(catalog::ExtentId extent) const {
@@ -594,6 +643,17 @@ class Scheduler {
     std::uint32_t waiting = 0;  // page-ins, operations and children it waits for
     bool failed = false;        // a dependency failed since the program last looked
     bool finished = false;
+    bool signalled = false;        // a signal came while it was not waiting for one
+    bool awaiting_signal = false;  // counted in `waiting` until a signal comes
+  };
+
+  // A request's lease (HoldLease), by the catalog lease that is it.
+  struct Held {
+    TaskId task;                             // the holder
+    std::vector<catalog::ExtentId> extents;  // sorted, unique: what it holds
+    std::uint32_t operations = 0;            // submitted under it, not yet concluded
+    bool ending = false;                     // released once `operations` is 0
+    std::vector<TaskId> waiters;             // tasks woken when it is released
   };
 
   struct Operation {
@@ -605,9 +665,11 @@ class Scheduler {
     bool critical = false;
     // A page-in stage or an eviction: the extent.
     catalog::ExtentId extent;
-    // Device and CPU work: the task that owns it and the lease it holds.
+    // Device and CPU work: the task that owns it and the lease it holds:
+    // its own, or, submitted under a request's lease, that one (`held`).
     TaskId task;
     catalog::LeaseId lease;
+    catalog::LeaseId held;
     // The command, until a lane takes it.
     ReadCommand read;
     DeviceCommand device;
@@ -636,11 +698,27 @@ class Scheduler {
   // TaskContext's work.
   std::expected<Readiness, WorkError> Materialize(TaskId task, const catalog::Closure& closure);
   // Moves from `device` or `job`, whichever `kind` names, only if the
-  // operation is created.
-  std::expected<OperationId, WorkError> Submit(TaskId task, const catalog::Closure& closure,
-                                               Kind kind, DeviceCommand& device, CpuJob& job);
+  // operation is created. Under `closure`'s own lease, or with a valid
+  // `held`, under that request's lease.
+  std::expected<OperationId, WorkError> Submit(TaskId task, const catalog::Closure* closure,
+                                               catalog::LeaseId held, Kind kind,
+                                               DeviceCommand& device, CpuJob& job);
   std::expected<Readiness, WorkError> Evict(TaskId task, catalog::ExtentId extent,
                                             EvictOptions options);
+  // Requests' leases.
+  std::expected<catalog::LeaseId, WorkError> HoldLease(TaskId task,
+                                                       const catalog::Closure& closure);
+  std::expected<Readiness, WorkError> EndLease(TaskId task, catalog::LeaseId lease);
+  std::expected<Readiness, WorkError> AwaitRelease(TaskId task,
+                                                   std::span<const catalog::ExtentId> extents);
+  std::expected<Readiness, WorkError> AwaitSignal(TaskId task);
+  void Signal(std::uint64_t request);
+  // An operation under a request's lease concluded: the lease is released
+  // if it is ending and that was the last.
+  void ConcludeHeld(catalog::LeaseId lease);
+  // Releases the lease (RecordUse, then the catalog's release) and wakes
+  // its waiters.
+  void ReleaseHeld(std::map<catalog::LeaseId, Held>::iterator held);
 
   // Page-ins (pagein.cc). With `own`, the extent's own parked eviction
   // has just ended and its kept backing is the load's.
@@ -732,6 +810,8 @@ class Scheduler {
   bool pumping_releases_ = false;
   std::map<catalog::ExtentId, PageSource> sources_;
   std::map<catalog::ExtentId, std::uint32_t> pinned_;  // D-090: pins per extent
+  // Requests' leases, at most `tasks` at once.
+  std::map<catalog::LeaseId, Held> held_;
   // The landing zone's slots, and the loads waiting: to start (kQueued),
   // for a slot (kSlot), or for a mailbox to open their next stage.
   std::vector<SlotState> slots_;
@@ -777,7 +857,7 @@ class TaskContext {
                                                      const DeviceWork& work) {
     DeviceCommand device{.operation = {}, .work = work};
     CpuJob none;
-    return scheduler_.Submit(task_, closure, Scheduler::Kind::kDevice, device, none);
+    return scheduler_.Submit(task_, &closure, {}, Scheduler::Kind::kDevice, device, none);
   }
   // A job that queues kernel work on one of the device lane's streams
   // (commands.h): it runs on the submission lane, and the operation's
@@ -785,18 +865,56 @@ class TaskContext {
   // the work is left with the caller (to try again after kBusy).
   std::expected<OperationId, WorkError> SubmitLaunch(const catalog::Closure& closure,
                                                      LaunchWork&& work) {
-    DeviceCommand device{.operation = {}, .work = std::move(work)};
-    CpuJob none;
-    auto submitted = scheduler_.Submit(task_, closure, Scheduler::Kind::kDevice, device, none);
-    if (!submitted) {
-      work = std::move(std::get<LaunchWork>(device.work));  // Submit took nothing
-    }
-    return submitted;
+    return Launch(&closure, {}, std::move(work));
   }
   std::expected<OperationId, WorkError> SubmitCpu(const catalog::Closure& closure, CpuJob job) {
     DeviceCommand none;
-    return scheduler_.Submit(task_, closure, Scheduler::Kind::kCpu, none, job);
+    return scheduler_.Submit(task_, &closure, {}, Scheduler::Kind::kCpu, none, job);
   }
+
+  // A request's lease (the header's list). Leases a materialized closure,
+  // all or none, at the contents it recorded, for this task, until it ends
+  // it or finishes: kNotResident, kStale or kBusy (an eviction begun) if
+  // it is not all resident at those contents; kBusy if as many leases as
+  // the task bound are held.
+  std::expected<catalog::LeaseId, WorkError> HoldLease(const catalog::Closure& closure) {
+    return scheduler_.HoldLease(task_, closure);
+  }
+  // Device work under this task's lease `held`: nothing is leased or
+  // walked per operation, and the lease cannot be released before the
+  // operation's fence. kInvalid for a lease this task does not hold,
+  // kClosed for one it has ended. Refused, the work is left with the
+  // caller.
+  std::expected<OperationId, WorkError> SubmitLaunch(catalog::LeaseId held, LaunchWork&& work) {
+    return Launch(nullptr, held, std::move(work));
+  }
+  std::expected<OperationId, WorkError> SubmitDevice(catalog::LeaseId held,
+                                                     const DeviceWork& work) {
+    DeviceCommand device{.operation = {}, .work = work};
+    CpuJob none;
+    return scheduler_.Submit(task_, nullptr, held, Scheduler::Kind::kDevice, device, none);
+  }
+  // Ends this task's lease: released at once (kReady) with no operation
+  // under it in flight, else once the last one's fence completes
+  // (kWaiting: the task is woken then). Its extents stay resident.
+  // kInvalid for a lease this task does not hold.
+  std::expected<Readiness, WorkError> EndLease(catalog::LeaseId held) {
+    return scheduler_.EndLease(task_, held);
+  }
+  // Whether another task's request lease holds any of `extents`: kReady if
+  // none does, else kWaiting, and the task is woken when that lease is
+  // released (then asks again). kBusy if its waiter list is full. kInvalid
+  // if this task or an ancestor holds a request's lease not yet ended:
+  // holding one while waiting for another's could close a cycle. The wait
+  // has no bound: the lease is released only when its holder ends it (or
+  // finishes), whatever the waiter's priority, so whoever asks for a swap
+  // ends the requests in its way first (D-093).
+  std::expected<Readiness, WorkError> AwaitRelease(std::span<const catalog::ExtentId> extents) {
+    return scheduler_.AwaitRelease(task_, extents);
+  }
+  // kReady if a signal (SignalRequest) came since the last wait, which it
+  // takes; else kWaiting, and the task is woken by the next one.
+  std::expected<Readiness, WorkError> AwaitSignal() { return scheduler_.AwaitSignal(task_); }
   // A child, ready at once; its finishing wakes this task.
   std::expected<TaskId, WorkError> Spawn(std::unique_ptr<TaskProgram> program,
                                          std::size_t priority = 1);
@@ -820,6 +938,18 @@ class TaskContext {
  private:
   friend class Scheduler;
   TaskContext(Scheduler& scheduler, TaskId task) : scheduler_(scheduler), task_(task) {}
+
+  std::expected<OperationId, WorkError> Launch(const catalog::Closure* closure,
+                                               catalog::LeaseId held, LaunchWork&& work) {
+    DeviceCommand device{.operation = {}, .work = std::move(work)};
+    CpuJob none;
+    auto submitted =
+        scheduler_.Submit(task_, closure, held, Scheduler::Kind::kDevice, device, none);
+    if (!submitted) {
+      work = std::move(std::get<LaunchWork>(device.work));  // Submit took nothing
+    }
+    return submitted;
+  }
 
   Scheduler& scheduler_;
   TaskId task_;

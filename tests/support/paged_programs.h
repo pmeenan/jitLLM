@@ -13,6 +13,12 @@
 // the closure's own extents or the ones it protects, and then materializes
 // the closure. With two models in one catalog, the victims are the other
 // model's clean weights.
+//
+// RequestProgram is a request's task (M3's lease per request, scheduler.h):
+// it materializes the request's closure and leases it once, then runs each
+// step its driver hands it (RequestChannel) as device work under that
+// lease, until the driver ends the request. The evicting programs wait for
+// a request's lease to be released rather than retrying past it.
 
 #ifndef JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
 #define JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
@@ -24,6 +30,7 @@
 #include <expected>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +38,7 @@
 #include "base/bytes.h"
 #include "catalog/catalog.h"
 #include "memory/materialize.h"
+#include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
 namespace jitllm::test_support {
@@ -170,7 +178,14 @@ class EvictingProgram : public HarnessProgram {
       const auto evicted = context.Evict(extent, options_);
       if (!evicted) {
         if (evicted.error() == scheduler::WorkError::kBusy) {
-          // No mailbox now: wait for those in flight, or try next turn.
+          // A request's lease holds it: wait for its release (this extent
+          // is tried again then). Otherwise no mailbox now, or a job's own
+          // lease that ends at its fence: wait for the evictions in
+          // flight, or try next turn.
+          const auto held = context.AwaitRelease(std::span(&extent, 1));
+          if (held && *held == scheduler::Readiness::kWaiting) {
+            return scheduler::Step::Wait();
+          }
           return issued > 0 ? scheduler::Step::Wait() : scheduler::Step::Yield();
         }
         return Fail(evicted.error());
@@ -219,6 +234,9 @@ struct SwapReport {
   std::chrono::steady_clock::time_point loaded;   // the incoming closure resident
   std::uint64_t evictions = 0;                    // extents resident when it began
   std::uint64_t loads = 0;                        // closure extents nonresident then
+  // Requests the node ended before the swap because they held outgoing
+  // extents (a swap asked for between a request's steps, paged_node.h).
+  std::uint64_t requests_ended = 0;
 };
 
 // A full swap (M3): evicts the outgoing extents (write-back first for live
@@ -307,6 +325,131 @@ class LaunchOnlyProgram final : public HarnessProgram {
   std::atomic<bool>& ran_;
   std::uint32_t stream_;
   bool submitted_ = false;
+};
+
+// Between a request's driver (a thread of the harness) and its task
+// (RequestProgram). The driver writes `job`, `stream` and `end`, then posts
+// a SignalRequest for the request; the task reads them only once that
+// signal has woken it (the control queue orders the two), and touches `job`
+// no more once it has counted the step. The task publishes the rest.
+struct RequestChannel {
+  scheduler::DeviceJob job;  // the next step's
+  std::uint32_t stream = 0;
+  bool end = false;                      // end the request instead
+  std::atomic<bool> held{false};         // the lease is taken
+  std::atomic<std::uint64_t> steps{0};   // steps ended: their fence seen, or refused
+  std::atomic<bool> step_failed{false};  // the last step's outcome, set before `steps`
+  std::atomic<int> step_error{-1};       // a WorkError that refused it, else -1
+};
+
+// A request's task: materializes `closure` and holds a lease on it
+// (TaskContext::HoldLease) until the driver ends the request, running each
+// step as device work under that lease: per step, no closure is walked and
+// nothing is leased or released, and the step still ends on its fence. A
+// step refused (other than for want of a mailbox, retried) or failed is
+// reported and the request goes on. Ending (or finishing any other way:
+// failed, cancelled) releases the lease once the step in flight, if any,
+// has drained; its extents stay resident.
+class RequestProgram final : public HarnessProgram {
+ public:
+  RequestProgram(Done& done, catalog::Closure closure, RequestChannel& channel)
+      : HarnessProgram(done), closure_(std::move(closure)), channel_(channel) {}
+
+  scheduler::Step Advance(scheduler::TaskContext& context) override {
+    while (true) {
+      switch (phase_) {
+        case Phase::kLeasing: {
+          if (context.TakeFailure()) {
+            return scheduler::Step::Finish(scheduler::TaskOutcome::kFailed);  // a page-in failed
+          }
+          const auto ready = context.Materialize(closure_);
+          if (!ready) {
+            if (ready.error() == scheduler::WorkError::kBusy) {
+              return scheduler::Step::Yield();
+            }
+            return Fail(ready.error());
+          }
+          if (*ready == scheduler::Readiness::kWaiting) {
+            return scheduler::Step::Wait();
+          }
+          // In the same step as the materialization: nothing can have
+          // begun evicting it since.
+          const auto held = context.HoldLease(closure_);
+          if (!held) {
+            if (held.error() == scheduler::WorkError::kBusy) {
+              return scheduler::Step::Yield();
+            }
+            return Fail(held.error());
+          }
+          lease_ = *held;
+          phase_ = Phase::kIdle;
+          channel_.held.store(true, std::memory_order_release);
+          continue;
+        }
+        case Phase::kIdle: {
+          const auto signalled = context.AwaitSignal();
+          if (!signalled) {
+            return Fail(signalled.error());
+          }
+          if (*signalled == scheduler::Readiness::kWaiting) {
+            return scheduler::Step::Wait();
+          }
+          if (channel_.end) {
+            phase_ = Phase::kEnding;
+            const auto ended = context.EndLease(lease_);
+            if (!ended) {
+              return Fail(ended.error());
+            }
+            if (*ended == scheduler::Readiness::kWaiting) {
+              return scheduler::Step::Wait();
+            }
+            return scheduler::Step::Finish(scheduler::TaskOutcome::kSucceeded);
+          }
+          phase_ = Phase::kSubmitting;
+          continue;
+        }
+        case Phase::kSubmitting: {
+          scheduler::LaunchWork work{.stream = channel_.stream, .job = std::move(channel_.job)};
+          const auto submitted = context.SubmitLaunch(lease_, std::move(work));
+          if (!submitted) {
+            if (submitted.error() == scheduler::WorkError::kBusy) {
+              // No mailbox now: the job, untouched (SubmitLaunch leaves a
+              // refused launch in work), again next turn.
+              // NOLINTNEXTLINE(bugprone-use-after-move)
+              channel_.job = std::move(work.job);
+              return scheduler::Step::Yield();
+            }
+            work.job = nullptr;  // gone before the driver hears of it
+            Report(true, static_cast<int>(submitted.error()));
+            continue;
+          }
+          phase_ = Phase::kRunning;
+          return scheduler::Step::Wait();
+        }
+        case Phase::kRunning:
+          Report(context.TakeFailure(), -1);  // its fence was seen: it touches nothing more
+          continue;
+        case Phase::kEnding:
+          return scheduler::Step::Finish(context.TakeFailure()
+                                             ? scheduler::TaskOutcome::kFailed
+                                             : scheduler::TaskOutcome::kSucceeded);
+      }
+    }
+  }
+
+ private:
+  enum class Phase : std::uint8_t { kLeasing, kIdle, kSubmitting, kRunning, kEnding };
+  void Report(bool failed, int error) {
+    phase_ = Phase::kIdle;
+    channel_.step_failed.store(failed, std::memory_order_relaxed);
+    channel_.step_error.store(error, std::memory_order_relaxed);
+    channel_.steps.fetch_add(1, std::memory_order_release);
+  }
+
+  catalog::Closure closure_;
+  RequestChannel& channel_;
+  catalog::LeaseId lease_;
+  Phase phase_ = Phase::kLeasing;
 };
 
 // What an acquisition did: the victims it evicted, in order, and how many

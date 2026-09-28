@@ -35,6 +35,18 @@
 // Submits without waiting runs no other model's job until that request is
 // gone.
 //
+// Requests (M3's lease per request; scheduler.h): BeginRequest opens one
+// on a model's stream, whose task (RequestProgram) materializes the
+// model's closure and leases it once. Until EndRequest, every Job on that
+// stream is a step of the request: handed to its task and run under that
+// lease (its closure must lie within the request's), with no closure
+// walked and nothing leased or released per step; Job still returns only
+// once the step's fence completed. Ending it releases the lease; the
+// extents stay resident. A swap or an eviction asked for between a
+// request's steps ends the requests holding what it evicts first (the
+// swap would otherwise wait for their release), and TearDown ends every
+// one. Every Job's time is noted per stream (StepTimes).
+//
 // Memory is registered as spans for BP-A1's in-process check: each has an
 // owner (a model's index, or kShared for the zone and the workspace), and
 // Covered accepts a model's own spans and the shared ones.
@@ -43,16 +55,19 @@
 #define JITLLM_TESTS_SUPPORT_PAGED_NODE_H_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "base/bytes.h"
@@ -67,9 +82,27 @@
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
 
+struct CUevent_st;  // cudaEvent_t's, kept out of this header
+
 namespace jitllm::test_support {
 
 using Status = std::expected<void, std::string>;
+
+// Where a stream's jobs (PagedNode::Job, a request's steps or not) spent
+// their time, summed: the wall from the call to its return; within it,
+// until the job began on the device lane (dispatch), the job itself (its
+// host time: inputs staged, work queued, waits for room in the stream
+// included), and from its end to the return (after); and the device's
+// span of the job's work, by CUDA events on the stream around it. The
+// round trip a step adds to the device's time is wall - device.
+struct StepTimes {
+  std::uint64_t steps = 0;
+  double wall = 0;
+  double dispatch = 0;
+  double job = 0;
+  double after = 0;
+  double device = 0;
+};
 
 inline constexpr std::uint64_t kPagedExtent = std::uint64_t{2} << 20U;  // D-033, D-056's chunk
 inline constexpr std::size_t kPagedDepth = 4;                           // D-034's bulk depth
@@ -123,6 +156,13 @@ struct NodeSettings {
   // Told of each page-in's progress, on the scheduler's thread; outlives
   // the node. Optional.
   scheduler::PageInObserver* observer = nullptr;
+  // How long the scheduler (while a critical operation is in flight or a
+  // request holds its lease) and the device lane's submission thread keep
+  // polling after their last progress before they sleep (RE-017). Longer
+  // than a decode step (DeepSeek's ~50 ms), so neither sleeps between a
+  // request's steps: at the lanes' own 200 µs each step paid 0.25–0.5 ms
+  // more (docs/experiments/fast-swap/swap.md, "A lease per request").
+  std::chrono::microseconds poll_window{100000};
 };
 
 // What the storage lane hands io_uring (BP-P1): requests, and the pieces
@@ -245,8 +285,24 @@ class PagedNode {
   std::expected<scheduler::SchedulerStats, std::string> Stats();
   // Requests and pieces the storage lane has handed io_uring so far.
   std::uint64_t requests() const { return counting_->requests.load(); }
+  // One job on `stream` over `closure`: a step of the request open there
+  // (refused unless every entry of its closure, extent and contents, is
+  // the request's), or else a program of its own that materializes and
+  // leases the closure for it (RunProgram). Returns once the job's fence
+  // completed. The node has one driver: a swap or eviction cannot be
+  // asked for while a step is in flight.
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
              std::uint32_t stream);
+  // Opens a request on `stream` (the header's Requests): returns once its
+  // task holds its lease on `closure` (copied). Refused if one is open
+  // there already.
+  Status BeginRequest(std::uint32_t stream, const catalog::Closure& closure, std::string_view what);
+  // Ends it: its lease released (no step is in flight between Jobs), its
+  // extents resident. Its task's failure, if it failed.
+  Status EndRequest(std::uint32_t stream);
+  bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
+  // The stream's StepTimes since the last call, which resets them.
+  StepTimes TakeTimes(std::uint32_t stream);
   // Runs `call` on the scheduler's thread.
   Status Call(std::function<Status()> call, std::string_view what);
   // Makes room for `closure` under the budget and materializes it
@@ -254,7 +310,33 @@ class PagedNode {
   Status Acquire(const catalog::Closure& closure, AcquireReport& report, std::string_view what);
 
  private:
+  // A request open on a stream: its task's channel and Done, and a sorted
+  // copy of its closure.
+  struct OpenRequest {
+    std::string what;
+    catalog::Closure closure;
+    std::uint64_t request = 0;
+    Done done;
+    RequestChannel channel;
+  };
+  // A job's times on the device lane's thread, read once it has retired.
+  struct Timing {
+    std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point queued;
+    bool ran = false;
+  };
+
   void Round();
+  // `job`, timed into `timing` and between the stream's events.
+  scheduler::DeviceJob Timed(scheduler::DeviceJob job, std::uint32_t stream, Timing& timing);
+  void Note(std::uint32_t stream, std::chrono::steady_clock::time_point called,
+            const Timing& timing);
+  Status Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
+              scheduler::DeviceJob job, std::string_view what);
+  void Signal(std::uint64_t request);
+  // Ends every open request holding any of `extents`; how many.
+  std::expected<std::uint64_t, std::string> EndRequestsOver(
+      std::span<const catalog::ExtentId> extents);
 
   NodeSettings settings_;
   std::unique_ptr<providers::VmmProvider> memory_;
@@ -275,6 +357,8 @@ class PagedNode {
   Mapped pool_;
   std::vector<void*> pinned_;
 
+  // Before the scheduler, so it outlives the programs that refer to it.
+  std::map<std::uint32_t, std::unique_ptr<OpenRequest>> requests_;  // by stream
   base::WakeFlag wake_;
   std::unique_ptr<scheduler::CompletionBoard> board_;
   std::unique_ptr<scheduler::StorageService> storage_lane_;
@@ -286,6 +370,8 @@ class PagedNode {
   std::optional<std::expected<void, scheduler::Fault>> stopped_;
   std::uint64_t request_ = 0;
   bool torn_down_ = false;
+  std::vector<StepTimes> times_;                             // by compute stream
+  std::vector<std::pair<CUevent_st*, CUevent_st*>> events_;  // by compute stream
 };
 
 }  // namespace jitllm::test_support

@@ -20,12 +20,17 @@
 //   from_pretrained(torch_dtype=bfloat16) casts them, and the resident
 //   harness does on the host) into its working memory before the decoder.
 //   Their places are pinned in the scheduler when registered (D-090).
-// - Phases, each a device job leasing only its component, the image's own
-//   memory, the shared workspace (every per-job buffer), the cuBLAS
-//   workspace and the staging: encode (one job), denoise (a job per step;
-//   the first also projects the text rows and fills the prefix K/V cache),
-//   decode (one job). A component a phase does not lease can be evicted
-//   and paged back meanwhile.
+// - Phases, each a device job over only its component's closure, the
+//   image's own memory, the shared workspace (every per-job buffer), the
+//   cuBLAS workspace and the staging: encode (one job), denoise (a job per
+//   step; the first also projects the text rows and fills the prefix K/V
+//   cache), decode (one job). A generation is one request: the harness
+//   opens it on the image's stream over everything() (all three
+//   components; PagedNode::BeginRequest, M3's lease per request), leased
+//   once, and each phase's job runs under that lease, its closure within
+//   it. Outside a request each job leases its own component, and a
+//   component a phase does not lease can be evicted and paged back
+//   meanwhile.
 // - The image's own memory (device VMM, mapped at setup, pinned): what
 //   lives from one job to the next within a generation — the prompt
 //   embeddings, the text rows, the prefix K/V cache, the rotary tables, the

@@ -211,7 +211,8 @@ admit) nor a cuBLAS formulation was needed.
   image, and the attention kernel's tests cover that size's sequence
   lengths.
 - The phases here run on `cudaMalloc` memory. On the paged node each phase
-  is a device job over its own component's leased closure, and the image is
+  is a device job over its own component's closure, a generation is one
+  request leasing all three components once (D-093), and the image is
   this harness's pixel for pixel (RGBA SHA-256 `95fbcbc5…`,
   [swap](../fast-swap/swap.md#qwen-image-21-on-the-paged-node)). In both,
   the kernels are called directly: the image path's operations are not yet

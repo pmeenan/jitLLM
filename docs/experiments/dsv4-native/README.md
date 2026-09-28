@@ -138,8 +138,12 @@ graphs yet, an M3 item), where llama-bench replays a captured graph; that
 is the likely share of the 6% decode gap, not measured. *Measured since*
 ([graphs](../fast-swap/graphs.md)): graphs are worth 4–5% on the paged
 node, and most of the gap was fusion (llama.cpp with fusion off: 20.04
-tok/s with graphs, 19.86 without); what remains is the paged node's
-per-step round trip.
+tok/s with graphs, 19.86 without); what remained was the paged node's
+per-step round trip. With a lease per request (D-093,
+[swap](../fast-swap/swap.md#a-lease-per-request)) that is gone: the paged
+node decodes at 20.34–20.46 tok/s with graphs, 1.016–1.022× llama.cpp with
+fusion off and graphs on (20.02, the same session) and 0.990–0.996× with
+fusion on (20.54).
 
 ## Judgement calls
 

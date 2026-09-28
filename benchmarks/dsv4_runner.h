@@ -5,8 +5,11 @@
 // M3's swap path, docs/experiments/fast-swap/swap.md): its v0 prepared
 // artifact paged into device VMM through the node's landing zone, each
 // chunk run as one device job on the model's own stream under a lease on
-// its whole closure (D-086), with the graph, plan and kernels of the
-// resident harness (dsv4_exec.cc, via dsv4_common.h). CUDA builds only.
+// its whole closure (D-086): the request's, held from its start to its end
+// when the harness opens one on the model's stream (PagedNode::BeginRequest,
+// M3's lease per request), else the job's own. With the graph, plan and
+// kernels of the resident harness (dsv4_exec.cc, via dsv4_common.h). CUDA
+// builds only.
 //
 // - Memory, registered in the node's one catalog domain, every extent
 //   2 MiB with managed backing (D-033):

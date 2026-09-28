@@ -80,6 +80,15 @@ target_link_libraries(acquire_test PRIVATE jitllm_paged_programs jitllm_schedule
                                            jitllm_fake_providers)
 jitllm_gtest(acquire_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# A request's lease (M3's lease per request; paged_programs.h
+# RequestProgram) over the fake providers: steps under one lease, eviction
+# refused and swaps waiting while it is held, release at its end or after a
+# cancelled request's step drains, and kept for good when a step is unproven.
+add_executable(held_lease_test held_lease_test.cc)
+target_link_libraries(held_lease_test PRIVATE jitllm_paged_programs jitllm_scheduler
+                                               jitllm_fake_providers)
+jitllm_gtest(held_lease_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Storage and whole reads, on the fake and on io_uring with a real file.
 add_executable(storage_test storage_test.cc)
 target_link_libraries(storage_test PRIVATE jitllm_fake_providers jitllm_storage jitllm_platform)

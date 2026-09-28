@@ -332,6 +332,108 @@ TEST(CudaPagedNodeTest, SwapsHandBackingOverAndEveryByteReadsBack) {
   EXPECT_TRUE(finished.has_value()) << finished.error();
 }
 
+// M3's lease per request on the real providers: a request pages its
+// model in and leases the closure once; each ReadBack is then a step under
+// that lease (one lease per extent throughout, none taken per step), its
+// bytes the file's; ending it leaves the model resident and unleased. A
+// swap asked for between a request's steps ends the request first, then
+// swaps, and the incoming model reads back whole under a request of its
+// own.
+TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + (kExtents[0] * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+
+  const auto leases = [&](const Model& model, std::uint32_t& each, std::size_t& resident) {
+    each = UINT32_MAX;
+    return node.Call(
+        [&]() -> ts::Status {
+          resident = model.Resident();
+          for (const ExtentId extent : model.weights()) {
+            each = std::min(each, node.catalog().Describe(extent).value().leases);
+          }
+          return {};
+        },
+        "reading the leases");
+  };
+  ran = node.BeginRequest(0, first.closure(), "the first model's request");
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(node.InRequest(0));
+  auto before = node.Stats();
+  ASSERT_TRUE(before.has_value());
+  (void)node.TakeTimes(0);
+  for (int step = 0; step < 4; ++step) {
+    ran = first.ReadBack();
+    ASSERT_TRUE(ran.has_value()) << ran.error();
+    EXPECT_TRUE(first.Intact()) << "step " << step;
+    std::uint32_t each = 0;
+    std::size_t resident = 0;
+    ASSERT_TRUE(leases(first, each, resident).has_value());
+    EXPECT_EQ(each, 1U) << "step " << step;  // the request's, and only it
+    EXPECT_EQ(resident, first.weights().size());
+  }
+  auto after = node.Stats();
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->held_operations - before->held_operations, 4U);
+  EXPECT_EQ(after->leases_held - before->leases_held, 0U);  // none per step
+  const ts::StepTimes times = node.TakeTimes(0);
+  EXPECT_EQ(times.steps, 4U);
+  EXPECT_GT(times.device, 0.0);  // the events around each step
+  EXPECT_LE(times.device, times.wall);
+  // A step whose closure is not within the request's (the other model's)
+  // is refused before it reaches the request's task, and runs nothing.
+  std::atomic<bool> outside_ran{false};
+  const ts::Status outside = node.Job(
+      second.closure(),
+      [&outside_ran](jitllm::providers::NativeStream /*native*/) {
+        outside_ran.store(true);
+        return sc::JobResult::kQueued;
+      },
+      "a step outside the request", 0);
+  EXPECT_FALSE(outside.has_value());
+  EXPECT_FALSE(outside_ran.load());
+  EXPECT_TRUE(node.InRequest(0));
+  ASSERT_TRUE(node.EndRequest(0).has_value());
+  EXPECT_FALSE(node.InRequest(0));
+  std::uint32_t each = 0;
+  std::size_t resident = 0;
+  ASSERT_TRUE(leases(first, each, resident).has_value());
+  EXPECT_EQ(each, 0U);
+  EXPECT_EQ(resident, first.weights().size());  // release is not eviction
+
+  // A swap between the steps of a request over the outgoing model.
+  ASSERT_TRUE(node.BeginRequest(0, first.closure(), "the first model's request").has_value());
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ts::SwapReport report;
+  ran = node.Swap(first.weights(), second.closure(), /*handoff=*/true, report);
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_EQ(report.requests_ended, 1U);
+  EXPECT_FALSE(node.InRequest(0));
+  EXPECT_EQ(report.evictions, first.weights().size());
+  ASSERT_TRUE(node.BeginRequest(1, second.closure(), "the second model's request").has_value());
+  ran = second.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(second.Intact());
+  ASSERT_TRUE(leases(second, each, resident).has_value());
+  EXPECT_EQ(each, 1U);
+  EXPECT_EQ(resident, second.weights().size());
+  // Left open: the teardown ends it before it evicts.
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
 // RE-029 on the real device: a job whose stream fills (a wait on a host
 // flag, then more operations than the stream holds pending) blocks the
 // device lane's submission thread in a launch. With the zone's copies on a

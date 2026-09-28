@@ -116,7 +116,8 @@ unfused step. The 3.0–4.2 ms between it and a replayed step's wall time is the
 paged node's round trip per chunk, which graphs do not touch: posting the
 job, the scheduler materializing and leasing the ~46,500-extent closure,
 the fence, and releasing the lease, with the GPU idle meanwhile. That, not
-launching, is now the gap to llama.cpp (not decomposed further).
+launching, was then the gap to llama.cpp; a lease per request removed it
+([below](#re-measured-with-a-lease-per-request-spark-b-2026-09-28)).
 
 **Capture cost and memory.** One capture per decode shape: 5.5–7.0 ms
 capturing and 18.0–18.5 ms instantiating and uploading a 5,920-node graph
@@ -146,6 +147,56 @@ table there stands; B→A is page-in bound (7.2 s of 7.4 s). This run
 shared `spark-b` with other work between phases (its launch-by-launch
 bench was 3–4% slower than `pb-1`'s), so its totals are within 3% of
 swap.md's, not a replacement for them.
+
+## Re-measured with a lease per request (`spark-b`, 2026-09-28)
+
+The owner asked (D-090's note) for graphs to be re-measured once a
+request leases its closure once instead of every step
+([swap](swap.md#a-lease-per-request)). `jitllm_swap_pairs --a dsv4 --b
+qwen38 --cycles 0 --bench 64 [--poll-us 200]`: 64 one-token greedy steps
+from BOS, four arms (lease per step or per
+request, launch by launch or replayed), a warm-up of each and then three
+passes of each in turn, every pass's logits equal to the first warm-up's
+(0 steps differ in all 32 passes of the four runs). Same host, driver,
+build conditions and artifact as above; the memory gate before each run,
+load average 1.2–5.0; raw outputs in `~/scratch/m3lease/r1` and `r2` on
+`spark-b`. The poll window is how long the scheduler and the device lane
+poll before they sleep (RE-017): the lanes' 200 µs, or the paged node's
+new 100 ms, longer than a step. Tok/s means of three passes, two runs per
+setting:
+
+| Arm | 100 ms poll (r1; r2) | 200 µs poll (r1; r2) |
+| --- | ---: | ---: |
+| lease per step, launch by launch | 18.86; 18.88 | 17.82; 18.49 |
+| lease per step, graphs | 19.71; 19.92 | 18.75; 19.63 |
+| lease per request, launch by launch | 19.44; 19.39 | 18.62; 19.28 |
+| lease per request, graphs | **20.34; 20.46** | 19.49; 20.36 |
+| llama.cpp tg64, fusion off, graphs on (r2, same session) | 20.02 ± 0.06 | |
+| llama.cpp tg64, fusion and graphs on (r2) | 20.54 ± 0.06 | |
+
+Per step (ms, the same runs; the round trip is the step's wall less the
+device's span of its work, by CUDA events around the job on the stream):
+
+| Arm, 100 ms poll | Wall | Device | Round trip | Job's host time |
+| --- | ---: | ---: | ---: | ---: |
+| lease per step, graphs | 50.01–50.54 | 48.70–49.00 | 1.30–1.55 | 0.06 |
+| lease per request, graphs | 48.71–48.97 | 48.70–48.96 | **0.009–0.013** | 0.06 |
+| lease per request, launch by launch | 51.27–51.40 | 51.26–51.39 | 0.009–0.010 | 41.4–41.6 |
+
+At the 200 µs poll the round trip was 2.2–2.6 ms per step with a lease per
+step and 0.26–0.46 ms with one per request (the lanes asleep between
+steps, RE-017). Outside the job the host spends about 0.17 ms per step
+(the logits copied out, the argmax, the next chunk's shape). r1's first
+run (200 µs) measured every device span 1.8–2.1 ms longer; r2 repeated it
+after the 100 ms run and did not, so it was the run, not the poll.
+
+**The graphs' gain is not a rounding error:** with a lease per request,
+replayed steps run 1.046–1.055× launch-by-launch ones (20.34–20.46 against
+19.39–19.44 tok/s), about 2.6 ms of device time per step: the launches'
+own cost on the device, which a lease does not touch. So graphs stay
+(D-090's note, 2026-09-28). With them and a lease per request DeepSeek
+decodes at 1.016–1.022× llama.cpp's like-for-like arm (fusion off, graphs
+on) and 0.990–0.996× its default (fusion on).
 
 ## Tests
 
@@ -213,6 +264,10 @@ swap.md's, not a replacement for them.
   scheduler. A runtime that unpins (to relocate or remove a model) must
   destroy every graph naming those extents first; the scheduler cannot
   see graphs (D-090).
-- Only DeepSeek so far; Qwen3.8's decode graphs follow its slice.
-- The paged node's per-chunk round trip (3.0–4.2 ms) is measured, not
-  broken down or reduced.
+- Only DeepSeek so far. Qwen3.8's decode graphs are not simple yet: the
+  n-gram rows' gather takes the step's distinct row count as a launch
+  parameter and reads rows the host fetched for that step, and its runner
+  changed with the prefill slice's planning (landed since); they are
+  still to do.
+- The paged node's per-chunk round trip (3.0–4.2 ms above) is gone with a
+  lease per request and lanes that poll through a step (0.01 ms, above).

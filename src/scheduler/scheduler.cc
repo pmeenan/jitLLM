@@ -9,9 +9,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -128,6 +130,9 @@ base::PushResult Scheduler::Post(Control&& control) {
       if (pushed == base::PushResult::kAccepted) {
         cancel_intents_.push_back(request);  // one per queued control: within capacity
       }
+    } else if (std::holds_alternative<SignalRequest>(control)) {
+      // Orders nothing against starts or cancellations of the request.
+      pushed = controls_.TryPush(std::move(control), base::PushKind::kOrdinary);
     } else {
       const std::uint64_t request = std::get<StartRequest>(control).request;
       pushed = controls_.TryPush(std::move(control), base::PushKind::kOrdinary);
@@ -335,7 +340,43 @@ void Scheduler::Apply(Control&& control) {
     }
     return;
   }
+  if (const auto* signal = std::get_if<SignalRequest>(&control)) {
+    Signal(signal->request);
+    return;
+  }
   (void)Cancel(std::get<CancelRequest>(control).request);
+}
+
+void Scheduler::Signal(std::uint64_t request) {
+  for (std::optional<TaskRecord>& record : records_) {
+    if (!record || record->request != request || record->finished || ViewOf(record->id).parent) {
+      continue;
+    }
+    // Kept for the task's next AwaitSignal, which takes it: woken now if
+    // it waits for one.
+    record->signalled = true;
+    if (record->awaiting_signal) {
+      record->awaiting_signal = false;
+      Wake(record->id, false);
+    }
+  }
+}
+
+std::expected<Readiness, WorkError> Scheduler::AwaitSignal(TaskId task) {
+  TaskRecord* record = Record(task);
+  const std::optional<TaskView> view = tasks_.Describe(task);
+  if (record == nullptr || record->finished || !view || view->cancelled) {
+    return std::unexpected(WorkError::kClosed);
+  }
+  if (record->signalled) {
+    record->signalled = false;
+    return Readiness::kReady;
+  }
+  if (!record->awaiting_signal) {
+    record->awaiting_signal = true;
+    ++record->waiting;
+  }
+  return Readiness::kWaiting;
 }
 
 void Scheduler::BeginStop() {
@@ -355,7 +396,8 @@ void Scheduler::BeginStop() {
 // Work -------------------------------------------------------------------------------
 
 std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
-                                                        const catalog::Closure& closure, Kind kind,
+                                                        const catalog::Closure* closure,
+                                                        catalog::LeaseId held, Kind kind,
                                                         DeviceCommand& device, CpuJob& job) {
   bool valid = false;
   if (kind == Kind::kDevice && lanes_.device != nullptr) {
@@ -367,7 +409,7 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   } else if (kind == Kind::kCpu) {
     valid = lanes_.cpu != nullptr && static_cast<bool>(job);
   }
-  if (!valid) {
+  if (!valid || (closure == nullptr) == !held.valid()) {
     return std::unexpected(WorkError::kInvalid);
   }
   TaskRecord* record = Record(task);
@@ -375,24 +417,45 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   if (record == nullptr || record->finished || !view || view->cancelled) {
     return std::unexpected(WorkError::kClosed);
   }
+  // Under a request's lease: the task's own, not ending.
+  Held* under = nullptr;
+  if (held.valid()) {
+    const auto found = held_.find(held);
+    if (found == held_.end() || found->second.task != task) {
+      return std::unexpected(WorkError::kInvalid);
+    }
+    if (found->second.ending) {
+      return std::unexpected(WorkError::kClosed);
+    }
+    under = &found->second;
+  }
   // Not open() against capacity(): a mailbox whose generation is exhausted
   // is retired and never issued again.
   if (board_.available() == 0) {
     return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
   }
   // Prepare under the owner: generations checked and leases taken, all or
-  // none, then the task's lifetime hold and the record, before any lane
-  // can touch the memory.
-  const auto lease = catalog_.AcquireLease(closure);
-  if (!lease) {
-    return std::unexpected(ErrorOf(lease.error()));
+  // none (or the request's lease counts one more operation under it), then
+  // the task's lifetime hold and the record, before any lane can touch the
+  // memory.
+  catalog::LeaseId lease;
+  if (under != nullptr) {
+    ++under->operations;
+    ++stats_.held_operations;
+  } else {
+    const auto acquired = catalog_.AcquireLease(*closure);
+    if (!acquired) {
+      return std::unexpected(ErrorOf(acquired.error()));
+    }
+    lease = *acquired;
+    base::Check(catalog_.RecordUse(lease, turn_).has_value(), "recording a fresh lease's use");
   }
-  base::Check(catalog_.RecordUse(*lease, turn_).has_value(), "recording a fresh lease's use");
   base::Check(tasks_.PrepareOperation(task).has_value(), "an open task takes an operation");
   Operation& operation = Open(kind);
   operation.route = kind == Kind::kCpu ? Route::kCpu : Route::kDevice;
   operation.task = task;
-  operation.lease = *lease;
+  operation.lease = lease;
+  operation.held = held;
   if (kind == Kind::kCpu) {
     operation.job = CpuCommand{.operation = operation.id, .job = std::move(job)};
   } else {
@@ -404,6 +467,126 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   const OperationId id = operation.id;
   Publish(operation);
   return id;
+}
+
+// Requests' leases --------------------------------------------------------------------
+
+std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(TaskId task,
+                                                                const catalog::Closure& closure) {
+  const TaskRecord* record = Record(task);
+  const std::optional<TaskView> view = tasks_.Describe(task);
+  if (record == nullptr || record->finished || !view || view->cancelled) {
+    return std::unexpected(WorkError::kClosed);
+  }
+  if (held_.size() >= settings_.tasks) {
+    return std::unexpected(WorkError::kBusy);
+  }
+  // All or none, at the recorded contents: exactly a per-operation lease,
+  // taken once. An extent whose eviction has begun cannot be leased
+  // (invariant 6), and none can begin while this is held.
+  const auto lease = catalog_.AcquireLease(closure);
+  if (!lease) {
+    return std::unexpected(ErrorOf(lease.error()));
+  }
+  base::Check(catalog_.RecordUse(*lease, turn_).has_value(), "recording a fresh lease's use");
+  Held held{.task = task, .extents = {}, .operations = 0, .ending = false, .waiters = {}};
+  held.extents.reserve(closure.extents.size());
+  for (const auto& [extent, generation] : closure.extents) {
+    held.extents.push_back(extent);
+  }
+  // A closure is sorted and unique by construction; a hand-made one is
+  // made so here, as the catalog's lease does.
+  std::ranges::sort(held.extents);
+  held.extents.erase(std::ranges::unique(held.extents).begin(), held.extents.end());
+  held.waiters.reserve(settings_.waiters + 1);
+  held_.emplace(*lease, std::move(held));
+  ++stats_.leases_held;
+  return *lease;
+}
+
+std::expected<Readiness, WorkError> Scheduler::EndLease(TaskId task, catalog::LeaseId lease) {
+  TaskRecord* record = Record(task);
+  const auto found = held_.find(lease);
+  if (record == nullptr || found == held_.end() || found->second.task != task) {
+    return std::unexpected(WorkError::kInvalid);
+  }
+  Held& held = found->second;
+  held.ending = true;  // no new operation under it
+  if (held.operations == 0) {
+    ReleaseHeld(found);
+    return Readiness::kReady;
+  }
+  // Released once the last operation's fence is seen: the holder waits.
+  if (!record->finished && std::ranges::find(held.waiters, task) == held.waiters.end()) {
+    held.waiters.push_back(task);  // room for the holder beyond the waiter bound
+    ++record->waiting;
+  }
+  return Readiness::kWaiting;
+}
+
+std::expected<Readiness, WorkError> Scheduler::AwaitRelease(
+    TaskId task, std::span<const catalog::ExtentId> extents) {
+  TaskRecord* record = Record(task);
+  const std::optional<TaskView> view = tasks_.Describe(task);
+  if (record == nullptr || record->finished || !view || view->cancelled) {
+    return std::unexpected(WorkError::kClosed);
+  }
+  // Never hold and wait: a task that holds a request's lease, or whose
+  // ancestor does (it waits for its children), would wait for a holder
+  // that may be waiting, the same way, for it, a cycle no release breaks.
+  // A lease that is ending is released on its operations' fences alone.
+  for (std::optional<TaskId> at = task; at;) {
+    if (std::ranges::any_of(held_, [&at](const auto& entry) {
+          return entry.second.task == *at && !entry.second.ending;
+        })) {
+      return std::unexpected(WorkError::kInvalid);
+    }
+    const std::optional<TaskView> up = tasks_.Describe(*at);
+    at = up ? up->parent : std::nullopt;
+  }
+  for (auto& [lease, held] : held_) {
+    if (held.task == task) {
+      continue;  // its own, ending: its operations' fences release it
+    }
+    const bool overlaps = std::ranges::any_of(extents, [&held](catalog::ExtentId extent) {
+      return std::ranges::binary_search(held.extents, extent);
+    });
+    if (!overlaps) {
+      continue;
+    }
+    if (std::ranges::find(held.waiters, task) == held.waiters.end()) {
+      if (held.waiters.size() >= settings_.waiters) {
+        return std::unexpected(WorkError::kBusy);
+      }
+      held.waiters.push_back(task);
+      ++record->waiting;
+    }
+    return Readiness::kWaiting;
+  }
+  return Readiness::kReady;
+}
+
+void Scheduler::ConcludeHeld(catalog::LeaseId lease) {
+  const auto found = held_.find(lease);
+  base::Check(found != held_.end() && found->second.operations > 0,
+              "an operation under a request's lease that is not counted");
+  --found->second.operations;
+  if (found->second.ending && found->second.operations == 0) {
+    ReleaseHeld(found);
+  }
+}
+
+void Scheduler::ReleaseHeld(std::map<catalog::LeaseId, Held>::iterator held) {
+  // Its last use is its release: the extents stay resident, now eligible
+  // for eviction (D-007), with the tick victim selection orders them by.
+  base::Check(catalog_.RecordUse(held->first, turn_).has_value(), "recording a held lease's use");
+  base::Check(catalog_.ReleaseLease(held->first).has_value(), "releasing a request's lease");
+  const std::vector<TaskId> waiters = std::move(held->second.waiters);
+  held_.erase(held);
+  ++stats_.leases_released;
+  for (const TaskId waiter : waiters) {
+    Wake(waiter, false);
+  }
 }
 
 bool TaskContext::TakeFailure() {
@@ -569,6 +752,22 @@ void Scheduler::Withdraw(TaskId task) {
     std::erase(slot_waiters_, extent);
     EndEviction(extent, false);
   }
+  // Requests' leases: it waits for none any more; its own end, released
+  // now or once the operations under them drain (a quarantined one never
+  // does, and keeps its lease).
+  std::vector<catalog::LeaseId> ended;
+  for (auto& [lease, held] : held_) {
+    std::erase(held.waiters, task);
+    if (held.task == task) {
+      held.ending = true;
+      if (held.operations == 0) {
+        ended.push_back(lease);
+      }
+    }
+  }
+  for (const catalog::LeaseId lease : ended) {
+    ReleaseHeld(held_.find(lease));
+  }
   // Backing this task kept for a handoff that no load took: released now,
   // never an idle pool (D-033).
   ReleaseParked(task);
@@ -626,11 +825,17 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
   const Kind kind = operation.kind;
   const catalog::ExtentId extent = operation.extent;
   if (kind == Kind::kDevice || kind == Kind::kCpu) {
-    base::Check(catalog_.ReleaseLease(operation.lease).has_value(),
-                "releasing an operation's lease");
+    const catalog::LeaseId held = operation.held;
+    if (!held.valid()) {
+      base::Check(catalog_.ReleaseLease(operation.lease).has_value(),
+                  "releasing an operation's lease");
+    }
     base::Check(tasks_.RetireOperation(operation.task).has_value(), "retiring a task's operation");
     const TaskId task = operation.task;
     operations_[id.index()].reset();
+    if (held.valid()) {
+      ConcludeHeld(held);  // the request's lease, if it is ending and this was its last
+    }
     Wake(task, outcome != Outcome::kSucceeded);
     TryRetire(task);
     return;
@@ -712,11 +917,13 @@ std::optional<std::expected<void, Fault>> Scheduler::Stopped() const {
     return std::nullopt;
   }
   // Every task finished at the stop; what remains is held by quarantined
-  // work, whose capacity is not reclaimed.
+  // work, whose capacity is not reclaimed (a request's lease with such an
+  // operation under it included).
   if (fault_) {
     return std::unexpected(*fault_);
   }
   base::Check(tasks_.size() == 0, "a task outlived its operations after the stop");
+  base::Check(held_.empty(), "a request's lease outlived its task after the stop");
   return std::expected<void, Fault>();
 }
 
@@ -734,7 +941,10 @@ std::expected<void, Fault> Scheduler::Run() {
       progressed = now;
       continue;
     }
-    if (critical_ > 0 && now - progressed < settings_.poll_window) {
+    // A critical operation in flight, or a request holding its lease, whose
+    // next step is imminent: poll rather than sleep, within the window
+    // (RE-017).
+    if ((critical_ > 0 || !held_.empty()) && now - progressed < settings_.poll_window) {
       ++stats_.polls;
       std::this_thread::yield();
       continue;

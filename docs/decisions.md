@@ -39,6 +39,58 @@ one Spark and on two.
 
 ---
 
+## D-093: A request may lease its closure once and run every step under that lease  (2026-09-28, status: accepted by the owner, 2026-09-28, for the M3 slice that built it, for review with it; amends D-086's "a job holds a lease on the phase's whole closure")
+
+**Decision.** The owner, on 2026-09-28: for a full-swap model the closure
+is the whole model, so a request (a prompt or turn; for an image, one
+generation) leases it once at admission, runs each prefill and decode step
+as lightweight device work under that lease, and releases it when the
+request ends or the model is swapped out; the per-step lease stays for
+M7's demand-paged experts.
+
+- **The lease** is an ordinary catalog lease on a materialized closure,
+  held by the request's task (`TaskContext::HoldLease`), not by one
+  operation. It excludes eviction of every extent it holds, as any lease
+  does (invariant 6).
+- **Each step** (`SubmitLaunch(held, …)`) takes a mailbox, the task's
+  lifetime hold and a fence, and nothing else: no closure is walked,
+  nothing is leased or released. The lease counts its operations.
+- **Release** (`EndLease`, or the task finishing: the request's end, a
+  failure or a cancellation) waits for the last operation under it to
+  conclude with proof of no further access; an unproven one keeps it for
+  good (invariant 2). Release records the use and changes eligibility,
+  not residency (D-007).
+- **A swap** that needs a held extent waits for the release
+  (`AwaitRelease`), which comes at the request's end, or earlier when the
+  swap is asked for between the request's steps and the runtime ends the
+  request first. The wait has no bound and no priority: only the holder
+  ends a lease, so whoever asks for the swap ends the requests in its way
+  first (the paged harness does). A task that holds a request's lease, or
+  whose ancestor does, is refused the wait (never hold and wait), so
+  holders cannot wait for each other in a cycle.
+- **A step still round-trips to the host:** sampling stays on the host,
+  since the next step's inputs are built there from the sampled token.
+
+**Why.** A decode step leased and released DeepSeek's ~46,500-extent
+closure every time: 1.3–2.6 ms of a ~50 ms step, the gap to llama.cpp.
+Per request it is 0.01 ms (with lanes that poll through a step), and
+DeepSeek decodes at 1.016–1.022× llama.cpp's like-for-like arm (fusion
+off, graphs on; two runs of three passes)
+([swap](experiments/fast-swap/swap.md#a-lease-per-request)). The polling
+is the paged harness's (100 ms): it keeps the scheduler's and the device
+submission lane's threads spinning while a request steps; the scheduler's
+default stays 200 µs, and the runtime's window is M3 serving's to set.
+
+**Consequences.** Nothing can evict a model while one of its requests
+runs, which D-019's switching at request boundaries already assumed; a
+switching policy that pauses a request mid-way (D-069) must end its lease
+at that boundary. A request's working set is the whole closure for its
+whole life, as D-050's envelope already charges it.
+
+**Reopen if.** A request's closure must change between its steps (routed
+experts, M7: those steps take their own leases), or a request must yield
+extents mid-way without reaching a step boundary.
+
 ## D-092: A speculative verify runs a row-invariant plan: each row computes what its one-row decode step computes, bit for bit  (2026-09-28, status: accepted by the M3 speculation slice under the owner's overnight delegation, for review with it; specializes D-068's numerical contract for speculation and D-053's plan selection for verify chunks)
 
 **Decision.**
@@ -147,7 +199,7 @@ top-k on a patched path without it (licensing.md).
 **Reopen if.** A license admitted as permissive turns out to carry an
 obligation or restriction above, or the owner narrows the rule.
 
-## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth to be re-measured (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
+## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth re-measured with a lease per request the same day and kept (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
 
 **Decision.**
 - **What a graph holds.** A graph is captured per model, plan and chunk
@@ -237,6 +289,19 @@ gain of 1.04–1.05× ([graphs](experiments/fast-swap/graphs.md)). Graphs are
 re-measured once leases are held per request rather than per step; if
 their gain is then a rounding error, graph capture and caching are
 removed, and pinned places may stay on their own merits.
+
+**Re-measured, 2026-09-28: graphs stay.** With a lease per request (the
+closure leased once, each step device work under it) and lanes that poll
+through a step, the paged node's round trip fell from 1.3–2.6 ms to
+0.01 ms a step, and replayed decode steps still run 1.046–1.055× launch by
+launch (DeepSeek, tg64 on `spark-b`: 20.34–20.46 against 19.39–19.44
+tok/s, about 2.6 ms of device time a step): not a rounding error, so
+capture and caching stay, with the pins. DeepSeek then decodes at
+1.016–1.022× llama.cpp's fusion-off, graphs-on arm measured in the same
+session (20.02 tok/s; two runs of three passes, 0.990–0.996× the
+fusion-on default's 20.54) ([graphs](experiments/fast-swap/graphs.md#re-measured-with-a-lease-per-request-spark-b-2026-09-28)).
+Qwen3.8's decode graphs are still to do: its row gather takes each
+step's row count as a launch parameter.
 
 **Reopen if.** A model must move between swaps (then per-node parameter
 updates or re-capture after a relocation), a kernel's parameters come to
@@ -544,7 +609,7 @@ plus the work that cannot overlap it exceeds it), a model's reference
 format cannot be supported under D-017 and D-080, or the owner moves the
 product milestones ahead of the swap work.
 
-## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs, and answered on 2026-09-28 by D-090: graphs replay at pinned places)
+## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs, and answered on 2026-09-28 by D-090: graphs replay at pinned places; a job's own lease amended by D-093: a request may hold one lease for all its steps)
 
 **Decision.** What M2's backend proof built and checked becomes the
 internal contract M3 builds on
