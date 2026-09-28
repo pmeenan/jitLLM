@@ -307,6 +307,17 @@ reproducing the template.
   Mia's vLLM in its deterministic mode with MTP off. Two repeats per
   prompt; all six identical. The file also lists, for information, the
   default launch's tokens.
+- [reference-qwen3.8-nvfp4-vllm-ppl.json](reference-qwen3.8-nvfp4-vllm-ppl.json):
+  the perplexity reference, from one more cold launch in the same
+  deterministic, MTP-off configuration (start to ready 677 s). The text is
+  `docs/async-model.md` at `e7973e5`, the same text the DeepSeek slice used,
+  tokenized by `/tokenize` without a template or special tokens: 3,558
+  tokens, under the 4,096-token cut, so all of it is used. One
+  `/v1/completions` request with `prompt_logprobs` 1 (4.6 s) gives each
+  position's log-probability of the actual next token and the top-1 token:
+  **perplexity 14.658** over positions 1..3,557 (mean NLL 2.6850 nats); the
+  top-1 token is the actual next token at 43.9% of positions. Made by
+  [ppl.py](ppl.py).
 
 **Mia's default launch is not a usable oracle.** With MTP 3 and the
 deterministic knobs off, the same greedy request sent twice gave different
