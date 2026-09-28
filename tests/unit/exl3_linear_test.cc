@@ -387,8 +387,8 @@ class Exl3LinearTest : public ::testing::Test {
       if (!launch) {
         return hashes;
       }
-      const std::uint64_t seed = static_cast<std::uint64_t>(shape.k) * 1000003U +
-                                 static_cast<std::uint64_t>(shape.n) * 101U +
+      const std::uint64_t seed = (static_cast<std::uint64_t>(shape.k) * 1000003U) +
+                                 (static_cast<std::uint64_t>(shape.n) * 101U) +
                                  static_cast<std::uint64_t>(shape.bits);
       const exl3::Weights w = Linear(placement, seed, shape.k, shape.n, shape.bits);
       const bool gate_up = shape.k == 896 && shape.n == 4864;
@@ -777,9 +777,8 @@ TEST_F(Exl3LinearTest, NoPackedKernelReadsOutsideItsOperandsAtTheFixturesShapes)
   std::size_t gemv_mode1 = 0;
   std::size_t tile4 = 0;
   for (const auto& [id, hash] : malloced) {
-    gemv_mode1 +=
-        id.find(" gemv ") != std::string::npos && id.find(" m1 ") == std::string::npos ? 1 : 0;
-    tile4 += id.find(" gemm 4 ") != std::string::npos ? 1 : 0;
+    gemv_mode1 += id.contains(" gemv ") && !id.contains(" m1 ") ? 1 : 0;
+    tile4 += id.contains(" gemm 4 ") ? 1 : 0;
   }
   EXPECT_GT(gemv_mode1, 0U);
   EXPECT_GT(tile4, 0U);

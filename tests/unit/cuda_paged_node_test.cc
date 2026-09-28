@@ -57,7 +57,7 @@ class Model final : public ts::PagedModel {
     const std::size_t extents = kExtents.at(index_);
     file_.resize(extents * kExtent);
     for (std::uint64_t i = 0; i < file_.size(); ++i) {
-      file_[i] = static_cast<std::byte>((i * 29) + (i >> 21) + (index_ * 101) + 3);
+      file_[i] = static_cast<std::byte>((i * 29) + (i >> 21) + (std::uint64_t{index_} * 101) + 3);
     }
     fd_ = ::open(directory.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
     ASSERT_GE(fd_, 0);
@@ -199,7 +199,7 @@ TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
   // B: what is resident now, the larger model's weights and half the
   // smaller's (rounded up to an extent).
   const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-  const std::uint64_t budget = fixed + (kExtents[0] + 2) * kExtent;
+  const std::uint64_t budget = fixed + ((kExtents[0] + 2) * kExtent);
   ASSERT_TRUE(node.Start(Bytes(budget)).has_value());
   for (Model* model : models) {
     model->Register();

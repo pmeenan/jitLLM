@@ -206,7 +206,12 @@ TEST(Exl3ValidateTest, MultiGemmRefusesTablesWrittenForOtherTensors) {
   for (std::size_t moved = 0; moved < 6; ++moved) {
     exl3::MultiLinearOperands relocated = o;
     exl3::Weights& w = moved % 2 == 0 ? relocated.first : relocated.second;
-    std::uint64_t& address = moved < 2 ? w.trellis : (moved < 4 ? w.suh : w.svh);
+    std::uint64_t& address = [&]() -> std::uint64_t& {
+      if (moved < 2) {
+        return w.trellis;
+      }
+      return moved < 4 ? w.suh : w.svh;
+    }();
     address += 20 * kMiB;
     EXPECT_EQ(FailedCode(exl3::CheckMultiGemm(relocated, plan, kCoresident, kLocks)),
               exl3::KernelError::kRejected)

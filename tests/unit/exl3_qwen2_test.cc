@@ -391,10 +391,10 @@ TEST_F(Exl3Qwen2Test, APrefillAndAStepBindAndRunOnOneStream) {
     EXPECT_EQ(before, plan->ops.size());
     EXPECT_EQ(after, plan->ops.size());
     std::vector<std::uint16_t> logits(plan->tensors.at("logits").bytes() / 2);
-    ASSERT_EQ(cudaMemcpy(logits.data(),
-                         reinterpret_cast<void*>(memory.region +
-                                                 plan->slots.at("logits").offset),  // NOLINT
-                         logits.size() * 2, cudaMemcpyDeviceToHost),
+    const std::uint64_t logits_at = memory.region + plan->slots.at("logits").offset;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address.
+    const auto* source = reinterpret_cast<const void*>(logits_at);
+    ASSERT_EQ(cudaMemcpy(logits.data(), source, logits.size() * 2, cudaMemcpyDeviceToHost),
               cudaSuccess);
     EXPECT_TRUE(std::ranges::all_of(logits, [](std::uint16_t v) { return (v & 0x7FFFU) == 0; }));
     ASSERT_EQ(cudaFreeHost(host), cudaSuccess);

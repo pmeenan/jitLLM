@@ -928,7 +928,8 @@ TEST_P(CudaPermutations, AFenceOfUnknownOutcomeQuarantinesAndStopsAdmission) {
   EXPECT_EQ(loading.outcome.load(), static_cast<int>(TaskOutcome::kFailed));
   StopFaulted();
   ASSERT_TRUE(result_status_.has_value());
-  EXPECT_FALSE(result_status_->has_value());  // the stop reports the fault
+  // The stop reports the fault.
+  EXPECT_TRUE(result_status_.has_value() && !result_status_->has_value());
   EXPECT_EQ(scheduler_->fault(), Fault::kUnproven);
   EXPECT_EQ(catalog_.Describe(extents_[0]).value().state, ExtentState::kQuarantined);
   EXPECT_EQ(catalog_.OccupancyOf(domain_).quarantined, Bytes(kExtent));

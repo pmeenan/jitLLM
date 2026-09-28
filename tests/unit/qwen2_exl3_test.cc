@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -248,15 +249,15 @@ TEST(Qwen2Exl3Test, OperationsFollowTheRecord) {
     for (int l = 0; l < 24; ++l) {
       for (const std::string& name : small) {
         if (name == "gate_up" && rows > 32) {
-          expected.push_back("gate_proj");
-          expected.push_back("up_proj");
+          expected.emplace_back("gate_proj");
+          expected.emplace_back("up_proj");
         } else {
           expected.push_back(name);
         }
       }
     }
     for (const char* name : {"final_norm", "final_norm.cast", "lm_head"}) {
-      expected.push_back(name);
+      expected.emplace_back(name);
     }
     std::vector<std::string> got;
     for (const auto& op : plan->ops) {
@@ -298,7 +299,7 @@ TEST(Qwen2Exl3Test, RefusesACaseTheTableLacksOrThatIsNotUpstreamsPath) {
         const Exl3LinearPlan* found = table.Find(l.name, r);
         if (found != nullptr) {
           Exl3LinearPlan p = l.name == linear && r == rows ? plan : *found;
-          (void)out.Add(l.name, r, p, std::string(table.Second(l.name, r)));
+          std::ignore = out.Add(l.name, r, p, std::string(table.Second(l.name, r)));
         }
       };
       copy(b.lm_head);

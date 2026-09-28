@@ -377,7 +377,7 @@ class CoalesceTest : public ::testing::Test {
     }
     return requests;
   }
-  std::map<std::uint64_t, FinishedRead> Drain(DirectReader& reader) {
+  static std::map<std::uint64_t, FinishedRead> Drain(DirectReader& reader) {
     std::map<std::uint64_t, FinishedRead> by_key;
     for (FinishedRead& read : PollUntilDone(reader)) {
       by_key.emplace(read.key, std::move(read));

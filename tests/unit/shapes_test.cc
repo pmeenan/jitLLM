@@ -1055,7 +1055,7 @@ TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesTh
       .context_limit = 8192,
       .states = {{.name = "kv",
                   .block_positions = 512,
-                  .block_bytes = Bytes(512 * 12'288),
+                  .block_bytes = Bytes(std::uint64_t{512} * 12'288),
                   .capabilities = StateCapability::kAppend | StateCapability::kTruncate,
                   .max_snapshots = 0,
                   .snapshot_bytes = {}}},
@@ -1091,7 +1091,8 @@ TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesTh
   EXPECT_EQ(roomy->Phase("prefill")->working, widest);  // the 1,023-row phase's, rounded
   EXPECT_EQ(roomy->Phase("prefill")->envelope, Add(closure, widest));
   const Bytes retained = roomy->envelope.retained;
-  EXPECT_EQ(retained, Add(Bytes(3 * 512 * 12'288), Bytes(kGranule)));  // 1,039 positions; output
+  // 1,039 positions; output.
+  EXPECT_EQ(retained, Add(Bytes(std::uint64_t{3} * 512 * 12'288), Bytes(kGranule)));
 
   // Exactly R_i plus the largest reconstruction phase's envelope: admitted.
   const Bytes exact = Add(retained, Add(closure, widest));

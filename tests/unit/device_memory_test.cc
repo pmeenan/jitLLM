@@ -19,6 +19,7 @@
 #include <limits>
 #include <span>
 #include <thread>
+#include <tuple>
 
 #include "base/bytes.h"
 #include "expected_error.h"
@@ -286,11 +287,11 @@ TEST(DeviceMemoryCallerDeathTest, ChangesFromTwoThreadsAtOnceAreFatal) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   const auto overlap = [] {
     BlockingProvider provider;
-    std::jthread lane([&] { (void)provider.Create(0, 2_MiB); });
+    std::jthread lane([&] { std::ignore = provider.Create(0, 2_MiB); });
     while (!provider.Inside()) {
       std::this_thread::yield();
     }
-    (void)provider.Reserve(2_MiB);  // while the lane's Create is under way
+    std::ignore = provider.Reserve(2_MiB);  // while the lane's Create is under way
     provider.Go();
   };
   EXPECT_DEATH(overlap(), "one thread calls it at a time");

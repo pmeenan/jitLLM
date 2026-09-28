@@ -305,7 +305,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         o.prefixes.push_back(prefix);
       }
     } else if (flag == "--evaluations") {
-      o.evaluations = std::atoi(std::string(value()).c_str());
+      const std::string_view text = value();
+      const auto [end, error] =
+          std::from_chars(text.data(), text.data() + text.size(), o.evaluations);
+      if (error != std::errc() || end != text.data() + text.size()) {
+        return Error("--evaluations takes an integer");
+      }
     } else if (flag == "--record") {
       o.record = true;
     } else if (flag == "--capture") {
@@ -534,7 +539,7 @@ Status Run::Setup() {
 
   // The norms, widened exactly to F32, and the multi-GEMM tables.
   const std::uint64_t norm_bytes = std::uint64_t{profile_.width} * 4;
-  auto norms = device_->Allocate(norm_bytes * (2 * profile_.layers + 1), "the F32 norms");
+  auto norms = device_->Allocate(norm_bytes * ((2 * profile_.layers) + 1), "the F32 norms");
   auto tables = device_->Allocate(std::uint64_t{48} * profile_.layers, "the multi-GEMM tables");
   if (!norms || !tables) {
     return std::unexpected(!norms ? norms.error() : tables.error());
@@ -637,6 +642,10 @@ Status Run::Setup() {
 
 // Plans and binds every phase of the run before any runs.
 Status Run::PlanAll() {
+  if (!table_) {
+    return Error("no launch table to plan with");
+  }
+  const model::Exl3LaunchTable& table = *table_;
   for (const int prefix : o_.prefixes) {
     if (prefix + kSuffix > static_cast<int>(ids_.size())) {
       return Error(std::format("prefix {} and its steps exceed the held-out IDs", prefix));
@@ -645,7 +654,7 @@ Status Run::PlanAll() {
       const model::Exl3Phase phase = index == 0
                                          ? model::Exl3Phase{.rows = prefix, .past = 0}
                                          : model::Exl3Phase{.rows = 1, .past = prefix + index - 1};
-      auto plan = model::PlanPhase(profile_, binding_, *table_, o_.arm, phase);
+      auto plan = model::PlanPhase(profile_, binding_, table, o_.arm, phase);
       if (!plan) {
         return Error(std::format("prefix {} phase {}: {}", prefix, index, plan.error()));
       }
@@ -756,9 +765,11 @@ std::expected<void, exl3::KernelFailure> Run::Before(const PhaseRun& phase, std:
                                   name, o.layer));
         }
         sha = found->second;
-        dtype = name == "embed_table"     ? "bfloat16"
-                : name.ends_with(".bias") ? "float16"
-                                          : "float32";
+        if (name == "embed_table") {
+          dtype = "bfloat16";
+        } else {
+          dtype = name.ends_with(".bias") ? "float16" : "float32";
+        }
         shape = name == "embed_table"
                     ? std::format("{},{}", profile_.vocab, profile_.width)
                     : std::format("{}", name.ends_with(".bias") && !name.starts_with("q_")
@@ -961,7 +972,7 @@ Status Run::RunPhase(PhaseRun& phase, int evaluation) {
   // Tier C: the cache after the prefill and after the steps.
   if (first && o_.capture && (phase.index == 0 || phase.index == kSuffix)) {
     const int cells = phase.index == 0 ? phase.prefix : phase.prefix + kSuffix;
-    const std::uint64_t cell = profile_.kv_width() * 2;
+    const std::uint64_t cell = std::uint64_t{profile_.kv_width()} * 2;
     auto& into = phase.index == 0 ? kv_prefill_[phase.prefix] : kv_suffix_[phase.prefix];
     for (const exl3::Qwen2Layer& layer : memory_.layers) {
       for (const std::uint64_t base : {layer.k_cache, layer.v_cache}) {
@@ -1067,6 +1078,9 @@ Status Run::Write() {
         jitllm::base::ToHex(phase.plan.launch_digest), phase.plan.region,
         phase.program->ggml_scratch());
   }
+  if (!table_) {
+    return Error("no launch table to record");
+  }
   std::ofstream manifest(o_.out / "manifest.json");
   manifest << std::format(
       "{{\"harness\": \"jitllm_exl3_exec\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
@@ -1129,8 +1143,10 @@ Status Run::Execute() {
           note(std::format("{}:mlp_norm.w", l), layer.mlp_norm,
                std::uint64_t{profile_.width} * 4) &&
           note(std::format("{}:q_proj.bias", l), layer.q.bias, std::uint64_t{profile_.width} * 2) &&
-          note(std::format("{}:k_proj.bias", l), layer.k.bias, profile_.kv_width() * 2) &&
-          note(std::format("{}:v_proj.bias", l), layer.v.bias, profile_.kv_width() * 2);
+          note(std::format("{}:k_proj.bias", l), layer.k.bias,
+               std::uint64_t{profile_.kv_width()} * 2) &&
+          note(std::format("{}:v_proj.bias", l), layer.v.bias,
+               std::uint64_t{profile_.kv_width()} * 2);
     }
     // Every linear's trellis and side vectors, the artifact's resource
     // bytes at the address each was loaded to.

@@ -50,7 +50,7 @@ class Binder {
   }
 
   std::expected<std::uint32_t, std::string> Plain(const std::string& name, std::string_view dtype,
-                                                  std::vector<std::uint64_t> shape) {
+                                                  const std::vector<std::uint64_t>& shape) {
     auto index = Find(name);
     if (!index) {
       return std::unexpected(index.error());
@@ -74,8 +74,7 @@ class Binder {
     const Exl3Resource& t = resources_[*trellis];
     const auto bits = static_cast<int>(t.k_bits);
     if (t.family != "exl3" || t.role != "trellis" || t.codebook != "mcg" || t.dtype != "I16" ||
-        t.in_features != static_cast<std::uint64_t>(k) ||
-        t.out_features != static_cast<std::uint64_t>(n) ||
+        std::cmp_not_equal(t.in_features, k) || std::cmp_not_equal(t.out_features, n) ||
         (bits != 4 && bits != 5 && bits != 6 && bits != 8) ||
         t.shape != std::vector<std::uint64_t>{static_cast<std::uint64_t>(k / 16),
                                               static_cast<std::uint64_t>(n / 16),
@@ -277,8 +276,14 @@ std::expected<Exl3Binding, std::string> BindQwen2Exl3(const Qwen2Profile& p,
   auto embed = bind.Plain("model.embed_tokens.weight", "BF16", {p.vocab, p.width});
   auto norm = bind.Plain("model.norm.weight", "BF16", {p.width});
   auto head = bind.Linear("lm_head", width, static_cast<int>(p.vocab), false);
-  if (!embed || !norm || !head) {
-    return std::unexpected(!embed ? embed.error() : !norm ? norm.error() : head.error());
+  if (!embed) {
+    return std::unexpected(embed.error());
+  }
+  if (!norm) {
+    return std::unexpected(norm.error());
+  }
+  if (!head) {
+    return std::unexpected(head.error());
   }
   out.embed = *embed;
   out.final_norm = *norm;

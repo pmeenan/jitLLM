@@ -33,6 +33,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -511,7 +512,7 @@ class GgmlStaleMemoryDeathTest : public GgmlKernelsTest {
       std::cerr << "the unmap failed\n";
       std::_Exit(3);
     }
-    (void)jitllm::kernels::ggml::RmsNorm(*launch, norm);  // queued; faults on the device
+    std::ignore = jitllm::kernels::ggml::RmsNorm(*launch, norm);  // queued; faults on the device
     const auto fence = execution_->Record(stream_);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (fence && std::chrono::steady_clock::now() < deadline) {

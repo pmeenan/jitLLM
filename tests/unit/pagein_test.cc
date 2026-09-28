@@ -1127,7 +1127,7 @@ TEST_P(PageInTest, AnUnwindThatCanNeverGetAMailboxFaultsTheStop) {
   }
   const auto stopped = scheduler_->Stopped();
   ASSERT_TRUE(stopped.has_value()) << "the stop waits forever for a mailbox";
-  EXPECT_FALSE(stopped->has_value());
+  EXPECT_TRUE(stopped.has_value() && !stopped->has_value());  // the stop reports a fault
   EXPECT_EQ(report.outcome, TaskOutcome::kCancelled);
   EXPECT_EQ(scheduler_->loads(), 0U);
   EXPECT_EQ(View(extents_[1]).state, ExtentState::kQuarantined);

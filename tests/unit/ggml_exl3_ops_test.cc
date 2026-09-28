@@ -69,7 +69,6 @@ using jitllm::providers::DeviceExecution;
 using jitllm::providers::FenceState;
 using jitllm::providers::StreamId;
 using jitllm::test_support::Event;
-using jitllm::test_support::EventKind;
 using jitllm::test_support::FailedCode;
 
 constexpr std::int64_t kHead = 64;
@@ -171,7 +170,7 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
   ggml_context* c = arena.context();
   const std::int64_t rows = 7;
   const std::int64_t width = 896;
-  std::mt19937 random(7);
+  std::mt19937 random(7);  // NOLINT(bugprone-random-generator-seed): reproducible
   std::normal_distribution<float> normal(0.0f, 3.0f);
   std::vector<float> values(static_cast<std::size_t>(rows * width));
   for (float& v : values) {
@@ -197,7 +196,7 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
   ASSERT_EQ(events.size(), 1U);
   EXPECT_EQ(jitllm::test_support::NormalizedKernelName(events[0].name),
             "_Z21cpy_scalar_contiguousIf6__halfEvPKcPcl");
-  EXPECT_EQ(events[0].grid[0], (rows * width + 63) / 64);  // the record's [448] at 32 rows
+  EXPECT_EQ(events[0].grid[0], ((rows * width) + 63) / 64);  // the record's [448] at 32 rows
   EXPECT_EQ(events[0].block[0], 64U);
 
   ggml_tensor* back =
@@ -235,7 +234,7 @@ TEST_F(GgmlExl3OpsTest, EmbeddingWidensTheBf16TableExactly) {
   ggml_context* c = arena.context();
   const std::int64_t width = 896;
   const std::int64_t vocab = 300;
-  std::mt19937 random(11);
+  std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): reproducible
   std::vector<std::uint16_t> table(static_cast<std::size_t>(vocab * width));
   for (std::uint16_t& v : table) {
     v = static_cast<std::uint16_t>(random());
@@ -334,7 +333,7 @@ TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {
       {.rows = 1, .past = 1023, .padded = 1024, .parallel_blocks = 13, .record_scratch = 48'048},
       {.rows = 1, .past = 1024, .padded = 1280, .parallel_blocks = 13, .record_scratch = 48'048},
   };
-  std::mt19937 random(23);
+  std::mt19937 random(23);  // NOLINT(bugprone-random-generator-seed): reproducible
   std::normal_distribution<float> normal(0.0f, 1.0f);
   for (const AttentionCase& a : cases) {
     SCOPED_TRACE(testing::Message() << a.rows << " rows at " << a.past);
@@ -410,7 +409,7 @@ TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {
     // The launches, as the record lists them: the mask pre-pass from 1,024
     // rows, the vector kernel, the combine.
     const int columns = a.rows == 1 ? 1 : 2;
-    const unsigned tiles = static_cast<unsigned>((a.rows + columns - 1) / columns);
+    const auto tiles = static_cast<unsigned>((a.rows + columns - 1) / columns);
     std::size_t e = 0;
     if (a.rows >= 1024) {
       ASSERT_GE(events.size(), 1U);
@@ -499,7 +498,7 @@ TEST_F(GgmlExl3OpsTest, OperationsReadAndWriteOnlyTheirTensors) {
     }
     return false;
   };
-  std::mt19937 random(31);
+  std::mt19937 random(31);  // NOLINT(bugprone-random-generator-seed): reproducible
   const auto words = [&](std::size_t bytes, bool half) {
     std::vector<std::uint16_t> out(bytes / 2);
     std::normal_distribution<float> normal(0.0f, 1.0f);

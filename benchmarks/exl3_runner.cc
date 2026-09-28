@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <print>
 #include <span>
+#include <system_error>
 #include <thread>
 #include <tuple>
 
@@ -328,7 +329,7 @@ Status Exl3Runner::Setup() {
 
   kv_bytes_ = std::uint64_t{profile_.layers} * 2 * kCells * profile_.kv_width() * 2;
   const std::uint64_t norm_bytes = std::uint64_t{profile_.width} * 4;
-  const std::uint64_t norms_bytes = norm_bytes * (2 * std::uint64_t{profile_.layers} + 1);
+  const std::uint64_t norms_bytes = norm_bytes * ((2 * std::uint64_t{profile_.layers}) + 1);
   for (const auto& [mapped, name, bytes, cls, recovery] :
        {std::tuple{&kv_, "the EXL3 cache", kv_bytes_, MemoryClass::kLiveState, Recovery::kPreserve},
         std::tuple{&locks_, "the lock area", exl3::kLockBytes, MemoryClass::kRuntime,
@@ -344,9 +345,15 @@ Status Exl3Runner::Setup() {
   }
   auto inputs = node_.Pinned(inputs_bytes_, owner_, staging_);
   auto logits = node_.Pinned(logits_bytes_, owner_, staging_);
-  auto derive = node_.Pinned(norms_bytes + std::uint64_t{48} * profile_.layers, owner_, staging_);
-  if (!inputs || !logits || !derive) {
-    return std::unexpected(!inputs ? inputs.error() : !logits ? logits.error() : derive.error());
+  auto derive = node_.Pinned(norms_bytes + (std::uint64_t{48} * profile_.layers), owner_, staging_);
+  if (!inputs) {
+    return std::unexpected(inputs.error());
+  }
+  if (!logits) {
+    return std::unexpected(logits.error());
+  }
+  if (!derive) {
+    return std::unexpected(derive.error());
   }
   inputs_ = *inputs;
   logits_ = *logits;
@@ -678,6 +685,7 @@ Status Exl3Runner::Partial() {
   const auto cases = PartialCases(*artifact_, layer, true);
   for (const auto& partial : cases) {
     std::vector<ExtentId> extents;
+    extents.reserve(partial.chunks.size());
     for (const auto& [group, chunk] : partial.chunks) {
       extents.push_back(chunk_extents_.at(group).at(chunk));
     }
@@ -801,7 +809,8 @@ Status Exl3Runner::RegisterCache() {
   std::filesystem::create_directories(o_.out);
   spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
   if (spill_fd_ < 0) {
-    return Error(std::format("the spill file in {}: {}", o_.out.string(), std::strerror(errno)));
+    return Error(std::format("the spill file in {}: {}", o_.out.string(),
+                             std::generic_category().message(errno)));
   }
   if (auto r = Cuda(cudaMallocHost(&kv_copy_, kv_bytes_), "the cache's host copy"); !r) {
     return r;
@@ -943,7 +952,7 @@ Status Exl3Runner::CancelInFlight() {
   // Not returned early on failure: the gate must open before this frame,
   // which the job refers to, can end (a failed probe leaves `holding` 0).
   std::size_t holding = 0;
-  (void)node_.Call(
+  std::ignore = node_.Call(
       [&]() -> Status {
         holding = held();
         return {};
@@ -951,7 +960,7 @@ Status Exl3Runner::CancelInFlight() {
       "probing the cancelled phase's lease");
   const bool retired_early = done.gone.load();
   std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(gate)).store(1);
-  (void)node_.Await(done, "the cancelled phase", request);  // its outcome is checked below
+  std::ignore = node_.Await(done, "the cancelled phase", request);  // its outcome is checked below
   const bool cancelled = done.outcome.load() == static_cast<int>(sc::TaskOutcome::kCancelled);
   std::size_t after = 1;
   if (auto r = node_.Call(

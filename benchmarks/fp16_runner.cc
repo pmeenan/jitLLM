@@ -22,6 +22,7 @@
 #include <print>
 #include <span>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include "artifact/layout.h"
@@ -699,6 +700,7 @@ Status Fp16Runner::Partial() {
   const auto cases = PartialCases(*artifact_, layer, false);
   for (const auto& partial : cases) {
     std::vector<ExtentId> extents;
+    extents.reserve(partial.chunks.size());
     for (const auto& [group, chunk] : partial.chunks) {
       extents.push_back(chunk_extents_.at(group).at(chunk));
     }
@@ -827,7 +829,7 @@ Status Fp16Runner::GatherRows(std::span<const std::int32_t> tokens, std::vector<
   const std::uint64_t row_bytes = std::uint64_t{profile_.width} * 2;
   const std::uint64_t table = WeightAddress(binding_.token_embd);
   for (const std::int32_t token : tokens) {
-    if (token < 0 || static_cast<std::uint32_t>(token) >= profile_.vocab) {
+    if (token < 0 || std::cmp_greater_equal(token, profile_.vocab)) {
       return Error(std::format("token {} is outside the vocabulary", token));
     }
   }
@@ -867,7 +869,8 @@ Status Fp16Runner::RegisterCache() {
   std::filesystem::create_directories(o_.out);
   spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
   if (spill_fd_ < 0) {
-    return Error(std::format("the spill file in {}: {}", o_.out.string(), std::strerror(errno)));
+    return Error(std::format("the spill file in {}: {}", o_.out.string(),
+                             std::generic_category().message(errno)));
   }
   if (auto r = Cuda(cudaMallocHost(&kv_copy_, kv_used_), "the cache's host copy"); !r) {
     return r;

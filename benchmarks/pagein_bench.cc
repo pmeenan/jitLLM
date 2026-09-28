@@ -71,6 +71,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -227,6 +228,7 @@ std::expected<int, std::string> CreateFile(const std::string& dir, std::uint64_t
   for (std::uint64_t at = 0; at < bytes; at += kChunk) {
     const std::uint64_t first = at / 4;
     std::vector<std::jthread> workers;
+    workers.reserve(8);
     for (std::uint64_t k = 0; k < 8; ++k) {
       workers.emplace_back([&, k] {
         for (std::uint64_t i = k * (kChunk / 32); i < (k + 1) * (kChunk / 32); ++i) {
@@ -252,6 +254,7 @@ std::uint64_t Check(const std::uint32_t* words, std::uint64_t count, std::uint64
   std::atomic<std::uint64_t> bad{0};
   std::vector<std::jthread> workers;
   constexpr std::uint64_t kWorkers = 8;
+  workers.reserve(kWorkers);
   for (std::uint64_t k = 0; k < kWorkers; ++k) {
     workers.emplace_back([&, k] {
       std::uint64_t mine = 0;
@@ -478,7 +481,7 @@ class Bench {
   Bench& operator=(const Bench&) = delete;
   Bench(Bench&&) = delete;
   Bench& operator=(Bench&&) = delete;
-  ~Bench() { (void)Teardown(); }
+  ~Bench() { std::ignore = Teardown(); }
 
   Status Run();
   Status Teardown();
@@ -828,6 +831,7 @@ Status Bench::Decode() {
     return Error("the decode loop failed");
   }
   std::vector<double> steps;
+  steps.reserve(ends.size());
   for (std::size_t i = 0; i < ends.size(); ++i) {
     steps.push_back(static_cast<double>(ends[i] - starts[i]) / 1e3);
   }
@@ -900,7 +904,7 @@ Status Bench::Run() {
                  Percentile(latencies, 0.5), Percentile(latencies, 0.99),
                  Percentile(latencies, 1.0), verified ? "yes" : "no", Percentile(leads, 0.1),
                  Percentile(leads, 0.5));
-    std::fflush(stdout);
+    (void)std::fflush(stdout);
     Done evicted;
     if (auto r = Post(std::make_unique<EvictProgram>(evicted, extent_ids_), evicted); !r) {
       return r;
@@ -933,7 +937,7 @@ Status Bench::Teardown() {
     }
   }
   if (execution_ != nullptr && stream_.valid()) {
-    (void)execution_->DestroyStream(stream_);
+    std::ignore = execution_->DestroyStream(stream_);
   }
   if (memory_ != nullptr) {
     const auto release = [&](ReservationId reservation,
@@ -942,9 +946,9 @@ Status Bench::Teardown() {
         return;
       }
       if (!backings.empty()) {
-        (void)memory_->Unmap(reservation, Bytes(0), Bytes(backings.size() * kExtent));
+        std::ignore = memory_->Unmap(reservation, Bytes(0), Bytes(backings.size() * kExtent));
         for (const auto backing : backings) {
-          (void)memory_->Release(backing);
+          std::ignore = memory_->Release(backing);
         }
       }
       if (!memory_->Free(reservation)) {

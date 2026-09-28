@@ -347,7 +347,7 @@ Status Alternation::Run() {
   const std::uint64_t b = exl3_weights_.size() * ts::kPagedExtent;
   const std::uint64_t budget =
       fixed_ + std::max(a, b) +
-      ((std::min(a, b) / 2 + ts::kPagedExtent - 1) / ts::kPagedExtent * ts::kPagedExtent);
+      (((std::min(a, b) / 2) + ts::kPagedExtent - 1) / ts::kPagedExtent * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
   }
@@ -413,7 +413,7 @@ Status Alternation::Run() {
                         name, round, e.evicted_own, e.evicted_else));
       }
       // The first acquisition finds room; every later one must evict.
-      if (!(round == 1 && model == kFp16) && e.evicted_other == 0) {
+      if ((round != 1 || model != kFp16) && e.evicted_other == 0) {
         problems_.push_back(
             std::format("acquiring {} (round {}) evicted nothing of the other model", name, round));
       }

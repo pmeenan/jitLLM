@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/check.h"
 #include "base/sha256.h"
 #include "execution/registry.h"
 #include "ggml.h"
@@ -115,6 +116,26 @@ struct Qwen2Program::Step {
   std::uint64_t bytes = 0;
   // The weights it reads, at the addresses bound (BoundWeights).
   std::vector<std::pair<std::string, std::uint64_t>> weights;
+
+  // The kernel its kind runs, bound when the step is made.
+  const ggml::Kernel& Ggml() const {
+    if (!ggml_kernel) {
+      base::Fatal("a GGML step without its kernel");
+    }
+    return *ggml_kernel;
+  }
+  const ggml::RmsNormMulKernel& Norm() const {
+    if (!norm_kernel) {
+      base::Fatal("a norm step without its kernel");
+    }
+    return *norm_kernel;
+  }
+  const Kernel& Exl3() const {
+    if (!exl3_kernel) {
+      base::Fatal("an EXL3 step without its kernel");
+    }
+    return *exl3_kernel;
+  }
 };
 
 struct Qwen2Program::State {
@@ -129,7 +150,13 @@ struct Qwen2Program::State {
 
 Qwen2Program::~Qwen2Program() = default;
 
-const execution::BoundPlan& Qwen2Program::bound() const { return *state_->bound; }
+const execution::BoundPlan& Qwen2Program::bound() const {
+  const std::optional<execution::BoundPlan>& plan = state_->bound;
+  if (!plan) {
+    base::Fatal("a program without its bound plan");
+  }
+  return *plan;
+}
 
 HostInputs HostInputsLayout(const model::Exl3PhasePlan& plan) {
   const auto rows = static_cast<std::uint64_t>(plan.phase.rows);
@@ -289,12 +316,13 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
     program->identity_ = hash.Finish();
   }
 
-  auto arena = ggml::TensorArena::Create(64 * (p.layers + 2));
+  const std::size_t tensors = 64 * (static_cast<std::size_t>(p.layers) + 2);
+  auto arena = ggml::TensorArena::Create(tensors);
   if (!arena) {
     return From(arena.error());
   }
   s.arena.emplace(std::move(*arena));
-  if (auto room = s.arena->Reserve(64 * (p.layers + 2)); !room) {
+  if (auto room = s.arena->Reserve(tensors); !room) {
     return From(room.error());
   }
   ggml_context* c = s.arena->context();
@@ -367,9 +395,12 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
         return From(kernel.error());
       }
       step.norm_kernel = *kernel;
-      const std::uint64_t weight = o.name == "attn_norm"  ? layer->attn_norm
-                                   : o.name == "mlp_norm" ? layer->mlp_norm
-                                                          : memory.final_norm;
+      const std::uint64_t weight = [&] {
+        if (o.name == "attn_norm") {
+          return layer->attn_norm;
+        }
+        return o.name == "mlp_norm" ? layer->mlp_norm : memory.final_norm;
+      }();
       ggml_tensor* x = leaf(GGML_TYPE_F32, {width, n, 1}, at(o.inputs.at(0)));
       ggml_tensor* w = leaf(GGML_TYPE_F32, {width, 1, 1}, weight);
       step.weights = {{o.inputs.at(1), weight}};
@@ -377,7 +408,7 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
       ggml_tensor* mul = ggml_mul(c, norm, w);
       ggml::TensorArena::Bind(mul, at(o.outputs.at(0)));
       step.nodes = {norm, mul};
-      if (auto checked = step.norm_kernel->Check(norm, mul); !checked) {
+      if (auto checked = step.Norm().Check(norm, mul); !checked) {
         return From(checked.error());
       }
     } else if (o.owner == Exl3Owner::kGgml) {
@@ -454,7 +485,7 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
       }
       step.nodes = {node};
       const std::array<const ggml_tensor*, 1> nodes = {node};
-      if (auto checked = step.ggml_kernel->Check(nodes); !checked) {
+      if (auto checked = step.Ggml().Check(nodes); !checked) {
         return From(ggml::KernelFailure{
             .error = checked.error().error,
             .detail = std::format("{} (layer {}): {}", o.name, o.layer, checked.error().detail)});
@@ -466,9 +497,12 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
         return std::unexpected(kernel.error());
       }
       step.exl3_kernel = *kernel;
-      const Qwen2Linear& linear = o.name == "q_proj.bias_add"   ? layer->q
-                                  : o.name == "k_proj.bias_add" ? layer->k
-                                                                : layer->v;
+      const Qwen2Linear& linear = [&]() -> const Qwen2Linear& {
+        if (o.name == "q_proj.bias_add") {
+          return layer->q;
+        }
+        return o.name == "k_proj.bias_add" ? layer->k : layer->v;
+      }();
       step.bias = {.x = at(o.inputs.at(0)),
                    .bias = linear.bias,
                    .y = at(o.outputs.at(0)),
@@ -673,7 +707,7 @@ std::expected<void, KernelFailure> Qwen2Program::Run(ggml::LaunchContext& ggml_l
     std::expected<void, KernelFailure> done;
     switch (step.kind) {
       case Step::Kind::kInputs: {
-        const std::uint64_t rows = static_cast<std::uint64_t>(s.plan.phase.rows);
+        const auto rows = static_cast<std::uint64_t>(s.plan.phase.rows);
         const HostInputs& layout = s.inputs;
         done = copy(Address(step.op, "ids"), host_inputs + layout.ids, rows * 4);
         if (done) {
@@ -689,29 +723,29 @@ std::expected<void, KernelFailure> Qwen2Program::Run(ggml::LaunchContext& ggml_l
         done = copy(step.destination, step.source, step.bytes);
         break;
       case Step::Kind::kNorm:
-        if (auto ran = step.norm_kernel->Run(ggml_launch, step.nodes[0], step.nodes[1]); !ran) {
+        if (auto ran = step.Norm().Run(ggml_launch, step.nodes[0], step.nodes[1]); !ran) {
           done = From(ran.error());
         }
         break;
       case Step::Kind::kGgml:
-        if (auto ran = step.ggml_kernel->Run(ggml_launch, step.nodes); !ran) {
+        if (auto ran = step.Ggml().Run(ggml_launch, step.nodes); !ran) {
           done = From(ran.error());
         }
         break;
       case Step::Kind::kGemm:
-        done = step.exl3_kernel->Run(launch, step.linear, step.gemm, 0);
+        done = step.Exl3().Run(launch, step.linear, step.gemm, 0);
         break;
       case Step::Kind::kGemv:
-        done = step.exl3_kernel->Run(launch, step.linear, step.gemv, 0);
+        done = step.Exl3().Run(launch, step.linear, step.gemv, 0);
         break;
       case Step::Kind::kMulti:
-        done = step.exl3_kernel->Run(launch, step.multi, step.multi_plan);
+        done = step.Exl3().Run(launch, step.multi, step.multi_plan);
         break;
       case Step::Kind::kRecon:
-        done = step.exl3_kernel->Run(launch, gemm, step.recon, step.algorithms);
+        done = step.Exl3().Run(launch, gemm, step.recon, step.algorithms);
         break;
       case Step::Kind::kBias:
-        done = step.exl3_kernel->Run(launch, step.bias);
+        done = step.Exl3().Run(launch, step.bias);
         break;
     }
     if (!done) {
