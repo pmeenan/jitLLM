@@ -968,6 +968,151 @@ TEST(ProgramPlanTest, ExplainsItsEnvelopeItemByItem) {
             "needs 2490368 bytes, 65536 more than available");
 }
 
+// D-050's "grant with a full useful cache; lease release without pressure"
+// (M2): a grant is a promise, not bytes, so admitting a request over a
+// cache that fills the budget evicts nothing. The request's first use
+// brings in only what it lacks, evicting idle cache only until that fits,
+// and releasing its lease leaves its contents resident.
+TEST(ShapeScenarioTest, AGrantOverAFullUsefulCacheEvictsNothing) {
+  Node node(40, 2);
+  const DenseWeights cached = Dense(node, 1, 4, 24, 4);  // 32 units: with F, 34 of 40
+  const std::array cached_resources = {cached.embeddings, cached.trunk, cached.head};
+  ASSERT_TRUE(node.Materialize(node.catalog().ClosureOf(cached_resources).value()));
+  const DenseWeights fresh = Dense(node, 2, 2, 6, 2);  // 10 units
+  const Bytes before = node.catalog().OccupancyOf(node.domain()).Total();
+  const ProgramPlan plan = Plan(node, AutoregressiveContract(1), Single(2, fresh),
+                                {.prompt = 32, .max_output = 8, .draft_depth = 0, .steps = 0});
+  const auto admitted = node.admission().Submit(
+      jitllm::scheduler::RequestSpec{.request_class = RequestClass::kInteractive,
+                                     .envelope = plan.envelope,
+                                     .work = 10,
+                                     .switch_cost = 1,
+                                     .deadline = std::nullopt},
+      node.Tock());
+  ASSERT_TRUE(admitted.has_value());
+  EXPECT_EQ(node.admission().StateOf(admitted->id), RequestState::kRunning);
+  EXPECT_EQ(node.evictions(), 0U);
+  EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total(), before);
+  // On use: the fresh weights load, and idle cache gives way only for the
+  // shortfall (34 + 10 - 40 = 4 units).
+  const std::array fresh_resources = {fresh.embeddings, fresh.trunk, fresh.head};
+  const Closure closure = node.catalog().ClosureOf(fresh_resources).value();
+  ASSERT_TRUE(node.Materialize(closure));
+  EXPECT_GE(node.evictions(), 1U);
+  EXPECT_LE(node.catalog().OccupancyOf(node.domain()).Total(), node.budget());
+  std::size_t cached_resident = 0;
+  for (const ResourceId resource : cached_resources) {
+    const std::array one = {resource};
+    const auto extents = node.catalog().ClosureOf(one).value().extents;
+    cached_resident += node.catalog().Describe(extents.front().first).value().state ==
+                               jitllm::catalog::ExtentState::kResident
+                           ? 1
+                           : 0;
+  }
+  EXPECT_GE(cached_resident, 1U);  // not the whole cache
+  const LeaseId lease = node.catalog().AcquireLease(closure).value();
+  const Bytes held = node.catalog().OccupancyOf(node.domain()).Total();
+  ASSERT_TRUE(node.catalog().ReleaseLease(lease).has_value());
+  EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total(), held);
+  for (const auto& [extent, generation] : closure.extents) {
+    EXPECT_EQ(node.catalog().Describe(extent).value().state,
+              jitllm::catalog::ExtentState::kResident);
+  }
+}
+
+// BP-V3 with the EXL3 fixture's own numbers: its weights (292 extents of
+// 2 MiB, the 4.0 bpw artifact), its KV (24 layers, 128-wide K and V, F16:
+// 12,288 bytes a position) in blocks of 512 positions, and each recorded
+// phase kind's working set as the proof measured it: the pre-registered
+// activation region (Qwen2Exl3Test.RegionsAreThePreRegisteredBufferPlan)
+// plus the GGML pool's bound. The largest reconstruction phase is the
+// 1,023-row prefill, larger than the 1,024-row one. At a budget of exactly
+// R_i plus its envelope the widest prefill is admitted, since a prompt may
+// end in a 1,023-row chunk; a byte less and the plan narrows, explained;
+// below the narrowest prefill it is refused as impossible, naming the
+// phase kind, the width and the shortfall.
+TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesThePlan) {
+  constexpr std::uint64_t kGranule = std::uint64_t{2} << 20U;  // D-033
+  Catalog catalog;
+  const DomainId domain = catalog.AddDomain("spark");
+  const ExtentId extent = catalog
+                              .AddExtent({.domain = domain,
+                                          .memory_class = MemoryClass::kWeights,
+                                          .recovery = Recovery::kFromArtifact,
+                                          .size = Bytes(292 * kGranule),
+                                          .content = {}})
+                              .value();
+  const std::array ranges = {
+      jitllm::catalog::Range{.extent = extent, .offset = Bytes(), .length = Bytes(292 * kGranule)}};
+  const ResourceId weights = catalog.AddResource(ranges).value();
+  const ModelContext context =
+      ModelContext::Create(
+          {{.role = ComponentRole::kMain, .artifact = Artifact(40), .resources = {weights}}})
+          .value();
+  const auto phase = [](std::uint64_t region, std::uint64_t pool) { return Bytes(region + pool); };
+  const Bytes w1023 = phase(373'247'744, 11'343'104);
+  const ProgramContract contract{
+      .context_limit = 8192,
+      .states = {{.name = "kv",
+                  .block_positions = 512,
+                  .block_bytes = Bytes(512 * 12'288),
+                  .capabilities = StateCapability::kAppend | StateCapability::kTruncate,
+                  .max_snapshots = 0,
+                  .snapshot_bytes = {}}},
+      .working = {},
+      .phases = {{.name = "prefill",
+                  .components = Roles(kMain),
+                  .widths = {{.positions = 32, .working = phase(9'838'592, 354'816)},
+                             {.positions = 144, .working = phase(44'273'664, 1'596'672)},
+                             {.positions = 145, .working = phase(103'301'376, 1'607'936)},
+                             {.positions = 1023, .working = w1023},
+                             {.positions = 1024, .working = phase(371'720'192, 11'356'160)}},
+                  .rule = WidthRule::kChunk,
+                  .repeat = Repeat::kPromptChunks,
+                  .appends = true,
+                  .emits = false},
+                 {.name = "step",
+                  .components = Roles(kMain),
+                  .widths = {{.positions = 1, .working = phase(307'456, 48'128)}},
+                  .rule = WidthRule::kOne,
+                  .repeat = Repeat::kOutputSteps,
+                  .appends = true,
+                  .emits = true}},
+      .mode = Autoregressive()};
+  const ProgramRequest request{.prompt = 1023, .max_output = 16, .draft_depth = 0, .steps = 0};
+  const auto plan_at = [&](Bytes available) {
+    return PlanProgram(contract, context, catalog, domain, request, available, Bytes(kGranule));
+  };
+  const auto roomy = plan_at(Bytes(std::uint64_t{64} << 30U));
+  ASSERT_TRUE(roomy.has_value()) << jitllm::execution::ToString(roomy.error());
+  const Bytes closure(292 * kGranule);
+  const Bytes widest((w1023.value() + kGranule - 1) / kGranule * kGranule);
+  EXPECT_EQ(roomy->Phase("prefill")->width, 1024U);
+  EXPECT_EQ(roomy->Phase("prefill")->working, widest);  // the 1,023-row phase's, rounded
+  EXPECT_EQ(roomy->Phase("prefill")->envelope, Add(closure, widest));
+  const Bytes retained = roomy->envelope.retained;
+  EXPECT_EQ(retained, Add(Bytes(3 * 512 * 12'288), Bytes(kGranule)));  // 1,039 positions; output
+
+  // Exactly R_i plus the largest reconstruction phase's envelope: admitted.
+  const Bytes exact = Add(retained, Add(closure, widest));
+  const auto tight = plan_at(exact);
+  ASSERT_TRUE(tight.has_value()) << jitllm::execution::ToString(tight.error());
+  EXPECT_EQ(tight->Phase("prefill")->width, 1024U);
+  // A byte less: the prefill narrows to the widest width whose chunks fit.
+  const auto narrower = plan_at(Bytes(exact.value() - 1));
+  ASSERT_TRUE(narrower.has_value()) << jitllm::execution::ToString(narrower.error());
+  EXPECT_EQ(narrower->Phase("prefill")->width, 145U);
+  // Less than even the narrowest prefill needs: refused, explained.
+  const Bytes narrowest = Add(retained, Add(closure, Bytes(5 * kGranule)));  // 32 rows: 10.2 MB
+  const auto refused = plan_at(Bytes(narrowest.value() - 1));
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().error, ProgramError::kDoesNotFit);
+  EXPECT_EQ(refused.error().phase, "prefill");
+  EXPECT_EQ(refused.error().width, 32U);
+  EXPECT_EQ(refused.error().required, narrowest);
+  EXPECT_EQ(refused.error().shortfall, Bytes(1));
+}
+
 TEST(ProgramPlanTest, SpeculationNeedsTruncationAndValidatedWidths) {
   Node node(64, 2);
   const DenseWeights main = Dense(node, 1, 4, 20, 4);

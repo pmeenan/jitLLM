@@ -83,8 +83,11 @@ class LaunchContext {
     return End();
   }
 
-  // The most scratch any run has held at once.
+  // The most scratch any run has held at once, since the context was made
+  // or the peak was last reset.
   base::Bytes scratch_peak() const;
+  // Between runs: the next peak counts only the runs after this.
+  void ResetScratchPeak();
   bool faulted() const { return faulted_; }
   int device() const { return device_; }
   Workspace workspace() const { return workspace_; }

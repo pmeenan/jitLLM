@@ -241,8 +241,9 @@ reservation policy) were recorded in M0.
       All pass on a Spark (`spark-b`) in `check:spark` under the cross, ASan and TSan
       builds, and the fake cases pass on the workstation and under
       qemu-user in `check`. Mapping and backing release on the device
-      lane arrived with the D-081 page-in path (backend proof, P2). Not
-      yet wired: victim selection on a miss, write-back and spill, and
+      lane arrived with the D-081 page-in path (backend proof, P2), and
+      write-back of live state with P4 (D-086). Not
+      yet wired: victim selection on a miss, spill as retention (M4), and
       admission driving task starts.
 - [x] **Providers** (D-026): device-memory, device-execution and storage
       interfaces, each with a deterministic poison-filling fake; the CUDA VMM
@@ -756,10 +757,11 @@ reservation policy) were recorded in M0.
         BP-P6 (restore times reported), BP-L1 (a job's lease holds until
         its fence, on the fake) and BP-V2 (VMM create and map failures
         unwind, on the fake).
-      Left in P2: the memory check on the paged harness (rungs 4 and 5)
-      and BP-A4's stale
-      binding and negative controls. Next for the pager: write-back and
-      state spill through the zone (BP-P4), coalesced vectored reads, and
+      Left in P2: the census on the paged harness (BP-A1's
+      reconciliation, BP-A2, BP-A5; replaced by D-085's coarse peak check)
+      and BP-A4's stale binding and negative controls (landed with P5,
+      below). Next for the pager: write-back and state spill through the
+      zone (BP-P4, landed with P4 below), coalesced vectored reads, and
       the D-033 handoff of a victim's backing.
 
       *P3 started: native EXL3 linears exact against upstream*
@@ -829,11 +831,65 @@ reservation policy) were recorded in M0.
         into device VMM through the zone, evicted, restored, relocated) are
         bit-identical to rung 3.
 
-      Next: BP-F2 on an idle `spark` (the missing tuning records, the
-      launch record, calibration, holdout, harness equivalence, then the
-      sessions), after writing the native candidate's timing harness and
-      its session driver. (D-085 later replaced the EXL3 census with the
-      coarse memory check, which passes on both fixtures.)
+      BP-F2 and the EXL3 census do not run (D-085): parity is judged end to
+      end once serving works, and memory by a coarse peak check, which
+      passes on every FP16 arm and both EXL3 fixtures (D-085, D-086).
+
+      *P4, P5 and P6: paging, lifetime and the contract*
+      ([report](experiments/backend-proof/README.md), D-086):
+      - **Write-back** (`scheduler.h`, `pagein.cc`; D-081's reverse path).
+        Evicting live state whose source is its write-back place copies it
+        into a landing slot, fenced, writes the slot with direct I/O
+        (`ReadSpec::kind`), and then unmaps and releases the backing. The
+        catalog (`BeginEvict(…, write_back)`) then keeps the content
+        generation and marks the contents preserved, so a later load
+        restores them. A failed or short write abandons the eviction with
+        the state resident and intact; an unproven copy quarantines it and
+        its slot; a load of a place with nothing preserved is refused, and
+        so is a new source naming another range for preserved contents.
+        Tests: `unit.CatalogTest.AWriteBackEvictionPreservesTheContentGeneration`,
+        the write-back cases of `unit.VmmWork/PageInTest.*` and
+        `unit.VmmWork/CudaWriteBack.*` (`gpu`: io_uring, device VMM, a
+        poisoned premapped pair and a managed pair).
+      - **BP-P2, P3, P4 on both representations** (2026-09-27, `spark-b`).
+        `jitllm_fp16_paged` and `jitllm_exl3_paged` gained `--partial`,
+        `--spill` and, for FP16, `--embeddings shared`. All four FP16 arms
+        and all four EXL3 arms were run. Every evaluation equalled the
+        first bit for bit, and the first equalled rung 3.
+        - Six partial evictions (one layer, side vectors and biases, the
+          trellis only in EXL3, a shared small-tensor chunk, padded tails,
+          a tensor crossing a chunk boundary) each evicted exactly their
+          extents. A launch over the incomplete closure was refused
+          before it ran.
+        - The cache was written back and restored after a prefill and
+          mid-decode, managed or poisoned while premapped, and came back
+          byte-identical.
+        - FP16 with its token table held once, in device VMM, gave the
+          duplicated arm's logits.
+        - The EXL3 head is checked to be its own resource.
+      - **BP-L and BP-V on the real providers:**
+        - a cancelled 1,023-row EXL3 prefill gated behind a stream wait
+          keeps its lease on every extent until its fence
+          (`--cancel-in-flight`; BP-L1, L3);
+        - repeated cancellations at varying points never corrupt a
+          reassigned slot (BP-L2);
+        - io_uring starts of unknown outcome and duplicated completions
+          change nothing, and an unknown fence quarantines and stops
+          admission (`unit.VmmWork/CudaPermutations.*`, BP-L4);
+        - backing the driver cannot create or map unwinds cleanly
+          (BP-V2);
+        - a GGML kernel over unmapped backing faults in a child process
+          (`unit.GgmlStaleMemoryDeathTest.*`, BP-A4's negative control);
+        - a tight budget admits the EXL3 fixture's largest reconstruction
+          phase or refuses the plan, explained (`unit.ProgramPlanTest.*`,
+          BP-V3).
+      - D-050's rows: the pause, lifetime and registration rows gained
+        tests (`unit.Admission.*`, `unit.ShapeScenarioTest.*`,
+        `unit.VmmWork/PageInTest.*`).
+      - Open: BP-S3 (FP16 and EXL3 alternating in one process) and BP-P1's
+        coalesced reads, which the owner chose to build in M2. D-050 rows
+        whose features arrive later move to those features' milestones
+        (owner, 2026-09-27).
 - [x] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.
@@ -911,14 +967,20 @@ reservation policy) were recorded in M0.
       `unit.ProgramPlanTest.*`, `unit.StateCursorTest.*` and
       `unit.ModelContextTest.*` cover the types. No contract gap needed a
       special case in the core.
-- [ ] **Explainable plans:** plans expose their validated phase widths,
+- [x] **Explainable plans:** plans expose their validated phase widths,
       envelopes and rejection reasons, and the proof records each phase
       kind's guaranteed bound against its observed peak.
-      *Landed:* the first part. A `ProgramPlan` lists each phase kind's
+      *Landed:* a `ProgramPlan` lists each phase kind's
       width, validated widths, closure, working set, envelope and phase
       count, and itemizes `R_i`. A rejection names the phase kind, the
       width, the required bytes and the shortfall
-      (`unit.ProgramPlanTest.*`). Remaining: the proof's observed peaks.
+      (`unit.ProgramPlanTest.*`). The paged harnesses record each phase
+      kind's bound (activation extent or region, and pool bound) against
+      the highest byte its bound tensors reach and the pool's peak in it
+      (`paging.json`). No peak exceeded its bound: FP16 reached every
+      bound exactly, and EXL3 reached them or stayed below (the region by
+      up to 1,833,216 bytes, the pool by up to 176)
+      ([report](experiments/backend-proof/README.md#p6-bounds-against-peaks)).
 - [x] Find which OS counters include VMM backing on the Spark driver, so
       the [memory breakdown](architecture.md#memory-breakdown) reconciles.
       *Landed:* on `spark` (driver 580.178.04), device-local and host
@@ -944,9 +1006,14 @@ reservation policy) were recorded in M0.
       native EXL3 phase, the CUDA contract and `smoke.doctor.discrete`)
       pass on the workstation's RTX 3080 Ti; tests that compare with GB10
       records stay GB10-only. Fast-swap validation on it is M4's.
-- [ ] Record the operation contract, registry, patch set, phase envelopes
+- [x] Record the operation contract, registry, patch set, phase envelopes
       and `F` per profile in a decision entry, and the aggregate report in
       `experiments/backend-proof/`.
+      *Landed:* D-086, with the per-operation K-C and K-L choices and the
+      status of D-052, D-053 and D-081; `F` is judged loosely at the
+      process level (owner, 2026-09-27). The
+      [aggregate report](experiments/backend-proof/README.md) holds the
+      case matrix's status.
 
 **Exit criteria:**
 

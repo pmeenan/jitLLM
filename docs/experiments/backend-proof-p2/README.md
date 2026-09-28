@@ -401,9 +401,10 @@ default workspace pool that `cublasSetWorkspace` does not free (RE-028).
 ## Not covered here
 
 - **The cache is not evicted at the restore point:** spilling state takes
-  the reverse path through the zone (write-back), which is not built yet.
-  Rung 5 here evicts and restores the weights, as BP-P1 asks; BP-P4's cache
-  eviction waits for it.
+  the reverse path through the zone (write-back). Rung 5 here evicts and
+  restores the weights, as BP-P1 asks. BP-P4's cache eviction came later,
+  with write-back
+  ([aggregate report](../backend-proof/README.md), `--spill`).
 - **Relocation rebuilds every descriptor** because each chunk is planned
   and bound anew. Nothing captures a pointer across chunks here (no CUDA
   graphs, no pointer tables), so BP-P5's rejection of stale ones is not

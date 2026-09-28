@@ -1,0 +1,330 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# Backend proof: aggregate report — 2026-09-27
+
+The early backend integration proof ([scope](../../backend-proof.md))
+ran real GGML FP16 and ExLlamaV3 kernels on jitLLM-owned memory under
+jitLLM's dispatch. This report gathers its stages and the status of every
+case, and gives the results of the last stages: P4 (paging), P5 (lifetime
+and failure) and P6 (the contract, recorded as D-086).
+
+## Stages
+
+| Stage | Result | Report |
+| --- | --- | --- |
+| P0 Bridges and controls | Both toolchain bridges bit-exact against their references; profiles, bounds and protocols approved or pre-registered | [P0](../backend-proof-p0/README.md) |
+| P1 Substrate probes | GGML launchers under jitLLM's K-C context; cuBLAS handle and workspace injection; plan selection between implementations; BP-F1 failed on host VMM and passed on device VMM (D-081) | [P1](../backend-proof-p1/README.md) |
+| P2 Resident FP16 | Native FP16 matches the bridge bit for bit, plan gate included (rung 3); paged into device VMM through the zone, evicted, restored and relocated, bit-identical (rungs 4, 5) | [P2](../backend-proof-p2/README.md) |
+| P3 Resident EXL3 | Every linear byte-equal to upstream at a forced plan (BP-N5); both fixtures end to end, the executed plan equal to the record, Tier E at operation level, Tier C; rungs 4 and 5 bit-identical | [P3](../backend-proof-p3/README.md) |
+| P4 Paging | Write-back through the zone; partial evictions, state spill and shared-storage views on both representations, bit-identical | below |
+| P5 Lifetime and failure | Cancellation, event permutations and injected failures on the real providers | below |
+| P6 Envelopes and contract | Bounds against peaks; the operation contract, registry, patch set, envelopes and memory account | below, D-086 |
+
+BP-F2 (EXL3 kernel timing) and the census protocol did not run: D-085
+replaces them with end-to-end parity once serving works and a loose
+process-level memory comparison. Page-in performance is in
+[pagein-perf](../pagein-perf/README.md).
+
+## P4: paging, on both representations
+
+**What changed** (`scheduler.h`, `pagein.cc`, `catalog.h`,
+`direct_reader.h`).
+- Evicting live state whose source is its write-back place first copies
+  the extent into a landing slot on the zone's stream and fences the copy.
+- The storage lane then writes the slot to the place with direct I/O
+  (`ReadSpec::kind`).
+- Only once that write has moved the whole range is the slot freed and
+  the backing unmapped and released.
+- The catalog then keeps the content generation and marks the contents
+  `preserved`, so a later load restores them through the zone as a page-in
+  does.
+- A write that fails or stops short abandons the eviction: the backing
+  was never touched, so the state is resident again with its contents,
+  and nothing is marked preserved. A copy or write whose completion is
+  unproven quarantines the extent and its slot.
+- A load of a write-back place is refused unless its contents are
+  preserved at the current generation.
+
+**The harnesses.** [`fp16_paged.cc`](../../../benchmarks/fp16_paged.cc) and
+[`exl3_paged.cc`](../../../benchmarks/exl3_paged.cc) gained:
+- `--partial` (BP-P2): one more evaluation, which at the restore point runs
+  [`paging_cases.h`](../../../benchmarks/paging_cases.h)'s partial
+  evictions. Each evicts exactly its extents, then checks that a phase's
+  job submitted without materializing is refused before it runs, and pages
+  only those extents back in.
+- `--spill premapped|managed` (BP-P4): one more evaluation, which writes the
+  cache back to an unnamed direct-I/O spill file and evicts it, then
+  restores it. FP16 does this after its first prefill chunk and 8 tokens
+  past the restore point. EXL3 does it after every prefix's prefill and its
+  eighth step.
+  - `premapped` keeps the backing mapped and poisons it with 0xff while
+    the cache is nonresident, so the restore must bring back every byte.
+  - `managed` releases the backing (D-033) and restores into fresh
+    backing.
+  - Either way the cache is copied to the host before and after and must
+    match byte for byte.
+- `--embeddings shared` (BP-P3, FP16): the token table is held once, in
+  device VMM. Each chunk's rows are copied from it to pinned staging by a
+  job leasing both, and widened on the host as the bridge's CPU lookup
+  widens them.
+- For EXL3, a setup check that the head is a resource of its own whose
+  bytes do not overlap the embedding's (BP-P3).
+
+**Results** (2026-09-27, `spark-b`: GB10, kernel 7.0.0-1019-nvidia, driver
+580.178.04, the `spark-native` build, `jitllm_fp16_paged` `4bc95949…`,
+`jitllm_exl3_paged` `87140d73…`, `CUDA_DISABLE_PTX_JIT=1`, lanes on their
+own threads):
+
+| Arm | Options | Evaluation 1 | Later evaluations against 1 | Launches refused over an incomplete closure | Cache bytes differing after restore |
+| --- | --- | --- | --- | --- | --- |
+| FP16-F `control` | `--restores 1 --partial --spill premapped` | bridge's `bb8ae5e7…` | 0, 0, 0, 0 | 5 of 5 | 0 |
+| FP16-F `control` | `--spill managed --embeddings shared` | bridge's `bb8ae5e7…` | 0, 0 | — | 0 |
+| FP16-U `control` | `--partial --spill managed` | bridge's `3560d337…` | 0, 0, 0 | 5 of 5 | 0 |
+| FP16-U `heldout` | `--partial --spill premapped` | bridge's `69ff0821…` | 0, 0, 0 | 5 of 5 | 0 |
+| FP16-F `heldout` | `--restores 1 --relocate --partial --spill managed --embeddings shared` | bridge's `bfb36f19…` | 0, 0, 0, 0 | 5 of 5 | 0 |
+| EXL3-G 4.0 bpw | `--partial --spill premapped --cancel-in-flight` | rung 3's logits files | 0, 0, 0 | 6 of 6 | 0 |
+| EXL3-O 4.0 bpw | `--partial --spill managed` | rung 3's | 0, 0, 0 | 6 of 6 | 0 |
+| EXL3-G 4.5 bpw | `--restores 1 --relocate --partial --spill managed --cancel-in-flight` | rung 3's | 0, 0, 0, 0 | 6 of 6 | 0 |
+| EXL3-O 4.5 bpw | `--partial --spill premapped` | rung 3's | 0, 0, 0 | 6 of 6 | 0 |
+
+"Rung 3's" means every `.npy` equals the P3 paged run's, which equals
+rung 3. Every bound tensor or range of every run lay in cataloged,
+resident device memory of its class (BP-A1's in-process check, no
+violation).
+
+- **The partial evictions** (extents evicted in each):
+
+  | Case | FP16 | EXL3 (both rates) |
+  | --- | ---: | ---: |
+  | one layer (the middle one) | 15 | 4 |
+  | side vectors and biases (resources of at most 64 KiB) | 97 | 97 |
+  | the trellis only (that layer's) | — | 4 |
+  | a shared small-tensor chunk | 1 | 1 |
+  | padded tails (each group's last chunk) | 25 | 26 |
+  | a tensor crossing a chunk boundary | 5 | 2 |
+
+- **Write-back and restore times** (reported, not gated; one run each):
+  - FP16's cache (3 extents for `control`, 6 for `heldout`) wrote back in
+    3.9–24.5 ms and was restored in 0.7–2.0 ms.
+  - EXL3's (24 extents, 48 MiB) wrote back in 11.5–54.3 ms and was
+    restored in 3.5–7.8 ms.
+  - The writes go to a newly created file and are slower than reads;
+    nothing here was tuned (M4 schedules spill writes).
+
+**GPU unit tests** (`gpu`, `spark-b`; not labeled `gpu-discrete` until
+run on the discrete GPU):
+- `unit.VmmWork/CudaWriteBack.*`: four extents of state written back to an
+  `O_TMPFILE` through io_uring and the zone and restored exactly; the
+  premapped pair was poisoned while nonresident, and the managed pair's
+  backing was released.
+- The fake-backend cases are in `unit.VmmWork/PageInTest.*`:
+  - staging and fence order;
+  - direct places;
+  - failed and short writes (D-050's spill-failed row);
+  - invalidated state;
+  - unproven copy-outs;
+  - slot order;
+  - an evictor cancelled mid-write, and one cancelled while its
+    write-back still waited for a slot (abandoned, nothing written);
+  - rejected places, and a preserved place that no new source may
+    rename.
+
+  `unit.CatalogTest.AWriteBackEvictionPreservesTheContentGeneration`
+  covers the catalog's side.
+
+## P5: lifetime and failure on the real providers
+
+- **BP-L1, BP-L3** (`jitllm_exl3_paged --cancel-in-flight`, both 4.0 bpw
+  EXL3-G and 4.5 bpw EXL3-G above):
+  - The largest reconstruction phase, the 1,023-row prefill (GGML and EXL3
+    work, each reconstruction slice followed by its GEMM), is submitted
+    behind a gate that its job queues first: a stream wait on a host
+    flag. Its request is then cancelled.
+  - While the gate held, every extent the phase touches (494 at 4.0 bpw,
+    504 at 4.5 bpw: weights, cache and the region with the reconstruction
+    scratch) was still leased and not evictable, and the task had not
+    retired.
+  - Once the gate opened, the task retired cancelled and no lease remained.
+  - The job's launches blocked in the driver until the gate opened
+    (RE-029), so the cancellation met the phase part-submitted: some
+    slices reconstructed, their GEMMs not yet queued.
+- **BP-L2** (`unit.VmmWork/CudaPageIn.RepeatedCancellationsNeverCorruptAReassignedSlot`):
+  over 8 rounds, a request is cancelled once 1 to 8 slots are busy. Its
+  loads drain, and every extent is evicted and loaded again; every reload
+  held exactly the file's bytes.
+  - Whether io_uring cancelled a given read or it completed first is not
+    observed. A read in flight on NVMe is not recalled; either way the slot
+    waits for its completion.
+- **BP-L4** (`unit.VmmWork/CudaPermutations.*`), through decorators the
+  lanes call in place of the real providers:
+  - io_uring submissions reported as of unknown start, and every
+    completion handed over twice, change nothing. All 32 extents load
+    intact, with no quarantine and no fault.
+  - A fence whose queries are of unknown outcome quarantines its extent
+    and slot. Both stay charged, the node faults and admission stops. The
+    stop reports the fault.
+  - Completion before acceptance is a board property, independent of the
+    provider (`unit.BoardTest.CompletionBeforeAcceptanceIsKept`).
+- **BP-L5:** P3's `unit.Exl3LinearTest.*`. A lock area shared by two
+  live contexts is refused, and two contexts' cooperative grids at the
+  co-resident limit on two streams both complete.
+- **BP-L6:** no I/O buffers are registered (the storage measurement needed
+  none). Registrations hold extents like leases
+  (`unit.CatalogTest.RegistrationsHoldLikeLeases`). A registration left
+  live after a cancelled phase keeps its extent from eviction until it is
+  retired (`unit.VmmWork/PageInTest.ALiveRegistrationOutlivesACancelledPhase`).
+- **BP-V1:** there is no C++ importer in M2. The loader's checks are
+  judged by M0's prototype (`unit.ArtifactCorpusTest.*`). The corpus
+  covers both families' mutations, the EXL3 ones included: rate
+  (`k_bits`), codebook, `in_features`, shapes, dtypes, closures,
+  truncation and hashes.
+- **BP-V2** (`unit.VmmWork/CudaPageIn.BackingThatCannotBeMadeOrMappedUnwindsCleanly`):
+  - 1 TiB of device backing (`cuMemCreate` refuses it) and a mapping outside
+    its reservation (made, refused at the map, released) each fail their
+    load with a known outcome. No backing, charge or fault remains.
+  - cuBLAS handle refusals and workspace exhaustion return errors
+    (`unit.GgmlCublasTest.AHandleMustFitItsContextAndWorkspace`,
+    `…WhatThePathCannotRunIsRefusedBeforeLaunch`,
+    `unit.GgmlKernelsTest.WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault`).
+- **BP-V3** (`unit.ProgramPlanTest.ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesThePlan`),
+  with the EXL3 fixture's own numbers:
+  - At exactly `R_i` plus the 1,023-row prefill's envelope, the 1,024-row
+    prefill is admitted, since a prompt may end in a 1,023-row chunk.
+  - One byte less and the plan narrows to 145 rows.
+  - Below the narrowest prefill the plan is refused. The refusal names
+    the phase kind, width 32, the bytes required and a shortfall of one
+    byte.
+- **BP-A4:** stale tables are refused before launch (P3's
+  `Exl3LinearTest`, BP-P5's stale-table case). Each FP16 chunk is planned
+  and bound anew, so nothing captures a pointer across chunks. The
+  negative control (`unit.GgmlStaleMemoryDeathTest.AKernelOverUnmappedBackingFaults`)
+  runs GGML's RMSNorm over device VMM whose backing was unmapped: in a
+  child process, the kernel faults and its fence reports the fault. It
+  never reads what the memory held.
+
+## P6: bounds against peaks
+
+The harnesses record, for each phase kind, the guaranteed bound and the
+observed peak (`paging.json`):
+- FP16: the placement's activation extent against the highest activation
+  byte a bound tensor reaches, and the plan's pool bound against the
+  pool's peak in that chunk.
+- EXL3: the plan's region against the highest region byte an operation
+  reaches, and the GGML pool's bound against its peak.
+
+| Phase kind | Activations or region: bound | Seen | Pool: bound | Seen |
+| --- | ---: | ---: | ---: | ---: |
+| FP16 single-token step | 611,328 | 611,328 | 0 | 0 |
+| FP16 16-row prefill | 9,781,248 | 9,781,248 | 0 | 0 |
+| FP16 17-row prefill | 10,392,576 | 10,392,576 | 5,196,288 | 5,196,288 |
+| FP16 32-row prefill | 19,562,496 | 19,562,496 | 9,781,248 | 9,781,248 |
+| FP16 512-row prefill | 312,999,936 | 312,999,936 | 156,499,968 | 156,499,968 |
+| EXL3 step, Npad 256 | 307,456 | 305,664 | 14,848 | 14,784 |
+| EXL3 step, Npad 1,024 or 1,280 | 307,456 | 305,664 | 48,128 | 48,048 |
+| EXL3 32-row prefill | 9,838,592 | 9,781,248 | 354,816 | 354,816 |
+| EXL3 144-row prefill | 44,273,664 | 44,015,616 | 1,596,672 | 1,596,672 |
+| EXL3 145-row prefill | 103,301,376 | 103,041,536 | 1,607,936 | 1,607,760 |
+| EXL3 1,023-row prefill | 373,247,744 | 371,414,528 | 11,343,104 | 11,343,024 |
+| EXL3 1,024-row prefill | 371,720,192 | 371,720,192 | 11,356,160 | 11,356,160 |
+
+- The same in every FP16 arm (fused and unfused, where the kind occurs) and
+  in all four EXL3 arms (both rates, EXL3-G and EXL3-O).
+- FP16's input copies and logits are exact by construction: the harness
+  copies those bytes.
+- The bounds are the pre-registered limits' items
+  ([memory and workspace](../../backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd)).
+- EXL3's region slots are 256-byte aligned by lifetime, which is why a
+  kind can stay below its region.
+
+The memory account and `F` per profile are D-086's. The catalog is exact
+for jitLLM's own bytes. Peak device memory for the whole process, from
+ordinary counters, is compared loosely (at most about 1.1×) against each
+reference engine. It passes: native is 0.81–0.96× the FP16 bridge on
+every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
+([backend-proof.md](../../backend-proof.md), "The memory check").
+
+## The case matrix
+
+| Case | Status | Where |
+| --- | --- | --- |
+| BP-A1 | In-process check passes on every run: all bound tensors and ranges in cataloged extents of their class. The census reconciliation is replaced by D-085's peak check, which passes (0.81–0.96× the bridge) | P2, P3, above |
+| BP-A2 | Pool draws within the plan's bound (table above); cuBLAS workspace declared; no allocation after the first launch in P3's traces. Library-internal growth is in `F`, judged loosely | above, P3 |
+| BP-A3 | FP16: no F32 conversion or extra buffer types; the table's host copy declared, and shown unnecessary (`--embeddings shared` gives the same logits). EXL3: weights are the artifact's bytes plus the declared F32 norms and tables; reconstruction is phase scratch in the region | P2, P3, above |
+| BP-A4 | Passes (above) | above |
+| BP-A5 | Counters reconciled with the catalog on the Spark ([vmm-counters](../vmm-counters/README.md)); the per-run census is replaced by D-085's peak check, which passes | plan.md |
+| BP-N1–N6 | Pass | P0, P1, P3 |
+| BP-N7 | Reported diagnostic: the CPU path is not bit-exact across CPU variants | P0 |
+| BP-P1 | Every weight evicted and restored bit-identically, one direct read per chunk in file order at disk speed; coalesced chunk-closure reads are not built | P2, pagein-perf; open, for the owner |
+| BP-P2 | Passes on both representations | above |
+| BP-P3 | Passes: FP16 duplicated and shared give the same logits; the EXL3 head is its own resource | above |
+| BP-P4 | Passes on both representations, poisoned and managed | above |
+| BP-P5 | Passes: relocation rebuilds descriptors (FP16) and rewrites EXL3's tables; stale tables refused | P2, P3 |
+| BP-P6 | Reported | P2, P3, above |
+| BP-L1–L6 | Pass (above) | above |
+| BP-V1–V3 | Pass (above) | above |
+| BP-F1 | Passed on device VMM (rule v2) | P1 |
+| BP-F2 | Not run (D-085) | — |
+| BP-F3 | Deferred to serving: D-085 judges each engine end to end against its reference | — |
+| BP-F4 | Per-launch host cost reported; per-token against upstream's decode deferred with BP-F3 | [launch-overhead](../launch-overhead/README.md) |
+| BP-S1, S2, S4 | Pass | P1, P2 |
+| BP-S3 | Not shown: FP16 and EXL3 have run in separate processes only | open |
+
+## D-050's adversarial matrix (M2 rows)
+
+Each M2 row, with the tests that carry it
+([matrix](../../reservation-policy.md#worked-cases-and-implementation-gates)):
+- **Pass on the fake backend:**
+  - two phases awaiting weights; same-class models; interactive over
+    background with D-069's pauses; a member's change during a pause; a
+    feasible queued request against an impossible phase (`unit.Admission.*`,
+    `unit.CommitmentLedger.*`, `unit.ShapeScenarioTest.*`);
+  - the substitute's change and the second pause
+    (`unit.Admission.ASecondPauseIsNotTakenWhileOneIsOpen`, new);
+  - a grant over a full useful cache, and lease release without pressure
+    (`unit.ShapeScenarioTest.AGrantOverAFullUsefulCacheEvictsNothing`,
+    new);
+  - spill full or failed (`…AFailedSpillLeavesTheStateResidentAndTheShortfallExplicit`,
+    new);
+  - a cancelled phase with a registration still live
+    (`…ALiveRegistrationOutlivesACancelledPhase`, new);
+  - an admitted request suspended indefinitely keeps its allowance
+    (`unit.Admission.APausedRequestKeepsItsAllowanceHoweverLongItWaits`,
+    new; expiry itself is M4's retention);
+  - unknown provider completion and budget reduction
+    (`unit.SchedulerTest.*`, `unit.CommitmentLedger.*`).
+- **Only in part, because the feature the row names does not exist
+  yet.** These are for the owner: each is either built now or its gate
+  moves to the milestone that introduces the feature.
+  - state growth through branch or copy-on-write, and a fork's divergent
+    growth (nothing forks state yet);
+  - many suballocation holes (no suballocation until state blocks share
+    extents);
+  - envelope upgrade racing cached-state promotion (no promotion before
+    M4's retention);
+  - repeated speculation with prefetch (no prefetch);
+  - a slow or disconnected client's termination (M3's front door; output
+    limits exist in `OutputBuffer`);
+  - a closure or rounded allocation over its bound detected at runtime
+    before submission (admission does not drive task starts yet;
+    planning refuses it);
+  - faulting on real capacity loss (the fake has no capacity-drop
+    injection);
+  - every queue full at once during cancellation (each queue is covered
+    alone).
+
+## Reproduction
+
+On `spark-b`, with the `spark-native` build, P2's `control-tokens.txt`
+and held-out IDs, P3's plans (`p3b-20260927/plans`), and the installed
+artifacts (`artifact-layout-20260922/installed`):
+- `jitllm_fp16_paged --artifact ART --trajectory control|heldout --tokens
+  FILE --fusion on|off --out DIR` with the options in the table;
+- `jitllm_exl3_paged --artifact ART --fixture 4.0bpw|4.5bpw --arm G|O
+  --plan PLAN --ids IDS --out DIR` with the options in the table;
+- then compare `summary.json` (logits, bit differences and coverage) and
+  `paging.json` (partial evictions, refusals, cache comparison, cancel
+  result, bounds against peaks).
+
+Each run took under 20 s. Raw outputs stay on `spark-b` under
+`~/.local/share/jitllm/m2close-final`.

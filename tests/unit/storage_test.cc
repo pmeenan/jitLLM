@@ -175,6 +175,45 @@ TEST_F(ReaderTest, TransientErrorsRetryAndOthersFailAfterDraining) {
   EXPECT_EQ(finished[0].error, EIO);
 }
 
+// Write-back's whole writes: an aligned short write continues where it
+// stopped, and one that stops short at an unaligned point, or makes no
+// progress, fails (never "end of file"), with the bytes it moved reported
+// so the caller cannot mistake it for whole.
+TEST_F(ReaderTest, AWriteContinuesAfterAnAlignedShortTransferAndOtherwiseFails) {
+  const std::vector<std::byte> pattern = Pattern(4 * kAlignment);
+  std::memcpy(buffer_.data, pattern.data(), pattern.size());
+  storage_.ScriptNext({.submission = Submission::kAccepted,
+                       .result = static_cast<std::int64_t>(kAlignment),
+                       .hold = false});
+  const ReadSpec spec{.fd = fd_,
+                      .offset = 12 * kAlignment,  // past the file's end: the write extends it
+                      .memory = buffer_.data,
+                      .length = 4 * kAlignment,
+                      .kind = IoKind::kWrite};
+  ASSERT_TRUE(reader_.Read(1, spec, 100).has_value());
+  auto finished = PollUntilDone(reader_);
+  ASSERT_EQ(finished.size(), 1U);
+  EXPECT_EQ(finished[0].outcome, ReadOutcome::kComplete);
+  EXPECT_EQ(finished[0].bytes, 4 * kAlignment);
+  ASSERT_EQ(storage_.submitted().size(), 2U);
+  EXPECT_EQ(storage_.submitted()[1].kind, IoKind::kWrite);
+  EXPECT_EQ(storage_.submitted()[1].offset, 13 * kAlignment);  // the remainder
+  ASSERT_GE(storage_.Contents(fd_).size(), 16 * kAlignment);
+  EXPECT_EQ(std::memcmp(storage_.Contents(fd_).data() + (12 * kAlignment), pattern.data(),
+                        pattern.size()),
+            0);
+
+  for (const std::int64_t result : {std::int64_t{100}, std::int64_t{0}}) {
+    storage_.ScriptNext({.submission = Submission::kAccepted, .result = result, .hold = false});
+    ASSERT_TRUE(reader_.Read(2, spec, 100).has_value());
+    finished = PollUntilDone(reader_);
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].outcome, ReadOutcome::kFailed) << result;
+    EXPECT_EQ(finished[0].error, EIO);
+    EXPECT_EQ(finished[0].bytes, static_cast<std::uint64_t>(result));
+  }
+}
+
 TEST_F(ReaderTest, DuplicatesCoalesceAndTheLastWaiterCancels) {
   storage_.ScriptNext({.submission = Submission::kAccepted, .result = std::nullopt, .hold = true});
   const ReadSpec spec{.fd = fd_, .offset = 0, .memory = buffer_.data, .length = 4 * kAlignment};

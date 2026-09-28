@@ -182,6 +182,11 @@ struct ExtentView {
   // The current contents were deliberately invalidated: the extent may be
   // released without preserving them. Cleared when new contents arrive.
   bool discarded = false;
+  // A nonresident kPreserve extent whose current contents a write-back
+  // eviction preserved whole (BeginEvict with write-back): a load restores
+  // them at the same content generation. Cleared when a load completes,
+  // since the resident copy is then the live one.
+  bool preserved = false;
   std::uint32_t leases = 0;
   std::uint32_t registrations = 0;
   // The last *actual* use (a consumer ran against it), as a logical tick;
@@ -267,16 +272,22 @@ class Catalog {
   // replaced a kPreserve extent's contents in place: the content generation
   // advances, so closures taken before cannot lease the new contents. The
   // caller establishes exclusive access before writing. Artifact and pinned contents are never
-  // replaced this way. A reload of a kPreserve extent is fresh backing for
-  // new contents at a new generation, never a restore (no spill path yet).
+  // replaced this way. A reload of a kPreserve extent restores its contents
+  // only if a write-back eviction preserved them (ExtentView::preserved);
+  // otherwise it is fresh backing for new contents at a new generation.
   std::expected<void, CatalogError> ReplaceContents(ExtentId extent);
 
   // RESIDENT -> EVICTING: a new eviction operation, which excludes new
-  // leases. The extent must be unheld and evictable.
-  std::expected<Ticket, CatalogError> BeginEvict(ExtentId extent);
+  // leases. The extent must be unheld and evictable. With `write_back`,
+  // a kPreserve extent whose contents were not invalidated may be evicted
+  // too: its owner writes the contents back before releasing the backing,
+  // and a completed eviction then keeps its content generation and marks
+  // it preserved (invariant 4). An abandoned write-back is CancelEvict.
+  std::expected<Ticket, CatalogError> BeginEvict(ExtentId extent, bool write_back = false);
   // EVICTING -> NONRESIDENT once every consumer and registration is gone
   // and the backing is released or handed off; the backing generation
-  // advances.
+  // advances. Mutable contents are gone (the content generation advances)
+  // unless the eviction wrote them back.
   std::expected<void, CatalogError> CompleteEvict(const Ticket& ticket);
   // EVICTING -> RESIDENT: the eviction was abandoned before the backing
   // was touched.
@@ -304,6 +315,7 @@ class Catalog {
     std::uint32_t resources = 0;             // resources placed in it
     std::uint64_t operations = 0;            // loads and evictions begun
     Operation operation = Operation::kLoad;  // the kind of the latest
+    bool writing_back = false;               // the eviction in progress preserves contents
   };
   struct Resource {
     std::vector<Range> ranges;

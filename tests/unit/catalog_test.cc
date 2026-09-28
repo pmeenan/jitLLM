@@ -305,6 +305,66 @@ TEST_F(CatalogTest, MutableStateMustBeInvalidatedBeforeEviction) {
   EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
 }
 
+// Write-back (invariant 4): live mutable contents may be evicted only by
+// an eviction that writes them back. A completed one keeps the content
+// generation and marks the contents preserved, so a closure taken before
+// is still current and a load restores it; an abandoned one leaves them
+// resident and unpreserved. Invalidated contents and other classes are
+// never written back.
+TEST_F(CatalogTest, AWriteBackEvictionPreservesTheContentGeneration) {
+  const auto state = catalog_
+                         .AddExtent({.domain = domain_,
+                                     .memory_class = MemoryClass::kLiveState,
+                                     .recovery = Recovery::kPreserve,
+                                     .size = 2_MiB,
+                                     .content = {}})
+                         .value();
+  const auto weights = catalog_
+                           .AddExtent({.domain = domain_,
+                                       .memory_class = MemoryClass::kWeights,
+                                       .recovery = Recovery::kFromArtifact,
+                                       .size = 2_MiB,
+                                       .content = {}})
+                           .value();
+  Load(state);
+  Load(weights);
+  EXPECT_EQ(Failed(catalog_.BeginEvict(weights, true)), CatalogError::kNotEvictable);
+  const Closure taken = Of({state});
+  const auto contents = catalog_.Describe(state).value().content_generation;
+
+  // Abandoned: resident again, nothing preserved.
+  auto abandoned = catalog_.BeginEvict(state, true).value();
+  EXPECT_EQ(Failed(catalog_.AcquireLease(taken)), CatalogError::kNotResident);
+  ASSERT_TRUE(catalog_.CancelEvict(abandoned).has_value());
+  EXPECT_EQ(catalog_.Describe(state).value().state, ExtentState::kResident);
+  EXPECT_FALSE(catalog_.Describe(state).value().preserved);
+  // A plain eviction of the same contents is still refused.
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
+
+  auto written = catalog_.BeginEvict(state, true).value();
+  ASSERT_TRUE(catalog_.CompleteEvict(written).has_value());
+  EXPECT_EQ(catalog_.Describe(state).value().state, ExtentState::kNonresident);
+  EXPECT_TRUE(catalog_.Describe(state).value().preserved);
+  EXPECT_EQ(catalog_.Describe(state).value().content_generation, contents);
+  // A failed restore keeps them preserved; a completed one hands the live
+  // copy back, under the closure taken before.
+  auto failed = catalog_.BeginLoad(state, kBudget).value();
+  ASSERT_TRUE(catalog_.FailLoad(failed, true).has_value());
+  EXPECT_TRUE(catalog_.Describe(state).value().preserved);
+  Load(state);
+  EXPECT_FALSE(catalog_.Describe(state).value().preserved);
+  const auto lease = catalog_.AcquireLease(taken).value();
+  ASSERT_TRUE(catalog_.ReleaseLease(lease).has_value());
+
+  // Invalidated contents are evicted plainly, never written back.
+  ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state, true)), CatalogError::kNotEvictable);
+  auto plain = catalog_.BeginEvict(state).value();
+  ASSERT_TRUE(catalog_.CompleteEvict(plain).has_value());
+  EXPECT_FALSE(catalog_.Describe(state).value().preserved);
+  EXPECT_EQ(catalog_.Describe(state).value().content_generation, contents + 2);
+}
+
 TEST_F(CatalogTest, ReplacingContentsRequiresExclusiveAccess) {
   const auto state = catalog_
                          .AddExtent({.domain = domain_,

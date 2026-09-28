@@ -69,6 +69,7 @@ class WorkspacePool final : public ggml_cuda_pool {
   }
   bool empty() const { return blocks_.empty(); }
   std::uint64_t peak() const { return peak_; }
+  void ResetPeak() { peak_ = top_; }
 
  private:
   static constexpr std::uint64_t kAlign = 256;
@@ -238,5 +239,7 @@ std::expected<void, KernelFailure> LaunchContext::End() {
 }
 
 base::Bytes LaunchContext::scratch_peak() const { return base::Bytes(pool_->peak()); }
+
+void LaunchContext::ResetScratchPeak() { pool_->ResetPeak(); }
 
 }  // namespace jitllm::kernels::ggml

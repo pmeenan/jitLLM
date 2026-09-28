@@ -12,7 +12,9 @@
 //   jitllm_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O
 //                     --plan PLAN.txt --ids FILE --out DIR
 //                     [--prefixes 32,144,145,1023,1024] [--restores N]
-//                     [--relocate] [--lanes threads|inline] [--record]
+//                     [--relocate] [--partial] [--spill premapped|managed]
+//                     [--cancel-in-flight]
+//                     [--lanes threads|inline] [--record]
 //
 // - Memory (all registered in one catalog domain):
 //   - every chunk of every group is an extent of device VMM with managed
@@ -45,17 +47,49 @@
 //   the whole closure until the fence after it completes.
 // - --record (with --lanes inline): the first evaluation, as exl3_exec.cc
 //   records it (op_plan_compare.py).
+// - BP-P2 (--partial): one more evaluation, which after the first prefix's
+//   prefill runs each of paging_cases.h's partial evictions (one layer,
+//   side vectors and biases, the trellis only, a shared small-tensor
+//   chunk, padded tails, a tensor crossing a chunk boundary): it evicts
+//   exactly those extents, checks that a phase's job submitted without
+//   materializing is refused before anything runs (invariants 1-2), and
+//   pages only them back in.
+// - BP-P4 (--spill premapped|managed): one more evaluation, which after
+//   every prefix's prefill and again after its eighth step writes the
+//   cache back through the zone to an unnamed direct-I/O spill file in
+//   --out and evicts it, then restores it; `premapped` keeps its backing
+//   mapped and poisons it with 0xff first, `managed` releases the backing
+//   (D-033). The cache's bytes before and after must match.
+// - BP-P3: the head is a representation of its own, never the embedding:
+//   checked at setup (distinct resources whose chunks do not overlap).
+// - BP-L1 and BP-L3 (--cancel-in-flight, with threads): after the
+//   evaluations, the largest reconstruction phase (the 1,023-row prefill,
+//   GGML and EXL3 work, each reconstruction slice followed by its GEMM)
+//   is submitted behind a gate its job queues first (a stream wait on a
+//   host flag), and its request is cancelled once the job has queued
+//   everything. While the gate holds, the phase's lease must still hold
+//   every extent it touches, the activations and reconstruction scratch
+//   among them; the task retires, cancelled, only after the gate opens and
+//   the fence completes, and only then are the leases gone.
+// - Explainable plans: for each phase kind, the guaranteed bound (the
+//   plan's activation region and the GGML pool's bound) against the
+//   observed peak (the highest region byte an operation reaches, and the
+//   pool's peak in that phase).
 //
 // Every evaluation's logits must equal the first's bit for bit; the first's
 // are written as exl3_exec.cc writes them (.npy per prefix), with a summary
 // of the page-ins and the coverage check. Rung 4 against rung 3 is the
 // comparison of those files with exl3_exec.cc's.
 
+#include <cuda.h>
 #include <cuda_runtime.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -99,6 +133,7 @@
 #include "launch_recorder.h"
 #include "model/qwen2.h"
 #include "model/qwen2_exl3.h"
+#include "paging_cases.h"
 #include "plan_record.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
@@ -168,6 +203,9 @@ struct Options {
   bool relocate = false;
   bool inline_lanes = false;
   bool record = false;
+  bool partial = false;
+  std::string spill;  // empty, premapped or managed
+  bool cancel = false;
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -183,12 +221,25 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.relocate = true;
       continue;
     }
+    if (a == "--partial") {
+      o.partial = true;
+      continue;
+    }
+    if (a == "--cancel-in-flight") {
+      o.cancel = true;
+      continue;
+    }
     if (i + 1 >= args.size()) {
       return Error(std::format("{} needs a value", a));
     }
     const std::string_view v = args[++i];
     if (a == "--artifact") {
       o.artifact = v;
+    } else if (a == "--spill") {
+      if (v != "premapped" && v != "managed") {
+        return Error("--spill is premapped or managed");
+      }
+      o.spill = v;
     } else if (a == "--fixture") {
       o.fixture = v;
     } else if (a == "--arm") {
@@ -230,11 +281,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.artifact.empty() || (o.fixture != "4.0bpw" && o.fixture != "4.5bpw") || !arm ||
       o.plan.empty() || o.ids.empty() || o.out.empty() || o.prefixes.empty() ||
-      (o.record && !o.inline_lanes)) {
+      (o.record && !o.inline_lanes) || (o.cancel && o.inline_lanes)) {
     return Error(
         "usage: jitllm_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O --plan PLAN.txt "
-        "--ids FILE --out DIR [--prefixes LIST] [--restores N] [--relocate] "
-        "[--lanes threads|inline] [--record (with --lanes inline)]");
+        "--ids FILE --out DIR [--prefixes LIST] [--restores N] [--relocate] [--partial] "
+        "[--spill premapped|managed] [--cancel-in-flight] [--lanes threads|inline] "
+        "[--record (with --lanes inline)]");
   }
   return o;
 }
@@ -400,7 +452,59 @@ class EvictProgram final : public HarnessProgram {
   std::size_t next_ = 0;
 };
 
+// Submits a job over a closure without materializing it first: with any
+// extent nonresident the lease, and so the submission, must be refused
+// before the job can run (BP-P2's incomplete closure).
+class LaunchOnlyProgram final : public HarnessProgram {
+ public:
+  LaunchOnlyProgram(Done& done, jitllm::catalog::Closure closure, std::atomic<bool>& ran)
+      : HarnessProgram(done), closure_(std::move(closure)), ran_(ran) {}
+  sc::Step Advance(sc::TaskContext& context) override {
+    if (submitted_) {
+      return sc::Step::Finish(context.TakeFailure() ? sc::TaskOutcome::kFailed
+                                                    : sc::TaskOutcome::kSucceeded);
+    }
+    std::atomic<bool>& ran = ran_;
+    const auto submitted = context.SubmitLaunch(
+        closure_, sc::LaunchWork{.stream = 0, .job = [&ran](jitllm::providers::NativeStream) {
+                                   ran.store(true);
+                                   return sc::JobResult::kQueued;
+                                 }});
+    if (!submitted) {
+      done_.error.store(static_cast<int>(submitted.error()));
+      return sc::Step::Finish(sc::TaskOutcome::kFailed);
+    }
+    submitted_ = true;
+    return sc::Step::Wait();
+  }
+  void Finished(sc::TaskOutcome outcome) override {
+    done_.outcome.store(static_cast<int>(outcome));
+  }
+  void Retired() override { done_.retired.store(true); }
+
+ private:
+  jitllm::catalog::Closure closure_;
+  std::atomic<bool>& ran_;
+  bool submitted_ = false;
+};
+
 // ------------------------------------------------------------------ the harness
+
+// A phase kind's guaranteed bound against its observed peak (bytes).
+struct Peak {
+  std::uint64_t phases = 0;
+  std::uint64_t region_bound = 0;
+  std::uint64_t region_seen = 0;
+  std::uint64_t pool_bound = 0;
+  std::uint64_t pool_seen = 0;
+};
+
+struct PagingEvent {
+  std::string what;
+  std::uint64_t extents = 0;
+  double seconds = 0;
+  std::string detail;
+};
 
 struct PhaseRun {
   int prefix = 0;
@@ -451,6 +555,13 @@ class Harness {
   Status RunPhase(const PhaseRun& phase, int evaluation, std::vector<float>& out);
   Status Restore(int evaluation);
   Status Write(const std::vector<std::map<int, std::vector<float>>>& results);
+  // BP-P2, BP-P4 and BP-P3's helpers.
+  Status Partial();
+  Status Spill(std::string_view where);
+  Status Snapshot(std::vector<std::byte>& out);
+  Status RegisterCache();
+  Status HeadIsItsOwn() const;
+  Status CancelInFlight();
 
   const Options& o_;
   const model::Qwen2Profile& profile_ = model::Qwen25Instruct05BExl3();
@@ -521,6 +632,15 @@ class Harness {
   std::vector<LoadStats> loads_;
   std::map<std::string, std::string> identities_;  // "prefix/phase" -> plan identity
   bool torn_down_ = false;
+
+  // --spill: the unnamed spill file, and a pinned copy of the cache.
+  int spill_fd_ = -1;
+  void* kv_copy_ = nullptr;
+  std::vector<PagingEvent> events_;
+  std::uint64_t kv_mismatches_ = 0;
+  std::uint64_t refusals_ = 0;                 // incomplete closures refused before launch
+  std::map<std::pair<int, int>, Peak> peaks_;  // by (rows, padded K)
+  std::string cancel_result_;                  // --cancel-in-flight's, as JSON
 };
 
 void Harness::AddSpan(std::uint64_t base, std::uint64_t size, ExtentId extent,
@@ -1046,6 +1166,14 @@ Status Harness::Setup() {
   if (auto r = RegisterWeights(); !r) {
     return r;
   }
+  if (auto r = HeadIsItsOwn(); !r) {
+    return r;
+  }
+  if (!o_.spill.empty()) {
+    if (auto r = RegisterCache(); !r) {
+      return r;
+    }
+  }
   if (!o_.inline_lanes) {
     threads_.emplace_back([this] { stopped_ = scheduler_->Run(); });
     threads_.emplace_back([this] { storage_lane_->Run(); });
@@ -1230,6 +1358,24 @@ Status Harness::RunPhase(const PhaseRun& phase, int evaluation, std::vector<floa
       jitllm::base::ToHex((*program)->identity());
   Check(**program, phase);
   const model::Exl3PhasePlan& plan = phase.plan;
+  // The phase kind's guaranteed bound, and the highest region byte its
+  // bound operations reach.
+  Peak& peak = peaks_[{plan.phase.rows, plan.padded}];
+  ++peak.phases;
+  peak.region_bound = std::max(peak.region_bound, plan.region);
+  peak.pool_bound = std::max(peak.pool_bound, (*program)->ggml_scratch());
+  for (std::size_t op = 0; op < plan.ops.size(); ++op) {
+    for (const auto& names : {plan.ops[op].inputs, plan.ops[op].outputs}) {
+      for (const std::string& name : names) {
+        const auto t = plan.tensors.find(name);
+        const std::uint64_t at = (*program)->Address(op, name);
+        if (t != plan.tensors.end() && at >= region_.base && at < region_.base + region_.bytes) {
+          peak.region_seen = std::max(peak.region_seen, at + t->second.bytes() - region_.base);
+        }
+      }
+    }
+  }
+  ggml_->ResetScratchPeak();
   const std::span<const std::int32_t> tokens(ids_.data() + plan.phase.past,
                                              static_cast<std::size_t>(plan.phase.rows));
   if (auto written = exl3::WriteHostInputs(
@@ -1301,6 +1447,7 @@ Status Harness::RunPhase(const PhaseRun& phase, int evaluation, std::vector<floa
     return Error(
         std::format("prefix {} phase {}: a launch context faulted", phase.prefix, phase.index));
   }
+  peak.pool_seen = std::max(peak.pool_seen, ggml_->scratch_peak().value());
   const auto* half = static_cast<const std::uint16_t*>(logits_);
   for (std::size_t i = 0; i < logits_bytes / 2; ++i) {
     out.push_back(model::HalfToFloat(half[i]));
@@ -1330,11 +1477,348 @@ Status Harness::Evaluate(int evaluation, std::map<int, std::vector<float>>& resu
     if (auto r = RunPhase(phase, evaluation, result[phase.prefix]); !r) {
       return r;
     }
-    if (evaluation > 2 && phase.index == 0) {
+    const int partial_at = o_.partial ? 3 + o_.restores : -1;
+    const int spill_at = o_.spill.empty() ? -1 : 3 + o_.restores + (o_.partial ? 1 : 0);
+    if (evaluation > 2 && evaluation <= 2 + o_.restores && phase.index == 0) {
       if (auto r = Restore(evaluation); !r) {
         return r;
       }
     }
+    if (evaluation == partial_at && phase.index == 0 && phase.prefix == phases_.front().prefix) {
+      if (auto r = Partial(); !r) {
+        return r;
+      }
+    }
+    if (evaluation == spill_at && (phase.index == 0 || phase.index == 8)) {
+      if (auto r = Spill(std::format("prefix {} {}", phase.prefix,
+                                     phase.index == 0 ? "after the prefill" : "mid-decode"));
+          !r) {
+        return r;
+      }
+    }
+  }
+  return {};
+}
+
+// BP-P2: each partial eviction in turn.
+Status Harness::Partial() {
+  const std::string layer = std::format("model.layers.{}.", profile_.layers / 2);
+  const auto cases = jitllm::benchmarks::PartialCases(*artifact_, layer, true);
+  for (const auto& partial : cases) {
+    std::vector<ExtentId> extents;
+    for (const auto& [group, chunk] : partial.chunks) {
+      extents.push_back(chunk_extents_.at(group).at(chunk));
+    }
+    const std::size_t backings = memory_->backings();
+    const auto start = std::chrono::steady_clock::now();
+    if (auto r = Evict(extents); !r) {
+      return r;
+    }
+    const double evicted = Seconds(std::chrono::steady_clock::now() - start);
+    std::size_t resident = 0;
+    for (const ExtentId extent : device_weights_) {
+      resident += catalog_.Describe(extent).value().state == jitllm::catalog::ExtentState::kResident
+                      ? 1
+                      : 0;
+    }
+    if (resident + extents.size() != device_weights_.size() ||
+        memory_->backings() + extents.size() != backings) {
+      return Error(std::format("partial eviction '{}' did not evict exactly its {} extents",
+                               partial.name, extents.size()));
+    }
+    std::atomic<bool> ran{false};
+    Done refused;
+    const Status submitted = Post(std::make_unique<LaunchOnlyProgram>(refused, everything_, ran),
+                                  refused, "a launch over an incomplete closure");
+    if (submitted || ran.load() ||
+        refused.error.load() != static_cast<int>(sc::WorkError::kNotResident)) {
+      return Error(
+          std::format("partial eviction '{}': a launch over an incomplete closure was "
+                      "not refused before it ran",
+                      partial.name));
+    }
+    ++refusals_;
+    events_.push_back(PagingEvent{.what = "partial eviction",
+                                  .extents = extents.size(),
+                                  .seconds = evicted,
+                                  .detail = partial.name});
+    if (auto r = Load(extents, std::format("partial restore: {}", partial.name)); !r) {
+      return r;
+    }
+  }
+  return {};
+}
+
+// BP-P4: the cache written back through the zone and evicted, then
+// restored; its bytes before and after must match.
+Status Harness::Spill(std::string_view where) {
+  std::vector<std::byte> before;
+  if (auto r = Snapshot(before); !r) {
+    return r;
+  }
+  const std::size_t backings = memory_->backings();
+  auto start = std::chrono::steady_clock::now();
+  if (auto r = Evict(kv_.extents); !r) {
+    return r;
+  }
+  events_.push_back(PagingEvent{.what = "state write-back",
+                                .extents = kv_.extents.size(),
+                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
+                                .detail = std::string(where)});
+  for (const ExtentId extent : kv_.extents) {
+    const auto view = catalog_.Describe(extent).value();
+    if (view.state != jitllm::catalog::ExtentState::kNonresident || !view.preserved) {
+      return Error("the cache is not nonresident and preserved after its write-back");
+    }
+  }
+  const bool managed = o_.spill == "managed";
+  if (memory_->backings() + (managed ? kv_.extents.size() : 0) != backings) {
+    return Error("the write-back did not release (managed) or keep (premapped) the backing");
+  }
+  if (!managed) {
+    if (auto r = Cuda(cudaMemset(Pointer(kv_.base), 0xff, kv_.bytes), "poisoning the cache"); !r) {
+      return r;
+    }
+    if (auto r = Cuda(cudaDeviceSynchronize(), "poisoning the cache"); !r) {
+      return r;
+    }
+  }
+  start = std::chrono::steady_clock::now();
+  if (auto r = Load(kv_.extents, std::format("state restore ({})", where)); !r) {
+    return r;
+  }
+  events_.push_back(PagingEvent{.what = "state restore",
+                                .extents = kv_.extents.size(),
+                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
+                                .detail = std::string(where)});
+  std::vector<std::byte> after;
+  if (auto r = Snapshot(after); !r) {
+    return r;
+  }
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    kv_mismatches_ += before[i] != after.at(i) ? 1 : 0;
+  }
+  return {};
+}
+
+Status Harness::Snapshot(std::vector<std::byte>& out) {
+  const std::uint64_t kv = kv_.base;
+  const std::uint64_t bytes = kv_bytes_;
+  void* copy = kv_copy_;
+  if (auto r = Job(
+          cache_,
+          [kv, bytes, copy](jitllm::providers::NativeStream stream) {
+            return cudaMemcpyAsync(copy, Pointer(kv), bytes, cudaMemcpyDeviceToHost,
+                                   static_cast<cudaStream_t>(stream.handle)) == cudaSuccess
+                       ? sc::JobResult::kQueued
+                       : sc::JobResult::kUnknown;
+          },
+          "copying the cache out");
+      !r) {
+    return r;
+  }
+  const auto* bytes_in = static_cast<const std::byte*>(kv_copy_);
+  out.assign(bytes_in, bytes_in + bytes);
+  return {};
+}
+
+// --spill: the cache's write-back places (fp16_paged.cc's).
+Status Harness::RegisterCache() {
+  std::filesystem::create_directories(o_.out);
+  spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
+  if (spill_fd_ < 0) {
+    return Error(std::format("the spill file in {}: {}", o_.out.string(), std::strerror(errno)));
+  }
+  if (auto r = Cuda(cudaMallocHost(&kv_copy_, kv_bytes_), "the cache's host copy"); !r) {
+    return r;
+  }
+  pinned_.push_back(kv_copy_);
+  const bool managed = o_.spill == "managed";
+  for (std::size_t i = 0; i < kv_.extents.size(); ++i) {
+    std::optional<sc::BackingPlace> backing;
+    if (managed) {
+      backing = sc::BackingPlace{.reservation = kv_.reservation,
+                                 .offset = Bytes(i * kExtent),
+                                 .size = Bytes(kExtent),
+                                 .allocation_class = device_class_};
+    }
+    auto set = scheduler_->SetSource(
+        kv_.extents[i],
+        sc::PageSource{
+            .read = {.fd = spill_fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
+            .landed = true,
+            .destination = kv_.base + (i * kExtent),
+            .backing = backing,
+            .write_back = true});
+    if (!set) {
+      return Error(std::format("the cache's write-back place: {}", sc::ToString(set.error())));
+    }
+  }
+  if (managed) {
+    kv_.backings.clear();  // the device lane releases them on eviction (D-033)
+  }
+  return {};
+}
+
+// BP-P3's EXL3 half: the head is its own representation, never the
+// embedding's storage.
+Status Harness::HeadIsItsOwn() const {
+  const auto embed = artifact_->ResourcePlacement(binding_.embed);
+  const auto head = artifact_->ResourcePlacement(binding_.lm_head.trellis);
+  if (!embed || !head) {
+    return Error("the embedding or the head has no placement");
+  }
+  const auto& resources = artifact_->resources();
+  const bool shared_name =
+      std::ranges::find(resources[binding_.embed].roles, binding_.lm_head.name + ".trellis") !=
+      resources[binding_.embed].roles.end();
+  const bool overlap = embed->group == head->group &&
+                       embed->offset.value() < head->offset.value() + head->readable.value() &&
+                       head->offset.value() < embed->offset.value() + embed->readable.value();
+  if (binding_.embed == binding_.lm_head.trellis || shared_name || overlap) {
+    return Error("the EXL3 head shares the embedding's storage");
+  }
+  return {};
+}
+
+// BP-L1 and BP-L3: a phase cancelled with its GGML and EXL3 work queued
+// behind a gate keeps its lease until the fence after that work completes.
+Status Harness::CancelInFlight() {
+  const PhaseRun* chosen = nullptr;
+  for (const PhaseRun& phase : phases_) {
+    if (phase.index == 0 && (chosen == nullptr || phase.plan.region > chosen->plan.region)) {
+      chosen = &phase;  // the largest reconstruction phase
+    }
+  }
+  if (chosen == nullptr) {
+    return Error("no prefill to cancel");
+  }
+  const model::Exl3PhasePlan& plan = chosen->plan;
+  auto program =
+      exl3::Qwen2Program::Bind(*registry_, profile_, plan, memory_map_, *ggml_, *launch_);
+  if (!program) {
+    return Error(std::format("the cancelled phase did not bind: {}", program.error().detail));
+  }
+  const std::span<const std::int32_t> tokens(ids_.data() + plan.phase.past,
+                                             static_cast<std::size_t>(plan.phase.rows));
+  if (auto written = exl3::WriteHostInputs(
+          profile_, plan, tokens,
+          std::span(static_cast<std::byte*>(inputs_), exl3::HostInputsLayout(plan).bytes));
+      !written) {
+    return Error(written.error().detail);
+  }
+  void* gate = nullptr;
+  if (auto r = Cuda(cudaHostAlloc(&gate, sizeof(std::uint32_t), cudaHostAllocMapped), "the gate");
+      !r) {
+    return r;
+  }
+  pinned_.push_back(gate);
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(gate)).store(0);
+  void* device_gate = nullptr;
+  if (auto r = Cuda(cudaHostGetDevicePointer(&device_gate, gate, 0), "the gate's device address");
+      !r) {
+    return r;
+  }
+  std::atomic<bool> started{false};  // the gate is queued: what follows waits behind it
+  std::atomic<bool> queued{false};   // the job has queued everything (more launches than
+                                     // the stream's pending queue holds wait in the driver)
+  Status ran;
+  auto job = [&, device_gate](jitllm::providers::NativeStream native) -> sc::JobResult {
+    if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
+                            reinterpret_cast<CUdeviceptr>(device_gate), 1,
+                            CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {
+      ran = Error("cuStreamWaitValue32 was refused");
+      return sc::JobResult::kNotStarted;
+    }
+    started.store(true);
+    if (auto r = (*program)->Run(*ggml_, *launch_, *gemm_, *execution_, streams_[0],
+                                 Address(inputs_), exl3::Qwen2Hooks{});
+        !r) {
+      ran = Error(r.error().detail);
+      return r.error().error == exl3::KernelError::kUnknown ? sc::JobResult::kUnknown
+                                                            : sc::JobResult::kFailed;
+    }
+    queued.store(true);
+    return sc::JobResult::kQueued;
+  };
+  Done done;
+  const std::uint64_t request = ++request_;
+  sc::Control start =
+      sc::StartRequest{.request = request,
+                       .priority = 1,
+                       .program = std::make_unique<RunProgram>(done, everything_, std::move(job))};
+  // NOLINTNEXTLINE(bugprone-use-after-move): Post moves only what it takes
+  while (scheduler_->Post(std::move(start)) == jitllm::base::PushResult::kFull) {
+    std::this_thread::yield();
+  }
+  // Until the job has queued what it can; the lane may still be inside it,
+  // its later launches waiting in the driver behind the gate.
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while (!started.load() && !done.gone.load() && std::chrono::steady_clock::now() < give_up) {
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const bool was_started = started.load();
+  const bool was_queued = queued.load();
+  sc::Control cancel = sc::CancelRequest{.request = request};
+  // NOLINTNEXTLINE(bugprone-use-after-move): Post moves only what it takes
+  while (scheduler_->Post(std::move(cancel)) == jitllm::base::PushResult::kFull) {
+    std::this_thread::yield();
+  }
+  // On the scheduler thread, with the gate still shut: what the lease holds.
+  const auto held = [&] {
+    std::vector<ExtentId> touched = region_.extents;
+    touched.insert(touched.end(), kv_.extents.begin(), kv_.extents.end());
+    touched.insert(touched.end(), device_weights_.begin(), device_weights_.end());
+    std::size_t holding = 0;
+    for (const ExtentId extent : touched) {
+      const auto view = catalog_.Describe(extent).value();
+      holding += view.leases > 0 && !jitllm::catalog::Catalog::Evictable(view) ? 1 : 0;
+    }
+    return holding == touched.size() ? touched.size() : 0;
+  };
+  std::size_t holding = 0;
+  {
+    // Not returned early on failure: the gate must open before this frame,
+    // which the job refers to, can end (a failed probe leaves `holding` 0).
+    Done probe;
+    (void)Post(std::make_unique<CallProgram>(probe,
+                                             [&]() -> Status {
+                                               holding = held();
+                                               return {};
+                                             }),
+               probe, "probing the cancelled phase's lease");
+  }
+  const bool retired_early = done.gone.load();
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(gate)).store(1);
+  (void)Await(done, "the cancelled phase", request);  // its outcome is checked below
+  const bool cancelled = done.outcome.load() == static_cast<int>(sc::TaskOutcome::kCancelled);
+  std::size_t after = 1;
+  {
+    Done probe;
+    if (auto r = Post(
+            std::make_unique<CallProgram>(probe,
+                                          [&]() -> Status {
+                                            after = 0;
+                                            for (const ExtentId extent : region_.extents) {
+                                              after += catalog_.Describe(extent).value().leases;
+                                            }
+                                            return {};
+                                          }),
+            probe, "probing after the fence");
+        !r) {
+      return r;
+    }
+  }
+  cancel_result_ = std::format(
+      R"({{"phase_rows":{},"gate_queued_before_cancel":{},"all_queued_before_cancel":{},)"
+      R"("extents_held_while_gated":{},"retired_before_the_gate_opened":{},)"
+      R"("outcome_cancelled":{},"leases_after_fence":{}}})",
+      plan.phase.rows, was_started ? "true" : "false", was_queued ? "true" : "false", holding,
+      retired_early ? "true" : "false", cancelled ? "true" : "false", after);
+  if (!ran || !was_started || holding == 0 || retired_early || !cancelled || after != 0) {
+    return Error(
+        std::format("cancelling in flight: {}{}", cancel_result_, ran ? "" : ": " + ran.error()));
   }
   return {};
 }
@@ -1397,7 +1881,7 @@ Status Harness::Run() {
     recording_ = std::make_unique<jitllm::test_support::Recording>();
     (void)recording_->Take();
   }
-  const int evaluations = 2 + o_.restores;
+  const int evaluations = 2 + o_.restores + (o_.partial ? 1 : 0) + (o_.spill.empty() ? 0 : 1);
   std::vector<std::map<int, std::vector<float>>> results(static_cast<std::size_t>(evaluations));
   for (int e = 1; e <= evaluations; ++e) {
     if (auto r = Evaluate(e, results[static_cast<std::size_t>(e - 1)]); !r) {
@@ -1408,6 +1892,11 @@ Status Harness::Run() {
         record_ += jitllm::test_support::EventLine(event);
       }
       recording_.reset();
+    }
+  }
+  if (o_.cancel) {
+    if (auto r = CancelInFlight(); !r) {
+      return r;
     }
   }
   return Write(results);
@@ -1485,7 +1974,39 @@ Status Harness::Write(const std::vector<std::map<int, std::vector<float>>>& resu
                 jitllm::test_support::LoadedCublas())
          << record_;
   }
+  // BP-P2 and BP-P4's runs, and each phase kind's bound against its peak.
+  std::string events;
+  for (const PagingEvent& event : events_) {
+    events += std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f},"detail":"{}"}})",
+                          events.empty() ? "" : ",", event.what, event.extents, event.seconds,
+                          event.detail);
+  }
+  std::string peaks;
+  bool within = true;
+  for (const auto& [kind, peak] : peaks_) {
+    within = within && peak.region_seen <= peak.region_bound && peak.pool_seen <= peak.pool_bound;
+    peaks +=
+        std::format(R"({}{{"rows":{},"padded":{},"phases":{},"region_bound":{},"region_seen":{},)"
+                    R"("pool_bound":{},"pool_seen":{}}})",
+                    peaks.empty() ? "" : ",", kind.first, kind.second, peak.phases,
+                    peak.region_bound, peak.region_seen, peak.pool_bound, peak.pool_seen);
+  }
+  {
+    std::ofstream file(o_.out / "paging.json");
+    file << std::format(
+                R"({{"partial":{},"spill":"{}","head_is_its_own":true,"refused_launches":{},)"
+                R"("kv_bytes_differing":{},"cancel_in_flight":{},"events":[{}],"peaks":[{}]}})",
+                o_.partial ? "true" : "false", o_.spill, refusals_, kv_mismatches_,
+                cancel_result_.empty() ? std::string("null") : cancel_result_, events, peaks)
+         << "\n";
+  }
   std::println("wrote {}", o_.out.string());
+  if (kv_mismatches_ != 0) {
+    return Error(std::format("{} bytes of the cache differ after its restore", kv_mismatches_));
+  }
+  if (!within) {
+    return Error("a phase reached past its guaranteed bound (paging.json)");
+  }
   if (coverage_.violations != 0) {
     return Error(std::format("{} ranges lie outside cataloged extents of their class; first: {}",
                              coverage_.violations, coverage_.first));
@@ -1509,7 +2030,12 @@ Status Harness::Teardown() {
             "fencing the compute stream")) {
       problems.emplace_back("the compute stream could not be fenced");
     }
-    if ((!threads_.empty() || !scheduler_->fault()) && !Evict(device_weights_)) {
+    std::vector<ExtentId> evicted = device_weights_;
+    if (o_.spill == "managed") {
+      // Its backing is the device lane's to release: written back and evicted.
+      evicted.insert(evicted.end(), kv_.extents.begin(), kv_.extents.end());
+    }
+    if ((!threads_.empty() || !scheduler_->fault()) && !Evict(evicted)) {
       problems.emplace_back("the weights could not be evicted at the end");
     }
     scheduler_->RequestShutdown();
@@ -1574,6 +2100,9 @@ Status Harness::Teardown() {
   }
   for (void* pointer : pinned_) {
     (void)cudaFreeHost(pointer);
+  }
+  if (spill_fd_ >= 0) {
+    (void)::close(spill_fd_);  // unnamed: nothing outlives the process
   }
   if (!problems.empty()) {
     std::string joined;

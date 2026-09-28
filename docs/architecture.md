@@ -734,8 +734,14 @@ wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation. The unmap and
 release run on the VMM lane while the extent is EVICTING (D-033: the
-backing is released, not pooled); write-back, the reverse path through the
-zone, is not built yet, so preserved state is not yet evictable.
+backing is released, not pooled). Live mutable state is written back
+first, by the reverse path through the zone: the extent is copied into a
+landing slot, fenced, and the slot written to the state's place with
+direct I/O. Only once the whole range is written is the backing released,
+and the catalog then marks the contents preserved at the same content
+generation, so a later load restores them (D-086). In M2 the place is a
+process-private unnamed file; D-055's spill role and retention arrive in
+M4.
 
 Storage backends sit behind one read/write completion interface. D-034 selects
 native direct-file I/O on validated Spark configurations, with bounded

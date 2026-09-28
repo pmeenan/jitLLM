@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -218,6 +219,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
       file_[i] = static_cast<std::byte>((i * 131) + (i >> 16) + 1);
     }
     fd_ = storage_.AddFile(file_);
+    spill_ = storage_.AddFile(std::vector<std::byte>(kSize * kExtents));
     domain_ = catalog_.AddDomain("node");
     for (std::size_t i = 0; i < kExtents; ++i) {
       extents_.push_back(
@@ -234,7 +236,8 @@ class PageInTest : public ::testing::TestWithParam<bool> {
     baseline_ = memory_.backings();
   }
 
-  void Build(std::size_t slots = kSlots, std::size_t board = 32) {
+  void Build(std::size_t slots = kSlots, std::size_t board = 32,
+             std::uint64_t budget = kSize * 64) {
     board_ = std::make_unique<CompletionBoard>(board, wake_);
     storage_lane_ = std::make_unique<StorageService>(
         storage_,
@@ -270,7 +273,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
                                                       .observations_per_turn = 64,
                                                       .steps_per_turn = 16,
                                                       .waiters = 8,
-                                                      .budget = Bytes(kSize * 64),
+                                                      .budget = Bytes(budget),
                                                       .poll_window = std::chrono::microseconds(200),
                                                       .tick = std::chrono::milliseconds(100),
                                                       .landing = landing});
@@ -377,6 +380,66 @@ class PageInTest : public ::testing::TestWithParam<bool> {
   bool Loaded(std::size_t i, ReservationId reservation) const {
     return std::memcmp(At(Place(reservation, i)), file_.data() + (i * kSize), LengthOf(i)) == 0;
   }
+  // Live state (write-back, D-081's reverse path): a kPreserve extent,
+  // resident in backing mapped by hand at moved_'s place i (device, or
+  // host for a direct place), holding Pattern(i), with its write-back
+  // place in the spill file at i x kSize.
+  static std::vector<std::byte> Pattern(std::size_t i) {
+    std::vector<std::byte> bytes(kSize);
+    for (std::size_t j = 0; j < bytes.size(); ++j) {
+      bytes[j] = static_cast<std::byte>((i * 7) + (j * 3) + 11);
+    }
+    return bytes;
+  }
+  PageSource StatePlace(std::size_t i, bool landed = true) const {
+    return PageSource{
+        .read = ReadSpec{.fd = spill_,
+                         .offset = i * kSize,
+                         .memory = landed ? nullptr : At(Place(moved_, i)),
+                         .length = kSize},
+        .landed = landed,
+        .destination = landed ? Place(moved_, i) : 0,
+        .backing = BackingPlace{.reservation = moved_,
+                                .offset = Bytes(i * kSize),
+                                .size = Bytes(kSize),
+                                .allocation_class = landed ? kDeviceClass : kHostClass},
+        .write_back = true};
+  }
+  ExtentId AddState(std::size_t i, bool landed = true) {
+    const ExtentId state = catalog_
+                               .AddExtent({.domain = domain_,
+                                           .memory_class = jitllm::catalog::MemoryClass::kLiveState,
+                                           .recovery = jitllm::catalog::Recovery::kPreserve,
+                                           .size = Bytes(kSize),
+                                           .content = {}},
+                                          true)
+                               .value();
+    const auto backing = memory_.Create(landed ? kDeviceClass : kHostClass, Bytes(kSize)).value();
+    EXPECT_TRUE(memory_.Map(moved_, Bytes(i * kSize), backing).has_value());
+    EXPECT_TRUE(
+        memory_.SetAccess(moved_, Bytes(i * kSize), Bytes(kSize), Access::kReadWrite).has_value());
+    const std::vector<std::byte> pattern = Pattern(i);
+    std::memcpy(At(Place(moved_, i)), pattern.data(), kSize);
+    EXPECT_TRUE(scheduler_->SetSource(state, StatePlace(i, landed)).has_value());
+    return state;
+  }
+  bool StateIs(std::size_t i) const {
+    return std::memcmp(At(Place(moved_, i)), Pattern(i).data(), kSize) == 0;
+  }
+  std::vector<jitllm::providers::IoRequest> Writes() const {
+    std::vector<jitllm::providers::IoRequest> writes;
+    for (const auto& request : storage_.submitted()) {
+      if (request.kind == jitllm::providers::IoKind::kWrite) {
+        writes.push_back(request);
+      }
+    }
+    return writes;
+  }
+  static std::unique_ptr<TaskProgram> Evicting(EvictProgram::Report& report,
+                                               std::vector<ExtentId> extents) {
+    return std::make_unique<EvictProgram>(report, std::move(extents));
+  }
+
   ExtentView View(ExtentId extent) const { return catalog_.Describe(extent).value(); }
   Occupancy Occupied() const { return catalog_.OccupancyOf(domain_); }
   Closure Of(std::initializer_list<std::size_t> which) const {
@@ -416,6 +479,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
   std::uint64_t moved_base_ = 0;
   std::vector<std::byte> file_;
   int fd_ = -1;
+  int spill_ = -1;
   jitllm::catalog::DomainId domain_;
   std::vector<ExtentId> extents_;
   StreamId stream_;
@@ -1153,6 +1217,364 @@ TEST_P(PageInTest, SourcesAreChecked) {
   EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
 }
 
+// Write-back (scheduler.h; D-081's reverse path, BP-P4): evicting live
+// state copies it into a slot, fenced, writes the slot to its place, and
+// only then unmaps and releases the backing. The contents keep their
+// generation, marked preserved, and a load restores them into fresh
+// backing, which the fake fills with poison, so every byte must come from
+// the place (invariant 4).
+TEST_P(PageInTest, WriteBackPreservesStateAcrossEvictionAndRestore) {
+  Build();
+  const ExtentId state = AddState(0);
+  const Closure before = catalog_.ClosureOfExtents(std::vector{state}).value();
+  const std::uint64_t contents = View(state).content_generation;
+  const std::uint64_t generation = View(state).backing_generation;
+  const std::size_t with_state = memory_.backings();
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(1, Evicting(evicted, {state})).has_value());
+  Settle(false);  // the device runs nothing: the copy-out's fence is pending
+  EXPECT_EQ(View(state).state, ExtentState::kEvicting);
+  EXPECT_EQ(Occupied().evicting, Bytes(kSize));
+  EXPECT_EQ(scheduler_->slots_busy(), 1U);
+  EXPECT_TRUE(Writes().empty());  // nothing written before the copy's fence
+  EXPECT_EQ(memory_.backings(), with_state);
+  EXPECT_FALSE(evicted.outcome.has_value());
+
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  const auto writes = Writes();
+  ASSERT_EQ(writes.size(), 4U);  // 64 KiB in 16 KiB requests, from the slot
+  for (const auto& write : writes) {
+    EXPECT_EQ(write.fd, spill_);
+    EXPECT_GE(reinterpret_cast<std::uint64_t>(write.memory), Slot(0));
+    EXPECT_LT(reinterpret_cast<std::uint64_t>(write.memory), Slot(0) + kSize);
+  }
+  EXPECT_EQ(std::memcmp(storage_.Contents(spill_).data(), Pattern(0).data(), kSize), 0);
+  EXPECT_EQ(View(state).state, ExtentState::kNonresident);
+  EXPECT_TRUE(View(state).preserved);
+  EXPECT_EQ(View(state).content_generation, contents);
+  EXPECT_EQ(View(state).backing_generation, generation + 1);
+  EXPECT_EQ(memory_.backings(), with_state - 1);  // released, not pooled (D-033)
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_EQ(Occupied().Total(), Bytes());
+
+  // The closure taken before the eviction is still current: restored
+  // through the zone into fresh backing.
+  LoadProgram::Report restored;
+  ASSERT_TRUE(scheduler_->Start(2, Load(restored, before)).has_value());
+  Settle();
+  EXPECT_EQ(restored.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(state).state, ExtentState::kResident);
+  EXPECT_TRUE(StateIs(0));
+  EXPECT_FALSE(View(state).preserved);  // the resident copy is the live one
+  EXPECT_EQ(View(state).content_generation, contents);
+  EXPECT_EQ(memory_.backings(), with_state);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+
+  // And again: a second write-back and restore keep every byte.
+  EvictProgram::Report again;
+  ASSERT_TRUE(scheduler_->Start(3, Evicting(again, {state})).has_value());
+  Settle();
+  ASSERT_EQ(again.outcome, TaskOutcome::kSucceeded);
+  LoadProgram::Report restored_again;
+  ASSERT_TRUE(scheduler_->Start(4, Load(restored_again, before)).has_value());
+  Settle();
+  EXPECT_EQ(restored_again.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(StateIs(0));
+}
+
+// A direct place (host backing the storage lane reaches) is written from
+// the extent's own memory, with no slot.
+TEST_P(PageInTest, ADirectWriteBackNeedsNoSlot) {
+  Build();
+  const ExtentId state = AddState(1, false);
+  const Closure before = catalog_.ClosureOfExtents(std::vector{state}).value();
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(1, Evicting(evicted, {state})).has_value());
+  Settle();
+  ASSERT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  for (const auto& write : Writes()) {
+    EXPECT_GE(reinterpret_cast<std::uint64_t>(write.memory), Place(moved_, 1));
+    EXPECT_LT(reinterpret_cast<std::uint64_t>(write.memory), Place(moved_, 1) + kSize);
+  }
+  EXPECT_TRUE(View(state).preserved);
+  LoadProgram::Report restored;
+  ASSERT_TRUE(scheduler_->Start(2, Load(restored, before)).has_value());
+  Settle();
+  EXPECT_EQ(restored.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(StateIs(1));
+}
+
+// D-050's "spill full or failed" (M2, injected): a write that fails or
+// stops short abandons the eviction. The backing was never touched, so the
+// state is resident again with its contents, nothing claims they were
+// preserved, and a load that needed the room fails explicitly for want of
+// budget, with no quarantine and no fault. Once the spill succeeds, the
+// room is there.
+TEST_P(PageInTest, AFailedSpillLeavesTheStateResidentAndTheShortfallExplicit) {
+  Build(kSlots, 32, 2 * kSize);
+  LoadProgram::Report weights;
+  ASSERT_TRUE(scheduler_->Start(1, Load(weights, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(weights.outcome, TaskOutcome::kSucceeded);
+  const ExtentId state = AddState(0);
+  const std::uint64_t contents = View(state).content_generation;
+  const std::size_t with_state = memory_.backings();
+  ASSERT_EQ(Occupied().Total(), Bytes(2 * kSize));  // the budget, exactly
+
+  LoadProgram::Report blocked;
+  ASSERT_TRUE(scheduler_->Start(2, Load(blocked, Of({1}))).has_value());
+  Settle();
+  EXPECT_EQ(blocked.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(blocked.error, WorkError::kOverBudget);
+
+  for (const std::int64_t result : {std::int64_t{-ENOSPC}, std::int64_t{0}}) {
+    storage_.ScriptNext({.submission = Submission::kAccepted, .result = result, .hold = false});
+    EvictProgram::Report evicted;
+    ASSERT_TRUE(scheduler_->Start(3, Evicting(evicted, {state})).has_value());
+    Settle();
+    EXPECT_EQ(evicted.outcome, TaskOutcome::kFailed) << result;
+    EXPECT_EQ(View(state).state, ExtentState::kResident);
+    EXPECT_FALSE(View(state).preserved);
+    EXPECT_EQ(View(state).content_generation, contents);
+    EXPECT_TRUE(StateIs(0));
+    EXPECT_EQ(memory_.backings(), with_state);
+    EXPECT_EQ(scheduler_->slots_busy(), 0U);
+    EXPECT_EQ(Occupied().quarantined, Bytes());
+    LoadProgram::Report still;
+    ASSERT_TRUE(scheduler_->Start(4, Load(still, Of({1}))).has_value());
+    Settle();
+    EXPECT_EQ(still.error, WorkError::kOverBudget);
+  }
+  EXPECT_FALSE(scheduler_->fault().has_value());
+
+  EvictProgram::Report spilled;
+  ASSERT_TRUE(scheduler_->Start(5, Evicting(spilled, {state})).has_value());
+  Settle();
+  ASSERT_EQ(spilled.outcome, TaskOutcome::kSucceeded);
+  LoadProgram::Report fits;
+  ASSERT_TRUE(scheduler_->Start(6, Load(fits, Of({1}))).has_value());
+  Settle();
+  EXPECT_EQ(fits.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Loaded(1, weights_));
+}
+
+// Invalidated state needs no write-back: its eviction writes nothing and
+// advances the content generation, so the old closure is stale and a new
+// one finds nothing preserved at the place (invariant 4).
+TEST_P(PageInTest, InvalidatedStateIsNeverWrittenBackOrRestored) {
+  Build();
+  const ExtentId state = AddState(0);
+  const Closure before = catalog_.ClosureOfExtents(std::vector{state}).value();
+  ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(1, Evicting(evicted, {state})).has_value());
+  Settle();
+  ASSERT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Writes().empty());
+  EXPECT_EQ(View(state).state, ExtentState::kNonresident);
+  EXPECT_FALSE(View(state).preserved);
+  LoadProgram::Report stale;
+  ASSERT_TRUE(scheduler_->Start(2, Load(stale, before)).has_value());
+  Settle();
+  EXPECT_EQ(stale.error, WorkError::kStale);
+  LoadProgram::Report nothing;
+  ASSERT_TRUE(
+      scheduler_->Start(3, Load(nothing, catalog_.ClosureOfExtents(std::vector{state}).value()))
+          .has_value());
+  Settle();
+  EXPECT_EQ(nothing.error, WorkError::kUnavailable);
+}
+
+// A copy-out whose fence cannot be proven quarantines the eviction and
+// its slot: the node faults rather than reuse either.
+TEST_P(PageInTest, AnUnprovenCopyOutQuarantinesTheEvictionAndItsSlot) {
+  Build(1);
+  const ExtentId state = AddState(0);
+  execution_.FailNextQuery(ProviderError::kUnknown, 1000);
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(1, Evicting(evicted, {state})).has_value());
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(View(state).state, ExtentState::kQuarantined);
+  EXPECT_FALSE(View(state).preserved);
+  EXPECT_EQ(Occupied().quarantined, Bytes(kSize));
+  EXPECT_EQ(scheduler_->slots_quarantined(), 1U);
+  EXPECT_TRUE(Writes().empty());
+  EXPECT_EQ(scheduler_->fault(), Fault::kUnproven);
+  execution_.FailNextQuery(ProviderError::kUnknown, 0);
+}
+
+// A write-back waits for a slot in order with loads; its evictor
+// cancelled mid-write, the write still drains and the eviction completes.
+TEST_P(PageInTest, AWriteBackWaitsForASlotAndOutlivesItsEvictor) {
+  Build(1);
+  const ExtentId state = AddState(0);
+  HoldNext(4);  // the load's reads
+  LoadProgram::Report loading;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loading, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(scheduler_->slots_busy(), 1U);
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(2, Evicting(evicted, {state})).has_value());
+  Settle();
+  EXPECT_EQ(View(state).state, ExtentState::kEvicting);  // waiting for the slot
+  EXPECT_TRUE(Writes().empty());
+  HoldNext(4);  // the write-back's writes, once it has the slot
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(loading.outcome, TaskOutcome::kSucceeded);
+  ASSERT_EQ(Writes().size(), 4U);
+  EXPECT_TRUE(scheduler_->Cancel(2));
+  Settle();
+  EXPECT_EQ(View(state).state, ExtentState::kEvicting);  // the write drains
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kCancelled);
+  EXPECT_EQ(View(state).state, ExtentState::kNonresident);
+  EXPECT_TRUE(View(state).preserved);
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+}
+
+// D-050's "cancelled phase, late DMA, registration still live, then
+// replacement phase" (M2): a cancelled request's job keeps its lease until
+// its fence completes; after that a registration still live (a buffer a
+// device or NIC holds) keeps the extent from eviction, and nothing is
+// released; only the registration's retirement lets the replacement evict
+// and reload it.
+TEST_P(PageInTest, ALiveRegistrationOutlivesACancelledPhase) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(loaded.outcome, TaskOutcome::kSucceeded);
+  const auto registration = catalog_.AddRegistration(extents_[0]).value();
+  LoadProgram::Report job;
+  ASSERT_TRUE(scheduler_->Start(2, Load(job, Of({0}), JobResult::kQueued)).has_value());
+  Settle(false);  // the job is queued; its fence has not completed
+  ASSERT_EQ(job.job_runs, 1);
+  EXPECT_TRUE(scheduler_->Cancel(2));
+  Settle(false);
+  EXPECT_EQ(View(extents_[0]).leases, 1U);  // held until the fence
+  EXPECT_FALSE(job.retired);
+  Settle();
+  EXPECT_EQ(job.outcome, TaskOutcome::kCancelled);
+  EXPECT_TRUE(job.retired);
+  EXPECT_EQ(View(extents_[0]).leases, 0U);
+  EXPECT_EQ(View(extents_[0]).registrations, 1U);
+  const std::size_t backings = memory_.backings();
+  EvictProgram::Report refused;
+  ASSERT_TRUE(scheduler_->Start(3, Evicting(refused, {extents_[0]})).has_value());
+  Settle();
+  EXPECT_EQ(refused.outcome, TaskOutcome::kFailed);
+  ASSERT_EQ(refused.results.size(), 1U);
+  EXPECT_EQ(Failed(refused.results.front()), WorkError::kBusy);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kResident);
+  EXPECT_EQ(memory_.backings(), backings);
+  ASSERT_TRUE(catalog_.RetireRegistration(registration).has_value());
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(4, Evicting(evicted, {extents_[0]})).has_value());
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  LoadProgram::Report replaced;
+  ASSERT_TRUE(scheduler_->Start(5, Load(replaced, Of({0}))).has_value());
+  Settle();
+  EXPECT_EQ(replaced.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Loaded(0, weights_));
+}
+
+TEST_P(PageInTest, WriteBackPlacesAreChecked) {
+  Build();
+  // Only live mutable contents have a write-back place.
+  PageSource weights = StatePlace(0);
+  EXPECT_EQ(Failed(scheduler_->SetSource(extents_[0], weights)), WorkError::kInvalid);
+  // A source is read, never a write.
+  PageSource written = Source(0, weights_);
+  written.read.kind = jitllm::providers::IoKind::kWrite;
+  EXPECT_EQ(Failed(scheduler_->SetSource(extents_[0], written)), WorkError::kInvalid);
+}
+
+// Invariant 4 across a new source: while live state is resident, its
+// write-back place cannot claim its contents are somewhere they are not;
+// once they are preserved, no source may name another range for them (a
+// load would restore other bytes under their generation), though their
+// backing may move.
+TEST_P(PageInTest, APreservedPlaceCannotBeRenamed) {
+  Build();
+  const ExtentId state = AddState(0);
+  PageSource elsewhere = StatePlace(0);
+  elsewhere.destination = Place(moved_, 1);
+  EXPECT_EQ(Failed(scheduler_->SetSource(state, elsewhere)), WorkError::kBusy);
+  PageSource direct = StatePlace(0);
+  direct.landed = false;
+  direct.destination = 0;
+  direct.read.memory = At(Place(moved_, 1));
+  EXPECT_EQ(Failed(scheduler_->SetSource(state, direct)), WorkError::kBusy);
+  // While resident, the copy there is the live one: the file range may
+  // change before anything is written to it.
+  PageSource moved_file = StatePlace(0);
+  moved_file.read.offset = 2 * kSize;
+  ASSERT_TRUE(scheduler_->SetSource(state, moved_file).has_value());
+  const Closure before = catalog_.ClosureOfExtents(std::vector{state}).value();
+
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(1, Evicting(evicted, {state})).has_value());
+  Settle();
+  ASSERT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  ASSERT_TRUE(View(state).preserved);
+  EXPECT_EQ(std::memcmp(storage_.Contents(spill_).data() + (2 * kSize), Pattern(0).data(), kSize),
+            0);
+  PageSource other_range = moved_file;
+  other_range.read.offset = 0;
+  EXPECT_EQ(Failed(scheduler_->SetSource(state, other_range)), WorkError::kBusy);
+  PageSource not_write_back = moved_file;
+  not_write_back.write_back = false;
+  EXPECT_EQ(Failed(scheduler_->SetSource(state, not_write_back)), WorkError::kBusy);
+  PageSource other_file = moved_file;
+  other_file.read.fd = fd_;
+  EXPECT_EQ(Failed(scheduler_->SetSource(state, other_file)), WorkError::kBusy);
+  // The same range, at the same place again: accepted, and restored.
+  ASSERT_TRUE(scheduler_->SetSource(state, moved_file).has_value());
+  LoadProgram::Report restored;
+  ASSERT_TRUE(scheduler_->Start(2, Load(restored, before)).has_value());
+  Settle();
+  EXPECT_EQ(restored.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(StateIs(0));
+  EXPECT_FALSE(scheduler_->fault().has_value());
+}
+
+// A write-back still waiting for a slot has touched nothing: when its
+// evictor leaves, it is abandoned and the state is resident again, with
+// nothing written and nothing marked preserved (a stop never waits for a
+// slot that may never free).
+TEST_P(PageInTest, AWriteBackWaitingForASlotIsAbandonedWhenItsEvictorLeaves) {
+  Build(1);
+  const ExtentId state = AddState(0);
+  HoldNext(4);  // the load's reads keep the only slot
+  LoadProgram::Report loading;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loading, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(scheduler_->slots_busy(), 1U);
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(2, Evicting(evicted, {state})).has_value());
+  Settle();
+  ASSERT_EQ(View(state).state, ExtentState::kEvicting);
+  EXPECT_TRUE(scheduler_->Cancel(2));
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kCancelled);
+  EXPECT_EQ(View(state).state, ExtentState::kResident);
+  EXPECT_FALSE(View(state).preserved);
+  EXPECT_EQ(Occupied().evicting, Bytes());
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(loading.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Writes().empty());
+  EXPECT_TRUE(StateIs(0));
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+}
+
 // On a VMM lane of its own, VMM work never holds up a copy: with the VMM
 // lane stopped and an eviction's unmap queued on it, a landed load into
 // backing mapped by hand is read, copied and published, while the evicted
@@ -1420,14 +1842,20 @@ TEST(PageInZoneDeathTest, TheLandingStreamMustBeADeviceLaneStream) {
 // load every extent through a one-slot zone, evict them, and load them
 // again, some cancelled, while the owner sleeps on its wake flag. A lost
 // wakeup hangs; a slot reused early or a publication before the copy's
-// fence shows as a mismatch, and a race under ThreadSanitizer.
+// fence shows as a mismatch, and a race under ThreadSanitizer. How many
+// evictions the overlapping requests manage depends on how the threads
+// are scheduled (one holding an extent makes another skip it), so the
+// count is asserted only for a last, serial phase: one request at a time,
+// each of which must evict every extent, and the next load them all again.
 TEST_P(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
   Build(1, 64);
   std::atomic<int> mismatches{0};
   std::atomic<int> done{0};
   std::atomic<int> evictions{0};
+  std::atomic<int> serial_evictions{0};
   constexpr int kTries = 1000;  // yields while other requests hold an extent
   constexpr int kRounds = 40;
+  constexpr int kSerial = 5;
   // Loads everything, checks the bytes while holding a job's lease, and
   // evicts what it can.
   class Cycle final : public TaskProgram {
@@ -1545,6 +1973,26 @@ TEST_P(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_EQ(done.load(), kRounds);
+    // The serial phase: nothing else holds an extent, so each request
+    // evicts all of them (none is ever skipped), whatever the timing.
+    for (int n = 0; n < kSerial; ++n) {
+      Control start = StartRequest{.request = static_cast<std::uint64_t>(kRounds + n + 1),
+                                   .priority = 1,
+                                   .program = std::make_unique<Cycle>(
+                                       All(), extents_, check, mismatches, serial_evictions, done)};
+      // NOLINTNEXTLINE(bugprone-use-after-move): Post moves only what it takes
+      while (scheduler_->Post(std::move(start)) == PushResult::kFull) {
+        std::this_thread::yield();
+      }
+      const auto serial_give_up = std::chrono::steady_clock::now() + kPatience;
+      while (done.load() < kRounds + n + 1 && std::chrono::steady_clock::now() < serial_give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if (done.load() != kRounds + n + 1) {
+        ADD_FAILURE() << "serial round " << n << " did not finish";
+        break;  // not ASSERT: the threads must still be stopped below
+      }
+    }
     scheduler_->RequestShutdown();
     owner.join();
     storage_lane_->Close();
@@ -1559,9 +2007,11 @@ TEST_P(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
   }
   EXPECT_FALSE(result.has_value() && !result->has_value());
   EXPECT_EQ(mismatches.load(), 0);
-  // Extents were evicted and read again, many times over.
-  EXPECT_GT(evictions.load(), static_cast<int>(4 * kExtents));
-  EXPECT_GT(storage_.submitted().size(), 4 * kExtents * 4);
+  // Extents were evicted and read again: every one in each serial round,
+  // and each serial round after the first loaded all of them (4 reads
+  // each), whatever the overlapping phase managed.
+  EXPECT_EQ(serial_evictions.load(), static_cast<int>(kSerial * kExtents));
+  EXPECT_GE(storage_.submitted().size(), (kSerial - 1) * kExtents * 4);
   EXPECT_EQ(scheduler_->slots_busy(), 0U);
   EXPECT_EQ(scheduler_->slots_quarantined(), 0U);
   EXPECT_EQ(scheduler_->loads(), 0U);

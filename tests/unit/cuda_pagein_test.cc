@@ -11,8 +11,11 @@
 // so the test checks each extent by copying it back to host VMM under a
 // lease. Evictions release the backing (D-033) and reloads, at the same
 // place or relocated, restore the same bytes; a request cancelled with
-// loads in flight drains them. Every lane runs on its own thread.
+// loads in flight drains them. Live state is written back through the
+// zone to a spill file and restored exactly (CudaWriteBack, `gpu` only so
+// far). Every lane runs on its own thread.
 
+#include <cuda.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -308,14 +311,16 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
       }
     }
     stream_ = execution_->CreateStream().value();
+    WrapProviders();  // what the lanes call: the providers, or a test's decorators over them
 
     storage_lane_ = std::make_unique<StorageService>(
-        *storage_,
+        lane_storage_ != nullptr ? *lane_storage_ : *storage_,
         jitllm::providers::ReaderSettings{
             .alignment = 4096, .request_bytes = 2U << 20U, .retries = 3, .reads = 64, .waiters = 8},
         board_, QueueSettings{.capacity = 64, .reserved = 8, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
-        *execution_, std::span<const StreamId>(&stream_, 1), board_,
+        lane_execution_ != nullptr ? *lane_execution_ : *execution_,
+        std::span<const StreamId>(&stream_, 1), board_,
         DeviceSettings{.queue = {.capacity = 64, .reserved = 8, .batch = 16},
                        .handoff = 64,
                        .poll_sleep = std::chrono::microseconds(0)},
@@ -337,6 +342,7 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
         SchedulerSettings{
             .tasks = 8, .budget = Bytes(kExtent * (kExtents + kSlots + 1)), .landing = landing});
     Place(0);
+    BeforeLanes();
     threads_.emplace_back([this] { result_status_ = scheduler_->Run(); });
     threads_.emplace_back([this] { storage_lane_->Run(); });
     threads_.emplace_back([this] { device_lane_->RunSubmission(); });
@@ -367,6 +373,13 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
       (void)::close(fd_);
     }
   }
+
+  // Runs before the lanes' threads start, while the test's thread is still
+  // the providers' only caller.
+  virtual void BeforeLanes() {}
+  // Runs before the lanes are built: may set lane_storage_ and
+  // lane_execution_ to decorators over the real providers.
+  virtual void WrapProviders() {}
 
   void Stop() {
     scheduler_->RequestShutdown();
@@ -451,6 +464,8 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
   std::unique_ptr<jitllm::providers::VmmProvider> memory_;
   std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
   std::unique_ptr<jitllm::providers::UringStorage> storage_;
+  jitllm::providers::Storage* lane_storage_ = nullptr;            // WrapProviders
+  jitllm::providers::DeviceExecution* lane_execution_ = nullptr;  // WrapProviders
   jitllm::catalog::Catalog catalog_;
   jitllm::base::WakeFlag wake_;
   CompletionBoard board_{128, wake_};
@@ -638,7 +653,465 @@ TEST_P(CudaPageIn, CancellingDuringACopyWaitsForItsFence) {
   EXPECT_EQ(after.mismatches.load(), 0);
 }
 
+// BP-V2 on the real provider: backing the driver cannot create (more than
+// the device has) and a mapping the provider refuses (outside its
+// reservation) each fail their load with a known outcome and unwind it
+// completely: no backing left, the extent nonresident and uncharged, no
+// fault. The same extent then loads from its real place.
+TEST_P(CudaPageIn, BackingThatCannotBeMadeOrMappedUnwindsCleanly) {
+  const auto attempt = [&](std::uint64_t request, BackingPlace place) {
+    Owner(request, [&] {
+      PageSource source{.read = {.fd = fd_, .offset = 0, .memory = nullptr, .length = kExtent},
+                        .landed = true,
+                        .destination = addresses_[0],
+                        .backing = place};
+      EXPECT_TRUE(scheduler_->SetSource(extents_[0], source).has_value());
+      return true;
+    });
+    Signals signals;
+    Post(StartRequest{.request = request + 1,
+                      .priority = 1,
+                      .program = std::make_unique<LoadAndCheck>(
+                          signals, catalog_, std::vector{extents_[0]}, std::vector{addresses_[0]},
+                          result_, host_base_ + (kSlots * kExtent), file_, false)});
+    EXPECT_TRUE(WaitFor(signals.retired));
+    EXPECT_EQ(signals.outcome.load(), static_cast<int>(TaskOutcome::kFailed));
+    bool clean = false;
+    Owner(request + 2, [&] {
+      const auto view = catalog_.Describe(extents_[0]).value();
+      clean = view.state == ExtentState::kNonresident && !scheduler_->fault().has_value() &&
+              scheduler_->slots_busy() == 0 && catalog_.OccupancyOf(domain_).loading == Bytes() &&
+              catalog_.OccupancyOf(domain_).quarantined == Bytes();
+      return true;
+    });
+    EXPECT_TRUE(clean);
+    EXPECT_EQ(memory_->backings(), baseline_);
+  };
+  const std::size_t device = ClassOf(BackingKind::kDevice);
+  // More backing than the device has: cuMemCreate refuses it.
+  attempt(100, BackingPlace{.reservation = places_[0],
+                            .offset = Bytes(0),
+                            .size = Bytes(std::uint64_t{1} << 40U),
+                            .allocation_class = device});
+  // A place outside the reservation: made, refused at the map, released.
+  attempt(110, BackingPlace{.reservation = places_[0],
+                            .offset = Bytes(kExtent * kExtents),
+                            .size = Bytes(kExtent),
+                            .allocation_class = device});
+  Owner(120, [&] {
+    Place(0);
+    return true;
+  });
+  Signals loaded;
+  ASSERT_EQ(Load(121, true, loaded), static_cast<int>(TaskOutcome::kSucceeded));
+  EXPECT_EQ(loaded.mismatches.load(), 0);
+}
+
+// BP-L2 on the real providers, repeated: a request cancelled at a
+// different point of its loads each round (after 1 to 8 slots were seen
+// busy), then everything evicted and loaded again. Whatever io_uring did
+// with each cancellation (the read completed, or was cancelled), no late
+// transfer lands in a slot or extent reassigned since (invariant 3): every
+// reload holds exactly the file's bytes.
+TEST_P(CudaPageIn, RepeatedCancellationsNeverCorruptAReassignedSlot) {
+  for (std::uint64_t round = 0; round < 8; ++round) {
+    Signals signals;
+    const std::uint64_t request = 200 + (round * 10);
+    Post(StartRequest{
+        .request = request,
+        .priority = 1,
+        .program = std::make_unique<LoadAndCheck>(signals, catalog_, extents_, addresses_, result_,
+                                                  host_base_ + (kSlots * kExtent), file_, false)});
+    Owner(request + 1, [&] {
+      if (scheduler_->slots_busy() <= round && scheduler_->loads() > 0) {
+        return false;  // not that many reads in flight yet
+      }
+      (void)scheduler_->Cancel(request);
+      return true;
+    });
+    ASSERT_TRUE(WaitFor(signals.retired));
+    Owner(request + 2, [&] { return scheduler_->loads() == 0; });
+    ASSERT_EQ(Evict(request + 3), static_cast<int>(TaskOutcome::kSucceeded));
+    Signals again;
+    ASSERT_EQ(Load(request + 4, true, again), static_cast<int>(TaskOutcome::kSucceeded));
+    EXPECT_EQ(again.mismatches.load(), 0) << "round " << round;
+    ASSERT_EQ(Evict(request + 5), static_cast<int>(TaskOutcome::kSucceeded));
+  }
+  EXPECT_EQ(memory_->backings(), baseline_);
+}
+
 INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPageIn, ::testing::Bool(), [](const auto& info) {
+  return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
+});
+
+// BP-L4: D-048's event permutations with the real providers, through
+// decorators the lanes call instead of them. The storage decorator
+// reports some submissions as of unknown start although io_uring took
+// them, and hands every completion over twice; the execution decorator
+// can report fence queries as of unknown outcome.
+class PermutingStorage final : public jitllm::providers::Storage {
+ public:
+  explicit PermutingStorage(jitllm::providers::Storage& inner) : inner_(inner) {}
+  std::atomic<int> unknown_starts{0};  // the next ones reported unknown
+  std::atomic<int> duplicated{0};      // completions handed over twice
+
+  std::size_t depth() const override { return inner_.depth(); }
+  std::size_t in_flight() const override { return inner_.in_flight(); }
+  jitllm::providers::Submission Submit(const jitllm::providers::IoRequest& request) override {
+    const auto submitted = inner_.Submit(request);
+    if (submitted == jitllm::providers::Submission::kAccepted && unknown_starts.load() > 0) {
+      unknown_starts.fetch_sub(1);
+      return jitllm::providers::Submission::kUnknown;
+    }
+    return submitted;
+  }
+  jitllm::providers::Submission Cancel(std::uint64_t token) override {
+    return inner_.Cancel(token);
+  }
+  std::size_t Harvest(std::span<jitllm::providers::IoCompletion> out, bool wait) override {
+    const std::size_t half = out.size() / 2;
+    const std::size_t n = inner_.Harvest(out.first(half), wait);
+    for (std::size_t i = 0; i < n; ++i) {
+      out[n + i] = out[i];  // the same completion again, after the first
+    }
+    duplicated.fetch_add(static_cast<int>(n));
+    return 2 * n;
+  }
+  void Wake() override { inner_.Wake(); }
+
+ private:
+  jitllm::providers::Storage& inner_;
+};
+
+class UnknownQueries final : public jitllm::providers::DeviceExecution {
+ public:
+  explicit UnknownQueries(jitllm::providers::DeviceExecution& inner) : inner_(inner) {}
+  std::atomic<bool> unknown{false};  // every query from now on
+
+  std::expected<StreamId, jitllm::providers::Failure> CreateStream() override {
+    return inner_.CreateStream();
+  }
+  std::expected<void, jitllm::providers::Failure> DestroyStream(StreamId stream) override {
+    return inner_.DestroyStream(stream);
+  }
+  std::expected<void, jitllm::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
+                                                       std::uint64_t source, Bytes size) override {
+    return inner_.Copy(stream, destination, source, size);
+  }
+  std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
+      StreamId stream) override {
+    return inner_.Submission(stream);
+  }
+  std::expected<void, jitllm::providers::Failure> Wait(StreamId stream,
+                                                       jitllm::providers::FenceId fence) override {
+    return inner_.Wait(stream, fence);
+  }
+  std::expected<jitllm::providers::FenceId, jitllm::providers::Failure> Record(
+      StreamId stream) override {
+    return inner_.Record(stream);
+  }
+  std::expected<jitllm::providers::FenceState, jitllm::providers::Failure> Query(
+      jitllm::providers::FenceId fence) override {
+    if (unknown.load()) {
+      return std::unexpected(jitllm::providers::Failure{
+          .error = jitllm::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
+    }
+    return inner_.Query(fence);
+  }
+  std::expected<void, jitllm::providers::Failure> Release(
+      jitllm::providers::FenceId fence) override {
+    return inner_.Release(fence);
+  }
+
+ private:
+  jitllm::providers::DeviceExecution& inner_;
+};
+
+class CudaPermutations : public CudaPageIn {
+ protected:
+  void WrapProviders() override {
+    storage_decorator_ = std::make_unique<PermutingStorage>(*storage_);
+    execution_decorator_ = std::make_unique<UnknownQueries>(*execution_);
+    lane_storage_ = storage_decorator_.get();
+    lane_execution_ = execution_decorator_.get();
+  }
+  // After a quarantine the node keeps what it holds (invariant 8): the
+  // lanes are stopped, then what stayed mapped is released by hand so the
+  // process can go on, and the stream, whose unproven fence was never
+  // released, is left as it is.
+  void TearDown() override {
+    if (!quarantined_) {
+      CudaPageIn::TearDown();
+      return;
+    }
+    if (!threads_.empty()) {
+      StopFaulted();
+    }
+    for (std::size_t i = 0; i < kExtents; ++i) {
+      const auto backing = memory_->MappedAt(places_[0], Bytes(i * kExtent));
+      if (backing) {
+        EXPECT_TRUE(memory_->Unmap(places_[0], Bytes(i * kExtent), Bytes(kExtent)).has_value());
+        EXPECT_TRUE(memory_->Release(*backing).has_value());
+      }
+    }
+    EXPECT_EQ(memory_->backings(), baseline_);
+    EXPECT_TRUE(memory_->Unmap(host_, Bytes(0), Bytes(kExtent * (kSlots + 1))).has_value());
+    EXPECT_TRUE(memory_->Release(host_backing_).has_value());
+    EXPECT_TRUE(memory_->Free(host_).has_value());
+    for (const ReservationId place : places_) {
+      EXPECT_TRUE(memory_->Free(place).has_value());
+    }
+    (void)::close(fd_);
+  }
+
+  // A faulted node admits nothing more, so its state is read once it has
+  // stopped: the scheduler's thread has returned and the lanes drained.
+  void StopFaulted() {
+    scheduler_->RequestShutdown();
+    threads_.front().join();
+    storage_lane_->Close();
+    device_lane_->Close();
+    if (backing_lane_ != nullptr) {
+      backing_lane_->Close();
+    }
+    threads_.clear();
+    EXPECT_EQ(storage_->in_flight(), 0U);
+  }
+
+  std::unique_ptr<PermutingStorage> storage_decorator_;
+  std::unique_ptr<UnknownQueries> execution_decorator_;
+  bool quarantined_ = false;
+};
+
+// Reads whose start io_uring reported as unknown are waited for like any
+// other, and a completion handed over twice is taken once: every extent
+// loads intact, nothing is quarantined and the node does not fault.
+TEST_P(CudaPermutations, UnknownStartsAndDuplicateCompletionsChangeNothing) {
+  storage_decorator_->unknown_starts.store(12);
+  Signals loaded;
+  ASSERT_EQ(Load(1, true, loaded), static_cast<int>(TaskOutcome::kSucceeded));
+  EXPECT_EQ(loaded.mismatches.load(), 0);
+  EXPECT_EQ(storage_decorator_->unknown_starts.load(), 0);
+  EXPECT_GE(storage_decorator_->duplicated.load(), static_cast<int>(kExtents));
+  bool healthy = false;
+  Owner(2, [&] {
+    healthy = !scheduler_->fault().has_value() && scheduler_->quarantined() == 0 &&
+              catalog_.OccupancyOf(domain_).quarantined == Bytes();
+    return true;
+  });
+  EXPECT_TRUE(healthy);
+}
+
+// A copy whose fence can no longer be queried is unproven: the load's
+// extent and its slot are quarantined and stay charged, and the node
+// faults, which stops admission. Timeout is never reclaim (invariant 8).
+TEST_P(CudaPermutations, AFenceOfUnknownOutcomeQuarantinesAndStopsAdmission) {
+  quarantined_ = true;
+  execution_decorator_->unknown.store(true);
+  Signals loading;
+  Post(StartRequest{.request = 1,
+                    .priority = 1,
+                    .program = std::make_unique<LoadAndCheck>(
+                        loading, catalog_, std::vector{extents_[0]}, std::vector{addresses_[0]},
+                        result_, host_base_ + (kSlots * kExtent), file_, false)});
+  ASSERT_TRUE(WaitFor(loading.retired));
+  EXPECT_EQ(loading.outcome.load(), static_cast<int>(TaskOutcome::kFailed));
+  StopFaulted();
+  ASSERT_TRUE(result_status_.has_value());
+  EXPECT_FALSE(result_status_->has_value());  // the stop reports the fault
+  EXPECT_EQ(scheduler_->fault(), Fault::kUnproven);
+  EXPECT_EQ(catalog_.Describe(extents_[0]).value().state, ExtentState::kQuarantined);
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).quarantined, Bytes(kExtent));
+  EXPECT_EQ(scheduler_->slots_quarantined(), 1U);
+  EXPECT_EQ(memory_->backings(), baseline_ + 1);  // still charged, never reused
+}
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPermutations, ::testing::Bool(), [](const auto& info) {
+  return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
+});
+
+// Write-back of live state over the real providers (BP-P4's path,
+// scheduler.h): four extents of device VMM with state, their write-back
+// places in a direct-I/O spill file. Evicting them copies each into a
+// landing slot on the zone's stream, writes the slot with io_uring, and
+// then releases the backing (the managed pair) or leaves it mapped (the
+// premapped pair, whose eviction is the catalog's alone). The premapped
+// pair's memory is then poisoned while nonresident, so its restore must
+// bring back every byte (invariant 4); the managed pair comes back in
+// fresh backing. Each extent is copied back to host VMM under a lease and
+// compared with what it held before.
+class CudaWriteBack : public CudaPageIn {
+ protected:
+  static constexpr std::size_t kStates = 4;  // 0 and 1 premapped, 2 and 3 managed
+  static constexpr std::size_t kPremapped = 2;
+
+  void BeforeLanes() override {
+    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path directory = scratch != nullptr
+                                                ? std::filesystem::path(scratch)
+                                                : std::filesystem::path(::testing::TempDir());
+    spill_ = ::open(directory.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
+    ASSERT_GE(spill_, 0);
+    states_place_ = memory_->Reserve(Bytes(kExtent * kStates)).value();
+    const std::uint64_t base = memory_->RangeOf(states_place_).value().base;
+    patterns_.resize(kExtent * kStates);
+    for (std::uint64_t i = 0; i < patterns_.size(); ++i) {
+      patterns_[i] = static_cast<std::byte>((i * 37) + (i >> 20) + 5);
+    }
+    // Written in through the host result extent (host VMM, CPU-mapped),
+    // one extent at a time, before any lane runs.
+    const std::uint64_t result = host_base_ + (kSlots * kExtent);
+    for (std::size_t i = 0; i < kStates; ++i) {
+      const auto backing = memory_->Create(ClassOf(BackingKind::kDevice), Bytes(kExtent)).value();
+      ASSERT_TRUE(memory_->Map(states_place_, Bytes(i * kExtent), backing).has_value());
+      ASSERT_TRUE(
+          memory_->SetAccess(states_place_, Bytes(i * kExtent), Bytes(kExtent), Access::kReadWrite)
+              .has_value());
+      if (i < kPremapped) {
+        premapped_.push_back(backing);
+      }
+      std::memcpy(At(result), patterns_.data() + (i * kExtent), kExtent);
+      const auto fence = [&]() -> bool {
+        if (!execution_->Copy(stream_, base + (i * kExtent), result, Bytes(kExtent))) {
+          return false;
+        }
+        const auto recorded = execution_->Record(stream_);
+        if (!recorded) {
+          return false;
+        }
+        const auto give_up = std::chrono::steady_clock::now() + kPatience;
+        while (std::chrono::steady_clock::now() < give_up) {
+          const auto state = execution_->Query(*recorded);
+          if (state && *state == jitllm::providers::FenceState::kComplete) {
+            return execution_->Release(*recorded).has_value();
+          }
+        }
+        return false;
+      }();
+      ASSERT_TRUE(fence);
+      const ExtentId state =
+          catalog_
+              .AddExtent({.domain = domain_,
+                          .memory_class = jitllm::catalog::MemoryClass::kLiveState,
+                          .recovery = jitllm::catalog::Recovery::kPreserve,
+                          .size = Bytes(kExtent),
+                          .content = {}},
+                         true)
+              .value();
+      states_.push_back(state);
+      addresses_of_states_.push_back(base + (i * kExtent));
+      std::optional<BackingPlace> managed;
+      if (i >= kPremapped) {
+        managed = BackingPlace{.reservation = states_place_,
+                               .offset = Bytes(i * kExtent),
+                               .size = Bytes(kExtent),
+                               .allocation_class = ClassOf(BackingKind::kDevice)};
+      }
+      ASSERT_TRUE(scheduler_
+                      ->SetSource(state, PageSource{.read = {.fd = spill_,
+                                                             .offset = i * kExtent,
+                                                             .memory = nullptr,
+                                                             .length = kExtent},
+                                                    .landed = true,
+                                                    .destination = base + (i * kExtent),
+                                                    .backing = managed,
+                                                    .write_back = true})
+                      .has_value());
+    }
+    // The premapped pair stays mapped throughout: the base's check counts it.
+    baseline_ += kPremapped;
+  }
+
+  void TearDown() override {
+    if (scheduler_ != nullptr && !threads_.empty()) {
+      Signals evicted;
+      Post(StartRequest{
+          .request = 998, .priority = 1, .program = std::make_unique<EvictAll>(evicted, states_)});
+      EXPECT_TRUE(WaitFor(evicted.retired));
+    }
+    CudaPageIn::TearDown();  // the lanes have stopped: this thread calls the providers again
+    if (states_place_.valid()) {
+      EXPECT_TRUE(memory_->Unmap(states_place_, Bytes(0), Bytes(kExtent * kPremapped)).has_value());
+      for (const auto backing : premapped_) {
+        EXPECT_TRUE(memory_->Release(backing).has_value());
+      }
+      EXPECT_TRUE(memory_->Free(states_place_).has_value());
+    }
+    if (spill_ >= 0) {
+      (void)::close(spill_);
+    }
+  }
+
+  // Copies each state back under a lease and compares it with its pattern.
+  int Check(std::uint64_t request, Signals& signals) {
+    Post(StartRequest{.request = request,
+                      .priority = 1,
+                      .program = std::make_unique<LoadAndCheck>(
+                          signals, catalog_, states_, addresses_of_states_, result_,
+                          host_base_ + (kSlots * kExtent), patterns_, true,
+                          std::vector<std::size_t>{0, 1, 2, 3})});
+    EXPECT_TRUE(WaitFor(signals.retired));
+    return signals.outcome.load();
+  }
+
+  int spill_ = -1;
+  ReservationId states_place_;
+  std::vector<jitllm::providers::BackingId> premapped_;
+  std::vector<ExtentId> states_;
+  std::vector<std::uint64_t> addresses_of_states_;
+  std::vector<std::byte> patterns_;
+};
+
+TEST_P(CudaWriteBack, LiveStateIsWrittenBackThroughTheZoneAndRestoredExactly) {
+  Signals before;
+  ASSERT_EQ(Check(1, before), static_cast<int>(TaskOutcome::kSucceeded));
+  ASSERT_EQ(before.mismatches.load(), 0);
+
+  Signals evicted;
+  Post(StartRequest{
+      .request = 2, .priority = 1, .program = std::make_unique<EvictAll>(evicted, states_)});
+  ASSERT_TRUE(WaitFor(evicted.retired));
+  ASSERT_EQ(evicted.outcome.load(), static_cast<int>(TaskOutcome::kSucceeded));
+  std::size_t preserved = 0;
+  Owner(3, [&] {
+    for (const ExtentId state : states_) {
+      const auto view = catalog_.Describe(state).value();
+      preserved += view.state == ExtentState::kNonresident && view.preserved ? 1 : 0;
+    }
+    return true;
+  });
+  EXPECT_EQ(preserved, kStates);
+  EXPECT_EQ(memory_->backings(), baseline_);  // the managed pair's backing released (D-033)
+
+  // Poison the premapped pair while nonresident: nothing may read it now.
+  CUcontext context = nullptr;
+  ASSERT_EQ(cuDevicePrimaryCtxRetain(&context, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuCtxPushCurrent(context), CUDA_SUCCESS);
+  EXPECT_EQ(cuMemsetD8(addresses_of_states_[0], 0xa5, kExtent * kPremapped), CUDA_SUCCESS);
+  EXPECT_EQ(cuCtxSynchronize(), CUDA_SUCCESS);
+  EXPECT_EQ(cuCtxPopCurrent(&context), CUDA_SUCCESS);
+  EXPECT_EQ(cuDevicePrimaryCtxRelease(0), CUDA_SUCCESS);
+
+  // Restored from the spill file through the zone, then compared.
+  Signals restored;
+  ASSERT_EQ(Check(4, restored), static_cast<int>(TaskOutcome::kSucceeded));
+  EXPECT_EQ(restored.mismatches.load(), 0);
+  std::size_t live = 0;
+  Owner(5, [&] {
+    for (const ExtentId state : states_) {
+      const auto view = catalog_.Describe(state).value();
+      live += view.state == ExtentState::kResident && !view.preserved ? 1 : 0;
+    }
+    return true;
+  });
+  EXPECT_EQ(live, kStates);
+  EXPECT_EQ(memory_->backings(), baseline_ + (kStates - kPremapped));
+  const auto occupied = catalog_.OccupancyOf(domain_);
+  EXPECT_EQ(occupied.quarantined, Bytes());
+  EXPECT_EQ(occupied.evicting, Bytes());
+}
+
+INSTANTIATE_TEST_SUITE_P(VmmWork, CudaWriteBack, ::testing::Bool(), [](const auto& info) {
   return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
 });
 

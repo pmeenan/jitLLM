@@ -114,9 +114,15 @@ if(JITLLM_CUDA)
   # The D-081 page-in path over io_uring, a host-VMM landing zone and
   # device VMM, the same on both classes (D-082). Each test runs both
   # instantiations (the VMM work on the device lane or its own).
+  # Write-back (CudaWriteBack) is verified on the GB10 only so far.
   add_executable(cuda_pagein_test cuda_pagein_test.cc)
+  target_include_directories(cuda_pagein_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(cuda_pagein_test PRIVATE jitllm_scheduler jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(cuda_pagein_test DISCRETE ALL
+  jitllm_gpu_gtest(cuda_pagein_test
+                   DISCRETE "*/CudaPageIn.LandedLoadsReachDeviceVmmAndReloadIdentically/*"
+                            "*/CudaPageIn.CancellingWithLoadsInFlightDrainsThem/*"
+                            "*/CudaPageIn.CancellingDuringACopyWaitsForItsFence/*"
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)

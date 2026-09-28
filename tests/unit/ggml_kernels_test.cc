@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -477,6 +478,62 @@ TEST_F(GgmlKernelsTest, AnErrorPendingOnTheThreadRefusesOneContext) {
   EXPECT_NE(refused.error().detail.find("a pending error"), std::string::npos)
       << refused.error().detail;
   EXPECT_NE(Launcher(), nullptr);  // taken, the error refuses nothing more
+}
+
+// BP-A4's negative control (invariant 1): a GGML kernel launched over
+// device VMM whose backing has been unmapped faults; it never reads what
+// that memory held. The fault ends the CUDA context, so it runs in a child
+// process: the run over mapped memory completes, the input's backing is
+// unmapped, and the same run's fence then reports the fault.
+class GgmlStaleMemoryDeathTest : public GgmlKernelsTest {
+ protected:
+  void RunOverUnmappedBacking() {
+    const std::uint64_t rows = Allocate(Memory::kDeviceVmm, kWidth * sizeof(float));
+    const Mapped input = mapped_.back();
+    const std::uint64_t out = Allocate(Memory::kDeviceVmm, kWidth * sizeof(float));
+    auto launch = Launcher();
+    auto arena = TensorArena::Create(4).value();
+    ggml_tensor* x = ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, kWidth);
+    TensorArena::Bind(x, rows);
+    ggml_tensor* norm = ggml_rms_norm(arena.context(), x, kEps);
+    TensorArena::Bind(norm, out);
+    const std::vector<float> ones(kWidth, 1.0F);
+    Upload(rows, ones.data(), ones.size() * sizeof(float));
+    const auto near_one = [](const std::vector<float>& values) {
+      return std::ranges::all_of(values, [](float v) { return std::fabs(v - 1.0F) < 1e-5F; });
+    };
+    if (!launch || !jitllm::kernels::ggml::RmsNorm(*launch, norm).has_value() ||
+        !near_one(Download(out, kWidth))) {
+      std::cerr << "the run over mapped memory failed\n";
+      std::_Exit(2);
+    }
+    if (!memory_->Unmap(input.reservation, Bytes(0), input.size).has_value()) {
+      std::cerr << "the unmap failed\n";
+      std::_Exit(3);
+    }
+    (void)jitllm::kernels::ggml::RmsNorm(*launch, norm);  // queued; faults on the device
+    const auto fence = execution_->Record(stream_);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (fence && std::chrono::steady_clock::now() < deadline) {
+      const auto state = execution_->Query(*fence);
+      if (!state) {
+        std::cerr << "faulted: " << state.error().detail << "\n";
+        std::_Exit(0);
+      }
+      if (*state == FenceState::kComplete) {
+        std::cerr << "completed over unmapped backing\n";
+        std::_Exit(4);
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    std::cerr << (fence ? "no result" : "faulted at the record") << "\n";
+    std::_Exit(fence ? 5 : 0);
+  }
+};
+
+TEST_F(GgmlStaleMemoryDeathTest, AKernelOverUnmappedBackingFaults) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(RunOverUnmappedBacking(), ::testing::ExitedWithCode(0), "faulted");
 }
 
 TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {

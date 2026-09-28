@@ -3,7 +3,8 @@
 
 // Whole reads over the storage provider (D-034, D-048;
 // docs/async-model.md): a range of a file into memory, all of it or an
-// explicit failure. The storage lane owns one reader over its provider.
+// explicit failure, and write-back's whole writes the same way (ReadSpec).
+// The storage lane owns one reader over its provider.
 //
 //   - Alignment is checked before anything starts: memory, file offset and
 //     length must be multiples of the direct-I/O alignment (4 KiB for
@@ -53,11 +54,17 @@ struct ReaderSettings {
   std::size_t waiters = 8;                  // per read
 };
 
+// A whole transfer: a read of the file range into memory, or with kWrite
+// (write-back, docs/architecture.md#page-in-and-eviction-lifecycles-8) a
+// write of the memory into the file range. A write is split, continued and
+// retried as a read is; a write that stops short of its range (no progress,
+// or at an unaligned point) fails rather than ending at end of file.
 struct ReadSpec {
   int fd = -1;
   std::uint64_t offset = 0;
   std::byte* memory = nullptr;
   std::uint64_t length = 0;
+  IoKind kind = IoKind::kRead;
   bool operator==(const ReadSpec&) const = default;
 };
 

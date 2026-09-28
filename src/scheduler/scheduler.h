@@ -60,6 +60,24 @@
 //     refused with nothing changed leaves it resident; one of unknown
 //     outcome, or refused because an earlier unknown outcome left its
 //     place undetermined, quarantines it.
+//   - Write back live mutable contents on eviction (a kPreserve extent
+//     whose source is its write-back place, PageSource::write_back), the
+//     page-in's reverse path through the zone (D-081): the extent is
+//     EVICTING (no new lease) and unheld; it waits in order for a slot;
+//     the device lane copies it into the slot on the zone's stream, and
+//     fences it; the storage lane writes the slot to the place with direct
+//     I/O; only once that write has moved the whole range is the slot
+//     freed and the backing unmapped and released (as above). The catalog
+//     then keeps the content generation and marks the contents preserved,
+//     and a later load restores them from the same place. A copy or write
+//     that fails with known completion, or a stage that can never get a
+//     mailbox, abandons the eviction: the backing was never touched, so
+//     the extent is resident again with its contents. One of unknown
+//     outcome quarantines the extent and its slot. One still waiting for
+//     a slot when its last waiter leaves is abandoned; once it has a slot
+//     it outlives its evictor and drains. A load of a write-back
+//     place whose contents are not preserved is refused: nothing claims
+//     contents that were never written (invariant 4).
 //   - Submit device work or a CPU job over a closure: the operation leases
 //     the closure (all or none, at the recorded contents), takes a lifetime
 //     hold on the task and a mailbox, and is recorded before its command is
@@ -85,8 +103,7 @@
 // lanes and releases backing. Work that cannot be reconciled (quarantined)
 // faults the shutdown instead of reporting its capacity reclaimed.
 //
-// Not yet here: write-back and spill of preserved contents (the reverse
-// path through the zone), the D-033 handoff of a victim's backing to a
+// Not yet here: the D-033 handoff of a victim's backing to a
 // load, victim selection on a miss, admission's envelopes
 // and the switching policy (admission.h) driving task starts, which
 // reports a boundary only where the request's ProgramCursor::AtBoundary
@@ -213,6 +230,13 @@ struct PageSource {
   // Managed backing; without it the backing stays mapped at the
   // destination for as long as the source is registered.
   std::optional<BackingPlace> backing;
+  // The file range is the extent's write-back place (state spill, D-081's
+  // reverse path): only for a kPreserve extent. Evicting it writes its
+  // contents here first (read.memory, or the zone for a landed source),
+  // and loading it restores them, only while the catalog marks them
+  // preserved. The caller owns the file: opened for direct I/O beneath the
+  // spill role, never shared by two places.
+  bool write_back = false;
 };
 
 // The landing zone (D-081): a persistent pool of `slots` host-VMM
@@ -352,10 +376,16 @@ class Scheduler {
   // Where an extent's contents come from and how they arrive (PageSource).
   // Refused (kBusy) while a load or eviction of it is in flight, or while
   // it is resident with backing mapped somewhere else, since its unmap
-  // must find what its load mapped; kInvalid for a landed source with no
-  // landing zone, a range that is empty or exceeds a slot, or no
-  // destination. Registering a new place for a nonresident extent
-  // relocates its next load (BP-P5).
+  // must find what its load mapped (a resident extent with no source yet,
+  // mapped by its owner, may name where that is), or, for a write-back
+  // place, with its contents somewhere other than the new source says;
+  // also refused (kBusy) while a nonresident extent's contents are
+  // preserved, unless the new source names the same write-back range.
+  // kInvalid for a landed source with no landing zone, a range that is
+  // empty or exceeds a slot, no destination, a write instead of a read,
+  // or a write-back place for an extent that is not kPreserve.
+  // Registering a new place for a nonresident extent relocates its next
+  // load (BP-P5).
   std::expected<void, WorkError> SetSource(catalog::ExtentId extent, const PageSource& source);
   // One turn; true if anything happened.
   bool Turn();
@@ -426,12 +456,24 @@ class Scheduler {
     bool mapped = false;      // its managed backing is mapped
     bool failed = false;      // it will not publish
   };
-  // An eviction whose backing the VMM lane unmaps and releases.
+  // An eviction's stages: a write-back's (the header's list), then the
+  // unmap of managed backing.
+  enum class EvictStage : std::uint8_t {
+    kSlot,       // waiting for a landing slot
+    kCopyOut,    // the device lane copies the extent into the slot
+    kWriting,    // the storage lane writes it to the write-back place
+    kUnmapping,  // the VMM lane unmaps and releases the backing
+  };
+  // An eviction whose backing the VMM lane unmaps and releases, after
+  // writing its contents back if it preserves them.
   struct Eviction {
     catalog::Ticket ticket;
     OperationId operation;
     TaskId evictor;               // the task that asked for it
     std::vector<TaskId> waiters;  // it, and tasks materializing the extent
+    EvictStage stage = EvictStage::kUnmapping;
+    std::optional<std::size_t> slot;
+    bool write_back = false;
   };
 
   struct TaskRecord {
@@ -509,7 +551,16 @@ class Scheduler {
   // Every mailbox is retired or held by quarantined work: none will free.
   bool NoMailboxEver() const;
   // Evictions.
-  void OnEvicted(catalog::ExtentId extent, Outcome outcome);
+  // A write-back's slot, in order: the first free one, else wait for one.
+  void ProceedEviction(catalog::ExtentId extent);
+  // Opens and publishes the stage's operation; false if no mailbox is
+  // free (it waits in blocked_). One that can never get a mailbox
+  // abandons the eviction: no stage it did not open touched the backing.
+  bool OpenEvictStage(catalog::ExtentId extent, Eviction& eviction);
+  void OnEvicted(catalog::ExtentId extent, Outcome outcome, std::uint64_t bytes);
+  // Settles the eviction: completed, or abandoned with the extent resident
+  // again (only the evictor is told of that).
+  void EndEviction(catalog::ExtentId extent, bool evicted);
   void QuarantineEvicting(catalog::ExtentId extent, Fault fault);
   void Fail(Fault fault);
 
@@ -613,7 +664,10 @@ class TaskContext {
   // lane unmaps and releases it first: kWaiting, and the task is woken
   // once the extent is nonresident (or, if the unmap failed, with a
   // failure). Otherwise at once, in the catalog only: its backing stays
-  // mapped, as its source registered it.
+  // mapped, as its source registered it. A kPreserve extent whose source
+  // is its write-back place, and whose contents were not invalidated, is
+  // written back first (kWaiting either way); an abandoned write-back
+  // wakes the task with a failure and leaves the extent resident.
   std::expected<Readiness, WorkError> Evict(catalog::ExtentId extent) {
     return scheduler_.Evict(task_, extent);
   }

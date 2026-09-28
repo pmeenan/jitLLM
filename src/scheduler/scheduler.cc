@@ -550,8 +550,19 @@ void Scheduler::Withdraw(TaskId task) {
       withdrawn.push_back(extent);
     }
   }
+  std::vector<catalog::ExtentId> abandoned;
   for (auto& [extent, eviction] : evictions_) {
-    std::erase(eviction.waiters, task);  // the unmap drains either way
+    std::erase(eviction.waiters, task);  // what a lane runs drains either way
+    if (eviction.waiters.empty() && eviction.stage == EvictStage::kSlot) {
+      // A write-back still waiting for a slot has touched nothing, and
+      // would wait forever if every slot were quarantined: abandoned, it
+      // leaves the extent resident and cannot hold up a stop.
+      abandoned.push_back(extent);
+    }
+  }
+  for (const catalog::ExtentId extent : abandoned) {
+    std::erase(slot_waiters_, extent);
+    EndEviction(extent, false);
   }
   // After the walk: cancelling a page-in may end it, erasing its entry.
   for (const catalog::ExtentId extent : withdrawn) {
@@ -620,7 +631,7 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
   if (kind == Kind::kLoad) {
     OnStage(extent, outcome, bytes);
   } else {
-    OnEvicted(extent, outcome);
+    OnEvicted(extent, outcome, bytes);
   }
 }
 

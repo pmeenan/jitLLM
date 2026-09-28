@@ -1588,6 +1588,10 @@ reference container.
 The [retained-backing comparison](#retained-backing-comparison) runs on the
 P4 harness, but its acceptance stays a separate plan item.
 
+P4–P6's results, and where every case below stands, are in the
+[aggregate report](experiments/backend-proof/README.md); P6's record is
+D-086.
+
 ### P2 prerequisites
 
 Three things are in place before any native FP16 run: the FP16 memory

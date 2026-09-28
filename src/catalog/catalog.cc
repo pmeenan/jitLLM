@@ -360,6 +360,7 @@ std::expected<void, CatalogError> Catalog::CompleteLoad(const Ticket& ticket) {
   const Bucket before = BucketOf(view);
   view.state = ExtentState::kResident;
   view.discarded = false;  // fresh contents
+  view.preserved = false;  // the resident copy is the live one now
   Recount(**record, before);
   return {};
 }
@@ -514,7 +515,7 @@ std::expected<void, CatalogError> Catalog::ReplaceContents(ExtentId extent) {
   return {};
 }
 
-std::expected<Ticket, CatalogError> Catalog::BeginEvict(ExtentId extent) {
+std::expected<Ticket, CatalogError> Catalog::BeginEvict(ExtentId extent, bool write_back) {
   ExtentRecord* record = Extent(extent);
   if (record == nullptr) {
     return std::unexpected(CatalogError::kUnknownId);
@@ -526,12 +527,20 @@ std::expected<Ticket, CatalogError> Catalog::BeginEvict(ExtentId extent) {
   if (view.leases > 0 || view.registrations > 0) {
     return std::unexpected(CatalogError::kHeld);
   }
-  if (!Evictable(view)) {
+  if (write_back) {
+    // Only live mutable contents are written back: invalidated contents
+    // need no preserving, and other classes are restorable or pinned.
+    if (view.descriptor.recovery != Recovery::kPreserve || view.discarded ||
+        view.descriptor.memory_class == MemoryClass::kUnknown) {
+      return std::unexpected(CatalogError::kNotEvictable);
+    }
+  } else if (!Evictable(view)) {
     return std::unexpected(CatalogError::kNotEvictable);
   }
   const Bucket before = BucketOf(view);
   view.state = ExtentState::kEvicting;  // no new lease from here on
   Recount(*record, before);
+  record->writing_back = write_back;
   return Begin(extent, *record, Operation::kEvict);
 }
 
@@ -544,10 +553,13 @@ std::expected<void, CatalogError> Catalog::CompleteEvict(const Ticket& ticket) {
   const Bucket before = BucketOf(view);
   view.state = ExtentState::kNonresident;
   Advance(view.backing_generation);
-  if (view.descriptor.recovery != Recovery::kFromArtifact) {
+  const bool preserved = (*record)->writing_back;
+  if (view.descriptor.recovery != Recovery::kFromArtifact && !preserved) {
     Advance(view.content_generation);  // the contents are gone
   }
   view.discarded = false;
+  view.preserved = preserved;  // written back whole: a load restores them
+  (*record)->writing_back = false;
   Recount(**record, before);
   return {};
 }
@@ -559,6 +571,7 @@ std::expected<void, CatalogError> Catalog::CancelEvict(const Ticket& ticket) {
   }
   const Bucket before = BucketOf((*record)->view);
   (*record)->view.state = ExtentState::kResident;
+  (*record)->writing_back = false;
   Recount(**record, before);
   return {};
 }
@@ -570,6 +583,7 @@ std::expected<void, CatalogError> Catalog::QuarantineEviction(const Ticket& tick
   }
   const Bucket before = BucketOf((*record)->view);
   (*record)->view.state = ExtentState::kQuarantined;
+  (*record)->writing_back = false;
   Recount(**record, before);
   return {};
 }

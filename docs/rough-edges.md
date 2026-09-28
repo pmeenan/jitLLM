@@ -30,6 +30,30 @@ Newest first. RE-numbers are never reused.
 
 ---
 
+## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: open)
+
+On `spark-b` (GB10, driver 580.178.04), `jitllm_exl3_paged
+--cancel-in-flight` queues the 1,023-row EXL3 prefill as one device job
+behind a gate: a `cuStreamWaitValue32` on a host flag, queued first.
+- The job's launches stopped returning to the submission lane while the
+  gate held. They were still blocked 60 s later, and returned only once
+  the gate opened. The likely cause, not measured further: the phase has
+  more launches than the stream can hold pending, and the driver blocks the
+  launching thread while that queue is full (its depth is not documented).
+- Nothing synchronizes in jitLLM's code: `src/kernels/` has no
+  synchronizing call.
+
+Impact: `commands.h` says a job only queues and never waits. The driver can
+still make it wait, whenever the stream is busy with earlier work and the
+phase is long. The device submission lane is then held. The same lane
+submits the zone's page-in copies, so a long phase queued behind a slow
+one can delay page-ins.
+- Correctness is unaffected: leases hold until the fence, and cancellation
+  still drains (the run above).
+- It matters for M3/M4 latency. Likely fixes are a separate submission
+  lane for the zone's copies, or phases split into jobs that fit the
+  queue. Measure before choosing.
+
 ## RE-028: cuBLAS's handle keeps a 64 MiB default workspace pool that `cublasSetWorkspace` does not free, and nsys's memory trace hides who allocated it  (2026-09-27, status: worked-around)
 
 Environment: `spark` and `spark-b` (GB10, kernel 7.0.0-1019-nvidia, driver

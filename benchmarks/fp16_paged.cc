@@ -9,6 +9,8 @@
 //
 //   jitllm_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE
 //                     --fusion on|off --out DIR [--restores N] [--relocate]
+//                     [--partial] [--spill premapped|managed]
+//                     [--embeddings duplicated|shared]
 //                     [--lanes threads|inline] [--record]
 //   jitllm_fp16_paged --artifact DIR ... --out DIR --load-only N
 //                     [--weights device|host] [--backing managed|premapped]
@@ -35,8 +37,29 @@
 //   and pages them all back in before continuing. With --relocate, every
 //   second restore registers the weights at a second reservation, so they
 //   come back at other addresses and every chunk's tensors are bound anew
-//   (BP-P5). The cache stays resident: spilling state is the reverse path,
-//   not built yet.
+//   (BP-P5). The cache stays resident.
+// - BP-P2 (--partial): one more evaluation, which at the restore point
+//   runs each of paging_cases.h's partial evictions in turn (one layer,
+//   side vectors and biases, a shared small-tensor chunk, padded tails, a
+//   tensor crossing a chunk boundary): it evicts exactly those extents,
+//   checks that a chunk's job submitted without materializing is refused
+//   before anything runs (invariants 1-2), and pages only them back in.
+// - BP-P4 (--spill): one more evaluation, which after the first chunk (a
+//   prefill) and again mid-decode (8 tokens after the restore point)
+//   writes the cache back through the zone to an unnamed direct-I/O spill
+//   file in --out and evicts it, then restores it. `premapped` keeps the
+//   cache's backing mapped (its eviction is the catalog's alone) and
+//   poisons it with 0xff before the restore; `managed` releases the
+//   backing (D-033) and the restore maps fresh backing. Either way the
+//   cache is copied back to the host before and after, and must match.
+// - BP-P3 (--embeddings shared): the token table is held once, in device
+//   VMM: each chunk's embedding rows are copied from it to pinned staging
+//   (a job leasing both) and widened on the host, instead of read from
+//   the host copy. The logits must equal the duplicated run's.
+// - Explainable plans: for each chunk shape, the guaranteed bound (the
+//   placement's activation extent and the plan's scratch bound) against
+//   the observed peak (the highest activation byte a bound tensor reaches,
+//   and the pool's peak in that chunk).
 // - Each chunk is one device job (scheduler::LaunchWork) on the compute
 //   stream, holding a lease on the whole closure until the fence after it
 //   completes: it builds the embedding rows from the host table, copies the
@@ -67,11 +90,14 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -84,6 +110,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <print>
@@ -111,6 +138,7 @@
 #include "kernels/ggml/launch.h"
 #include "launch_recorder.h"
 #include "model/qwen2.h"
+#include "paging_cases.h"
 #include "plan_record.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
@@ -187,6 +215,9 @@ struct Options {
   bool weights_host = false;
   bool premapped = false;
   std::size_t slots = kSlots;
+  bool partial = false;
+  std::string spill;  // empty, premapped or managed
+  bool shared_embeddings = false;
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -202,11 +233,25 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.relocate = true;
       continue;
     }
+    if (a == "--partial") {
+      o.partial = true;
+      continue;
+    }
     if (i + 1 >= args.size()) {
       return Error(std::format("{} needs a value", a));
     }
     const std::string_view v = args[++i];
-    if (a == "--artifact") {
+    if (a == "--spill") {
+      if (v != "premapped" && v != "managed") {
+        return Error("--spill is premapped or managed");
+      }
+      o.spill = v;
+    } else if (a == "--embeddings") {
+      if (v != "duplicated" && v != "shared") {
+        return Error("--embeddings is duplicated or shared");
+      }
+      o.shared_embeddings = v == "shared";
+    } else if (a == "--artifact") {
       o.artifact = v;
     } else if (a == "--trajectory") {
       o.trajectory = v;
@@ -253,10 +298,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.artifact.empty() || o.trajectory.empty() || o.tokens.empty() || o.out.empty() ||
       !fusion_set || (o.record && !o.inline_lanes) ||
-      ((o.weights_host || o.premapped || o.slots != kSlots) && o.load_only == 0)) {
+      ((o.weights_host || o.premapped || o.slots != kSlots) && o.load_only == 0) ||
+      ((o.partial || !o.spill.empty() || o.shared_embeddings) && o.load_only > 0)) {
     return Error(
         "usage: jitllm_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE "
-        "--fusion on|off --out DIR [--restores N] [--relocate] [--lanes threads|inline] "
+        "--fusion on|off --out DIR [--restores N] [--relocate] [--partial] "
+        "[--spill premapped|managed] [--embeddings duplicated|shared] [--lanes threads|inline] "
         "[--record (with --lanes inline)] | --load-only N [--weights device|host] "
         "[--backing managed|premapped] [--slots N]");
   }
@@ -437,7 +484,59 @@ class EvictProgram final : public HarnessProgram {
   std::size_t next_ = 0;
 };
 
+// Submits a job over a closure without materializing it first: with any
+// extent nonresident the lease, and so the submission, must be refused
+// before the job can run (BP-P2's incomplete closure).
+class LaunchOnlyProgram final : public HarnessProgram {
+ public:
+  LaunchOnlyProgram(Done& done, jitllm::catalog::Closure closure, std::atomic<bool>& ran)
+      : HarnessProgram(done), closure_(std::move(closure)), ran_(ran) {}
+  sc::Step Advance(sc::TaskContext& context) override {
+    if (submitted_) {
+      return sc::Step::Finish(context.TakeFailure() ? sc::TaskOutcome::kFailed
+                                                    : sc::TaskOutcome::kSucceeded);
+    }
+    std::atomic<bool>& ran = ran_;
+    const auto submitted = context.SubmitLaunch(
+        closure_, sc::LaunchWork{.stream = 0, .job = [&ran](jitllm::providers::NativeStream) {
+                                   ran.store(true);
+                                   return sc::JobResult::kQueued;
+                                 }});
+    if (!submitted) {
+      done_.error.store(static_cast<int>(submitted.error()));
+      return sc::Step::Finish(sc::TaskOutcome::kFailed);
+    }
+    submitted_ = true;
+    return sc::Step::Wait();
+  }
+  void Finished(sc::TaskOutcome outcome) override {
+    done_.outcome.store(static_cast<int>(outcome));
+  }
+  void Retired() override { done_.retired.store(true); }
+
+ private:
+  jitllm::catalog::Closure closure_;
+  std::atomic<bool>& ran_;
+  bool submitted_ = false;
+};
+
 // ------------------------------------------------------------------ the harness
+
+// A chunk shape's guaranteed bound against its observed peak (bytes).
+struct Peak {
+  std::uint64_t chunks = 0;
+  std::uint64_t activations_bound = 0;
+  std::uint64_t activations_seen = 0;
+  std::uint64_t scratch_bound = 0;
+  std::uint64_t scratch_seen = 0;
+};
+
+struct PagingEvent {
+  std::string what;
+  std::uint64_t extents = 0;
+  double seconds = 0;
+  std::string detail;
+};
 
 class Harness {
  public:
@@ -485,6 +584,12 @@ class Harness {
   Status Job(const jitllm::catalog::Closure& closure, sc::DeviceJob job, std::string_view what);
   Status Evaluate(int evaluation, std::vector<float>& result);
   Status Restore(int evaluation);
+  // BP-P2, BP-P4 and BP-P3's helpers.
+  Status Partial();
+  Status Spill(std::string_view where);
+  Status Snapshot(std::vector<std::byte>& out);
+  Status GatherRows(std::span<const std::int32_t> tokens, std::vector<float>& embd);
+  Status RegisterCache();
   Status Write(const std::vector<std::vector<float>>& results);
   Status WriteLoads();
 
@@ -556,6 +661,19 @@ class Harness {
   Coverage coverage_;
   std::vector<LoadStats> loads_;
   bool torn_down_ = false;
+
+  // --spill: the unnamed spill file, and a pinned copy of the cache.
+  int spill_fd_ = -1;
+  void* kv_copy_ = nullptr;
+  std::uint64_t kv_used_ = 0;  // the cache's bytes (kv_.bytes rounds up)
+  // --embeddings shared: pinned staging for a chunk's rows.
+  void* rows_ = nullptr;
+  std::uint64_t rows_bytes_ = 0;
+  jitllm::catalog::Closure gather_;  // the device table and the staging
+  std::vector<PagingEvent> events_;
+  std::uint64_t kv_mismatches_ = 0;
+  std::uint64_t refusals_ = 0;           // incomplete closures refused before launch
+  std::map<std::uint32_t, Peak> peaks_;  // by chunk rows
 };
 
 void Harness::AddSpan(std::uint64_t base, std::uint64_t size, ExtentId extent,
@@ -668,6 +786,9 @@ Status Harness::RegisterWeights() {
                             jitllm::providers::Access::kReadWrite)) {
       return Error("access to the premapped weights");
     }
+  }
+  if (o_.shared_embeddings) {
+    return Place(0);  // one copy of the table, in device VMM (BP-P3)
   }
   // The token table's host copy: its group's chunks again, read directly
   // into host VMM the CPU maps.
@@ -1028,6 +1149,7 @@ Status Harness::Setup() {
   }
   const std::uint64_t layer_cache = std::uint64_t{profile_.kv_width()} * t_.cells * 2;
   const std::uint64_t kv_bytes = layer_cache * 2 * profile_.layers;
+  kv_used_ = kv_bytes;
   std::uint32_t most_rows = 0;
   {
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
@@ -1093,8 +1215,15 @@ Status Harness::Setup() {
     return r;
   }
   std::vector<ExtentId> staging;
-  const std::array<std::pair<void*, std::uint64_t>, 2> pinned = {
-      {{inputs_, input_bytes_}, {logits_, logits_bytes_}}};
+  std::vector<std::pair<void*, std::uint64_t>> pinned = {{inputs_, input_bytes_},
+                                                         {logits_, logits_bytes_}};
+  if (o_.shared_embeddings) {
+    rows_bytes_ = std::uint64_t{most_rows} * profile_.width * 2;
+    if (auto r = Cuda(cudaMallocHost(&rows_, rows_bytes_), "the row staging"); !r) {
+      return r;
+    }
+    pinned.emplace_back(rows_, rows_bytes_);
+  }
   for (const auto& [pointer, bytes] : pinned) {
     auto extent = catalog_.AddExtent({.domain = domain_,
                                       .memory_class = MemoryClass::kStaging,
@@ -1141,6 +1270,18 @@ Status Harness::Setup() {
           .tasks = 16, .budget = Bytes(std::uint64_t{64} << 30U), .landing = landing});
   if (auto r = RegisterWeights(); !r) {
     return r;
+  }
+  if (!o_.spill.empty()) {
+    if (auto r = RegisterCache(); !r) {
+      return r;
+    }
+  }
+  if (o_.shared_embeddings) {
+    // What a gather leases: the device table's chunks and the row staging.
+    std::vector<ExtentId> gather =
+        chunk_extents_.at(artifact_->resources()[binding_.token_embd].group);
+    gather.push_back(staging.back());
+    gather_ = catalog_.ClosureOfExtents(gather).value();
   }
   // What a chunk leases: every weight (both copies of the table), the
   // cache, the activations, the scratch, the workspace and the staging.
@@ -1267,12 +1408,22 @@ Status Harness::Evaluate(int evaluation, std::vector<float>& result) {
     Check(planned->graph);
     const std::uint64_t chunk_logits = std::uint64_t{rows} * profile_.vocab * sizeof(float);
     Status ran;
-    const auto& table = artifact_->resources()[binding_.token_embd];
-    const std::span<const std::uint16_t> host_table(
-        reinterpret_cast<const std::uint16_t*>(  // NOLINT(performance-no-int-to-ptr)
-            table_base_ + table.offset.value()),
-        std::size_t{profile_.vocab} * profile_.width);
     const std::span<const std::int32_t> tokens = std::span(t_.tokens).subspan(n_past, rows);
+    std::span<const std::uint16_t> host_table;
+    std::vector<float> gathered;
+    if (o_.shared_embeddings) {
+      // BP-P3's shared arm: the rows come from the device table.
+      if (auto r = GatherRows(tokens, gathered); !r) {
+        return r;
+      }
+    } else {
+      const auto& table = artifact_->resources()[binding_.token_embd];
+      host_table =
+          std::span(reinterpret_cast<const std::uint16_t*>(  // NOLINT(performance-no-int-to-ptr)
+                        table_base_ + table.offset.value()),
+                    std::size_t{profile_.vocab} * profile_.width);
+    }
+    launch_->ResetScratchPeak();
     auto job = [&, rows, chunk = static_cast<int>(k),
                 n_past](jitllm::providers::NativeStream native) -> sc::JobResult {
       if (recording_ != nullptr) {
@@ -1282,13 +1433,17 @@ Status Harness::Evaluate(int evaluation, std::vector<float>& result) {
         record_ += jitllm::test_support::ChunkLine(
             {.evaluation = evaluation, .chunk = chunk, .rows = rows, .n_past = n_past});
       }
-      // The embedding rows, from the host table this job's lease holds.
-      std::vector<float> embd(std::size_t{rows} * profile_.width);
-      if (auto r =
-              jitllm::model::EmbedRows(host_table, profile_.width, profile_.vocab, tokens, embd);
-          !r) {
-        ran = std::unexpected(r.error());
-        return sc::JobResult::kNotStarted;
+      // The embedding rows, from the host table this job's lease holds (or
+      // gathered from the device table before it).
+      std::vector<float> embd = gathered;
+      if (!o_.shared_embeddings) {
+        embd.assign(std::size_t{rows} * profile_.width, 0.0F);
+        if (auto r =
+                jitllm::model::EmbedRows(host_table, profile_.width, profile_.vocab, tokens, embd);
+            !r) {
+          ran = std::unexpected(r.error());
+          return sc::JobResult::kNotStarted;
+        }
       }
       auto* const stream = static_cast<cudaStream_t>(native.handle);
       const kg::Qwen2Graph& g = planned->graph;
@@ -1343,12 +1498,250 @@ Status Harness::Evaluate(int evaluation, std::vector<float>& result) {
     // The job's fence has completed: the logits are in.
     const auto* values = static_cast<const float*>(logits_);
     result.insert(result.end(), values, values + (chunk_logits / sizeof(float)));
+    // The chunk shape's guaranteed bound against what it reached.
+    Peak& peak = peaks_[rows];
+    ++peak.chunks;
+    peak.activations_bound = std::max(peak.activations_bound, planned->placement.extent);
+    peak.scratch_bound = std::max(peak.scratch_bound, *step_scratch);
+    peak.scratch_seen = std::max(peak.scratch_seen, launch_->scratch_peak().value());
+    const auto reach = [&](const ggml_tensor* t) {
+      const std::uint64_t at = t != nullptr ? Address(t->data) : 0;
+      if (at >= activations_.base && at < activations_.base + activations_.bytes) {
+        peak.activations_seen =
+            std::max(peak.activations_seen, at + ggml_nbytes(t) - activations_.base);
+      }
+    };
+    for (const ggml_tensor* node : planned->graph.nodes) {
+      reach(node);
+      for (const ggml_tensor* src : node->src) {
+        reach(src);
+      }
+    }
     n_past += rows;
-    if (evaluation > 2 && n_past == t_.restore_after) {
+    const int partial_at = o_.partial ? 3 + o_.restores : -1;
+    const int spill_at = o_.spill.empty() ? -1 : 3 + o_.restores + (o_.partial ? 1 : 0);
+    if (evaluation > 2 && evaluation <= 2 + o_.restores && n_past == t_.restore_after) {
       if (auto r = Restore(evaluation); !r) {
         return r;
       }
     }
+    if (evaluation == partial_at && n_past == t_.restore_after) {
+      if (auto r = Partial(); !r) {
+        return r;
+      }
+    }
+    if (evaluation == spill_at && (k == 0 || n_past == t_.restore_after + 8)) {
+      if (auto r = Spill(k == 0 ? "after the first prefill chunk" : "mid-decode"); !r) {
+        return r;
+      }
+    }
+  }
+  return {};
+}
+
+// BP-P2: each partial eviction in turn, at the restore point.
+Status Harness::Partial() {
+  const std::string layer =
+      std::format("blk.{}.", profile_.layers / 2);  // a middle layer's resources
+  const auto cases = jitllm::benchmarks::PartialCases(*artifact_, layer, false);
+  for (std::size_t c = 0; c < cases.size(); ++c) {
+    const auto& partial = cases[c];
+    std::vector<ExtentId> extents;
+    for (const auto& [group, chunk] : partial.chunks) {
+      extents.push_back(chunk_extents_.at(group).at(chunk));
+    }
+    const std::size_t backings = memory_->backings();
+    const auto start = std::chrono::steady_clock::now();
+    if (auto r = Evict(extents); !r) {
+      return r;
+    }
+    const double evicted = Seconds(std::chrono::steady_clock::now() - start);
+    std::size_t resident = 0;
+    for (const ExtentId extent : device_weights_) {
+      resident += catalog_.Describe(extent).value().state == jitllm::catalog::ExtentState::kResident
+                      ? 1
+                      : 0;
+    }
+    if (resident + extents.size() != device_weights_.size() ||
+        memory_->backings() + extents.size() != backings) {
+      return Error(std::format("partial eviction '{}' did not evict exactly its {} extents",
+                               partial.name, extents.size()));
+    }
+    // An incomplete closure refuses the launch: nothing may run.
+    std::atomic<bool> ran{false};
+    Done refused;
+    const Status submitted = Post(std::make_unique<LaunchOnlyProgram>(refused, everything_, ran),
+                                  refused, "a launch over an incomplete closure");
+    if (submitted || ran.load() ||
+        refused.error.load() != static_cast<int>(sc::WorkError::kNotResident)) {
+      return Error(
+          std::format("partial eviction '{}': a launch over an incomplete closure was "
+                      "not refused before it ran",
+                      partial.name));
+    }
+    ++refusals_;
+    events_.push_back(PagingEvent{.what = "partial eviction",
+                                  .extents = extents.size(),
+                                  .seconds = evicted,
+                                  .detail = partial.name});
+    // Only the missing extents page in; the next chunk binds against them.
+    if (auto r = Load(extents, std::format("partial restore: {}", partial.name)); !r) {
+      return r;
+    }
+  }
+  return {};
+}
+
+// BP-P4: the cache written back through the zone and evicted, then
+// restored; its bytes before and after must match.
+Status Harness::Spill(std::string_view where) {
+  std::vector<std::byte> before;
+  if (auto r = Snapshot(before); !r) {
+    return r;
+  }
+  const std::size_t backings = memory_->backings();
+  auto start = std::chrono::steady_clock::now();
+  if (auto r = Evict(kv_.extents); !r) {
+    return r;
+  }
+  events_.push_back(PagingEvent{.what = "state write-back",
+                                .extents = kv_.extents.size(),
+                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
+                                .detail = std::string(where)});
+  for (const ExtentId extent : kv_.extents) {
+    const auto view = catalog_.Describe(extent).value();
+    if (view.state != jitllm::catalog::ExtentState::kNonresident || !view.preserved) {
+      return Error("the cache is not nonresident and preserved after its write-back");
+    }
+  }
+  const bool managed = o_.spill == "managed";
+  if (memory_->backings() + (managed ? kv_.extents.size() : 0) != backings) {
+    return Error("the write-back did not release (managed) or keep (premapped) the backing");
+  }
+  if (!managed) {
+    // Poisoned while nonresident: the restore must bring back every byte.
+    if (auto r = Cuda(cudaMemset(Pointer(kv_.base), 0xff, kv_.bytes), "poisoning the cache"); !r) {
+      return r;
+    }
+    if (auto r = Cuda(cudaDeviceSynchronize(), "poisoning the cache"); !r) {
+      return r;
+    }
+  }
+  start = std::chrono::steady_clock::now();
+  if (auto r = Load(kv_.extents, std::format("state restore ({})", where)); !r) {
+    return r;
+  }
+  events_.push_back(PagingEvent{.what = "state restore",
+                                .extents = kv_.extents.size(),
+                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
+                                .detail = std::string(where)});
+  std::vector<std::byte> after;
+  if (auto r = Snapshot(after); !r) {
+    return r;
+  }
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    kv_mismatches_ += before[i] != after.at(i) ? 1 : 0;
+  }
+  return {};
+}
+
+// The cache's bytes, copied to the host by a job that leases it.
+Status Harness::Snapshot(std::vector<std::byte>& out) {
+  const std::uint64_t kv = kv_.base;
+  const std::uint64_t bytes = kv_used_;
+  void* copy = kv_copy_;
+  if (auto r = Job(
+          cache_,
+          [kv, bytes, copy](jitllm::providers::NativeStream stream) {
+            return cudaMemcpyAsync(copy, Pointer(kv), bytes, cudaMemcpyDeviceToHost,
+                                   static_cast<cudaStream_t>(stream.handle)) == cudaSuccess
+                       ? sc::JobResult::kQueued
+                       : sc::JobResult::kUnknown;
+          },
+          "copying the cache out");
+      !r) {
+    return r;
+  }
+  const auto* bytes_in = static_cast<const std::byte*>(kv_copy_);
+  out.assign(bytes_in, bytes_in + bytes);
+  return {};
+}
+
+// BP-P3's shared arm: a chunk's embedding rows copied from the device
+// table to pinned staging by a job leasing both, then widened on the host
+// as the bridge's CPU lookup widens them.
+Status Harness::GatherRows(std::span<const std::int32_t> tokens, std::vector<float>& embd) {
+  const std::uint64_t row_bytes = std::uint64_t{profile_.width} * 2;
+  const std::uint64_t table = WeightAddress(binding_.token_embd);
+  for (const std::int32_t token : tokens) {
+    if (token < 0 || static_cast<std::uint32_t>(token) >= profile_.vocab) {
+      return Error(std::format("token {} is outside the vocabulary", token));
+    }
+  }
+  void* rows = rows_;
+  if (auto r = Job(
+          gather_,
+          [&, rows](jitllm::providers::NativeStream stream) {
+            for (std::size_t i = 0; i < tokens.size(); ++i) {
+              if (cudaMemcpyAsync(
+                      static_cast<std::byte*>(rows) + (i * row_bytes),
+                      Pointer(table + (static_cast<std::uint64_t>(tokens[i]) * row_bytes)),
+                      row_bytes, cudaMemcpyDeviceToHost,
+                      static_cast<cudaStream_t>(stream.handle)) != cudaSuccess) {
+                return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kUnknown;
+              }
+            }
+            return sc::JobResult::kQueued;
+          },
+          "gathering the embedding rows");
+      !r) {
+    return r;
+  }
+  std::vector<std::int32_t> local(tokens.size());
+  for (std::size_t i = 0; i < local.size(); ++i) {
+    local[i] = static_cast<std::int32_t>(i);
+  }
+  embd.assign(tokens.size() * profile_.width, 0.0F);
+  return jitllm::model::EmbedRows(
+      std::span(static_cast<const std::uint16_t*>(rows_), tokens.size() * profile_.width),
+      profile_.width, static_cast<std::uint32_t>(tokens.size()), local, embd);
+}
+
+// --spill: the cache's write-back places, one 2 MiB range of an unnamed
+// direct-I/O file per extent, with its backing managed (released on
+// eviction) or kept mapped (premapped).
+Status Harness::RegisterCache() {
+  std::filesystem::create_directories(o_.out);
+  spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
+  if (spill_fd_ < 0) {
+    return Error(std::format("the spill file in {}: {}", o_.out.string(), std::strerror(errno)));
+  }
+  if (auto r = Cuda(cudaMallocHost(&kv_copy_, kv_used_), "the cache's host copy"); !r) {
+    return r;
+  }
+  const bool managed = o_.spill == "managed";
+  for (std::size_t i = 0; i < kv_.extents.size(); ++i) {
+    std::optional<sc::BackingPlace> backing;
+    if (managed) {
+      backing = sc::BackingPlace{.reservation = kv_.reservation,
+                                 .offset = Bytes(i * kExtent),
+                                 .size = Bytes(kExtent),
+                                 .allocation_class = device_class_};
+    }
+    auto set = scheduler_->SetSource(
+        kv_.extents[i],
+        sc::PageSource{
+            .read = {.fd = spill_fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
+            .landed = true,
+            .destination = kv_.base + (i * kExtent),
+            .backing = backing,
+            .write_back = true});
+    if (!set) {
+      return Error(std::format("the cache's write-back place: {}", sc::ToString(set.error())));
+    }
+  }
+  if (managed) {
+    kv_.backings.clear();  // the VMM lane releases them on eviction (D-033)
   }
   return {};
 }
@@ -1412,7 +1805,7 @@ Status Harness::Run() {
   if (auto r = Load(table_extents_, "initial (host table)"); !r) {
     return r;
   }
-  const int evaluations = 2 + o_.restores;
+  const int evaluations = 2 + o_.restores + (o_.partial ? 1 : 0) + (o_.spill.empty() ? 0 : 1);
   std::vector<std::vector<float>> results(static_cast<std::size_t>(evaluations));
   for (int e = 1; e <= evaluations; ++e) {
     if (auto r = Evaluate(e, results[static_cast<std::size_t>(e - 1)]); !r) {
@@ -1506,11 +1899,45 @@ Status Harness::Write(const std::vector<std::vector<float>>& results) {
       device_bytes, table_extents_.size(), table_bytes, device_weights_.size() * kExtent,
       stored_bytes_, o_.slots, zone_.bytes, kv_.bytes, activations_.bytes, scratch_.bytes,
       workspace_.bytes, loads, coverage_.tensors, coverage_.violations, coverage_.first, by_class);
+  // BP-P2, BP-P4 and BP-P3's runs, and each chunk shape's bound against
+  // its peak.
+  std::string events;
+  for (const PagingEvent& event : events_) {
+    events += std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f},"detail":"{}"}})",
+                          events.empty() ? "" : ",", event.what, event.extents, event.seconds,
+                          event.detail);
+  }
+  std::string peaks;
+  bool within = true;
+  for (const auto& [rows, peak] : peaks_) {
+    within = within && peak.activations_seen <= peak.activations_bound &&
+             peak.scratch_seen <= peak.scratch_bound;
+    peaks +=
+        std::format(R"({}{{"rows":{},"chunks":{},"activations_bound":{},"activations_seen":{},)"
+                    R"("scratch_bound":{},"scratch_seen":{}}})",
+                    peaks.empty() ? "" : ",", rows, peak.chunks, peak.activations_bound,
+                    peak.activations_seen, peak.scratch_bound, peak.scratch_seen);
+  }
+  {
+    std::ofstream file(o_.out / "paging.json");
+    file << std::format(R"({{"partial":{},"spill":"{}","embeddings":"{}","refused_launches":{},)"
+                        R"("kv_bytes_differing":{},"events":[{}],"peaks":[{}]}})",
+                        o_.partial ? "true" : "false", o_.spill,
+                        o_.shared_embeddings ? "shared" : "duplicated", refusals_, kv_mismatches_,
+                        events, peaks)
+         << "\n";
+  }
   {
     std::ofstream file(o_.out / "summary.json");
     file << summary << "\n";
   }
   std::println("wrote {}", o_.out.string());
+  if (kv_mismatches_ != 0) {
+    return Error(std::format("{} bytes of the cache differ after its restore", kv_mismatches_));
+  }
+  if (!within) {
+    return Error("a chunk reached past its guaranteed bound (paging.json)");
+  }
   if (coverage_.violations != 0) {
     return Error(
         std::format("{} bound tensors lie outside cataloged extents of their class; "
@@ -1534,6 +1961,10 @@ Status Harness::Teardown() {
     // scheduler stops and the lanes drain (the program's order).
     std::vector<ExtentId> weights = device_weights_;
     weights.insert(weights.end(), table_extents_.begin(), table_extents_.end());
+    if (o_.spill == "managed") {
+      // Its backing is the VMM lane's to release: written back and evicted.
+      weights.insert(weights.end(), kv_.extents.begin(), kv_.extents.end());
+    }
     // A fence after anything noted on the compute stream (the measuring
     // launch context notes work even when no chunk runs), so it can be
     // destroyed.
@@ -1620,6 +2051,11 @@ Status Harness::Teardown() {
   }
   (void)cudaFreeHost(inputs_);
   (void)cudaFreeHost(logits_);
+  (void)cudaFreeHost(kv_copy_);
+  (void)cudaFreeHost(rows_);
+  if (spill_fd_ >= 0) {
+    (void)::close(spill_fd_);  // unnamed: nothing outlives the process
+  }
   return Joined(problems);
 }
 

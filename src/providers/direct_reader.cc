@@ -162,7 +162,7 @@ bool DirectReader::Start(std::uint64_t key, Reading& reading) {
     const std::uint64_t token = next_token_++;
     const IoRequest request{
         .token = token,
-        .kind = IoKind::kRead,
+        .kind = reading.spec.kind,
         .fd = reading.spec.fd,
         .offset = reading.spec.offset + piece.start + piece.done,
         .memory = reading.spec.memory + piece.start +
@@ -220,7 +220,11 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
       piece.done += std::min(transferred, piece.length - piece.done);
       const bool aligned = (piece.done % settings_.alignment) == 0;
       if (piece.done < piece.length && (transferred == 0 || !aligned)) {
-        Stop(reading, ReadOutcome::kEndOfFile, 0);  // the file ended here
+        if (reading.spec.kind == IoKind::kWrite) {
+          Stop(reading, ReadOutcome::kFailed, EIO);  // a write that stops short failed
+        } else {
+          Stop(reading, ReadOutcome::kEndOfFile, 0);  // the file ended here
+        }
       } else if (piece.done < piece.length) {
         Queue(key, reading);  // a short transfer continues, ahead of later reads
       }

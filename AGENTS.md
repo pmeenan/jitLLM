@@ -258,8 +258,14 @@ relocated) are bit-identical. The x86-64 build's CUDA code and kernels
 also target the workstation's discrete GPU (D-082), where the providers,
 the page-in path and a kernel smoke pass. D-085 replaced the allocation
 census with a coarse peak check: native's peak is within 1.1× of its
-reference's on every FP16 arm and both EXL3 fixtures. Open: write-back
-and state spill, and P4–P6. D-033 is retained; per
-D-085, BP-F2 does not run and each engine is held to its reference's
-speed end to end once operational. Keep this
+reference's on every FP16 arm and both EXL3 fixtures. P4–P6 landed
+(D-086, [aggregate report](docs/experiments/backend-proof/README.md)):
+write-back of live state through the zone, partial evictions, state
+spill and lifetime cases on both representations and the real
+providers, and the operation contract. Open: BP-S3 (FP16 and EXL3 in
+one process) and BP-P1's coalesced reads, both built in M2 at the
+owner's choice; D-050 rows whose features come later move to their
+milestones. D-033 is retained; per D-085, BP-F2 does not run and each
+engine is held to its reference's speed end to end once operational.
+Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

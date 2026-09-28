@@ -33,6 +33,127 @@ feature-matrix triage of 2026-09-21 (D-028 onward).
 
 ---
 
+## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof)
+
+**Decision.** What M2's backend proof built and checked becomes the
+internal contract M3 builds on
+([report](experiments/backend-proof/README.md)).
+
+- **The operation contract.** An operation (`execution::Operation`) has one
+  or more compiled implementations. An implementation:
+  - refuses on the host, before anything is queued, whatever its launcher
+    would assert on or read or write out of bounds (`kRejected`);
+  - queues only on the provider stream it is given, with jitLLM's
+    handles (GGML's K-C context, the lent cuBLAS handle, ExLlamaV3's
+    launch context and lock area);
+  - draws scratch only from declared workspace, its bound checked before
+    submission;
+  - allocates, synchronizes and creates handles never;
+  - returns a launch error as a fault (`kUnknown`), which stops its
+    context, and never aborts the process.
+
+  A phase is one plan bound through the registry and run as one device
+  job (`scheduler::LaunchWork`). The job holds a lease on the phase's
+  whole closure (weights, state, activations, scratch, workspace and
+  staging) until the fence after its work completes. A job only queues;
+  its launches may still wait in the driver for room in the stream's
+  queue (RE-029). Cancelling stops further submission. Queued work
+  completes, and its leases hold until the fence (BP-L1, BP-L3).
+- **The registry** (`execution/registry.h`). Each program assembles it
+  at build time from the modules it links; there is no runtime plugin ABI
+  (D-053). An identity covers the source, the prepared tree's digest, a
+  digest of the module's own files, the SDK, target, device architecture,
+  build type, assertions, sanitizers and a variant naming the launchers.
+  A plan names one implementation per operation, and its identity is a
+  SHA-256 of them in order. Resolution binds every operation or rejects
+  the plan as unsupported or stale; nothing is substituted. As built:
+  - GGML-derived, K-C (GGML's launchers under jitLLM's context):
+    `rms_norm`, `rms_norm_mul.fused` and `.unfused` (the core pair of one
+    operation), `add`, `mul`, `mul_mat.mmvf`, `mul_mat.mmf`, `get_rows`,
+    `set_rows`, `rope.neox`, `rope_set_rows.fused`, `soft_max`, `cont`,
+    `swiglu`, `convert`, `flash_attn_ext.vec` (forced),
+    `mul_mat_add.mmvf_fused` and `mul_mat_glu.mmvf_fused`;
+  - GGML-derived, K-L: `mul_mat.cublas`, a recorded jitLLM copy of GGML's
+    `static` cuBLAS launcher with one host plan, and its copied
+    `k_compute_batched_ptrs`;
+  - EXL3, K-L (jitLLM launchers replacing ExLlamaV3's ATen wrappers):
+    `exl3.linear.gemm`, `exl3.linear.gemv` (the pair of one operation at
+    up to eight rows), `exl3.linear.reconstruct`,
+    `exl3.linear.reconstruct_fused`, `exl3.multi_linear.mgemm` and
+    `exl3.bias_add`.
+- **The patch set** (D-077). GGML: 0001 makes `ggml_cuda_error` return
+  instead of abort, turns off `ggml_abort`'s backtrace, and has the build
+  decide PDL rather than the environment; 0002 adds jitLLM's build.
+  ExLlamaV3: 0001 removes `util.cuh`'s exiting checks and NVCC-rejected
+  `register` specifiers; 0002 adds jitLLM's build and instance unit; 0003
+  reduces the reconstruction, Hadamard and bias-add sources to their
+  kernels. A new patch or kernel changes this record and
+  [licensing.md](licensing.md).
+- **Phase envelopes** (D-050). `E` is the closure's unique bytes plus the
+  working set. The working set is itemized from the plan and pinned by
+  tests:
+  - FP16 (FP16-U and FP16-F alike): activations n × 611,328 bytes, the
+    plan's pool bound, the input copies and the logits
+    ([table](backend-proof.md#memory-and-workspace-the-m2-gate-in-exl3-bringupmd));
+  - EXL3 (EXL3-G and EXL3-O alike): the placement region plus the
+    attention pool (the tightened table there).
+
+  Every run in the report reached its bound exactly or stayed below it.
+  `ProgramContract` and `PlanProgram` (`execution/program.h`) turn these
+  into D-050 envelopes and explain refusals (BP-V3); they express D-068's
+  shapes without executing them (`unit.ShapeScenarioTest.*`).
+- **The memory account.** Following the owner on 2026-09-27, the catalog
+  accounts exactly for jitLLM's own bytes, and the whole process is judged
+  loosely:
+  - *Catalog-exact, per profile:* weights (the artifact's bytes, padding
+    reported), KV in its declared layout, `E` per phase kind, and the
+    persistent pools outside `E`:
+    - the landing zone, 16 MiB (D-081);
+    - FP16: the cuBLAS workspace, 32 MiB, and the token table's declared
+      host copy;
+    - EXL3: the lock area (4,202,760 bytes), the F32 norms and the
+      multi-GEMM tables;
+    - the pinned staging for inputs and logits.
+  - *`F`, per profile,* is what the process holds beyond the catalog:
+    handles, module state and lazily loaded library code. It is not
+    itemized. Peak device memory, read from ordinary counters (driver free
+    memory, `MemAvailable`) in a quick run, must be at most about 1.1× the
+    reference engine's (the FP16 bridge's llama.cpp, ExLlamaV3). This
+    replaces the census protocol and its per-byte `F` caps (D-085). It
+    passes: 0.81–0.96× the bridge on the FP16 arms, 0.82–0.87× ExLlamaV3
+    on the EXL3 fixtures.
+- **Status of the decisions the proof tested.**
+  - *D-052*, as D-085 amends it: the EXL3 companion runs natively in M2,
+    exact against upstream and within Tier C, resident, paged, evicted,
+    written back and restored. Its kernel-time gate is replaced by
+    end-to-end parity once serving works.
+  - *D-053* holds as built: jitLLM owns streams, workspace, handles,
+    fusion and completion; plans select between implementations
+    (fused/unfused RMSNorm, EXL3 GEMM/GEMV); nothing is substituted. BP-S3,
+    FP16 and EXL3 alternating in one process, is not yet shown.
+  - *D-081* stands: BP-F1 passed on device VMM, page-in through the zone
+    runs at disk speed, and write-back takes the zone's reverse path.
+
+**Context.** Backend proof stage P6
+([backend-proof.md](backend-proof.md#stages)) asked for this record before
+M3 builds serving on it. P4 (write-back through the zone) and P5 landed
+in the same change; the plan and the report list them.
+
+**Consequences.**
+- Spill in M2 is process-private: the harnesses write it to an unnamed
+  `O_TMPFILE` in their output directory, so no spill format exists yet.
+  D-055's spill role, marker, digests and retention arrive with M4.
+- A kernel module that synchronizes, allocates or creates a handle during
+  a job breaks this contract. So does a phase whose working set is not
+  itemized.
+
+**Reopen if.**
+- M3's serving needs graph capture: pointer tables and captured graphs
+  then need the relocation rules.
+- A phase kind's working set cannot be itemized from its plan.
+- The loose process-level memory comparison fails and the excess is
+  jitLLM's own.
+
 ## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
 
 **Decision.** The owner, on 2026-09-27: any operation that takes more than

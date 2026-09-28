@@ -210,6 +210,52 @@ TEST(Admission, TheSubstitutesChangesAreRefusedNotDeferred) {
   EXPECT_FALSE(admission.Boundary(b, 1, 3).value().paused.has_value());
 }
 
+// D-050's row: while one pause is open, a still-running cohort member is
+// not paused, although an interactive request waits whose phase would fit
+// in its place. Once the first pause has closed, the same boundary pauses
+// it (the control: the guard, not the fit, held it).
+TEST(Admission, ASecondPauseIsNotTakenWhileOneIsOpen) {
+  Node node(100, PolicySettings{});
+  Admission& admission = node.admission;
+  ASSERT_TRUE(admission.AddFixed(Bytes(10), 0).has_value());
+  const RequestId a = Admit(admission, Spec(0, 60, RequestClass::kBackground));
+  const RequestId c = Admit(admission, Spec(0, 10, RequestClass::kBackground));
+  ASSERT_TRUE(admission.Join(c, 0).has_value());
+  const RequestId b = Admit(admission, Spec(0, 20, RequestClass::kInteractive), 1);
+  ASSERT_EQ(admission.Boundary(a, 1, 2).value().paused, a);
+  const RequestId e = Admit(admission, Spec(0, 5, RequestClass::kInteractive), 3);
+  EXPECT_EQ(admission.StateOf(e), RequestState::kWaiting);
+  EXPECT_FALSE(admission.Boundary(c, 1, 4).value().paused.has_value());
+  EXPECT_EQ(admission.StateOf(c), RequestState::kRunning);
+  EXPECT_EQ(admission.StateOf(a), RequestState::kPaused);
+  // B retires and A resumes next: no pause is open any more.
+  EXPECT_EQ(admission.Retire(b, 5).value().run, a);
+  EXPECT_EQ(admission.Boundary(c, 1, 6).value().paused, c);
+}
+
+// D-050's "continuation expires while an admitted request is suspended"
+// (its M2 lifetime part; expiry itself is M4's retention): nothing in
+// admission ages an admitted request's allowance out. However long a
+// pause lasts, the paused request's retained allowance stays committed, a
+// newcomer that would need it waits, and the paused request resumes.
+TEST(Admission, APausedRequestKeepsItsAllowanceHoweverLongItWaits) {
+  Node node(100, PolicySettings{});
+  Admission& admission = node.admission;
+  ASSERT_TRUE(admission.AddFixed(Bytes(10), 0).has_value());
+  const RequestId a = Admit(admission, Spec(30, 30, RequestClass::kBackground));
+  const RequestId b = Admit(admission, Spec(10, 20, RequestClass::kInteractive), 1);
+  ASSERT_EQ(admission.Boundary(a, 1, 2).value().paused, a);
+  const Bytes retained = admission.Totals().retained;
+  EXPECT_EQ(retained, Bytes(40));
+  constexpr std::uint64_t kLater = 1'000'000'000;
+  const RequestId d = Admit(admission, Spec(30, 30, RequestClass::kBackground), kLater);
+  EXPECT_EQ(admission.StateOf(d), RequestState::kQueued);
+  EXPECT_EQ(admission.StateOf(a), RequestState::kPaused);
+  EXPECT_EQ(admission.Totals().retained, retained);
+  EXPECT_EQ(admission.Retire(b, kLater + 1).value().run, a);
+  EXPECT_EQ(admission.StateOf(a), RequestState::kRunning);
+}
+
 // Endless higher-class arrivals cannot starve a waiting background request.
 TEST(Admission, AgingPreventsStarvation) {
   Node node(1000, PolicySettings{.policy = SwitchingPolicy::kRunToCompletion, .aging_limit = 2});

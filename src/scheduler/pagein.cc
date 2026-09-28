@@ -74,7 +74,7 @@ void Scheduler::SetSource(catalog::ExtentId extent, const providers::ReadSpec& s
 
 std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
                                                     const PageSource& source) {
-  if (source.read.length == 0 ||
+  if (source.read.length == 0 || source.read.kind != providers::IoKind::kRead ||
       (source.landed && (slots_.empty() || source.destination == 0 ||
                          source.read.length > settings_.landing.slot_bytes.value())) ||
       (!source.landed && source.read.memory == nullptr) ||
@@ -88,13 +88,32 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
   if (!view) {
     return std::unexpected(WorkError::kUnavailable);
   }
+  if (source.write_back && view->descriptor.recovery != catalog::Recovery::kPreserve) {
+    return std::unexpected(WorkError::kInvalid);  // only live mutable contents are written back
+  }
+  const auto old = sources_.find(extent);
   if (view->state != catalog::ExtentState::kNonresident) {
     // Its backing is where its last source put it: an eviction must unmap
-    // that place, so the place cannot change until then.
-    const auto old = sources_.find(extent);
-    const std::optional<BackingPlace> place =
-        old != sources_.end() ? old->second.backing : std::nullopt;
-    if (place != source.backing) {
+    // that place, so the place cannot change until then. With no source
+    // yet, its owner mapped it and says where.
+    if (old != sources_.end() && old->second.backing != source.backing) {
+      return std::unexpected(WorkError::kBusy);
+    }
+    // A write-back copies the live contents from where they are: the
+    // destination (or memory, for a direct place) cannot move either.
+    if (old != sources_.end() && source.write_back &&
+        (old->second.landed != source.landed ||
+         (source.landed ? old->second.destination != source.destination
+                        : old->second.read.memory != source.read.memory))) {
+      return std::unexpected(WorkError::kBusy);
+    }
+  } else if (view->preserved) {
+    // The preserved contents are at the write-back place that wrote them
+    // and nowhere else: a source naming another range would restore other
+    // bytes under their generation (invariant 4). The backing may move.
+    if (old == sources_.end() || !source.write_back || !old->second.write_back ||
+        old->second.read.fd != source.read.fd || old->second.read.offset != source.read.offset ||
+        old->second.read.length != source.read.length) {
       return std::unexpected(WorkError::kBusy);
     }
   }
@@ -144,6 +163,11 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
         }
         if (found->content_generation != generation) {
           return std::unexpected(WorkError::kStale);  // a load restores current contents only
+        }
+        if (source->second.write_back && !found->preserved) {
+          // Nothing was written back at this generation: the place holds
+          // no contents the closure could use (invariant 4).
+          return std::unexpected(WorkError::kUnavailable);
         }
         if (board_.available() == 0) {
           return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
@@ -546,6 +570,13 @@ void Scheduler::FreeSlot(std::size_t slot) {
       Proceed(next);  // takes this slot
       return;
     }
+    // A write-back waits in the same order (an extent is never loading
+    // and evicting at once).
+    const auto eviction = evictions_.find(next);
+    if (eviction != evictions_.end() && eviction->second.stage == EvictStage::kSlot) {
+      ProceedEviction(next);  // takes this slot
+      return;
+    }
   }
 }
 
@@ -555,10 +586,16 @@ bool Scheduler::RetryBlocked() {
     const catalog::ExtentId extent = blocked_.front();
     blocked_.pop_front();
     const auto found = loads_.find(extent);
-    if (found == loads_.end()) {
+    const auto eviction = evictions_.find(extent);
+    bool opened = false;
+    if (found != loads_.end()) {
+      opened = OpenStage(extent, found->second);
+    } else if (eviction != evictions_.end() && !eviction->second.operation.valid()) {
+      opened = OpenEvictStage(extent, eviction->second);
+    } else {
       continue;
     }
-    if (!OpenStage(extent, found->second)) {
+    if (!opened) {
       blocked_.push_front(extent);  // still no mailbox: the rest wait too
       break;
     }
@@ -576,7 +613,16 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
     return std::unexpected(WorkError::kClosed);
   }
   const auto source = sources_.find(extent);
-  if (source == sources_.end() || !source->second.backing) {
+  const auto extent_view = catalog_.Describe(extent);
+  if (!extent_view) {
+    return std::unexpected(WorkError::kUnavailable);
+  }
+  // Live mutable contents at a write-back place are written back first;
+  // invalidated ones need nothing preserved.
+  const bool write_back = source != sources_.end() && source->second.write_back &&
+                          extent_view->descriptor.recovery == catalog::Recovery::kPreserve &&
+                          !extent_view->discarded;
+  if (!write_back && (source == sources_.end() || !source->second.backing)) {
     // Unmanaged backing: the catalog alone records it.
     const auto ticket = catalog_.BeginEvict(extent);
     if (!ticket) {
@@ -585,46 +631,202 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
     base::Check(catalog_.CompleteEvict(*ticket).has_value(), "completing a fresh eviction");
     return Readiness::kReady;
   }
-  if (lanes_.device == nullptr && lanes_.backing == nullptr) {
+  const PageSource& place = source->second;
+  if (write_back && (lanes_.storage == nullptr || (place.landed && lanes_.device == nullptr))) {
+    return std::unexpected(WorkError::kInvalid);
+  }
+  if (place.backing && lanes_.device == nullptr && lanes_.backing == nullptr) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (board_.available() == 0) {
     return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
   }
-  // Excludes new leases at once; the backing is released only on the
-  // VMM lane, after every consumer has retired (the lease rule).
-  const auto ticket = catalog_.BeginEvict(extent);
+  // Excludes new leases at once; the contents are read, and the backing
+  // released, only on the lanes, after every consumer has retired (the
+  // lease rule).
+  const auto ticket = catalog_.BeginEvict(extent, write_back);
   if (!ticket) {
     return std::unexpected(ErrorOf(ticket.error()));
   }
-  const BackingPlace place = source->second.backing.value_or(BackingPlace{});
-  Operation& operation = Open(Kind::kEvict);
-  operation.extent = extent;
-  operation.route = BackingRoute();
-  operation.device = DeviceCommand{.operation = operation.id,
-                                   .work = BackingWork{.kind = BackingWork::Kind::kUnmap,
-                                                       .reservation = place.reservation,
-                                                       .offset = place.offset,
-                                                       .size = place.size,
-                                                       .allocation_class = place.allocation_class}};
   Eviction& eviction = evictions_[extent];
-  eviction = Eviction{.ticket = *ticket, .operation = operation.id, .evictor = task, .waiters = {}};
+  eviction = Eviction{.ticket = *ticket,
+                      .operation = {},
+                      .evictor = task,
+                      .waiters = {},
+                      .stage = EvictStage::kUnmapping,
+                      .slot = std::nullopt,
+                      .write_back = write_back};
   eviction.waiters.reserve(settings_.waiters);
   eviction.waiters.push_back(task);
   ++record->waiting;
-  SetCritical(operation, true);
-  Publish(operation);
+  if (write_back && place.landed) {
+    eviction.stage = EvictStage::kSlot;
+    ProceedEviction(extent);  // last: it may settle the eviction at once
+    return Readiness::kWaiting;
+  }
+  eviction.stage = write_back ? EvictStage::kWriting : EvictStage::kUnmapping;
+  if (!OpenEvictStage(extent, eviction)) {
+    blocked_.push_back(extent);
+  }
   return Readiness::kWaiting;
 }
 
-void Scheduler::OnEvicted(catalog::ExtentId extent, Outcome outcome) {
+void Scheduler::ProceedEviction(catalog::ExtentId extent) {
   const auto found = evictions_.find(extent);
-  base::Check(found != evictions_.end(), "an unmap lost its eviction");
+  if (found == evictions_.end()) {
+    return;
+  }
+  Eviction& eviction = found->second;
+  base::Check(eviction.stage == EvictStage::kSlot, "a write-back proceeding past its slot");
+  const auto slot = std::ranges::find(slots_, SlotState::kFree);
+  if (slot == slots_.end()) {
+    slot_waiters_.push_back(extent);
+    return;
+  }
+  *slot = SlotState::kBusy;
+  eviction.slot = static_cast<std::size_t>(slot - slots_.begin());
+  eviction.stage = EvictStage::kCopyOut;
+  if (!OpenEvictStage(extent, eviction)) {
+    blocked_.push_back(extent);
+  }
+}
+
+bool Scheduler::OpenEvictStage(catalog::ExtentId extent, Eviction& eviction) {
+  if (board_.available() == 0) {
+    if (!NoMailboxEver()) {
+      return false;
+    }
+    if (eviction.stage == EvictStage::kUnmapping && !eviction.write_back) {
+      // Plain evictions open their unmap when they begin; this one never
+      // started, so nothing changed.
+      EndEviction(extent, false);
+      return true;
+    }
+    // Nothing a lane will run touched the backing: the extent keeps its
+    // contents, resident again. A write already made is merely unused.
+    if (eviction.slot) {
+      const std::size_t slot = *eviction.slot;
+      eviction.slot.reset();
+      FreeSlot(slot);
+    }
+    EndEviction(extent, false);
+    return true;
+  }
+  const PageSource& place = sources_.at(extent);
+  Operation& operation = Open(Kind::kEvict);
+  operation.extent = extent;
+  eviction.operation = operation.id;
+  switch (eviction.stage) {
+    case EvictStage::kCopyOut: {
+      base::Check(eviction.slot.has_value(), "a write-back's copy without a slot");
+      DeviceWork work;
+      work.stream = settings_.landing.stream;
+      work.copies.at(0) =
+          DeviceCopy{.destination = settings_.landing.slots.at(eviction.slot.value_or(0)),
+                     .source = place.destination,
+                     .size = Bytes(place.read.length)};
+      work.count = 1;
+      operation.route = Route::kDevice;
+      operation.device = DeviceCommand{.operation = operation.id, .work = work};
+      break;
+    }
+    case EvictStage::kWriting: {
+      providers::ReadSpec spec = place.read;
+      spec.kind = providers::IoKind::kWrite;
+      if (place.landed) {
+        base::Check(eviction.slot.has_value(), "a landed write-back without a slot");
+        const std::uint64_t slot = settings_.landing.slots.at(eviction.slot.value_or(0));
+        spec.memory = reinterpret_cast<std::byte*>(slot);  // NOLINT(performance-no-int-to-ptr)
+      }
+      operation.route = Route::kStorage;
+      operation.read = ReadCommand{.operation = operation.id, .spec = spec};
+      break;
+    }
+    case EvictStage::kUnmapping: {
+      base::Check(place.backing.has_value(), "unmapping backing a source does not manage");
+      const BackingPlace backing = place.backing.value_or(BackingPlace{});
+      operation.route = BackingRoute();
+      operation.device =
+          DeviceCommand{.operation = operation.id,
+                        .work = BackingWork{.kind = BackingWork::Kind::kUnmap,
+                                            .reservation = backing.reservation,
+                                            .offset = backing.offset,
+                                            .size = backing.size,
+                                            .allocation_class = backing.allocation_class}};
+      break;
+    }
+    case EvictStage::kSlot:
+      base::Check(false, "opening an operation for a write-back waiting for a slot");
+      break;
+  }
+  SetCritical(operation, true);
+  Publish(operation);  // last: a rollback settles the stage at once
+  return true;
+}
+
+void Scheduler::OnEvicted(catalog::ExtentId extent, Outcome outcome, std::uint64_t bytes) {
+  const auto found = evictions_.find(extent);
+  base::Check(found != evictions_.end(), "an eviction stage lost its eviction");
+  Eviction& eviction = found->second;
+  eviction.operation = OperationId{};
+  const bool succeeded = outcome == Outcome::kSucceeded;
+  const PageSource& place = sources_.at(extent);
+  switch (eviction.stage) {
+    case EvictStage::kCopyOut:
+      if (succeeded) {
+        eviction.stage = EvictStage::kWriting;
+        if (!OpenEvictStage(extent, eviction)) {
+          blocked_.push_back(extent);
+        }
+        return;
+      }
+      // The copy's fence completed (or it never started): the slot is
+      // untouched from here on, and the extent's contents were only read.
+      [[fallthrough]];
+    case EvictStage::kWriting: {
+      // The write has completed: the slot (or the extent's memory) is
+      // touched no more. The contents are preserved only if it moved
+      // the whole range.
+      const bool whole =
+          eviction.stage == EvictStage::kWriting && succeeded && bytes == place.read.length;
+      if (eviction.slot) {
+        const std::size_t slot = *eviction.slot;
+        eviction.slot.reset();
+        FreeSlot(slot);  // may hand the slot on; this eviction stays
+      }
+      Eviction& again = evictions_.at(extent);
+      if (!whole) {
+        EndEviction(extent, false);  // abandoned: resident again, contents intact
+        return;
+      }
+      if (!place.backing) {
+        EndEviction(extent, true);  // unmanaged backing: the catalog alone records it
+        return;
+      }
+      again.stage = EvictStage::kUnmapping;
+      if (!OpenEvictStage(extent, again)) {
+        blocked_.push_back(extent);
+      }
+      return;
+    }
+    case EvictStage::kUnmapping:
+      // Released: the backing generation advances. Refused with nothing
+      // changed: the eviction is abandoned and the extent is resident
+      // again.
+      EndEviction(extent, succeeded);
+      return;
+    case EvictStage::kSlot:
+      base::Check(false, "a completion for a write-back waiting for a slot");
+      return;
+  }
+}
+
+void Scheduler::EndEviction(catalog::ExtentId extent, bool evicted) {
+  const auto found = evictions_.find(extent);
+  base::Check(found != evictions_.end(), "ending an eviction that is not in flight");
   Eviction eviction = std::move(found->second);
   evictions_.erase(found);
-  const bool evicted = outcome == Outcome::kSucceeded;
-  // Released: the backing generation advances. Refused with nothing
-  // changed: the eviction is abandoned and the extent is resident again.
+  base::Check(!eviction.slot, "an eviction ended holding a slot");
   base::Check(evicted ? catalog_.CompleteEvict(eviction.ticket).has_value()
                       : catalog_.CancelEvict(eviction.ticket).has_value(),
               "settling an eviction");
@@ -643,6 +845,12 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
   }
   Eviction eviction = std::move(found->second);
   evictions_.erase(found);
+  Remove(slot_waiters_, extent);
+  Remove(blocked_, extent);
+  if (eviction.slot) {
+    // A copy or write may still touch it: never reused.
+    slots_.at(*eviction.slot) = SlotState::kQuarantined;
+  }
   base::Check(catalog_.QuarantineEviction(eviction.ticket).has_value(), "quarantining an eviction");
   for (const TaskId waiter : eviction.waiters) {
     Wake(waiter, true);
