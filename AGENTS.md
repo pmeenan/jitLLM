@@ -159,7 +159,7 @@ affected docs. Until then, these govern.
 | `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/`. `retained_backing/` holds the retained-backing replay and its candidate designs, which unit tests cover |
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest; a `std::expected`'s error is read through `tests/support/expected_error.h`, D-083); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
-| `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the safe reading of a `std::expected`'s error (D-083), the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan |
+| `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the safe reading of a `std::expected`'s error (D-083), the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan; the paged harnesses' node and task programs (`paged_node.h`, `paged_programs.h`), which the benchmarks' model runners share |
 | `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `jitllm_package.py`), `job-proof` (the confined-job proof), `run-target` (runs cross-built tests under qemu-user or over SSH) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
@@ -262,10 +262,10 @@ reference's on every FP16 arm and both EXL3 fixtures. P4–P6 landed
 (D-086, [aggregate report](docs/experiments/backend-proof/README.md)):
 write-back of live state through the zone, partial evictions, state
 spill and lifetime cases on both representations and the real
-providers, and the operation contract. Open: BP-S3 (FP16 and EXL3 in
-one process) and BP-P1's coalesced reads, both built in M2 at the
-owner's choice; D-050 rows whose features come later move to their
-milestones. D-033 is retained; per D-085, BP-F2 does not run and each
-engine is held to its reference's speed end to end once operational.
-Keep this
+providers, and the operation contract; BP-S3 alternates FP16 and EXL3 in
+one process, each evicting the other's weights. Open: BP-P1's coalesced
+reads (built in M2 at the owner's choice); D-050 rows whose features
+come later move to their milestones. D-033 is retained; per D-085, BP-F2
+does not run and each engine is held to its reference's speed end to
+end once operational. Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

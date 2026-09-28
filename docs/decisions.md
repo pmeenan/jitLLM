@@ -129,8 +129,9 @@ internal contract M3 builds on
     end-to-end parity once serving works.
   - *D-053* holds as built: jitLLM owns streams, workspace, handles,
     fusion and completion; plans select between implementations
-    (fused/unfused RMSNorm, EXL3 GEMM/GEMV); nothing is substituted. BP-S3,
-    FP16 and EXL3 alternating in one process, is not yet shown.
+    (fused/unfused RMSNorm, EXL3 GEMM/GEMV); nothing is substituted. BP-S3
+    shows FP16 and EXL3 alternating in one process, each on its own
+    stream and launch contexts, over one catalog, zone and workspace.
   - *D-081* stands: BP-F1 passed on device VMM, page-in through the zone
     runs at disk speed, and write-back takes the zone's reverse path.
 

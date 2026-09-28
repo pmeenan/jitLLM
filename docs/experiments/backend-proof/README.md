@@ -244,6 +244,104 @@ reference engine. It passes: native is 0.81–0.96× the FP16 bridge on
 every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
 ([backend-proof.md](../../backend-proof.md), "The memory check").
 
+## BP-S3: FP16 and EXL3 in one process
+
+**The harness.** The paged harnesses became model runners on one node:
+- [`paged_node.h`](../../../tests/support/paged_node.h) holds what the
+  models share: the providers, one catalog domain, the scheduler with its
+  lanes, the landing zone, and one workspace (the activation region and
+  the GGML pool) sized for the larger need of each part.
+- Each model has its own stream, launch contexts, cache and staging:
+  [`fp16_runner.h`](../../../benchmarks/fp16_runner.h) for FP16 (GGML's
+  kernels and cuBLAS), and [`exl3_runner.h`](../../../benchmarks/exl3_runner.h)
+  for EXL3 (ExLlamaV3's kernels and GGML's).
+- `jitllm_fp16_paged` and `jitllm_exl3_paged` run one model each, as
+  before. The EXL3 launch context is now made before the scheduler runs,
+  and EXL3's VMM work moved to the VMM lane, as FP16's already ran.
+- The refactored binaries were rerun with P4's options (`spark-b`, same
+  build). Each gave rung 3's logits, all refusals, no cache byte
+  differing, and for `--cancel-in-flight` the result above:
+  - FP16-F `control`: `--restores 1 --relocate --partial --spill managed`;
+  - FP16-U `heldout`: `--lanes inline --embeddings shared --spill premapped`;
+  - EXL3-G 4.0 bpw: `--restores 1 --relocate --partial --spill premapped
+    --cancel-in-flight`;
+  - EXL3-O 4.5 bpw: `--lanes inline --spill managed`.
+- [`alternate_paged.cc`](../../../benchmarks/alternate_paged.cc) registers
+  both models and alternates them: FP16, EXL3, FP16 and so on, for three
+  rounds. Each model runs its whole trajectory set per evaluation: 76
+  tokens for FP16 `control` and 577 for `heldout`; for EXL3, every
+  prefix with its 16 steps.
+- **The budget** B is the node's fixed occupancy plus the larger model's
+  weights plus half the smaller's. Both models' weights never fit at once.
+- **Before each evaluation** the model's whole closure is acquired
+  ([`AcquireProgram`](../../../tests/support/paged_programs.h)):
+  - the memory module plans the materialization against B
+    (`PlanMaterialization`), the shared workspace protected;
+  - the victims it chooses are evicted and their backing released;
+  - what is missing pages in through the zone.
+  Its jobs then run under leases, as in a standalone run. The models
+  never run at once: each job is waited for until its fence completes, so
+  the workspace needs no ordering between their streams.
+- **The run checks** that:
+  - every evaluation's logits equal that model's first, and rung 3's
+    hashes;
+  - every acquisition after the first evicts only the other model's
+    weights, and at least one;
+  - the catalog's occupancy never exceeds B;
+  - the scratch class is charged exactly the shared workspace, once;
+  - each model's coverage and bounds hold, as in its standalone
+    `summary.json` and `paging.json`.
+
+**Results** (2026-09-27, `spark-b`: GB10, kernel 7.0.0-1019-nvidia,
+driver 580.178.04, the `spark-native` build, `jitllm_alternate_paged`
+`1e1467ec…`, `CUDA_DISABLE_PTX_JIT=1`, lanes on their own threads, three
+rounds; an earlier build of the same code before formatting, `0bcffb4b…`,
+gave the same results, and the timings and memory below are its):
+
+| Pair | Every evaluation against rung 3 | Weight extents (FP16, EXL3) | Evicted from the other model, per acquisition after the first | Own or other extents evicted | B, peak occupancy | Shared workspace (separate) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| FP16-F `control` + EXL3-G 4.0 bpw | FP16 `bb8ae5e7…` ×3; EXL3 all 10 `.npy` ×3 | 620, 292 | 146 | 0 | 2,442,810,496, the same | 385,875,968 (417,333,248) |
+| FP16-U `heldout` + EXL3-O 4.5 bpw | FP16 `69ff0821…` ×3; EXL3 all 10 `.npy` ×3 | 620, 302 | 151 | 0 | 2,899,767,936, the same | 530,579,456 (857,735,168) |
+
+- Every bound tensor or range lay in cataloged, resident device memory of
+  its class, the model's own or the shared workspace: no violation in
+  332,370 (`control`) or 258,510 (`heldout`) FP16 tensors, or in
+  542,928 EXL3 ranges per pair.
+- Each acquisition took 41–115 ms. Each evaluation took 0.53–0.63 s for
+  FP16 `control`, 1.38–1.50 s for `heldout`, and 6.5–7.3 s for EXL3.
+  Reported, not gated.
+- **Peak memory, loosely (D-085).** This is the drop in `MemAvailable`
+  during each run, from system counters (the
+  [vmm-counters](../vmm-counters/README.md) finding: VMM backing appears
+  in no process counter). Measured on an idle `spark`, same binaries,
+  FP16-F `control` and EXL3-G 4.0 bpw, two runs each:
+
+  | Run | Drop |
+  | --- | ---: |
+  | FP16 alone | 2,069–2,134 MiB |
+  | EXL3 alone | 6,457–6,671 MiB |
+  | Both, alternating | 7,224–7,858 MiB |
+
+  - The pair costs less than the two alone.
+  - About 1.4 GB of EXL3's drop is cataloged (its weights, region, pool,
+    cache, zone and pinned staging). The other 5 GB or so is outside the
+    catalog. Not investigated.
+  - EXL3 alone here drops about 1.7 GB more than native EXL3's 4,813 MiB
+    in the memory check (`jitllm_exl3_exec`, rung 3, arm O, `cudaMalloc`;
+    [backend-proof.md](../../backend-proof.md), "The memory check").
+    The harness and arm differ; the gap is not explained.
+
+**Tests.**
+- `unit.AcquireTest.*` (fake backend): each acquisition evicts only the
+  other model's weights, as many as the shortfall needs, never the shared
+  workspace, even from a closure that omits it (unprotected, it would be
+  the first victim). A closure that cannot fit is refused as over budget
+  and evicts nothing.
+- `unit.CudaPagedNodeTest.*` (`gpu`): two synthetic models alternate on
+  the real providers, each on its own stream, through one zone and
+  workspace. Each acquisition evicts only the other's weights, and the
+  bytes read back are the file's. Teardown leaves no backing.
+
 ## The case matrix
 
 | Case | Status | Where |
@@ -268,7 +366,7 @@ every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
 | BP-F3 | Deferred to serving: D-085 judges each engine end to end against its reference | — |
 | BP-F4 | Per-launch host cost reported; per-token against upstream's decode deferred with BP-F3 | [launch-overhead](../launch-overhead/README.md) |
 | BP-S1, S2, S4 | Pass | P1, P2 |
-| BP-S3 | Not shown: FP16 and EXL3 have run in separate processes only | open |
+| BP-S3 | Passes: FP16 and EXL3 alternate in one process, each evicting the other's weights, every evaluation equal to rung 3 | below |
 
 ## D-050's adversarial matrix (M2 rows)
 
@@ -324,7 +422,15 @@ artifacts (`artifact-layout-20260922/installed`):
   --plan PLAN --ids IDS --out DIR` with the options in the table;
 - then compare `summary.json` (logits, bit differences and coverage) and
   `paging.json` (partial evictions, refusals, cache comparison, cancel
-  result, bounds against peaks).
+  result, bounds against peaks);
+- for BP-S3, `jitllm_alternate_paged --fp16-artifact ART --trajectory T
+  --tokens FILE --fusion F --exl3-artifact ART --fixture X --arm A --plan
+  PLAN --ids IDS --out DIR --rounds 3 --fp16-expect SHA256 --exl3-expect
+  RUNG3DIR`, where RUNG3DIR is P3's `rung3-*` output. It exits 1 on any
+  failed check; `alternation.json` has each evaluation's hashes and
+  evictions and each sample's occupancy.
 
-Each run took under 20 s. Raw outputs stay on `spark-b` under
-`~/.local/share/jitllm/m2close-final`.
+Each run took under 20 s; each alternation, about 40 s. Raw outputs stay
+on `spark-b` under `~/.local/share/jitllm/m2close-final` and
+`~/.local/share/jitllm/bps3-20260927`. The memory runs' summaries are on
+`spark` under `~/.local/share/jitllm/bps3-20260927`.

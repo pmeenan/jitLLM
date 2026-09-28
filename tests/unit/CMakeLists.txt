@@ -72,6 +72,14 @@ add_executable(pagein_test pagein_test.cc)
 target_link_libraries(pagein_test PRIVATE jitllm_scheduler jitllm_fake_providers)
 jitllm_gtest(pagein_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# BP-S3's acquisition (tests/support/paged_programs.h) over the fake
+# providers: two models under one budget, each evicting only the other's
+# weights.
+add_executable(acquire_test acquire_test.cc)
+target_link_libraries(acquire_test PRIVATE jitllm_paged_programs jitllm_scheduler
+                                           jitllm_fake_providers)
+jitllm_gtest(acquire_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Storage and whole reads, on the fake and on io_uring with a real file.
 add_executable(storage_test storage_test.cc)
 target_link_libraries(storage_test PRIVATE jitllm_fake_providers jitllm_storage jitllm_platform)
@@ -123,6 +131,16 @@ if(JITLLM_CUDA)
                    DISCRETE "*/CudaPageIn.LandedLoadsReachDeviceVmmAndReloadIdentically/*"
                             "*/CudaPageIn.CancellingWithLoadsInFlightDrainsThem/*"
                             "*/CudaPageIn.CancellingDuringACopyWaitsForItsFence/*"
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+  # BP-S3's paged node (tests/support/paged_node.h) on a GB10: two models
+  # on their own streams alternating under one budget, through one zone and
+  # one shared workspace.
+  add_executable(cuda_paged_node_test cuda_paged_node_test.cc)
+  target_include_directories(cuda_paged_node_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(cuda_paged_node_test PRIVATE jitllm_paged_node)
+  jitllm_gpu_gtest(cuda_paged_node_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)

@@ -886,10 +886,21 @@ reservation policy) were recorded in M0.
       - D-050's rows: the pause, lifetime and registration rows gained
         tests (`unit.Admission.*`, `unit.ShapeScenarioTest.*`,
         `unit.VmmWork/PageInTest.*`).
-      - Open: BP-S3 (FP16 and EXL3 alternating in one process) and BP-P1's
-        coalesced reads, which the owner chose to build in M2. D-050 rows
-        whose features arrive later move to those features' milestones
-        (owner, 2026-09-27).
+      - **BP-S3** (2026-09-27, `spark-b`): the paged harnesses became
+        model runners (`benchmarks/fp16_runner.h`, `exl3_runner.h`) on a
+        shared node (`tests/support/paged_node.h`): one catalog domain,
+        scheduler, landing zone and workspace (activations and GGML
+        pool), each model on its own stream. `jitllm_alternate_paged`
+        alternates FP16 and EXL3 for three rounds under a budget that
+        holds one model's weights and half the other's; each acquisition
+        (`AcquireProgram`, the memory module's planning) evicts only the
+        other model's weights. Every evaluation equals its model's rung-3
+        logits bit for bit, with no coverage violation, on two pairings.
+        Tests: `unit.AcquireTest.*` (fake backend) and
+        `unit.CudaPagedNodeTest.*` (`gpu`).
+      - Open: BP-P1's coalesced reads, which the owner chose to build in
+        M2. D-050 rows whose features arrive later move to those
+        features' milestones (owner, 2026-09-27).
 - [x] **Retained-backing comparison** ([scope](backend-proof.md#retained-backing-comparison)):
       build the cross-model swap trace, have the retain/amend criteria
       approved, then keep or amend D-033.

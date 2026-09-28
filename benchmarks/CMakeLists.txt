@@ -69,17 +69,40 @@ if(JITLLM_CUDA)
                                                  jitllm_warnings)
   target_link_options(jitllm_fp16_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # The paged model runners: the FP16 fixture and an EXL3 fixture, each a
+  # model on a paged node (tests/support/paged_node.h), so one process can
+  # hold either or both (BP-S3). Their binaries link the launch recorder
+  # themselves (an object library, whose wrappers must be in the link).
+  add_library(jitllm_paged_runners STATIC fp16_runner.cc fp16_common.cc exl3_runner.cc
+                                          exl3_common.cc)
+  target_include_directories(jitllm_paged_runners SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_include_directories(jitllm_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(jitllm_paged_runners PUBLIC jitllm_paged_node jitllm_exl3_qwen2
+                                                    jitllm_ggml_kernels jitllm_scheduler
+                                                    jitllm_cuda_device_memory jitllm_artifact
+                                                    jitllm_model jitllm_plan_record
+                                             PRIVATE jitllm_warnings)
+
   # Backend-proof P2, rungs 4 and 5: the same fixture paged into device VMM
   # through the landing zone by the scheduler and its lanes, executed as
   # device jobs under leases, evicted and restored
   # (docs/experiments/backend-proof-p2/). Links the launch recorder.
-  add_executable(jitllm_fp16_paged fp16_paged.cc fp16_common.cc)
-  target_include_directories(jitllm_fp16_paged SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(jitllm_fp16_paged PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
-                                                  jitllm_scheduler jitllm_artifact jitllm_model
-                                                  jitllm_launch_recorder jitllm_warnings)
+  add_executable(jitllm_fp16_paged fp16_paged.cc)
+  target_link_libraries(jitllm_fp16_paged PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                                  jitllm_warnings)
   target_link_options(jitllm_fp16_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # BP-S3: the FP16 fixture and an EXL3 fixture alternating on one paged
+  # node, under a budget that forces each to evict the other's weights
+  # (docs/experiments/backend-proof/). Links the launch recorder.
+  add_executable(jitllm_alternate_paged alternate_paged.cc)
+  target_include_directories(jitllm_alternate_paged SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_alternate_paged PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                                       jitllm_warnings)
+  target_link_options(jitllm_alternate_paged PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through jitLLM's launchers at upstream's forced plans,
@@ -105,10 +128,8 @@ if(JITLLM_CUDA)
   # device VMM through the landing zone by the scheduler and its lanes,
   # executed as device jobs under leases, evicted and restored
   # (docs/experiments/backend-proof-p3/). Links the launch recorder.
-  add_executable(jitllm_exl3_paged exl3_paged.cc exl3_common.cc)
-  target_link_libraries(jitllm_exl3_paged PRIVATE jitllm_exl3_qwen2 jitllm_scheduler
-                                                  jitllm_cuda_device_memory jitllm_artifact
-                                                  jitllm_model jitllm_launch_recorder
+  add_executable(jitllm_exl3_paged exl3_paged.cc)
+  target_link_libraries(jitllm_exl3_paged PRIVATE jitllm_paged_runners jitllm_launch_recorder
                                                   jitllm_warnings)
   target_link_options(jitllm_exl3_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 

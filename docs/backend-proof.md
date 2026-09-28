@@ -1767,7 +1767,10 @@ beside the candidate)
   from the old plan is reused only with validated compatibility; otherwise it
   is recomputed.
 - **BP-S3:** Models using different kernel sources are resident and run
-  alternately in one process, with correct accounting of shared workspace.
+  alternately in one process, with correct accounting of shared workspace
+  (passed 2026-09-27: FP16 and EXL3 alternating on one node, each
+  evicting the other's weights under one budget; the
+  [aggregate report](experiments/backend-proof/README.md#bp-s3-fp16-and-exl3-in-one-process)).
 - **BP-S4:** In the fake backend, a build profile lacking an eligible
   implementation reports the model as unsupported. Nothing is substituted.
 
