@@ -94,16 +94,30 @@ tree (the lock's `license.scope` lists it); every added file is under the
 root MIT license with no header of its own (checked 2026-09-28; the NVFP4
 MMQ instance unit Qwen3.8 added, `template-instances/mmq-instance-nvfp4.cu`,
 likewise, checked the same day). Upstream's
-`argsort.cu` and `top-k.cu` include CUB directly, and jitLLM's patch
+`argsort.cu` and `top-k.cu` would include CUB directly, and jitLLM's patch
 builds them without it (bitonic argsort; top-k's radix select, upstream's
-HIP path). CUB's own headers in the SDK's CCCL are BSD-3-Clause,
-Apache-2.0 or Apache-2.0 WITH LLVM-exception, and what `argsort.cu` and
-`top-k.cu` would include also reaches two BSL-1.0 Thrust headers,
-`thrust/detail/preprocessor.h` and `type_deduction.h` (checked
-2026-09-28). The owner approved CUB, with those two headers, on 2026-09-28
-(D-091). Whether GGML's argsort and top-k take it follows a measured A/B;
-adopting it records in provenance.toml's `cccl` unit what is reached, and
-the package then carries CUB's BSD-3-Clause notice. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
+HIP path). D-080 cleared libcu++ only. CUB's own headers in the SDK's
+CCCL are BSD-3-Clause, Apache-2.0 or Apache-2.0 WITH LLVM-exception, but
+what `argsort.cu` and `top-k.cu` would include also reaches two BSL-1.0
+Thrust headers, `thrust/detail/preprocessor.h` and `type_deduction.h`
+(checked 2026-09-28). The owner approved CUB with those headers on
+2026-09-28 (D-091), adopting it only if a measurement shows it faster; it
+is not faster where it matters, so the build still leaves it out. On `spark-b` (CUDA 13.4.92,
+CCCL 3.4.3, `sm_121a`, idle GPU, the two builds of the same pinned files
+in one scratch binary, median of 7), upstream's CUB top-k
+(`DeviceTopK::MaxPairs` once per row) took 8.4–13.2 µs a call in a
+captured graph for one row of 1,024 to 262,144 columns, against 18–41 µs
+now (bitonic at 1,024, the radix select beyond). Across a decode step that is 0.4% of DeepSeek V4
+Flash's 48 ms at 4,096 positions (21 CSA layers, top 512 of 1,024) and
+0.8% at 256K, reaching 1.1% only at 1M; Qwen3.8's QSA top-k runs only past
+2,051 cells and would save 0.3–0.8% of its 40 ms. At two rows it is even,
+at four and more slower, and a 512-row prefill chunk's top-k is 3.6–71×
+slower (DeepSeek, 4,096 positions: 5.0 ms against 0.19 ms a layer, +7% a
+chunk; Qwen3.8, 8,192 cells: +10%). Argsort is the same bitonic kernel
+either way for rows of at most 1,024 (MoE routing: 256 and 512 experts;
+bitwise-identical output). The selections were equal as index sets on
+distinct values and as value multisets under ties; which tied index is
+chosen differs. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)).
 

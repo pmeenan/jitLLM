@@ -294,9 +294,10 @@ it appears.
       change.
       Open: the vector attention at D = 256, which
       upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
-      runs it meanwhile); and whether GGML's argsort and top-k take CUB,
-      which the owner approved on 2026-09-28 (D-091) and the build still
-      leaves out (top-k takes GGML's radix select; an A/B decides;
+      runs it meanwhile). CUB stays out although its licenses are
+      cleared (D-091): upstream's CUB top-k is 2–3× faster for one row but
+      under 1% of a decode step below 1M positions, and 3.6–71× slower for
+      prefill's many rows (measured 2026-09-28,
       [licensing.md](licensing.md)).
 - [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
       compressed sparse attention with its indexer (CSA/HCA) and mHC;
