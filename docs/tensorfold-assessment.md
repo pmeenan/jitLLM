@@ -7,10 +7,12 @@ The owner asked, on 2026-09-26, that [TensorFold](https://github.com/ashhart/Ten
 be considered as a benchmark target and as a source of optimization ideas.
 This is a source review of commit
 [`d7470ed`](https://github.com/ashhart/TensorFold/tree/d7470ed8f6365ad3c7c7268f3c32da548eb1c343)
-(version 0.3.1). TensorFold itself has not been run. Every number about
-TensorFold below is creator-reported and unverified; only the `/proc`
-observations in item 6 are ours. Measuring TensorFold on our Sparks is a
-separate step ([below](#proposed-use)).
+(version 0.3.1). Every number about TensorFold in the sections up to
+[Proposed use](#proposed-use) is creator-reported and unverified; only the
+`/proc` observations in item 6 are ours. TensorFold has since been pinned
+and measured on our Sparks as an M3 baseline
+([baselines](experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)),
+and its later commits are surveyed [at the end](#upstream-to-0362-2026-09-28).
 
 ## What it is
 
@@ -196,3 +198,119 @@ Mapped to where they would land in jitLLM:
   - Record the result under `docs/experiments/`, as with the other
     references.
   - This waits until the Spark is free of P0's timing sessions.
+
+## Upstream to 0.3.6.2 (2026-09-28)
+
+The pin moved from `beddbb7b` (0.3.5.1) to main's tip
+[`71377a53`](https://github.com/ashhart/TensorFold/tree/71377a5373ed7b394f1b480ba2a6a3986b03af1c)
+(0.3.6.2): 58 commits, still MIT ([licensing](licensing.md#tensorfold)). On
+our Qwen3.8 Flash Next baseline the tip measures within 4% of the first pin
+([baselines](experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)).
+Of the load study's four cold-start patches, one is upstream: JIT kernels
+built for the GPU present (`34bae79`, 0.3.6.1). The O_DIRECT reader, the
+int32 nibble shuffle and the RUNBOOK's cache volumes still apply as they
+were. The owner is taking those upstream.
+
+What the commits offer jitLLM, read from the code. Every TensorFold number
+here is creator-reported, on one GB10 unless stated:
+
+1. **Grouped EXL3 routed experts, every codebook and mixed widths**
+   (`1bbd2dd`; `cuda/exl3/experts.cu`, `experts_grouped.cuh`).
+   - What it does: one launch per projection covers a whole MoE layer.
+     Each expert has its own width (1–8 bits, half-bit steps) and is read
+     in place through per-expert pointer tables. Grouping, the input
+     rotation, the SwiGLU epilogue and down plus combine are fused. It
+     uses no atomics and no host sync, so it can be graph-captured.
+   - Gain (micro-benchmark on MiMo's real experts): 1.5–3.6× ExLlamaV3's
+     `exl3_moe_mixedk`, for example 179.6 against 49.9 GB/s at one row.
+     It is within 2% of `exl3_moe_coop` on uniform layers, which coop
+     alone can dispatch.
+   - jitLLM has no EXL3 MoE yet (M4 kernels). The pointer-table read suits
+     demand-paged experts (M7). **Lands in M4, then M7. Highest value.**
+2. **A latent MLA cache for GLM** (`fb985b8`, `279d8f7`;
+   `glm5_next/cuda/latent.py`, `sparse.py`).
+   - What it does: stores only the 512-wide latent, about 1 KB a token and
+     layer. Queries absorb `kv_b`'s key blocks and outputs expand through
+     its value blocks. A radix select picks the top 512 pools, with a
+     graph per pool bucket.
+   - Gain (two Sparks, with MTP): 256K context. Prompt 1,138 / 898 / 849
+     tok/s and decode 50.9 / 47.2 / 31.9 tok/s at 32K / 131K / 256K. Loss
+     within 0.001 nats of the per-head cache.
+   - The M4 GLM cache design, and it sizes GLM's swap spill. **M4.**
+3. **Confidence-gated MTP chains** (`decode.py:draft()`, present at
+   `beddbb7b`; `163da97` only adds `--mtp-confidence`).
+   - What it does: keeps the first draft, then stops before any draft whose
+     probability is under 0.30, up to 6 a round. It costs a host sync per
+     draft. The commit calls 0.60 and 0.75 "the measured policies", with
+     no numbers.
+   - On our prompts this gives 2.21 / 2.35 tokens a round (measured).
+     jitLLM's Qwen3.8 drafts a fixed 2 inside one graph. A depth-3 verify
+     costs about 5.7 ms more there, and depth 3 measured slower overall. A
+     device-side stop could recover depth without paying for rejected
+     rows. **M3 speculation, or M9's draft-length tuning.**
+4. **Quantized KV caches, int8 and int4** (`549b7a7`, `22649b7`, `b8612e4`,
+   `6ed268b`).
+   - What it does: ExLlamaV3's `-cq 8` / `-cq 4` arithmetic. Groups of 32
+     are Hadamard-rotated with an fp16 absmax scale. The query is rotated
+     to match and the output rotated back, so the stored codes stay
+     rotated. Indexer and pooled keys stay bf16.
+   - Gain: 30,784 → 18,304 → 11,648 bytes a token (1.68× / 2.64×). No
+     speed or quality number. The test checks scales bit for bit against
+     ExLlamaV3's quantizer, written independently.
+   - A checkable candidate for the deferred quality/performance modes
+     item. If M4's Mia oracles run `-cq`, it becomes a same-format need.
+     **Deferred modes; check at M4.**
+5. **A row-invariant EXL3 linear for every codebook and width** (`e9780ed`,
+   `b16fb91`, `38235a9`; `cuda/exl3/linear.cu`, `decode.cuh`).
+   - What it does: K-split ranges depend only on (K, N), for 1 to 128 rows.
+     `38235a9` loads each k step's low-bit words as one coalesced run a
+     warp, shuffled out, with the next step in flight.
+   - Gain (micro-benchmark, one row): 2-bit o_proj and down 76–79 → 186–193
+     GB/s, level with ExLlamaV3's own linear (176–233).
+   - jitLLM already runs ExLlamaV3's kernels at their speed
+     (`src/kernels/exl3/`), for mcg at integer widths only, and they are
+     not row-invariant. This is an MIT reference for more codebooks and
+     widths, and for exact speculative verify on EXL3 (D-092). **M4.**
+6. **Flash Next and the 27B on EXL3 checkpoints, with MTP** (`d7d18e0`,
+   `5b4b343`; measured in `654e4ad`, `docs/recipes/qwen3.8-flash-next.md`).
+   - Flash Next on turboderp's 3.05 bpw pack decodes at 59.4–80.8 tok/s,
+     against 62.7–76.5 for its MLX 4-bit and 33.2–42.4 for vLLM MTP 3.
+     Those are 64-token replies to its own prompts.
+   - Without drafts it runs 1.51–1.55× ExLlamaV3 on a mixed-width pack and
+     5–6% behind it on the uniform 3.05 bpw pack. Top-1 agreement with
+     ExLlamaV3 is 0.954–0.959. Prefill is 930–970 tok/s, about 0.4× MLX's.
+     Weights take 52 GB against MLX's 81 GB.
+   - The pack traps are directly reusable in M4: norms stored as gamma−1,
+     the MTP mixer kept outside the index, and ExLlamaV3's n-gram row
+     codec. **M4; an EXL3 Flash Next is an M9 format option.**
+7. **Streaming routed experts from SSD into a GPU pool** (`--ssd-experts`,
+   0.3.6, `src/tensorfold/streaming/`; Metal only).
+   - What it does: the GPU signals each MoE layer's picks to a host thread
+     through a shared event inside the command stream, then waits. The host
+     loads missing experts into an LRU of slots and writes the slot table.
+     The kernels are the resident ones with a different address, so the
+     tokens are identical.
+   - Gain (M3 Ultra, held to a 64 GB Mac's budget, 24 GiB pool): decode
+     0.31–0.39× resident, prefill about 0.33×.
+   - This is D-008's routing-as-dependency-discovery on another stack,
+     with a working in-stream wait. **M7.**
+8. **Smaller items.**
+   - The prefill head on the final chunk only (`96c0b0e`): jitLLM's chunk
+     graphs already compute only the last rows' logits.
+   - Prompt kernels at startup (`416106f`): 26.4 s of first-start compiles
+     moved ahead of `/health` (measured). jitLLM compiles ahead of time, so
+     this does not apply.
+   - Evicted-prefix spill to disk (`675d4c2`, Mac): 2.2–2.4 GiB written in
+     0.18–0.19 s and read back in 0.24 s, answering in 2.3 s against
+     26.2 s cold. It corroborates M6's retention spill.
+   - N-gram rows read a chunk ahead while the previous chunk computes
+     (`ea709da`, Mac): a small lever for our synchronous row reads in M3
+     prefill.
+   - Concurrent 27B serving, and a request that stops or fails leaving its
+     neighbours exact (`2fbebf7`, `9a1e6f1`, `24afe5e`, `ce09822`). These
+     are M5 and M6 test cases, for client disconnects and admission
+     failure.
+
+Ranked by likely value to jitLLM: the grouped mixed-width EXL3 experts,
+the latent MLA cache, confidence-gated drafts, the quantized KV caches, and
+the row-invariant EXL3 linear.

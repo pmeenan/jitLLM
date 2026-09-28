@@ -670,7 +670,7 @@ resolved from the Hugging Face, GitHub and registry APIs on 2026-09-28.
 | MiaAI single-Spark recipe | `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark@b8439110eec0230facbe4ddf0dffe01b8f769be0` (main on 2026-09-28) | AGPL-3.0-or-later ([below](#miaai-single-spark-recipe)) |
 | Its default engine | `vllm/vllm-openai:qwen38-flash-next`, index `sha256:fc120ece…`, arm64 `sha256:3b0e188f…`; built 2026-08-26 as a local build (its labels give no vLLM commit); FlashInfer 0.6.17, CUDA 13.0.1, NCCL 2.30.7 | vLLM Apache-2.0; the image's full closure is not audited |
 | Its opt-in lane (`start-v030.sh`) | `vllm/vllm-openai:v0.30.0`, index `sha256:8a69ffad…`, arm64 `sha256:4864d466…`; vLLM `ced6857a` (tag v0.30.0); FlashInfer 0.6.18.post1, CUTLASS v4.7.1, CUDA 13.0.2. It serves `nvidia/Qwen3.8-Flash-Next-NVFP4`, not pinned: only if this lane becomes a baseline | As above |
-| TensorFold | `ashhart/TensorFold@beddbb7bc818b432163c30500aea256e2b46ff8a` (0.3.5.1, head on 2026-09-28); runs in `nvcr.io/nvidia/pytorch:26.07-py3`, index `sha256:2140e699…` | MIT ([below](#tensorfold)) |
+| TensorFold | `ashhart/TensorFold@71377a5373ed7b394f1b480ba2a6a3986b03af1c` (0.3.6.2, main on 2026-09-28; moved from `beddbb7b`, 0.3.5.1, the same day); runs in `nvcr.io/nvidia/pytorch:26.07-py3`, index `sha256:2140e699…` | MIT ([below](#tensorfold)) |
 | llama.cpp, the GGUF oracle | `b29c606e` (build 10964), the source lock's pin and M0's image `ghcr.io/ggml-org/llama.cpp@sha256:837fc732…`. It has `deepseek4`, `dflash` (DSpark) and `qwen4exp`; the drafter's card needs b10269 or newer | MIT (recorded under the first dense slice) |
 
 vLLM or SGLang as DeepSeek's cross-quantization comparator is not pinned:
@@ -706,22 +706,33 @@ any later reuse starts from vLLM's or another upstream's own sources.
 
 ### TensorFold
 
-Pinned at `beddbb7b`: 371 tracked files. The root `LICENSE` is the MIT
-text, "Copyright (c) 2026 TensorFold contributors" (SHA-256 `be6a9ee4…`),
-and `pyproject.toml` declares MIT. No file carries an SPDX tag or a
-license text of its own. `THIRD_PARTY_NOTICES.md` names what is adapted
-or vendored, and `LICENSES/Apache-2.0.txt` ships the Apache text:
+Pinned at `71377a53` (0.3.6.2): 540 tracked files, 58 commits after the
+first pin `beddbb7b` (0.3.5.1, 371 files), with commits by ten outside
+contributors besides the author and no separate terms stated for them. The root `LICENSE`
+is the MIT text, "Copyright (c) 2026 TensorFold contributors", unchanged
+(SHA-256 `be6a9ee4…`), and `pyproject.toml` declares MIT. No file carries
+an SPDX tag; five EXL3 files name ExLlamaV3 in their first line (below).
+`THIRD_PARTY_NOTICES.md` names what is adapted or vendored and, since
+0.3.6, carries the MIT permission text; `LICENSES/Apache-2.0.txt` ships the
+Apache text (unchanged):
 
 | Paths | Declaration |
 | --- | --- |
-| `src/tensorfold/drafters/vendor/z_lab_dflash/model_mlx.py` | Vendored unmodified from `z-lab/dflash`, MIT, Copyright (c) 2026 Z Lab: stated in its directory's `README.md` and the notices, not in the file |
+| `src/tensorfold/drafters/vendor/z_lab_dflash/model_mlx.py` | Vendored unmodified from `z-lab/dflash`, MIT, Copyright (c) 2026 Z Lab: stated in its directory's `README.md` and the notices, not in the file. Unchanged since `beddbb7b` |
 | The n-gram ID helpers in `src/tensorfold/families/qwen4_exp/model.py` and `cuda/ngram.py` | Translated from transformers' `modeling_qwen4_exp.py`, Apache-2.0, Copyright 2026 The Qwen Team and The HuggingFace Inc. team (per the notices) |
 | `src/tensorfold/kernels/qwen/dense/v1/lane_gdn.py`, `lane_tree.py` | Adapt mlx-lm's `qwen3_5` and `gated_delta` math, MIT, Apple (per the notices) |
-| Everything else | TensorFold's MIT. The notices say the CUDA DeltaNet kernel follows flash-linear-attention's numerics, the NCCL wrapper vLLM's stream convention, and the GLM EXL3 decoder ExLlamaV3's layout "without copying"; the GLM engine follows Mia's recipe "without including recipe code" |
+| EXL3 (new since `beddbb7b`): the shared module `src/tensorfold/cuda/exl3/` (15 files: trellis decoders, the row-invariant linear, grouped experts), GLM's `families/glm5_next/cuda/exl3.{py,cu}`, `exl3_mm.py`, and the Qwen loaders `families/qwen3_5/cuda/exl3_load.py`, `families/qwen4_exp/cuda/exl3.py` | Read ExLlamaV3's EXL3 format (trellis layout and bitstream, the 3inst, mcg and mul1 codebooks, fragment order, the n-gram row codec), MIT, Copyright (c) 2025 Turboderp. The notices call them "separate implementations, checked bit for bit against ExLlamaV3's dequantization"; `exl3/decode.cuh`, `exl3/experts_grouped.cuh`, `exl3/format.py`, `glm5_next/cuda/exl3.cu` and `exl3.py` say "after ExLlamaV3" with that notice in their first lines |
+| `src/tensorfold/families/qwen4_exp/cuda/kvcache.py`, `kvquant.py` (new) | The int8 and int4 KV caches follow ExLlamaV3's `-cq 8` / `-cq 4` scheme (MIT, Turboderp); per the notices the quantizer and dequant are TensorFold's own code |
+| GLM on Apple Silicon (new; Metal, not the CUDA path): `families/glm5_next/` MLX engine, `kernels/glm/flash/v1/` | Per the notices: follows mlx-vlm's `glm5_next` (PR #2030) as vendored by oMLX (Apache-2.0), "nothing imported"; `kda.py` and `sparse_attention.py` ported from mlx-vlm PRs #2105 and #2245 (MIT, Copyright (c) 2025 Prince Canuma); the hyper-connection kernel repeats mlx-vlm's `deepseek_v4` one (MIT, Copyright (c) 2026 Apple Inc.); row kernels repeat MLX 0.32's arithmetic (MIT, Apple) |
+| Everything else | TensorFold's MIT. The notices say the CUDA DeltaNet kernel follows flash-linear-attention's numerics and the NCCL wrapper vLLM's stream convention, "without copying"; the GLM engine follows Mia's recipe "without including recipe code". The Mac-only `ssd` extra builds a small MLX extension with nanobind 2.15.0 (not on the CUDA path) |
 
-**Status: cleared** to run as a baseline, and its own code is
-core-eligible (MIT) if ever ported, with the Apache-2.0 and MIT notices
-above kept for the files they cover. Its runtime (PyTorch, Triton) comes
+**Status: cleared** to run as a baseline (at `beddbb7b`; the terms at
+`71377a53` are the same MIT, so the owner's clearance is carried, not
+re-granted), and its own code is core-eligible (MIT) if ever ported, with
+the Apache-2.0 and MIT notices above kept for the files they cover. A port
+of the EXL3 or KV-cache code would keep ExLlamaV3's MIT notice (Turboderp)
+beside TensorFold's; a port of the Metal GLM kernels, mlx-vlm's and
+Apple's. Its runtime (PyTorch, Triton) comes
 from NVIDIA's container and is not audited. Its Qwen3.8 Flash Next family
 reads groups of 32 (`families/qwen4_exp/cuda/qmm.py`), matching the
 checkpoint; the 64 in [tensorfold-assessment.md](tensorfold-assessment.md)

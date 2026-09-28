@@ -46,6 +46,13 @@ def session(directory):
                 if drafts:
                     entry["draft_acceptance"] = rounded(
                         sum(r["draft_n_accepted"] for r in drafts) / sum(r["draft_n"] for r in drafts), 3)
+                stats = [r["engine_stats"] for r in row["runs"] if (r.get("engine_stats") or {}).get("drafted")]
+                if stats:  # TensorFold's per-reply block: drafted and accepted tokens, rounds
+                    entry["draft_acceptance"] = rounded(
+                        sum(s["accepted"] for s in stats) / sum(s["drafted"] for s in stats), 3)
+                    entry["tokens_per_round"] = rounded(statistics.median(
+                        r["completion_tokens"] / r["engine_stats"]["rounds"] for r in row["runs"]
+                        if (r.get("engine_stats") or {}).get("rounds")))
                 metrics = row.get("spec_metrics_delta") or {}
                 drafted = sum(v for k, v in metrics.items() if "num_draft_tokens_total" in k)
                 accepted = sum(v for k, v in metrics.items()

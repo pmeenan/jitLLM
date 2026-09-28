@@ -410,6 +410,116 @@
     "peak_memavailable_drop_gib": 88.43,
     "baseline_memavailable_gib": 118.1
   },
+  "qwen3.8_tensorfold_mlx4_0.3.6.2": {
+    "load_ready_s": 142.82,
+    "load_first_token_s": 143.03,
+    "peak_memavailable_drop_gib": 88.9,
+    "baseline_memavailable_gib": 117.23,
+    "prefill": {
+      "512": {
+        "prompt_tokens": 532,
+        "n": 3,
+        "client_tok_s": 1330.3,
+        "client_tok_s_range": [
+          1294.0,
+          1335.2
+        ],
+        "engine_tok_s": null
+      },
+      "2048": {
+        "prompt_tokens": 2075,
+        "n": 3,
+        "client_tok_s": 2094.7,
+        "client_tok_s_range": [
+          2055.3,
+          2104.5
+        ],
+        "engine_tok_s": null
+      },
+      "8192": {
+        "prompt_tokens": 8212,
+        "n": 3,
+        "client_tok_s": 2322.8,
+        "client_tok_s_range": [
+          2218.1,
+          2322.9
+        ],
+        "engine_tok_s": null
+      }
+    },
+    "decode": {
+      "mtp": {
+        "prose": {
+          "n": 3,
+          "completion_tokens": [
+            256,
+            256,
+            256
+          ],
+          "client_tok_s": 55.39,
+          "client_tok_s_range": [
+            50.97,
+            55.42
+          ],
+          "engine_tok_s": null,
+          "draft_acceptance": 0.461,
+          "tokens_per_round": 2.21
+        },
+        "code": {
+          "n": 3,
+          "completion_tokens": [
+            256,
+            256,
+            256
+          ],
+          "client_tok_s": 56.05,
+          "client_tok_s_range": [
+            53.11,
+            56.09
+          ],
+          "engine_tok_s": null,
+          "draft_acceptance": 0.463,
+          "tokens_per_round": 2.35
+        }
+      },
+      "spec_off": {
+        "prose": {
+          "n": 3,
+          "completion_tokens": [
+            256,
+            256,
+            256
+          ],
+          "client_tok_s": 37.55,
+          "client_tok_s_range": [
+            37.5,
+            37.59
+          ],
+          "engine_tok_s": null
+        },
+        "code": {
+          "n": 3,
+          "completion_tokens": [
+            256,
+            256,
+            256
+          ],
+          "client_tok_s": 37.53,
+          "client_tok_s_range": [
+            37.48,
+            37.54
+          ],
+          "engine_tok_s": null
+        }
+      }
+    }
+  },
+  "qwen3.8_tensorfold_first_start_0.3.6.2": {
+    "load_ready_s": 224.38,
+    "load_first_token_s": 224.84,
+    "peak_memavailable_drop_gib": 87.7,
+    "baseline_memavailable_gib": 115.86
+  },
   "qwen3.8_llamacpp_ud_iq3_xxs_spec_off": {
     "load_ready_s": 68.09,
     "load_first_token_s": 68.62,

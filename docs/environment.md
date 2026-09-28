@@ -371,7 +371,7 @@ application configuration.
 | `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93` (UD-Q2_K_XL, DSpark Q8_0, READMEs) | yes | yes |
 | `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` | yes | yes |
 | `Qwen/Qwen-Image-2.1@790c9263` (BF16; without `assets/qr.png`) | yes | yes |
-| `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` | yes | no |
+| `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` | yes | yes (downloaded on `spark-b` from Hugging Face, 2026-09-28) |
 
 Every file was checked on each host against the pinned SHA-256 (or Git
 blob, for small files) and size. Binary reference outputs kept out of Git
@@ -381,7 +381,8 @@ live on both Sparks under `~/.local/share/jitllm/references/`. The older store,
 DeepSeek V4 Flash at `e3aa0d6a` (`D/`) and Qwen3.8's UD-IQ3_XXS (`Q/`).
 
 Each checkpoint was downloaded once, on `spark`, then copied to `spark-b`
-over the direct link. One sample each, on 2026-09-28:
+over the direct link; TensorFold's MLX checkpoint `spark-b` later
+downloaded itself, verified the same way. One sample each, on 2026-09-28:
 - **Internet** (`curl` from `huggingface.co`, resumable): about 55 MB/s
   for one stream in a 1 GiB range probe, and about 80 MB/s with three
   files in parallel (213.7 GB in about 44 minutes).

@@ -193,12 +193,13 @@ it appears.
       [pins](experiments/fast-swap/pins.json)): the recipe pinned at
       `b8439110` with all 70 tracked files classified, and run unmodified
       as a baseline (owner, 2026-09-28); TensorFold at `beddbb7b` and its
-      checkpoint cleared; the four checkpoints, the vLLM images and the
-      llama.cpp pin recorded; the vLLM, FlashInfer and CUTLASS parts of
+      checkpoint cleared (the pin moved to `71377a53`, 0.3.6.2, the same
+      day, with the same MIT terms); the four checkpoints, the vLLM images
+      and the llama.cpp pin recorded; the vLLM, FlashInfer and CUTLASS parts of
       Mia's NVFP4 and MXFP8 path identified with their licenses, a
       CuTe-DSL kernel's runtime among them under NVIDIA's proprietary
-      terms. The checkpoints are on both Sparks' NVMe, TensorFold's on
-      `spark` only ([environment.md](environment.md#m3-model-store-2026-09-28)).
+      terms. The checkpoints are on both Sparks' NVMe
+      ([environment.md](environment.md#m3-model-store-2026-09-28)).
       The default vLLM image's commit (`8e685d198`) and the kernels its
       engine log selects were read in the baselines item.
 - [ ] **Baselines,** installed and run on the Sparks by us: MiaAI's
@@ -693,10 +694,11 @@ it appears.
   and beside the baselines ([measured](experiments/fast-swap/baselines.md),
   cold page cache, one run each): Mia's vLLM Qwen3.8 at 13 min 13 s from
   start to first token (11–14 min creator-reported), TensorFold at 141 s
-  (about 90 s creator-reported), the pinned llama.cpp at 77 s from DeepSeek
-  0731 to Qwen3.8's GGUF and 104 s back with A's 8K state restored (75–93 s
-  per switch in M0's run of the older revision), and diffusers at 212 s
-  from process start to Qwen-Image's first denoising step.
+  at `beddbb7b` and 143 s at `71377a53` (about 90 s creator-reported),
+  the pinned llama.cpp at 77 s from DeepSeek 0731 to Qwen3.8's GGUF and
+  104 s back with A's 8K state restored (75–93 s per switch in M0's run
+  of the older revision), and diffusers at 212 s from process start to
+  Qwen-Image's first denoising step.
 - **LLM correctness:** on a short prompt set, greedy tokens match the
   model's same-format oracle (table above), with small logit differences
   allowed, and perplexity on a fixed text is within a few percent of the

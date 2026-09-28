@@ -494,7 +494,7 @@
       "card_license": "other",
       "license_sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
       "license_name": "Qwen Community License 1.0 (same bytes as the base's LICENSE)",
-      "hosts": "spark only",
+      "hosts": "spark and spark-b (each downloaded from Hugging Face)",
       "bytes": 113233046214,
       "files": [
         {
@@ -727,9 +727,15 @@
     {
       "id": "tensorfold",
       "repository": "https://github.com/ashhart/TensorFold",
-      "revision": "beddbb7bc818b432163c30500aea256e2b46ff8a",
-      "version": "0.3.5.1",
-      "tracked_files": 371,
+      "revision": "71377a5373ed7b394f1b480ba2a6a3986b03af1c",
+      "version": "0.3.6.2",
+      "tracked_files": 540,
+      "previous": {
+        "revision": "beddbb7bc818b432163c30500aea256e2b46ff8a",
+        "version": "0.3.5.1",
+        "tracked_files": 371,
+        "note": "the first pin, measured on spark on 2026-09-28; the pin moved to main's tip the same day, with the same LICENSE"
+      },
       "license": "MIT",
       "license_sha256": "be6a9ee4462784a762b21790954b8e76c4dcacc9fb6da2a40d03a8a9bddec93e",
       "container": "nvcr.io/nvidia/pytorch:26.07-py3",

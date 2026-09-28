@@ -11,13 +11,14 @@ exceeds about 10%. Every number here is **measured** on `spark` in this
 session unless marked **creator-reported** (from the recipe's or engine's
 own documentation) or **computed**.
 
-**Headline (measured, `spark`, cold page cache):**
+**Headline (measured, `spark`, cold page cache; TensorFold 0.3.6.2 on `spark-b`):**
 
 | Model | Engine and format | Load to first token | Prefill at 8K, tok/s | Decode, tok/s: spec off / on | Peak memory (`MemAvailable` drop) |
 | --- | --- | ---: | ---: | --- | ---: |
 | DeepSeek V4 Flash 0731 | llama.cpp, UD-Q2_K_XL (oracle and comparator) | 104.0 s (92.3 s with the drafter) | 352 | 19.9 / 30.8–31.9 (DSpark) | 93.4 GiB (104.7 with the drafter) |
 | Qwen3.8 Flash Next | Mia's vLLM, NVFP4 (oracle and comparator) | 13 min 13 s (MTP 3, one cold start) | 2,066 | 25.1–25.3 / 37.9 (MTP 3) | 103.4 GiB |
-| Qwen3.8 Flash Next | TensorFold, MLX 4-bit (cross-quantization) | 140.6 s | 2,282 | 36.9–37.6 / 55.1–55.2 (MTP) | 85.7 GiB |
+| Qwen3.8 Flash Next | TensorFold 0.3.6.2 (`71377a53`), MLX 4-bit (cross-quantization); measured on `spark-b` | 143.0 s | 2,323 | 37.5 / 55.4–56.1 (MTP) | 88.9 GiB |
+| Qwen3.8 Flash Next | TensorFold 0.3.5.1 (`beddbb7b`, the first pin; history) | 140.6 s | 2,282 | 36.9–37.6 / 55.1–55.2 (MTP) | 85.7 GiB |
 | Qwen3.8 Flash Next | llama.cpp, UD-IQ3_XXS (cross-quantization) | 68.6 s | 616 | 30.4 / not run | 79.9 GiB |
 | Qwen-Image-2.1 | diffusers, BF16 | 212.2 s to the first step's output | 1.259 s per step at 1024², 40 steps | 52.5–52.7 s per full generation | 43.4 GiB |
 
@@ -35,7 +36,7 @@ the image's first denoising step; [swap.md](swap.md#results-m3s-swap-pairs-spark
 | --- | ---: | ---: |
 | DeepSeek 0731 (8K context) → Qwen3.8 | 7.7–8.8 s | 76.6 s (llama.cpp, Qwen3.8's UD-IQ3_XXS GGUF: cross-quantization, speed only) |
 | Qwen3.8 → DeepSeek 0731, A's 8K state restored | 8.8–9.0 s | 104.4 s (llama.cpp, the same) |
-| Qwen3.8 (NVFP4) to its first token | 6.2–8.8 s from another model | 13 min 13 s (Mia's vLLM, from start); 141 s (TensorFold, MLX 4-bit, cross-quantization) |
+| Qwen3.8 (NVFP4) to its first token | 6.2–8.8 s from another model | 13 min 13 s (Mia's vLLM, from start); 143 s (TensorFold 0.3.6.2 on `spark-b`, MLX 4-bit, cross-quantization; 141 s at 0.3.5.1) |
 | Qwen-Image-2.1 to its first step's output | 5.0–6.3 s from an LLM | 212.2 s (diffusers BF16, from process start) |
 | Worst LLM↔LLM swap | 9.38 s | — |
 
@@ -74,7 +75,7 @@ File age (RE-027: the SSD reads recently written data about 11% faster):
 | DeepSeek V4 Flash 0731 UD-Q2_K_XL and DSpark Q8_0 | 2026-09-28 00:31–01:08 EDT | about 1 hour: **recent** |
 | Qwen3.8 NVFP4 (Mia) | 2026-09-28 00:34–01:14 EDT; PLE table built 02:11 | about 1–2 hours; PLE table minutes: **recent** |
 | Qwen3.8 UD-IQ3_XXS GGUF (M0's, the swap's B) | 2026-09-21 22:26–22:37 EDT | 6 days: **at rest** |
-| TensorFold's MLX 4-bit checkpoint | 2026-09-28 01:16–01:32 EDT | about 1.5 hours: **recent** |
+| TensorFold's MLX 4-bit checkpoint | 2026-09-28 01:16–01:32 EDT on `spark`; 16:49–17:04 EDT on `spark-b` (downloaded there) | about 1.5 hours on `spark`, 7–37 minutes on `spark-b`: **recent** |
 | Qwen-Image-2.1 BF16 | 2026-09-28 00:30 EDT (copied into the store) | about 2.5 hours: **recent** |
 
 So every load here except the swap's B read recently written files, the
@@ -235,35 +236,75 @@ are reported, and the 8K rows varied by under 3%.
 
 ## Qwen3.8 Flash Next: TensorFold (MLX 4-bit; cross-quantization)
 
-Speed and memory only, never correctness, and never gated.
-`ashhart/TensorFold@beddbb7b` (0.3.5.1) installed as its runbook says into
-`nvcr.io/nvidia/pytorch:26.07-py3@sha256:2140e699…`
-([Dockerfile.tensorfold](Dockerfile.tensorfold); local image
-`sha256:305b9263…`), serving `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80`
-from a read-only mount with its defaults: one CUDA rank, MTP drafts on (1
-to 6 a round), thinking on, context from its startup estimate (137,206
+Speed and memory only, never correctness, and never gated. The M3
+baselines pinned `ashhart/TensorFold@beddbb7b` (0.3.5.1) and measured it on
+`spark`; the pin then moved to main's tip `71377a53` (0.3.6.2) the same day,
+re-measured on `spark-b` under the same protocol, prompts and client. Both
+are below; the tip's are current. Each is installed as its runbook says
+into `nvcr.io/nvidia/pytorch:26.07-py3@sha256:2140e699…`
+([Dockerfile.tensorfold](Dockerfile.tensorfold); local images
+`sha256:305b9263…` and `sha256:1a2afff2…`), serving
+`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` from a read-only mount
+with its defaults: one CUDA rank, MTP drafts on (1 to 6 a round, a chain
+stopping before a later draft under 30% confidence), thinking on, a bf16
+KV cache, and a context from its startup estimate (137,206 and 150,042
 tokens allocated). Speculation off is the request field `"draft": false`,
 on the same warm server. CUDA Qwen engines ignore `ignore_eos`; every
-decode still produced 256 tokens.
+decode still produced 256 tokens. The tip's launch adds a 110 GiB
+container memory cap and leaves the image's own `TORCH_CUDA_ARCH_LIST`
+(below).
 
-| Measure | MTP drafts (default) | `"draft": false` |
-| --- | ---: | ---: |
-| Start to ready / first token, s | 140.3 / 140.6 | (same server) |
-| Prefill, 532 / 2,075 / 8,212 prompt tokens, tok/s | 1,387 / 2,095 / 2,282 | — |
-| Decode, `prose` / `code`, tok/s | 55.24 / 55.13 | 36.87 / 37.61 |
-| Tokens per draft round (streamed pieces, computed) | 2.19 / 2.33 | 1 |
-| Peak `MemAvailable` drop, GiB | 85.7 | |
+| Measure | 0.3.6.2, drafts | 0.3.6.2, `"draft": false` | 0.3.5.1, drafts | 0.3.5.1, `"draft": false` |
+| --- | ---: | ---: | ---: | ---: |
+| Start to ready / first token, s (kernels cached) | 142.8 / 143.0 | (same server) | 140.3 / 140.6 | (same server) |
+| First start, empty kernel cache: ready / first token, s | 224.4 / 224.8 | | 199.8 / 225.4 | |
+| Prefill, 532 / 2,075 / 8,212 prompt tokens, tok/s | 1,330 / 2,095 / 2,323 | — | 1,387 / 2,095 / 2,282 | — |
+| Decode, `prose` / `code`, tok/s | 55.39 / 56.05 | 37.55 / 37.53 | 55.24 / 55.13 | 36.87 / 37.61 |
+| Draft acceptance, `prose` / `code` (accepted ÷ drafted, the engine's per-reply counts) | 0.461 / 0.463 | — | not recorded | — |
+| Tokens per draft round, `prose` / `code` | 2.21 / 2.35 (the engine's rounds) | 1 | 2.19 / 2.33 (streamed pieces, computed) | 1 |
+| Peak `MemAvailable` drop, GiB | 88.9 | | 85.7 | |
 
-The measured start is the second one, with its kernels already compiled.
-The first start compiles TensorFold's CUDA extensions: 199.8 s to ready and
-225.4 s to the first token. It failed at first: the container's
-`TORCH_CUDA_ARCH_LIST` (`8.0 8.6 9.0 10.0 11.0 12.0+PTX`) makes the JIT
-build every kernel for sm_80 too, where the cluster API and FP8 MMA do not
-exist; `TORCH_CUDA_ARCH_LIST=12.1` fixed it (about 10 minutes lost). The
-load is 140 s against the about 90 s creator-reported; it was one cold
-start. TensorFold's speculation-off decode (36.9–37.6) matches Mia's MTP 3
-decode (37.85), and with drafts it is 1.46× Mia's: a different
-quantization, so this is information, not a target.
+- **Old against new:** every speed is within 4% (the load +1.8%, prefill
+  at 8K +1.8%, decode −0.2 to +1.8%), under D-085's ~10% question, on a
+  different Spark of the same hardware, driver and kernel. The 58 commits
+  change this path's defaults little: their Flash Next work is EXL3
+  checkpoints, opt-in int8 and int4 KV caches, memory accounting and the
+  startup prefill below. Peak memory is 3.2 GiB (4%) higher; not
+  investigated.
+- **The first start.** At 0.3.5.1 it failed until
+  `TORCH_CUDA_ARCH_LIST=12.1` was set: the container's list (`8.0 8.6 9.0
+  10.0 11.0 12.0+PTX`) made the JIT build every kernel for sm_80 too, where
+  the cluster API and FP8 MMA do not exist (about 10 minutes lost). 0.3.6.1
+  (`34bae79`) passes `-gencode` for the GPU present, and the tip's first
+  start built in the image's default. The tip's startup also prefills a
+  synthetic prompt (`416106f`) so that no request compiles a prompt kernel:
+  26.4 s on the first start and 0.9 s once cached. So the first start is
+  ready 24.6 s later than 0.3.5.1's, and its first token arrives at the
+  same time.
+- **Exactness,** TensorFold's own claim: each drafted reply's `token_sha`
+  equals its `"draft": false` reply's (`prose` `71e063b2b477`, `code`
+  `a3bf76a03fa6`), in all three repeats.
+- **The load** is 143 s against the about 90 s creator-reported. A side
+  study outside the repository traced it to small buffered reads and an
+  int64 nibble shuffle in the expert repack, and two small patches cut it
+  to about 45 s at 0.3.5.1. Neither is upstream at 0.3.6.2, whose reader
+  and shuffle are unchanged; one phase-marked start there (unpatched,
+  148.6 s) spent 132.7 s in `weights.load`, 70.9 s of it reading at
+  1.13 GB/s. The owner is taking the patches upstream; the tip's patched
+  start was not measured.
+- **Against the other Qwen3.8 numbers:** TensorFold's speculation-off
+  decode (37.5) matches Mia's MTP 3 decode (37.85), and with drafts it is
+  1.46–1.48× Mia's. jitLLM's NVFP4 Qwen3.8 decodes at 25.8–26.1 tok/s plain
+  and 42.46 / 39.09 with MTP depth 2
+  ([qwen38-mtp](../qwen38-mtp/README.md#performance-and-memory)): 0.69–0.70× and
+  0.77 / 0.70× TensorFold's. A different quantization, so this is
+  information, not a target.
+- **Conditions on `spark-b`,** 17:11–17:27 EDT: before each start the GPU
+  was idle, at least 115 GiB available and no container running, twice
+  30 s apart; other agents' jobs ran on `spark-b` between the runs, and one
+  was waited out before the measured session. The first drafted `prose`
+  repeat (50.97 tok/s) is the one outlier. The kernel cache of the
+  measured start is the first start's.
 
 ## Qwen3.8 Flash Next: llama.cpp (UD-IQ3_XXS; cross-quantization)
 
@@ -368,8 +409,9 @@ run as its control.
   process; their swap is a stop plus the load above. **An LLM↔image swap
   in a reference:** diffusers and llama.cpp run in separate processes; the
   sum of their loads above is the comparison.
-- **TensorFold's draft acceptance, and llama.cpp's Qwen3.8 GGUF with a
-  drafter:** not recorded.
+- **llama.cpp's Qwen3.8 GGUF with a drafter:** not run. TensorFold's draft
+  acceptance was not recorded at 0.3.5.1; at 0.3.6.2 it is, from the
+  engine's per-reply counts (above).
 
 ## Reproduce
 
@@ -397,9 +439,14 @@ python3 tools/summarize.py results.json LABEL=raw/DIR ...
 ```
 
 TensorFold's and diffusers' exact `docker run` lines are in the raw logs
-(`logs/tf-run-cmd.txt`, and the image run mounts the checkpoint at `/model`,
-this directory at `/tools` and an output directory at `/out`, then runs
-`/tools/image_baseline.py /model /out/run1 /tools/prompts.json 3` with
-`PROCESS_START` set just before `docker run`). Mia's packed PLE table stays
-in `~/.cache/vllm/ple_cache/` on `spark` (27 GiB, root-owned, written by
-the recipe's container).
+(`logs/tf-run-cmd.txt`; for 0.3.6.2, `tf-run-cmd.txt` on `spark-b` under
+`~/.local/share/jitllm/baselines-20260928-tensorfold-71377a53/`, run as
+`baseline.py session --port 8090 --model tf --start "$(cat tf-run-cmd.txt)"
+--stop "sudo -n docker rm -f tfbase" --evict CHECKPOINT --tokenizer usage
+--variant mtp={} --variant 'spec_off={"draft": false}'`, after a first
+start with `--no-measure` and an empty kernel cache; and the image run
+mounts the checkpoint at `/model`, this directory at `/tools` and an
+output directory at `/out`, then runs `/tools/image_baseline.py /model
+/out/run1 /tools/prompts.json 3` with `PROCESS_START` set just before
+`docker run`). Mia's packed PLE table stays in `~/.cache/vllm/ple_cache/`
+on `spark` (27 GiB, root-owned, written by the recipe's container).

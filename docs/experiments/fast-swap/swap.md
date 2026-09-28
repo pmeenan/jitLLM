@@ -654,8 +654,9 @@ run each): llama.cpp's DeepSeek 0731 → Qwen3.8 (UD-IQ3_XXS) swap took
 76.6 s and the return with 8K state restored 104.4 s; jitLLM's
 DeepSeek → Qwen3.8 took 7.7–8.8 s and the return 8.8–9.0 s. Mia's vLLM
 reaches Qwen3.8's first token 13 min 13 s from start and TensorFold
-141 s; diffusers reaches Qwen-Image's first denoising step 212 s from
-process start, jitLLM 5.0–6.3 s from the swap request.
+141–143 s (0.3.5.1 and 0.3.6.2); diffusers reaches Qwen-Image's first
+denoising step 212 s from process start, jitLLM 5.0–6.3 s from the swap
+request.
 
 ## What was built (DeepSeek and the FP16 stand-in)
 

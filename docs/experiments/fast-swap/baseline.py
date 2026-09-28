@@ -123,7 +123,8 @@ class Client:
         if self.model:
             payload.setdefault("model", self.model)
         result = {"t_send": time.monotonic(), "t_first": None, "t_last": None,
-                  "pieces": 0, "text": "", "usage": None, "timings": None}
+                  "pieces": 0, "text": "", "usage": None, "timings": None,
+                  "engine_stats": None}
         with OPENER.open(self._request(path, payload), timeout=timeout) as response:
             for raw in response:
                 line = raw.strip()
@@ -136,6 +137,7 @@ class Client:
                 now = time.monotonic()
                 result["usage"] = chunk.get("usage") or result["usage"]
                 result["timings"] = chunk.get("timings") or result["timings"]
+                result["engine_stats"] = chunk.get("tensorfold") or result["engine_stats"]
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     piece = (delta.get("content") or delta.get("reasoning_content")
@@ -245,6 +247,7 @@ def measure(client, args, output):
                              "engine_tok_s": timings.get("predicted_per_second"),
                              "draft_n": timings.get("draft_n"),
                              "draft_n_accepted": timings.get("draft_n_accepted"),
+                             "engine_stats": result["engine_stats"],
                              "text_head": result["text"][:200]})
             after = spec_metrics(client)
             report["decode"][name][prompt["id"]] = {

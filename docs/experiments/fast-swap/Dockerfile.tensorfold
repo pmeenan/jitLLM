@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
-# TensorFold at its pin (beddbb7b) in NVIDIA's PyTorch container, as its
+# TensorFold at its pin (71377a53, 0.3.6.2; beddbb7b before) in NVIDIA's PyTorch container, as its
 # runbook installs it. Build context: a checkout of TensorFold at the pin.
 FROM nvcr.io/nvidia/pytorch:26.07-py3@sha256:2140e699b3beaf7f96a0081fd9c9406bc3832b435cdb60dfa2d261f7d2f34a1c
 COPY . /opt/tensorfold

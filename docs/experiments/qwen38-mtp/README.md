@@ -239,8 +239,9 @@ diagnosed.
 **Comparators.** Mia's vLLM (the same NVFP4 and MXFP8 checkpoint) from
 [baselines](../fast-swap/baselines.md): MTP 3 at 37.85 / 37.85 tok/s
 (`prose` / `code`, acceptance 0.423 / 0.422, peak 103.4 GiB), and MTP off
-(deterministic) at 25.12 / 25.33. TensorFold's 55.2 / 55.1 tok/s speculates
-cross-quantization and is information only.
+(deterministic) at 25.12 / 25.33. TensorFold's 55.2 / 55.1 tok/s (55.4 /
+56.1 at 0.3.6.2, 37.5 without drafts) speculates cross-quantization and
+is information only.
 
 **Speculative decode** (the greedy run above, `spark`, 256 tokens, three
 repeats, median in bold):
