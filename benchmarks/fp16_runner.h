@@ -69,6 +69,7 @@
 #define JITLLM_BENCHMARKS_FP16_RUNNER_H_
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -141,11 +142,16 @@ class Fp16Runner final : public test_support::PagedModel {
   // BP-S3's hooks. One evaluation of the trajectory from a cleared cache
   // (numbered as RunAlone numbers them), its logits in `result`.
   Status Evaluate(int evaluation, std::vector<float>& result);
+  // When the last evaluation's first chunk (the prompt's prefill) had its
+  // logits back: the first generated token's time (M3's swap runner).
+  std::chrono::steady_clock::time_point first_chunk_done() const { return first_chunk_done_; }
   // Everything a chunk leases: every weight, the cache, the workspace and
   // the staging.
   const catalog::Closure& everything() const { return everything_; }
   // The weight extents: the device chunks, then the host table's.
   std::vector<catalog::ExtentId> weights() const;
+  // The bytes a load of every weight extent reads.
+  std::uint64_t weight_read_bytes() const;
   // Summary and paging.json for `results` (the first is written); an error
   // for any failed check.
   Status Write(const std::vector<std::vector<float>>& results);
@@ -254,6 +260,7 @@ class Fp16Runner final : public test_support::PagedModel {
   std::uint64_t kv_mismatches_ = 0;
   std::uint64_t refusals_ = 0;           // incomplete closures refused before launch
   std::map<std::uint32_t, Peak> peaks_;  // by chunk rows
+  std::chrono::steady_clock::time_point first_chunk_done_;
 };
 
 }  // namespace jitllm::benchmarks

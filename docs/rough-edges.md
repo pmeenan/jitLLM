@@ -53,7 +53,7 @@ ratio needs a padded sinks tensor, or a kernel fix upstream.
 
 ---
 
-## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: open)
+## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: worked-around)
 
 On `spark-b` (GB10, driver 580.178.04), `jitllm_exl3_paged
 --cancel-in-flight` queues the 1,023-row EXL3 prefill as one device job
@@ -104,6 +104,30 @@ headers, clang 22.1.8), gave, in two identical runs:
 So a stream holds about 1,020 pending operations, whatever it waits on,
 and a launch into a full stream blocks the calling thread; other streams
 are unaffected. Mia's "next launch" did not reproduce with the driver API.
+
+**Also blocked, 2026-09-28 (`spark-b`, same driver):** while one thread is
+blocked launching into a full stream, `cuEventCreate` and
+`cuStreamCreate` on any other thread block too, for as long as it is
+(30 s in the probe below: until the gate opened). `cuEventRecord`,
+`cuEventQuery`, `cuMemcpyAsync` and a synchronize on another, idle stream
+returned at once. So a separate thread and stream are not enough: a lane
+that fences its work must not make events as it goes.
+
+**Worked around 2026-09-28 (M3's swap path):** the zone's copies, in and
+out, run on a copy lane of their own (a second device service with its own
+submission and completion threads over the zone's stream,
+`scheduler.h` `Lanes::copy`), and the CUDA device-execution provider takes
+fences' events from a pool made when it opens and kept when a fence is
+released (`cuda_device_execution.h`); the paged node makes as many as its
+device and copy lanes can hold fences at once (1,042), so neither makes
+one as it goes. A job blocked launching into a full
+stream then holds up no page-in; a DeepSeek chunk is 4,972 launches.
+Checked on `spark-b` by `unit.CudaPagedNodeTest.ACopyLaneLandsPageInsWhileAJobFillsItsStream`
+(a job gated by `cuStreamWaitValue32` on a host flag stops after about
+1,020 of its 1,500 operations, and a 6 MiB page-in completes in 11–13 ms
+meanwhile; without the pool it waited for the gate) and by the swap
+runner's overlap probe ([swap](experiments/fast-swap/swap.md)). The depth
+was not measured again: the test asserts only that the job stops short.
 
 What it implies for page-in copies sharing the submission lane: the lane
 must never launch into a stream that may be full. A phase of more than

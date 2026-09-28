@@ -219,7 +219,7 @@ class GgmlExtOpsTest : public ::testing::Test {
     return values;
   }
 
-  int ComputeCapability() const {
+  static int ComputeCapability() {
     int major = 0;
     int minor = 0;
     EXPECT_EQ(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0), cudaSuccess);
@@ -381,10 +381,11 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
           for (std::int64_t r = 0; r < kOut; ++r) {
             double sum = 0.0;
             for (std::int64_t i = 0; i < test.k; ++i) {
-              sum += weights.values[static_cast<std::size_t>(((expert * kOut + r) * test.k) + i)] *
-                     x[static_cast<std::size_t>(((t * rows_in + row_in) * test.k) + i)];
+              const auto wi = static_cast<std::size_t>((((expert * kOut) + r) * test.k) + i);
+              const auto xi = static_cast<std::size_t>((((t * rows_in) + row_in) * test.k) + i);
+              sum += weights.values[wi] * x[xi];
             }
-            want[static_cast<std::size_t>(((t * kUsed + s) * kOut) + r)] = sum;
+            want[static_cast<std::size_t>((((t * kUsed) + s) * kOut) + r)] = sum;
           }
         }
       }
@@ -507,7 +508,7 @@ TEST_F(GgmlExtOpsTest, QuantizedChecksRefuseWhatTheLaunchersWouldNotTake) {
 TEST_F(GgmlExtOpsTest, TheHadamardHintRunsTheNormalizedWalshHadamardTransform) {
   // DeepSeek V4's indexer rotation: 128-element heads; and 512.
   for (const std::int64_t n : {128, 512}) {
-    const std::int64_t rows = 64 * 3;
+    const std::int64_t rows = std::int64_t{64} * 3;
     const std::vector<float> x = Normal(41, static_cast<std::size_t>(n * rows));
     ggml_tensor* rotation = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, n, n));
     ggml_tensor* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, n, rows), x);
@@ -553,7 +554,14 @@ TEST_F(GgmlExtOpsTest, ElementwiseFunctionsMatchTheReference) {
   };
   const std::array<Function, 10> functions = {{
       {"abs", ggml_abs, [](double v) { return std::abs(v); }, false},
-      {"sgn", ggml_sgn, [](double v) { return v > 0 ? 1.0 : (v < 0 ? -1.0 : 0.0); }, false},
+      {"sgn", ggml_sgn,
+       [](double v) {
+         if (v > 0) {
+           return 1.0;
+         }
+         return v < 0 ? -1.0 : 0.0;
+       },
+       false},
       {"neg", ggml_neg, [](double v) { return -v; }, false},
       {"silu", ggml_silu, [](double v) { return v / (1.0 + std::exp(-v)); }, false},
       {"tanh", ggml_tanh, [](double v) { return std::tanh(v); }, false},
@@ -591,7 +599,7 @@ TEST_F(GgmlExtOpsTest, ElementwiseFunctionsMatchTheReference) {
 
 TEST_F(GgmlExtOpsTest, ScaleClampFillRepeatSubAndDivMatchTheReference) {
   // DeepSeek V4's hyper-connection pre weights: scale_bias over [4, tokens].
-  const std::vector<float> x = Normal(61, 24 * 5);
+  const std::vector<float> x = Normal(61, std::size_t{24} * 5);
   ggml_tensor* mixes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 24, 5), x);
   ggml_tensor* scaled = Place(ggml_scale_bias(c(), mixes, 0.75f, 1e-6f));
   Launched(kg::Scale(launch(), scaled), "scale_bias");
@@ -602,7 +610,7 @@ TEST_F(GgmlExtOpsTest, ScaleClampFillRepeatSubAndDivMatchTheReference) {
   ExpectNmse(Download(scaled), want, kDefaultNmse, "scale_bias");
 
   // The MoE's clamp of the expert logits, and Qwen3.8's.
-  const std::vector<float> wide = Normal(62, 2048 * 3, 20.0f);
+  const std::vector<float> wide = Normal(62, std::size_t{2048} * 3, 20.0f);
   ggml_tensor* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 2048, 3), wide);
   ggml_tensor* clamped = Place(ggml_clamp(c(), logits, -10.0f, 10.0f));
   Launched(kg::Clamp(launch(), clamped), "clamp");
@@ -636,8 +644,8 @@ TEST_F(GgmlExtOpsTest, ScaleClampFillRepeatSubAndDivMatchTheReference) {
 
   // sub and div with broadcasting: the hyper-connections' normalization of
   // [4, 4, tokens] by a row sum [1, 4, tokens].
-  const std::vector<float> a = Uniform(64, 16 * 5, 0.1f, 2.0f);
-  const std::vector<float> b = Uniform(65, 4 * 5, 0.5f, 3.0f);
+  const std::vector<float> a = Uniform(64, std::size_t{16} * 5, 0.1f, 2.0f);
+  const std::vector<float> b = Uniform(65, std::size_t{4} * 5, 0.5f, 3.0f);
   ggml_tensor* ta = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 4, 4, 5), a);
   ggml_tensor* tb = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, 4, 5), b);
   ggml_tensor* quotient = Place(ggml_div(c(), ta, tb));
@@ -697,21 +705,20 @@ TEST_F(GgmlExtOpsTest, ConcatAndSumRowsMatchTheReference) {
               at[static_cast<std::size_t>(dim)] -= shape_a[static_cast<std::size_t>(dim)];
             }
             const auto& shape = first ? shape_a : shape_b;
-            const float want = round((
-                first
-                    ? va
-                    : vb)[static_cast<std::size_t>(at[0] + shape[0] * (at[1] + shape[1] * at[2]))]);
-            ASSERT_EQ(got[static_cast<std::size_t>(i0 + joined->ne[0] * (i1 + joined->ne[1] * i2))],
-                      want)
-                << what;
+            const auto from =
+                static_cast<std::size_t>(at[0] + (shape[0] * (at[1] + (shape[1] * at[2]))));
+            const float want = round((first ? va : vb)[from]);
+            const auto to =
+                static_cast<std::size_t>(i0 + (joined->ne[0] * (i1 + (joined->ne[1] * i2))));
+            ASSERT_EQ(got[to], want) << what;
           }
         }
       }
     }
   }
   // A strided source: the first 48 elements of each row (the slow kernel).
-  const std::vector<float> va = Normal(73, 64 * 5);
-  const std::vector<float> vb = Normal(74, 48 * 5);
+  const std::vector<float> va = Normal(73, std::size_t{64} * 5);
+  const std::vector<float> vb = Normal(74, std::size_t{48} * 5);
   ggml_tensor* ta = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, 5), va);
   ggml_tensor* view = ggml_view_2d(c(), ta, 48, 5, ta->nb[1], 0);
   ggml_tensor* tb = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 48, 5), vb);
@@ -750,10 +757,11 @@ TEST_F(GgmlExtOpsTest, ArgsortAndTopKFindTheLargestValues) {
   // ggml_argsort_top_k views it, and top-k 512 of an indexer row.
   for (const std::int64_t experts : {256, 512}) {
     std::vector<float> scores(static_cast<std::size_t>(experts * 5));
-    std::mt19937 random(81);
+    std::mt19937 random(81);  // NOLINT(bugprone-random-generator-seed): reproducible
     for (std::size_t r = 0; r < 5; ++r) {
       std::vector<float> row(static_cast<std::size_t>(experts));
-      std::iota(row.begin(), row.end(), 0.0f);  // distinct: no ties
+      // Distinct: no ties. std::ranges::iota needs an incrementable type.
+      std::iota(row.begin(), row.end(), 0.0f);  // NOLINT(modernize-use-ranges)
       std::shuffle(row.begin(), row.end(), random);
       std::ranges::copy(row, scores.begin() + static_cast<std::ptrdiff_t>(r * row.size()));
     }
@@ -761,8 +769,9 @@ TEST_F(GgmlExtOpsTest, ArgsortAndTopKFindTheLargestValues) {
     ggml_tensor* order = Place(ggml_argsort(c(), in, GGML_SORT_ORDER_DESC));
     Launched(kg::Argsort(launch(), order), "argsort");
     const auto got = Download<std::int32_t>(order);
+    const auto width = static_cast<std::size_t>(experts);
     for (std::size_t r = 0; r < 5; ++r) {
-      for (std::size_t i = 0; i < static_cast<std::size_t>(experts); ++i) {
+      for (std::size_t i = 0; i < width; ++i) {
         const auto index =
             static_cast<std::size_t>(got[(r * static_cast<std::size_t>(experts)) + i]);
         ASSERT_EQ(scores[(r * static_cast<std::size_t>(experts)) + index],
@@ -774,10 +783,10 @@ TEST_F(GgmlExtOpsTest, ArgsortAndTopKFindTheLargestValues) {
     const std::int64_t rows = 3;
     const std::int64_t k = 512;
     std::vector<float> scores(static_cast<std::size_t>(cells * rows));
-    std::mt19937 random(82);
+    std::mt19937 random(82);  // NOLINT(bugprone-random-generator-seed): reproducible
     for (std::size_t r = 0; r < static_cast<std::size_t>(rows); ++r) {
       std::vector<float> row(static_cast<std::size_t>(cells));
-      std::iota(row.begin(), row.end(), 0.0f);
+      std::iota(row.begin(), row.end(), 0.0f);  // NOLINT(modernize-use-ranges)
       std::shuffle(row.begin(), row.end(), random);
       std::ranges::copy(row, scores.begin() + static_cast<std::ptrdiff_t>(r * row.size()));
     }
@@ -917,7 +926,7 @@ TEST_F(GgmlExtOpsTest, RopeWithOffsetsYarnAndSectionsMatchesTheReference) {
     const int sect_dims = sections[0] + sections[1] + sections[2] + sections[3];
     for (std::int64_t t = 0; t < kTokens; ++t) {
       for (std::int64_t h = 0; h < test.heads; ++h) {
-        const std::size_t row = static_cast<std::size_t>((t * test.heads + h) * test.head);
+        const auto row = static_cast<std::size_t>(((t * test.heads) + h) * test.head);
         for (int pair = 0; pair < test.n_dims / 2; ++pair) {
           int component = 0;
           if (multi) {
@@ -970,8 +979,8 @@ TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
           << r << ", " << i;
     }
   }
-  std::vector<std::int32_t> hash(6 * 1000);
-  std::iota(hash.begin(), hash.end(), 0);
+  std::vector<std::int32_t> hash(std::size_t{6} * 1000);
+  std::ranges::iota(hash, 0);
   ggml_tensor* tid2eid = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 6, 1000), hash);
   const std::vector<std::int32_t> vocab = {999, 0, 512};
   ggml_tensor* vocab_ids = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 3), vocab);
@@ -986,8 +995,10 @@ TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
 
   // DeepSeek V4's top-k mask: F16 zeros written at I32 cells of a -inf F16
   // mask; and F32 rows into F32 at I32 indices.
-  const std::vector<float> minus_inf(1024 * 3, -std::numeric_limits<float>::infinity());
-  ggml_tensor* mask = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 1, 1024 * 3), Halves(minus_inf));
+  const std::vector<float> minus_inf(std::size_t{1024} * 3,
+                                     -std::numeric_limits<float>::infinity());
+  ggml_tensor* mask =
+      Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 1, std::int64_t{1024} * 3), Halves(minus_inf));
   const std::vector<std::int32_t> cells = {5, 700, 1023, 2048, 3071};
   ggml_tensor* zeros =
       Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 1, 5), Halves(std::vector<float>(5, 0.0f)));
@@ -999,7 +1010,7 @@ TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
     const bool set = std::ranges::find(cells, static_cast<std::int32_t>(i)) != cells.end();
     ASSERT_EQ(got_mask[i], set ? 0.0f : -std::numeric_limits<float>::infinity()) << i;
   }
-  const std::vector<float> values = Normal(112, 64 * 3);
+  const std::vector<float> values = Normal(112, std::size_t{64} * 3);
   ggml_tensor* dst =
       Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, 10), std::vector<float>(640, 0.0f));
   ggml_tensor* src = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, 3), values);
@@ -1194,7 +1205,7 @@ TEST_F(GgmlExtOpsTest, HyperConnectionsMatchTheReference) {
       std::array<double, 16> m{};  // m[dst + 4 * src]
       constexpr std::size_t kStreams = 4;
       for (std::size_t src = 0; src < kStreams; ++src) {
-        double max = -INFINITY;
+        double max = -std::numeric_limits<double>::infinity();
         for (std::size_t dst = 0; dst < kStreams; ++dst) {
           const std::size_t idx = dst + (4 * src);
           m[idx] = (mixes[n(t * 24) + 8 + idx] * static_cast<double>(scale[2])) + base[8 + idx];
@@ -1326,11 +1337,11 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
     // A causal mask over the cache's last rows, or for the sparse case 256
     // chosen cells per row.
     std::vector<float> mask(n(test.cells * test.rows), -std::numeric_limits<float>::infinity());
-    std::mt19937 random(164);
+    std::mt19937 random(164);  // NOLINT(bugprone-random-generator-seed): reproducible
     for (std::int64_t r = 0; r < test.rows; ++r) {
       if (test.n_kv_max > 0) {
         std::vector<std::int64_t> chosen(n(test.cells));
-        std::iota(chosen.begin(), chosen.end(), 0);
+        std::ranges::iota(chosen, 0);
         std::shuffle(chosen.begin(), chosen.end(), random);
         for (std::int64_t i = 0; i < test.n_kv_max; ++i) {
           mask[n((r * test.cells) + chosen[n(i)])] = 0.0f;
@@ -1385,11 +1396,12 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
     for (std::int64_t h = 0; h < test.heads; ++h) {
       const std::int64_t kh = h / gqa;
       for (std::int64_t r = 0; r < test.rows; ++r) {
-        double max = test.sinks ? static_cast<double>(sinks[n(h)]) : -INFINITY;
+        double max = test.sinks ? static_cast<double>(sinks[n(h)])
+                                : -std::numeric_limits<double>::infinity();
         for (std::int64_t cell = 0; cell < test.cells; ++cell) {
           const float m = ggml_fp16_to_fp32(mask16[n((r * test.cells) + cell)]);
           if (std::isinf(m)) {
-            logits[n(cell)] = -INFINITY;
+            logits[n(cell)] = -std::numeric_limits<double>::infinity();
             continue;
           }
           double dot = 0.0;
@@ -1614,11 +1626,11 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
           });
   }
   for (const std::int64_t tokens : {2, 24}) {
-    const Quantized w = Quantize(GGML_TYPE_IQ2_XS, 2048, 32 * 8, 203);
+    const Quantized w = Quantize(GGML_TYPE_IQ2_XS, 2048, std::int64_t{32} * 8, 203);
     std::vector<std::int32_t> ids;
     for (std::int64_t t = 0; t < tokens; ++t) {
       for (std::int32_t e = 0; e < 6; ++e) {
-        ids.push_back(static_cast<std::int32_t>((t + (e * 3)) % 8));  // 7 among them
+        ids.push_back(static_cast<std::int32_t>((t + (std::int64_t{e} * 3)) % 8));  // 7 among them
       }
     }
     check("mul_mat_id IQ2_XS x " + std::to_string(tokens),
@@ -1705,10 +1717,10 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
   // The indexer's scores and top-k (the radix select and the bitonic
   // argsort), and a dequantizing gather of the table's last rows.
   check("lightning_indexer",
-        {bytes_of(Normal(209, 128 * 64 * 3)),
-         bytes_of(Halves(Normal(210, 128 * 1000))),
-         bytes_of(Normal(211, 64 * 3)),
-         bytes_of(Halves(std::vector<float>(1000 * 3, 0.0f))),
+        {bytes_of(Normal(209, std::size_t{128} * 64 * 3)),
+         bytes_of(Halves(Normal(210, std::size_t{128} * 1000))),
+         bytes_of(Normal(211, std::size_t{64} * 3)),
+         bytes_of(Halves(std::vector<float>(std::size_t{1000} * 3, 0.0f))),
          {}},
         [&](ggml_context* ctx, const PlaceFn& place) {
           ggml_tensor* q = place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 128, 64, 3, 1));
@@ -1722,7 +1734,8 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
         });
   for (const std::int64_t cells : {700, 5000}) {
     std::vector<float> scores(static_cast<std::size_t>(cells * 2));
-    std::iota(scores.begin(), scores.end(), 0.0f);  // distinct: one answer
+    // Distinct: one answer. std::ranges::iota needs an incrementable type.
+    std::iota(scores.begin(), scores.end(), 0.0f);  // NOLINT(modernize-use-ranges)
     check("top_k of " + std::to_string(cells), {bytes_of(scores), {}},
           [&](ggml_context* ctx, const PlaceFn& place) {
             ggml_tensor* in = place(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, cells, 2));
@@ -1747,7 +1760,10 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
   }
 
   // Qwen3.8's linear attention.
-  check("ssm_conv", {bytes_of(Normal(213, (3 + 5) * 1024)), bytes_of(Normal(214, 4 * 1024)), {}},
+  check("ssm_conv",
+        {bytes_of(Normal(213, std::size_t{3 + 5} * 1024)),
+         bytes_of(Normal(214, std::size_t{4} * 1024)),
+         {}},
         [&](ggml_context* ctx, const PlaceFn& place) {
           ggml_tensor* x = place(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 3 + 5, 1024, 1));
           ggml_tensor* w = place(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 1024));
@@ -1757,12 +1773,12 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
                        }};
         });
   check("gated_delta_net",
-        {bytes_of(Normal(215, 128 * 16 * 3)),
-         bytes_of(Normal(216, 128 * 16 * 3)),
-         bytes_of(Normal(217, 128 * 48 * 3)),
-         bytes_of(Uniform(218, 48 * 3, -1.0f, -0.1f)),
-         bytes_of(Uniform(219, 48 * 3, 0.0f, 1.0f)),
-         bytes_of(Normal(220, 128 * 128 * 48, 0.1f)),
+        {bytes_of(Normal(215, std::size_t{128} * 16 * 3)),
+         bytes_of(Normal(216, std::size_t{128} * 16 * 3)),
+         bytes_of(Normal(217, std::size_t{128} * 48 * 3)),
+         bytes_of(Uniform(218, std::size_t{48} * 3, -1.0f, -0.1f)),
+         bytes_of(Uniform(219, std::size_t{48} * 3, 0.0f, 1.0f)),
+         bytes_of(Normal(220, std::size_t{128} * 128 * 48, 0.1f)),
          {}},
         [&](ggml_context* ctx, const PlaceFn& place) {
           ggml_tensor* q = place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 128, 16, 3, 1));

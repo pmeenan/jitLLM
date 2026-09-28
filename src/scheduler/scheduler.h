@@ -37,14 +37,21 @@
 //     runs in stages, each one operation with its own mailbox:
 //       1. with managed backing (D-033), the VMM lane (Lanes::backing, or
 //          the device lane without one) creates backing in the source's
-//          allocation class, maps it at its place and sets access;
+//          allocation class, maps it at its place and sets access; or, when
+//          the load was handed backing an eviction kept (below), maps that;
 //       2. a landed source (D-081) waits for a landing slot, in order;
 //       3. the storage lane reads the file range with direct I/O, into the
 //          slot, or for a direct source into the extent's own memory;
-//       4. for a landed source, the device lane copies the slot into the
-//          extent's device address on the zone's stream, and fences it;
+//       4. for a landed source, the copy lane (Lanes::copy, or the device
+//          lane without one) copies the slot into the extent's device
+//          memory on the zone's stream, in up to kMaxDeviceCopies pieces,
+//          and fences it;
 //       5. the extent is published resident, and the slot freed, only once
 //          that fence has completed.
+//     The zone's copies have a lane of their own so that a job's launches
+//     never hold them up: a launch into a stream with about 1,020
+//     operations pending blocks the launching thread (RE-029), and a
+//     phase can have several thousand.
 //     A slot is reused only once the read into it and the copy out of it
 //     have both been proven to touch it no more; one whose copy is
 //     unproven is quarantined with the extent, never reused. At most twice
@@ -60,6 +67,23 @@
 //     refused with nothing changed leaves it resident; one of unknown
 //     outcome, or refused because an earlier unknown outcome left its
 //     place undetermined, quarantines it.
+//   - Hand backing off (D-033): an eviction asked for with a handoff
+//     unmaps the backing but keeps it, and parks: the extent stays
+//     EVICTING, charged, so the catalog counts the kept backing, and the
+//     evictor is told it is done. A page-in whose managed backing has the
+//     same allocation class and size takes the backing of a parked
+//     eviction in its own domain (B is each domain's)
+//     instead of creating its own: in one step the load begins, allowed
+//     the parked extent's bytes over B, and the parked eviction completes,
+//     so the charge moves from one extent to the other and occupancy never
+//     exceeds B. A page-in of a parked extent itself takes its own. The
+//     VMM lane then maps the kept backing at the new place and sets
+//     access, with no create and no release. Parked backing never waits
+//     for a load that may not come: when the task that asked for the
+//     eviction finishes, the VMM lane releases what is still parked and
+//     the evictions complete. A load that took kept backing and ends
+//     without mapping it (cancelled, or refused) releases it before the
+//     extent is nonresident again.
 //   - Write back live mutable contents on eviction (a kPreserve extent
 //     whose source is its write-back place, PageSource::write_back), the
 //     page-in's reverse path through the zone (D-081): the extent is
@@ -103,8 +127,7 @@
 // lanes and releases backing. Work that cannot be reconciled (quarantined)
 // faults the shutdown instead of reporting its capacity reclaimed.
 //
-// Not yet here: the D-033 handoff of a victim's backing to a
-// load, victim selection on a miss, admission's envelopes
+// Not yet here: victim selection on a miss, admission's envelopes
 // and the switching policy (admission.h) driving task starts, which
 // reports a boundary only where the request's ProgramCursor::AtBoundary
 // holds (execution/program.h).
@@ -124,6 +147,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -217,16 +241,32 @@ struct BackingPlace {
   bool operator==(const BackingPlace&) const = default;
 };
 
+// A piece of a landed read: `length` bytes at `slot_offset` in the slot,
+// copied to `destination`.
+struct LandedPiece {
+  std::uint64_t slot_offset = 0;
+  std::uint64_t destination = 0;
+  Bytes length;
+  bool operator==(const LandedPiece&) const = default;
+};
+
 // Where a nonresident extent's contents come from, and how they arrive.
 struct PageSource {
   // The file range. A direct read lands at `read.memory`, which the CPU
   // and the storage provider reach (host backing, D-034); a landed read
   // ignores it.
   providers::ReadSpec read;
-  // Landed (D-081): the read lands in a landing slot and the device lane
-  // copies it to `destination`, the extent's device address.
+  // Landed (D-081): the read lands in a landing slot and the copy lane
+  // copies it to `destination`, the extent's device address; or, with
+  // pieces, each piece to its own destination (an extent whose contents
+  // are not one range of the file read, such as a page of a resident
+  // expert slab whose groups sit at a stride that is not the file's). The
+  // caller guarantees every destination byte lies in the extent's own
+  // memory. Write-back takes only the one-range form.
   bool landed = false;
   std::uint64_t destination = 0;
+  std::array<LandedPiece, kMaxDeviceCopies> pieces{};
+  std::size_t piece_count = 0;
   // Managed backing; without it the backing stays mapped at the
   // destination for as long as the source is registered.
   std::optional<BackingPlace> backing;
@@ -243,7 +283,9 @@ struct PageSource {
 // addresses of `slot_bytes` each, mapped read-write for the CPU and the
 // device. The program maps it and registers it in the catalog before the
 // scheduler starts, and keeps it until the lanes have drained. Landed
-// copies run on the device lane's stream `stream`.
+// copies run on the copy lane's stream `stream`, or without a copy lane on
+// the device lane's. Slots need not be 2 MiB: a read may be longer than
+// the extent it lands (PageSource's pieces), up to `slot_bytes`.
 struct LandingZone {
   std::vector<std::uint64_t> slots = {};  // NOLINT(readability-redundant-member-init)
   Bytes slot_bytes = {};                  // NOLINT(readability-redundant-member-init)
@@ -303,12 +345,23 @@ struct SchedulerSettings {
 
 // The lanes the scheduler publishes to; any may be absent (its work is
 // then refused as invalid). Managed backing's VMM work goes to `backing`
-// if there is one, and otherwise to the device lane.
+// if there is one, and otherwise to the device lane; the landing zone's
+// copies, in and out, go to `copy` (a DeviceService of its own, with the
+// zone's stream) if there is one, and otherwise to the device lane.
 struct Lanes {
   StorageService* storage = nullptr;
   DeviceService* device = nullptr;
   Lane<CpuCommand>* cpu = nullptr;
   BackingService* backing = nullptr;
+  DeviceService* copy = nullptr;
+};
+
+// How an eviction goes (TaskContext::Evict).
+struct EvictOptions {
+  // Keep the managed backing for a load to take (the header's handoff):
+  // the eviction parks once unmapped, and the backing is released only if
+  // no load has taken it by the time the evicting task finishes.
+  bool handoff = false;
 };
 
 // Controls from other threads.
@@ -333,6 +386,11 @@ struct SchedulerStats {
   std::uint64_t turns = 0;
   std::uint64_t polls = 0;   // idle turns spent polling for a critical completion
   std::uint64_t sleeps = 0;  // waits on the wake flag
+  // The handoff (D-033): evictions parked with their backing kept, loads
+  // that took parked backing, and parked backing released unused.
+  std::uint64_t parked = 0;
+  std::uint64_t handed_off = 0;
+  std::uint64_t released_unused = 0;
 };
 
 class Scheduler {
@@ -409,6 +467,10 @@ class Scheduler {
   }
   // Page-ins in flight, in any stage.
   std::size_t loads() const { return loads_.size(); }
+  // Evictions parked with their backing kept for a handoff.
+  std::size_t parked() const { return parked_count_; }
+  // Evictions in flight, in any stage (parked, and releasing, included).
+  std::size_t evictions() const { return evictions_.size(); }
   // Landing slots in use by a read or copy, and quarantined ones.
   std::size_t slots_busy() const;
   std::size_t slots_quarantined() const;
@@ -424,22 +486,27 @@ class Scheduler {
   // or a task's device or CPU work.
   enum class Kind : std::uint8_t { kLoad, kEvict, kDevice, kCpu };
   // The lane an operation's command goes to.
-  enum class Route : std::uint8_t { kStorage, kDevice, kCpu, kBacking };
-  static constexpr std::size_t kRoutes = 4;
+  enum class Route : std::uint8_t { kStorage, kDevice, kCpu, kBacking, kCopy };
+  static constexpr std::size_t kRoutes = 5;
   // Where VMM work goes: the VMM lane, or the device lane without one (in
   // order with its other work, as before there was a VMM lane).
   Route BackingRoute() const {
     return lanes_.backing != nullptr ? Route::kBacking : Route::kDevice;
   }
+  // Where the zone's copies go: the copy lane, or the device lane without
+  // one.
+  Route CopyRoute() const { return lanes_.copy != nullptr ? Route::kCopy : Route::kDevice; }
+  bool CanCopy() const { return lanes_.copy != nullptr || lanes_.device != nullptr; }
 
   // A page-in's stages (the header's list).
   enum class Stage : std::uint8_t {
     kQueued,     // waiting for room among the landed loads in flight
-    kMapping,    // 1: creating and mapping managed backing
+    kMapping,    // 1: creating (or taking kept backing) and mapping managed backing
     kSlot,       // 2: waiting for a landing slot
     kReading,    // 3
     kCopying,    // 4
     kUnmapping,  // unwinding a failed or withdrawn load's backing
+    kReleasing,  // unwinding: releasing kept backing the load took and never mapped
   };
   enum class SlotState : std::uint8_t { kFree, kBusy, kQuarantined };
 
@@ -455,14 +522,19 @@ class Scheduler {
     bool started = false;     // counted among the landed loads in flight
     bool mapped = false;      // its managed backing is mapped
     bool failed = false;      // it will not publish
+    // It took backing a parked eviction kept, which the VMM lane holds
+    // until this load maps it (or releases it, unwinding).
+    bool reuse = false;
   };
   // An eviction's stages: a write-back's (the header's list), then the
-  // unmap of managed backing.
+  // unmap of managed backing, and for a handoff the park.
   enum class EvictStage : std::uint8_t {
     kSlot,       // waiting for a landing slot
-    kCopyOut,    // the device lane copies the extent into the slot
+    kCopyOut,    // the copy lane copies the extent into the slot
     kWriting,    // the storage lane writes it to the write-back place
-    kUnmapping,  // the VMM lane unmaps and releases the backing
+    kUnmapping,  // the VMM lane unmaps and releases (or, for a handoff, keeps) the backing
+    kParked,     // unmapped, its backing kept for a load to take; no operation
+    kReleasing,  // parked backing no load took, being released
   };
   // An eviction whose backing the VMM lane unmaps and releases, after
   // writing its contents back if it preserves them.
@@ -474,7 +546,15 @@ class Scheduler {
     EvictStage stage = EvictStage::kUnmapping;
     std::optional<std::size_t> slot;
     bool write_back = false;
+    bool handoff = false;
+    bool release_open = false;  // kReleasing and counted in releases_open_
   };
+  // Releases of parked backing no load took run a few at a time, so
+  // thousands of them never take every mailbox from other work.
+  static constexpr std::size_t kReleaseWindow = 16;
+  // Parked evictions by the backing they keep, oldest first: an entry
+  // whose eviction has since ended or left kParked is skipped.
+  using BackingKey = std::pair<std::size_t, std::uint64_t>;  // allocation class, bytes
 
   struct TaskRecord {
     TaskId id;
@@ -529,11 +609,19 @@ class Scheduler {
   // operation is created.
   std::expected<OperationId, WorkError> Submit(TaskId task, const catalog::Closure& closure,
                                                Kind kind, DeviceCommand& device, CpuJob& job);
-  std::expected<Readiness, WorkError> Evict(TaskId task, catalog::ExtentId extent);
+  std::expected<Readiness, WorkError> Evict(TaskId task, catalog::ExtentId extent,
+                                            EvictOptions options);
 
-  // Page-ins (pagein.cc).
+  // Page-ins (pagein.cc). With `own`, the extent's own parked eviction
+  // has just ended and its kept backing is the load's.
   std::expected<void, WorkError> BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                             const PageSource& source);
+                                             const PageSource& source, bool own = false);
+  // A parked eviction in `domain` keeping backing for `place`: the budget
+  // is each domain's, so a charge never moves between domains.
+  std::optional<catalog::ExtentId> Donor(const BackingPlace& place, catalog::DomainId domain);
+  // Ends a parked eviction whose backing a load takes: completed, the
+  // charge moving to the load.
+  void EndParked(catalog::ExtentId extent);
   void Join(Load& load, TaskRecord& record);
   // Runs the load's next stage, from where it stands.
   void Proceed(catalog::ExtentId extent);
@@ -561,6 +649,14 @@ class Scheduler {
   // Settles the eviction: completed, or abandoned with the extent resident
   // again (only the evictor is told of that).
   void EndEviction(catalog::ExtentId extent, bool evicted);
+  // A handoff's unmap succeeded: the eviction parks and its waiters are
+  // told it is done.
+  void Park(catalog::ExtentId extent);
+  // Releases the backing of `task`'s parked evictions (every one's with no
+  // valid task), which no load took: queued, and opened kReleaseWindow at
+  // a time (PumpReleases).
+  void ReleaseParked(std::optional<TaskId> task);
+  void PumpReleases();
   void QuarantineEvicting(catalog::ExtentId extent, Fault fault);
   void Fail(Fault fault);
 
@@ -596,6 +692,14 @@ class Scheduler {
   std::vector<std::optional<Operation>> operations_;  // by mailbox index
   std::map<catalog::ExtentId, Load> loads_;           // page-ins in flight
   std::map<catalog::ExtentId, Eviction> evictions_;
+  std::map<BackingKey, std::deque<catalog::ExtentId>> parked_;
+  std::size_t parked_count_ = 0;                 // evictions in kParked
+  std::deque<catalog::ExtentId> release_queue_;  // kReleasing, not yet opened
+  std::size_t releases_open_ = 0;
+  // PumpReleases is running: a release it opens that settles at once (a
+  // quarantine) lets the running loop open the next, rather than recursing
+  // once per queued release.
+  bool pumping_releases_ = false;
   std::map<catalog::ExtentId, PageSource> sources_;
   // The landing zone's slots, and the loads waiting: to start (kQueued),
   // for a slot (kSlot), or for a mailbox to open their next stage.
@@ -646,12 +750,17 @@ class TaskContext {
   }
   // A job that queues kernel work on one of the device lane's streams
   // (commands.h): it runs on the submission lane, and the operation's
-  // lease holds the closure until the fence after it completes.
+  // lease holds the closure until the fence after it completes. Refused,
+  // the work is left with the caller (to try again after kBusy).
   std::expected<OperationId, WorkError> SubmitLaunch(const catalog::Closure& closure,
-                                                     LaunchWork work) {
+                                                     LaunchWork&& work) {
     DeviceCommand device{.operation = {}, .work = std::move(work)};
     CpuJob none;
-    return scheduler_.Submit(task_, closure, Scheduler::Kind::kDevice, device, none);
+    auto submitted = scheduler_.Submit(task_, closure, Scheduler::Kind::kDevice, device, none);
+    if (!submitted) {
+      work = std::move(std::get<LaunchWork>(device.work));  // Submit took nothing
+    }
+    return submitted;
   }
   std::expected<OperationId, WorkError> SubmitCpu(const catalog::Closure& closure, CpuJob job) {
     DeviceCommand none;
@@ -668,8 +777,13 @@ class TaskContext {
   // is its write-back place, and whose contents were not invalidated, is
   // written back first (kWaiting either way); an abandoned write-back
   // wakes the task with a failure and leaves the extent resident.
-  std::expected<Readiness, WorkError> Evict(catalog::ExtentId extent) {
-    return scheduler_.Evict(task_, extent);
+  //
+  // With a handoff (EvictOptions), managed backing is kept rather than
+  // released: the task is woken once it is unmapped, the extent stays
+  // EVICTING and charged, and a load may take the backing (the header's
+  // handoff). Whatever no load took is released when this task finishes.
+  std::expected<Readiness, WorkError> Evict(catalog::ExtentId extent, EvictOptions options = {}) {
+    return scheduler_.Evict(task_, extent, options);
   }
 
  private:

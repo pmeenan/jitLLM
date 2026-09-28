@@ -104,9 +104,11 @@ Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::Wa
   cancel_intents_.reserve(settings_.controls);
   base::Check(settings_.landing.slots.empty() || settings_.landing.slot_bytes > Bytes(),
               "a landing zone needs slots of a non-zero size");
+  const DeviceService* copier = lanes_.copy != nullptr ? lanes_.copy : lanes_.device;
   base::Check(settings_.landing.slots.empty() ||
-                  (lanes_.device != nullptr && settings_.landing.stream < lanes_.device->streams()),
-              "a landing zone's stream must be one of the device lane's streams");
+                  (copier != nullptr && settings_.landing.stream < copier->streams()),
+              "a landing zone's stream must be one of the copy lane's streams (or, without one, "
+              "the device lane's)");
   slots_.assign(settings_.landing.slots.size(), SlotState::kFree);
 }
 
@@ -467,6 +469,9 @@ base::PushResult Scheduler::Push(Operation& operation) const {
     case Route::kDevice:
       return lanes_.device != nullptr ? lanes_.device->Submit(std::move(operation.device))
                                       : base::PushResult::kClosed;
+    case Route::kCopy:
+      return lanes_.copy != nullptr ? lanes_.copy->Submit(std::move(operation.device))
+                                    : base::PushResult::kClosed;
     case Route::kCpu:
       return lanes_.cpu != nullptr ? lanes_.cpu->Submit(std::move(operation.job))
                                    : base::PushResult::kClosed;
@@ -564,6 +569,9 @@ void Scheduler::Withdraw(TaskId task) {
     std::erase(slot_waiters_, extent);
     EndEviction(extent, false);
   }
+  // Backing this task kept for a handoff that no load took: released now,
+  // never an idle pool (D-033).
+  ReleaseParked(task);
   // After the walk: cancelling a page-in may end it, erasing its entry.
   for (const catalog::ExtentId extent : withdrawn) {
     const auto load = loads_.find(extent);

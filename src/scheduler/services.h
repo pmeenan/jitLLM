@@ -46,6 +46,29 @@ struct QueueSettings {
   std::size_t batch = 16;     // commands a turn takes
 };
 
+// Backing unmapped for a handoff and not yet mapped again or released
+// (D-033; BackingWork's `retain`, `reuse` and kRelease): the lane that
+// calls the device-memory provider keeps it, on its own thread. Every
+// entry is charged in the catalog to an extent the scheduler names
+// (scheduler.h), never an idle pool of its own.
+class HandoffStash {
+ public:
+  void Put(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
+    entries_.push_back({.allocation_class = allocation_class, .size = size, .backing = backing});
+  }
+  // The most recently kept backing of that class and size, if any.
+  std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
+  std::size_t size() const { return entries_.size(); }
+
+ private:
+  struct Entry {
+    std::size_t allocation_class = 0;
+    Bytes size;
+    providers::BackingId backing;
+  };
+  std::vector<Entry> entries_;
+};
+
 // The storage lane: whole reads (providers::DirectReader) into memory the
 // scheduler protects, one read per operation. A read is accepted once the
 // reader takes it, and ends only when every request it started has
@@ -153,6 +176,10 @@ struct DeviceSettings {
 // through the zone gives it to a BackingService instead (below), so a
 // load's copies never wait behind it, and then gives this service no
 // device-memory provider: one lane calls a provider (device_memory.h).
+// Such a program also gives the zone's copies to a second DeviceService
+// over the zone's stream alone (the copy lane, scheduler.h's Lanes::copy):
+// a job launching into a full stream blocks this lane's thread (RE-029),
+// and the copies must not wait for it.
 //
 // A copy the provider refused queued nothing; if an operation's first copy
 // is refused it did not start. A later refusal leaves earlier copies
@@ -181,6 +208,9 @@ class DeviceService {
                 providers::DeviceMemory* memory = nullptr);
 
   std::size_t streams() const { return streams_.size(); }
+  // Backing kept for a handoff (VMM work given to this service): the
+  // submission lane's, read only while it is idle (tests, teardown).
+  std::size_t stashed() const { return stash_.size(); }
   // Moves from `command` only if it is accepted.
   base::PushResult Submit(DeviceCommand&& command,
                           base::PushKind kind = base::PushKind::kOrdinary) {
@@ -244,6 +274,8 @@ class DeviceService {
   // Completion lane only, together at most `handoff` (allocated once).
   std::vector<Watch> watches_;
   std::vector<Release> releases_;
+  // Submission lane only: backing kept for a handoff.
+  HandoffStash stash_;
 };
 
 // The VMM lane (D-033, D-081): managed backing's VMM work (BackingWork),
@@ -278,6 +310,9 @@ class BackingService {
   bool Turn();
   // Until closed, with everything queued carried out.
   void Run();
+  // Backing kept for a handoff: read only while the lane is idle (tests,
+  // teardown).
+  std::size_t stashed() const { return stash_.size(); }
 
  private:
   void Handle(DeviceCommand& command);
@@ -286,6 +321,7 @@ class BackingService {
   CompletionBoard& board_;
   base::BoundedQueue<DeviceCommand> queue_;
   std::size_t batch_;
+  HandoffStash stash_;  // the lane's thread only
 };
 
 // The CPU worker lane (a Lane of CpuCommand, at most four workers per

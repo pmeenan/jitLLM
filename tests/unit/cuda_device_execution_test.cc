@@ -23,6 +23,7 @@ struct Driver {
   CUresult destroy_stream = CUDA_SUCCESS;
   CUresult destroy_event = CUDA_SUCCESS;
   int records = 0;
+  int event_creates = 0;
   int event_destroys = 0;
 };
 
@@ -58,6 +59,7 @@ CUresult CUDAAPI cuStreamWaitEvent(CUstream /*hStream*/, CUevent /*hEvent*/,
   return CUDA_SUCCESS;
 }
 CUresult CUDAAPI cuEventCreate(CUevent* phEvent, unsigned int /*Flags*/) {
+  ++driver.event_creates;
   *phEvent = reinterpret_cast<CUevent>(3);  // NOLINT(performance-no-int-to-ptr)
   return CUDA_SUCCESS;
 }
@@ -88,7 +90,10 @@ class CudaExecutionFailureTest : public ::testing::Test {
  protected:
   void SetUp() override {
     driver = Driver{};
-    auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+    // No pool: each fence makes its event and its release destroys it, as
+    // these failures of destruction need.
+    auto opened =
+        jitllm::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 0, .events_kept = 0});
     ASSERT_TRUE(opened.has_value());
     execution_ = std::move(*opened);
     stream_ = execution_->CreateStream().value();
@@ -103,6 +108,29 @@ class CudaExecutionFailureTest : public ::testing::Test {
   std::unique_ptr<DeviceExecution> execution_;
   StreamId stream_;
 };
+
+// With the pool (the default), events are made when the provider opens and
+// kept when a fence is released: fencing makes and destroys none (RE-029:
+// cuEventCreate blocks while another thread launches into a full stream).
+TEST(CudaExecutionPoolTest, FencesReuseEventsMadeAhead) {
+  driver = Driver{};
+  {
+    auto opened =
+        jitllm::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 4, .events_kept = 4});
+    ASSERT_TRUE(opened.has_value());
+    const StreamId stream = (*opened)->CreateStream().value();
+    EXPECT_EQ(driver.event_creates, 4);
+    for (int i = 0; i < 20; ++i) {
+      const FenceId fence = (*opened)->Record(stream).value();
+      EXPECT_EQ((*opened)->Query(fence).value(), FenceState::kComplete);
+      EXPECT_TRUE((*opened)->Release(fence).has_value());
+    }
+    EXPECT_EQ(driver.event_creates, 4);
+    EXPECT_EQ(driver.event_destroys, 0);
+    EXPECT_TRUE((*opened)->DestroyStream(stream).has_value());
+  }
+  EXPECT_EQ(driver.event_destroys, 4);  // the pool's, when the provider closes
+}
 
 TEST_F(CudaExecutionFailureTest, AnUnknownStreamDestructionCannotRecordNewWork) {
   driver.destroy_stream = CUDA_ERROR_UNKNOWN;

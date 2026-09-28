@@ -325,7 +325,8 @@ observations; they never change its records or run a continuation inline.
 | Scheduler | M2 | Bounded batches of observations and ready tasks per turn; never blocks on disk, GPU, network or a full queue |
 | Storage | M2 | Direct-I/O submission and completion harvesting |
 | Device submission | M2 | Ordered copies and launches on owned streams (and VMM calls when there is no VMM lane) |
-| VMM | M2 | Creating, mapping and releasing managed backing, so a page-in's copies never wait behind it |
+| VMM | M2 | Creating, mapping and releasing managed backing, so a page-in's copies never wait behind it; keeping it for a handoff (M3) |
+| Copy | M3 | The landing zone's copies, in and out, on the zone's stream, so a job blocked launching into a full stream (RE-029) never holds them up |
 | Device completion | M2 | Fence queries, independent of any blocking submission call |
 | CPU workers | M2 | Plan preparation, hashing and verification, then rendering and tokenization in M3; other long host work |
 | Network | M3 (loopback endpoint), M5 (front door), M6a (cluster) | Listeners, TLS, protocol parsing and writing, cluster sessions, backpressure |
@@ -718,7 +719,10 @@ creates the extent's backing, maps it and sets access; the load waits, in
 order, for a landing slot; the storage lane reads the chunk into the slot,
 starting reads in the order they were published, so a load reaches the
 device sequentially (RE-026);
-the device lane copies it into place on the zone's stream; and the extent
+the copy lane (or, without one, the device lane) copies it into place on
+the zone's stream, in up to four pieces when the extent is not one range
+of the read (a page of a resident expert slab, whose groups sit at a
+stride that is not the file's); and the extent
 is published, and the slot freed, only once that copy's fence has
 completed. At most twice the zone's slots of landed loads are in flight,
 so backing is mapped at most one zone ahead of the reads. A failed or
@@ -735,7 +739,15 @@ wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation. The unmap and
 release run on the VMM lane while the extent is EVICTING (D-033: the
-backing is released, not pooled). Live mutable state is written back
+backing is released, not pooled). An eviction asked for with a handoff
+(M3's full swap) unmaps the backing but keeps it, and parks, still
+EVICTING and charged; a page-in in the same domain whose backing has the
+same class and size takes it, and the parked eviction completes in the
+same step, so the
+charge moves from one extent to the other and occupancy never exceeds B.
+The VMM lane then maps the kept backing with no create or release.
+Backing no load took is released when the task that asked for the
+eviction finishes: never an idle pool. Live mutable state is written back
 first, by the reverse path through the zone: the extent is copied into a
 landing slot, fenced, and the slot written to the state's place with
 direct I/O. Only once the whole range is written is the backing released,

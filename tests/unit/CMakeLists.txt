@@ -145,6 +145,14 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(cuda_paged_node_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+  # The DeepSeek runner's expert-slab pages (benchmarks/dsv4_runner.h): a
+  # host-only check, in the CUDA build that has the runner.
+  add_executable(slab_layout_test slab_layout_test.cc)
+  target_include_directories(slab_layout_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(slab_layout_test PRIVATE jitllm_paged_runners jitllm_launch_recorder)
+  jitllm_gpu_gtest(slab_layout_test)
+
   add_executable(cuda_device_memory_test cuda_device_memory_test.cc)
   target_link_libraries(cuda_device_memory_test PRIVATE jitllm_cuda_device_memory jitllm_storage)
   jitllm_gpu_gtest(cuda_device_memory_test DISCRETE ALL

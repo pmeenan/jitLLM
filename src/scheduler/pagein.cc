@@ -74,8 +74,17 @@ void Scheduler::SetSource(catalog::ExtentId extent, const providers::ReadSpec& s
 
 std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
                                                     const PageSource& source) {
-  if (source.read.length == 0 || source.read.kind != providers::IoKind::kRead ||
-      (source.landed && (slots_.empty() || source.destination == 0 ||
+  // Pieces: only landed, never for write-back, each inside the read.
+  bool pieces_valid = source.piece_count <= kMaxDeviceCopies &&
+                      (source.piece_count == 0 || (source.landed && !source.write_back));
+  for (std::size_t i = 0; pieces_valid && i < source.piece_count; ++i) {
+    const LandedPiece& piece = source.pieces.at(i);
+    pieces_valid = piece.length > Bytes() && piece.destination != 0 &&
+                   piece.slot_offset <= source.read.length &&
+                   piece.length.value() <= source.read.length - piece.slot_offset;
+  }
+  if (source.read.length == 0 || source.read.kind != providers::IoKind::kRead || !pieces_valid ||
+      (source.landed && (slots_.empty() || (source.piece_count == 0 && source.destination == 0) ||
                          source.read.length > settings_.landing.slot_bytes.value())) ||
       (!source.landed && source.read.memory == nullptr) ||
       (source.backing && source.backing->size == Bytes())) {
@@ -157,7 +166,7 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
       case catalog::ExtentState::kNonresident: {
         const auto source = sources_.find(extent);
         if (source == sources_.end() || lanes_.storage == nullptr ||
-            (source->second.landed && lanes_.device == nullptr) ||
+            (source->second.landed && !CanCopy()) ||
             (source->second.backing && lanes_.device == nullptr && lanes_.backing == nullptr)) {
           return std::unexpected(WorkError::kUnavailable);
         }
@@ -184,6 +193,35 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
         if (eviction == evictions_.end()) {
           return std::unexpected(WorkError::kBusy);
         }
+        if (eviction->second.stage == EvictStage::kParked) {
+          // Parked with its backing kept: the extent takes its own backing
+          // back, if the eviction keeps the contents' generation (artifact
+          // contents, or written back); otherwise they are gone.
+          const auto source = sources_.find(extent);
+          const bool keeps = found->descriptor.recovery == catalog::Recovery::kFromArtifact ||
+                             eviction->second.write_back;
+          if (!keeps || found->content_generation != generation) {
+            return std::unexpected(WorkError::kStale);
+          }
+          if (source == sources_.end() || lanes_.storage == nullptr ||
+              (source->second.landed && !CanCopy())) {
+            return std::unexpected(WorkError::kUnavailable);
+          }
+          if (board_.available() == 0) {
+            return std::unexpected(NoMailboxEver() ? WorkError::kUnavailable : WorkError::kBusy);
+          }
+          // Its bytes leave the occupancy and come back as the load's: the
+          // load fits exactly when the occupancy is within B now.
+          if (catalog_.OccupancyOf(found->descriptor.domain).Total() > settings_.budget) {
+            return std::unexpected(WorkError::kOverBudget);
+          }
+          EndParked(extent);
+          if (auto begun = BeginPageIn(*record, extent, source->second, /*own=*/true); !begun) {
+            return std::unexpected(begun.error());
+          }
+          waiting = true;
+          continue;
+        }
         std::vector<TaskId>& waiters = eviction->second.waiters;
         if (std::ranges::find(waiters, task) == waiters.end()) {
           if (waiters.size() >= settings_.waiters) {
@@ -203,10 +241,31 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
 }
 
 std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                                      const PageSource& source) {
-  const auto ticket = catalog_.BeginLoad(extent, settings_.budget);
+                                                      const PageSource& source, bool own) {
+  // Backing a parked eviction kept, if one keeps a compatible one: the
+  // load is allowed that extent's bytes over B because the parked
+  // eviction completes in the same step, moving the charge.
+  std::optional<catalog::ExtentId> donor;
+  Bytes budget = settings_.budget;
+  // Only where the extent's charge is its backing's size, so that moving a
+  // charge moves exactly the bytes kept.
+  const auto view = catalog_.Describe(extent);
+  if (!own && source.backing && view && view->descriptor.size == source.backing->size) {
+    donor = Donor(*source.backing, view->descriptor.domain);
+    if (donor) {
+      budget = budget.Plus(source.backing->size).value_or(budget);
+    }
+  }
+  const auto ticket = catalog_.BeginLoad(extent, budget);
   if (!ticket) {
+    // Own backing: its eviction has ended, and the kept backing is still
+    // the lane's; it must not be left unaccounted. BeginLoad cannot refuse
+    // here (the extent is nonresident and its bytes were just freed).
+    base::Check(!own, "a load refused the backing its own parked eviction kept");
     return std::unexpected(ErrorOf(ticket.error()));
+  }
+  if (donor) {
+    EndParked(*donor);
   }
   // Recorded before any lane can see it: the extent is LOADING and charged
   // until the load's last stage settles it.
@@ -214,6 +273,10 @@ std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalo
   load = Load{};
   load.ticket = *ticket;
   load.source = source;
+  load.reuse = own || donor.has_value();
+  if (load.reuse) {
+    ++stats_.handed_off;
+  }
   load.waiters.reserve(settings_.waiters);
   Join(load, record);
   if (source.landed && started_ >= 2 * slots_.size()) {
@@ -293,18 +356,26 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
   const PageSource& source = load.source;
   switch (load.stage) {
     case Stage::kMapping:
-    case Stage::kUnmapping: {
+    case Stage::kUnmapping:
+    case Stage::kReleasing: {
       base::Check(source.backing.has_value(), "mapping backing a source does not manage");
       const BackingPlace place = source.backing.value_or(BackingPlace{});
+      BackingWork::Kind kind = BackingWork::Kind::kUnmap;
+      if (load.stage == Stage::kMapping) {
+        kind = BackingWork::Kind::kMap;
+      } else if (load.stage == Stage::kReleasing) {
+        kind = BackingWork::Kind::kRelease;
+      }
       operation.route = BackingRoute();
-      operation.device = DeviceCommand{
-          .operation = operation.id,
-          .work = BackingWork{.kind = load.stage == Stage::kMapping ? BackingWork::Kind::kMap
-                                                                    : BackingWork::Kind::kUnmap,
-                              .reservation = place.reservation,
-                              .offset = place.offset,
-                              .size = place.size,
-                              .allocation_class = place.allocation_class}};
+      operation.device =
+          DeviceCommand{.operation = operation.id,
+                        .work = BackingWork{.kind = kind,
+                                            .reservation = place.reservation,
+                                            .offset = place.offset,
+                                            .size = place.size,
+                                            .allocation_class = place.allocation_class,
+                                            .retain = false,
+                                            .reuse = load.stage == Stage::kMapping && load.reuse}};
       break;
     }
     case Stage::kReading: {
@@ -332,13 +403,23 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
     }
     case Stage::kCopying: {
       base::Check(load.slot.has_value(), "a copy without a slot");
+      const std::uint64_t slot = settings_.landing.slots.at(load.slot.value_or(0));
       DeviceWork work;
       work.stream = settings_.landing.stream;
-      work.copies.at(0) = DeviceCopy{.destination = source.destination,
-                                     .source = settings_.landing.slots.at(load.slot.value_or(0)),
-                                     .size = Bytes(source.read.length)};
-      work.count = 1;
-      operation.route = Route::kDevice;
+      if (source.piece_count == 0) {
+        work.copies.at(0) = DeviceCopy{
+            .destination = source.destination, .source = slot, .size = Bytes(source.read.length)};
+        work.count = 1;
+      } else {
+        for (std::size_t i = 0; i < source.piece_count; ++i) {
+          const LandedPiece& piece = source.pieces.at(i);
+          work.copies.at(i) = DeviceCopy{.destination = piece.destination,
+                                         .source = slot + piece.slot_offset,
+                                         .size = piece.length};
+        }
+        work.count = source.piece_count;
+      }
+      operation.route = CopyRoute();
       operation.device = DeviceCommand{.operation = operation.id, .work = work};
       break;
     }
@@ -360,13 +441,14 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
   const bool succeeded = outcome == Outcome::kSucceeded;
   switch (load.stage) {
     case Stage::kMapping:
-      // Known outcomes only: a mapping that failed changed nothing.
+      // Known outcomes only: a mapping that failed changed nothing (kept
+      // backing it took is kept still, and released as the load unwinds).
       if (!succeeded) {
-        load.failed = true;
-        EndLoad(extent, false);
+        Unwind(extent, load);
         return;
       }
       load.mapped = load.source.backing.has_value();
+      load.reuse = false;  // the kept backing is mapped at the place now
       if (load.mapped && settings_.observer != nullptr) {
         settings_.observer->Staged(extent, PageInEvent::kMapped);
       }
@@ -440,6 +522,16 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
       // catalog must not call it released. Keep it charged.
       QuarantineLoad(extent, Fault::kBacking);
       return;
+    case Stage::kReleasing:
+      if (succeeded) {
+        load.reuse = false;
+        ++stats_.released_unused;
+        EndLoad(extent, false);
+        return;
+      }
+      // The kept backing was not released: it stays charged to this extent.
+      QuarantineLoad(extent, Fault::kBacking);
+      return;
     case Stage::kQueued:
     case Stage::kSlot:
       base::Check(false, "a completion for a stage that waits for none");
@@ -449,11 +541,14 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
 
 void Scheduler::Unwind(catalog::ExtentId extent, Load& load) {
   load.failed = true;
-  if (!load.mapped) {
+  if (!load.mapped && !load.reuse) {
     EndLoad(extent, false);
     return;
   }
-  load.stage = Stage::kUnmapping;
+  // Mapped backing is unmapped (and released); kept backing the load took
+  // but never mapped is released: either way the extent stays LOADING, and
+  // charged, until the VMM lane has done it.
+  load.stage = load.mapped ? Stage::kUnmapping : Stage::kReleasing;
   if (!OpenStage(extent, load)) {
     blocked_.push_back(extent);
   }
@@ -464,8 +559,8 @@ void Scheduler::EndLoad(catalog::ExtentId extent, bool loaded) {
   base::Check(found != loads_.end(), "ending a page-in that is not in flight");
   Load load = std::move(found->second);
   loads_.erase(found);
-  base::Check(!load.slot && (loaded || !load.mapped),
-              "a page-in ended holding a slot, or failed with backing mapped");
+  base::Check(!load.slot && (loaded || !load.mapped) && !load.reuse,
+              "a page-in ended holding a slot or kept backing, or failed with backing mapped");
   base::Check(loaded ? catalog_.CompleteLoad(load.ticket).has_value()
                      : catalog_.FailLoad(load.ticket, true).has_value(),
               "settling a page-in's load");
@@ -530,9 +625,10 @@ void Scheduler::CancelPageIn(catalog::ExtentId extent, Load& load) {
   }
   switch (load.stage) {
     case Stage::kQueued:
-      // Never started: nothing mapped, nothing read.
+      // Never started: nothing mapped, nothing read (kept backing it took
+      // is released first).
       Remove(queued_, extent);
-      EndLoad(extent, false);
+      Unwind(extent, load);
       return;
     case Stage::kSlot:
       Remove(slot_waiters_, extent);
@@ -562,6 +658,7 @@ void Scheduler::CancelPageIn(catalog::ExtentId extent, Load& load) {
       }
       return;
     case Stage::kUnmapping:
+    case Stage::kReleasing:
       return;  // unwinding already
   }
 }
@@ -614,7 +711,8 @@ bool Scheduler::RetryBlocked() {
 
 // Evictions -------------------------------------------------------------------------
 
-std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::ExtentId extent) {
+std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::ExtentId extent,
+                                                     EvictOptions options) {
   TaskRecord* record = Record(task);
   const std::optional<TaskView> view = tasks_.Describe(task);
   if (record == nullptr || record->finished || !view || view->cancelled) {
@@ -640,7 +738,7 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
     return Readiness::kReady;
   }
   const PageSource& place = source->second;
-  if (write_back && (lanes_.storage == nullptr || (place.landed && lanes_.device == nullptr))) {
+  if (write_back && (lanes_.storage == nullptr || (place.landed && !CanCopy()))) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (place.backing && lanes_.device == nullptr && lanes_.backing == nullptr) {
@@ -663,7 +761,9 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
                       .waiters = {},
                       .stage = EvictStage::kUnmapping,
                       .slot = std::nullopt,
-                      .write_back = write_back};
+                      .write_back = write_back,
+                      // Only managed backing is kept: unmanaged stays mapped anyway.
+                      .handoff = options.handoff && place.backing.has_value()};
   eviction.waiters.reserve(settings_.waiters);
   eviction.waiters.push_back(task);
   ++record->waiting;
@@ -704,6 +804,11 @@ bool Scheduler::OpenEvictStage(catalog::ExtentId extent, Eviction& eviction) {
     if (!NoMailboxEver()) {
       return false;
     }
+    if (eviction.stage == EvictStage::kReleasing) {
+      // Kept backing that can never be released: it stays charged.
+      QuarantineEvicting(extent, Fault::kExhausted);
+      return true;
+    }
     if (eviction.stage == EvictStage::kUnmapping && !eviction.write_back) {
       // Plain evictions open their unmap when they begin; this one never
       // started, so nothing changed.
@@ -734,7 +839,7 @@ bool Scheduler::OpenEvictStage(catalog::ExtentId extent, Eviction& eviction) {
                      .source = place.destination,
                      .size = Bytes(place.read.length)};
       work.count = 1;
-      operation.route = Route::kDevice;
+      operation.route = CopyRoute();
       operation.device = DeviceCommand{.operation = operation.id, .work = work};
       break;
     }
@@ -750,21 +855,27 @@ bool Scheduler::OpenEvictStage(catalog::ExtentId extent, Eviction& eviction) {
       operation.read = ReadCommand{.operation = operation.id, .spec = spec};
       break;
     }
-    case EvictStage::kUnmapping: {
+    case EvictStage::kUnmapping:
+    case EvictStage::kReleasing: {
       base::Check(place.backing.has_value(), "unmapping backing a source does not manage");
       const BackingPlace backing = place.backing.value_or(BackingPlace{});
       operation.route = BackingRoute();
-      operation.device =
-          DeviceCommand{.operation = operation.id,
-                        .work = BackingWork{.kind = BackingWork::Kind::kUnmap,
-                                            .reservation = backing.reservation,
-                                            .offset = backing.offset,
-                                            .size = backing.size,
-                                            .allocation_class = backing.allocation_class}};
+      operation.device = DeviceCommand{
+          .operation = operation.id,
+          .work = BackingWork{
+              .kind = eviction.stage == EvictStage::kUnmapping ? BackingWork::Kind::kUnmap
+                                                               : BackingWork::Kind::kRelease,
+              .reservation = backing.reservation,
+              .offset = backing.offset,
+              .size = backing.size,
+              .allocation_class = backing.allocation_class,
+              .retain = eviction.stage == EvictStage::kUnmapping && eviction.handoff,
+              .reuse = false}};
       break;
     }
     case EvictStage::kSlot:
-      base::Check(false, "opening an operation for a write-back waiting for a slot");
+    case EvictStage::kParked:
+      base::Check(false, "opening an operation for an eviction that waits for none");
       break;
   }
   SetCritical(operation, true);
@@ -820,13 +931,130 @@ void Scheduler::OnEvicted(catalog::ExtentId extent, Outcome outcome, std::uint64
     case EvictStage::kUnmapping:
       // Released: the backing generation advances. Refused with nothing
       // changed: the eviction is abandoned and the extent is resident
-      // again.
+      // again. Kept for a handoff: parked.
+      if (succeeded && evictions_.at(extent).handoff) {
+        Park(extent);
+        return;
+      }
       EndEviction(extent, succeeded);
       return;
+    case EvictStage::kReleasing:
+      // The kept backing no load took is released: the eviction completes.
+      // Refused: it is still kept, and stays charged.
+      if (succeeded) {
+        ++stats_.released_unused;
+        EndEviction(extent, true);
+        return;
+      }
+      QuarantineEvicting(extent, Fault::kBacking);
+      return;
     case EvictStage::kSlot:
-      base::Check(false, "a completion for a write-back waiting for a slot");
+    case EvictStage::kParked:
+      base::Check(false, "a completion for an eviction that waits for none");
       return;
   }
+}
+
+void Scheduler::Park(catalog::ExtentId extent) {
+  Eviction& eviction = evictions_.at(extent);
+  eviction.stage = EvictStage::kParked;
+  ++parked_count_;
+  ++stats_.parked;
+  const BackingPlace place = sources_.at(extent).backing.value_or(BackingPlace{});
+  parked_[BackingKey{place.allocation_class, place.size.value()}].push_back(extent);
+  // Done, as far as its waiters go: the evictor, and tasks that would
+  // materialize the extent (they take its kept backing back when they do).
+  const std::vector<TaskId> waiters = std::move(eviction.waiters);
+  eviction.waiters.clear();
+  for (const TaskId waiter : waiters) {
+    Wake(waiter, false);
+  }
+  // An evictor that finished while the unmap ran will not release it.
+  const TaskRecord* evictor = Record(eviction.evictor);
+  if (evictor == nullptr || evictor->finished) {
+    ReleaseParked(eviction.evictor);
+  }
+}
+
+void Scheduler::ReleaseParked(std::optional<TaskId> task) {
+  std::vector<catalog::ExtentId> release;
+  for (const auto& [extent, eviction] : evictions_) {
+    if (eviction.stage == EvictStage::kParked && (!task || eviction.evictor == *task)) {
+      release.push_back(extent);
+    }
+  }
+  for (const catalog::ExtentId extent : release) {
+    Eviction& eviction = evictions_.at(extent);
+    eviction.stage = EvictStage::kReleasing;
+    --parked_count_;
+    release_queue_.push_back(extent);
+  }
+  PumpReleases();
+}
+
+void Scheduler::PumpReleases() {
+  if (pumping_releases_) {
+    return;  // the loop below opens the next one
+  }
+  pumping_releases_ = true;
+  while (releases_open_ < kReleaseWindow && !release_queue_.empty()) {
+    const catalog::ExtentId extent = release_queue_.front();
+    release_queue_.pop_front();
+    const auto found = evictions_.find(extent);
+    if (found == evictions_.end() || found->second.stage != EvictStage::kReleasing ||
+        found->second.release_open) {
+      continue;
+    }
+    found->second.release_open = true;
+    ++releases_open_;
+    if (!OpenEvictStage(extent, found->second)) {
+      blocked_.push_back(extent);
+    }
+  }
+  pumping_releases_ = false;
+}
+
+std::optional<catalog::ExtentId> Scheduler::Donor(const BackingPlace& place,
+                                                  catalog::DomainId domain) {
+  const auto found = parked_.find(BackingKey{place.allocation_class, place.size.value()});
+  if (found == parked_.end()) {
+    return std::nullopt;
+  }
+  std::deque<catalog::ExtentId>& queue = found->second;
+  for (auto it = queue.begin(); it != queue.end();) {
+    const catalog::ExtentId extent = *it;
+    const auto eviction = evictions_.find(extent);
+    const auto source = sources_.find(extent);
+    const auto view = catalog_.Describe(extent);
+    // Still parked, with backing of this class and size, charged exactly
+    // that (a stale entry of an extent parked again elsewhere is dropped).
+    if (eviction == evictions_.end() || eviction->second.stage != EvictStage::kParked ||
+        source == sources_.end() || !source->second.backing ||
+        source->second.backing->allocation_class != place.allocation_class ||
+        source->second.backing->size != place.size || !view ||
+        view->descriptor.size != place.size) {
+      it = queue.erase(it);  // no longer parked here: its entry is stale
+      continue;
+    }
+    // Only within the load's domain: moving a charge between domains would
+    // let the load's exceed B.
+    if (view->descriptor.domain == domain) {
+      return extent;
+    }
+    ++it;
+  }
+  if (queue.empty()) {
+    parked_.erase(found);
+  }
+  return std::nullopt;
+}
+
+void Scheduler::EndParked(catalog::ExtentId extent) {
+  Eviction& eviction = evictions_.at(extent);
+  base::Check(eviction.stage == EvictStage::kParked && eviction.waiters.empty(),
+              "handing off backing an eviction does not keep");
+  --parked_count_;
+  EndEviction(extent, true);  // its entry in parked_ goes stale
 }
 
 void Scheduler::EndEviction(catalog::ExtentId extent, bool evicted) {
@@ -843,6 +1071,10 @@ void Scheduler::EndEviction(catalog::ExtentId extent, bool evicted) {
   for (const TaskId waiter : eviction.waiters) {
     Wake(waiter, !evicted && waiter == eviction.evictor);
   }
+  if (eviction.release_open) {
+    --releases_open_;
+    PumpReleases();  // the next release of parked backing
+  }
 }
 
 void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
@@ -855,6 +1087,7 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
   evictions_.erase(found);
   Remove(slot_waiters_, extent);
   Remove(blocked_, extent);
+  Remove(release_queue_, extent);
   if (eviction.slot) {
     // A copy or write may still touch it: never reused.
     slots_.at(*eviction.slot) = SlotState::kQuarantined;
@@ -862,6 +1095,10 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
   base::Check(catalog_.QuarantineEviction(eviction.ticket).has_value(), "quarantining an eviction");
   for (const TaskId waiter : eviction.waiters) {
     Wake(waiter, true);
+  }
+  if (eviction.release_open) {
+    --releases_open_;
+    PumpReleases();
   }
 }
 

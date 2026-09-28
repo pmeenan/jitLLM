@@ -282,10 +282,13 @@ it appears.
       ([dsv4-native](experiments/dsv4-native/README.md)). The KV, indexer
       and compressor state is explicit and bounded (`Dsv4StateLayout`, three
       D-068 representations); its spill and restore are the swap path's.
-      Open: running each chunk as a device job over leased closures on the
-      paged node (D-086; the harness is resident on `cudaMalloc` memory, like
-      the backend proof's rung 3), the executed-plan record against
-      llama.cpp's, and the other models.
+      *On the paged node* (`benchmarks/dsv4_runner.h`): each chunk a device
+      job over its leased closure (D-086), 46,232 extents paged through the
+      landing zone, each layer's expert slab as 2 MiB pages whose contents
+      land in pieces; all 8 prompts' 32 steps bit-identical to the resident
+      harness's logits ([swap](experiments/fast-swap/swap.md)).
+      Open: the executed-plan record against llama.cpp's, and the other
+      models.
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
@@ -326,6 +329,19 @@ it appears.
       write-back path and restored on return, with no re-prefill; that cost
       counts in the swap time. D-055's named spill format and the retention
       policy stay in M6.
+      *Core landed, with DeepSeek* ([swap](experiments/fast-swap/swap.md)):
+      the handoff (an eviction parks its unmapped backing, charged; a load
+      of the same class and size takes it; the rest is released when the
+      evicting task ends), state spill and restore through the zone, and
+      the zone's copies on a copy lane of their own with fences from a
+      pooled set of events (RE-029: `cuEventCreate` blocks too). DeepSeek
+      (8,192 context tokens) ↔ the FP16 fixture on `spark-b`: B→A 7.36 s
+      prepared, 7.44 s first use, A→B 1.79–1.86 s, DeepSeek evict-all
+      reload 9.07 s, all from the request to the first token; page-in at
+      13.4 GB/s; A resumed after B bit-identical to A never swapped. The
+      handoff saves 1.3–1.4 s of a 46k-extent eviction. Open: the
+      Qwen3.8 and image pairs, overlapping eviction with page-in, and
+      graph restore.
 - [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
@@ -338,7 +354,7 @@ it appears.
       `patch_ple_offload.py` reports it as 0, with `cuStreamWaitValue32`
       then blocking the host's next launch (creator-reported). The answer
       decides how page-in copies and phases share the submission lane
-      during a swap. *Done 2026-09-28* ([RE-029](rough-edges.md#re-029-a-jobs-kernel-launches-can-block-its-lane-while-the-stream-is-busy--2026-09-27-status-open)):
+      during a swap. *Done 2026-09-28* ([RE-029](rough-edges.md#re-029-a-jobs-kernel-launches-can-block-its-lane-while-the-stream-is-busy--2026-09-27-status-worked-around)):
       the deprecated `_V1` attribute reads 0 and the current memory
       operations are supported; the wait does not block the next launch.
       A stream holds about 1,020 pending operations and a launch into a
@@ -348,6 +364,11 @@ it appears.
 - [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
+      *As a harness binary for now* (`jitllm_swap_runner`, since the
+      tokenizer waits for D-088): DeepSeek with the FP16 fixture as B,
+      first-use and prepared cycles, 0 context, evict-all reloads and the
+      RE-029 overlap probe. Open: moving it into `jitllm-runtime` once
+      D-088 is settled, and the three M3 models.
 - [ ] Start the model support matrix (moved from M5), recording template
       hashes.
 - [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible

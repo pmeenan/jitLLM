@@ -253,8 +253,10 @@ class PageInTest : public ::testing::TestWithParam<bool> {
   // `span`: the reader's span_bytes. By default the reader's own (one
   // request per 16 KiB piece), as most tests here count them; the
   // coalescing tests raise it.
+  // `copy`: the zone's copies on a copy lane of their own (Lanes::copy,
+  // RE-029), with a stream of its own.
   void Build(std::size_t slots = kSlots, std::size_t board = 32, std::uint64_t budget = kSize * 64,
-             std::uint32_t span = jitllm::providers::kNoCoalescing) {
+             std::uint32_t span = jitllm::providers::kNoCoalescing, bool copy = false) {
     board_ = std::make_unique<CompletionBoard>(board, wake_);
     storage_lane_ = std::make_unique<StorageService>(
         storage_,
@@ -276,6 +278,15 @@ class PageInTest : public ::testing::TestWithParam<bool> {
       backing_lane_ = std::make_unique<BackingService>(
           &memory_, *board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     }
+    if (copy) {
+      copy_stream_ = execution_.CreateStream().value();
+      copy_lane_ = std::make_unique<DeviceService>(
+          execution_, std::span<const StreamId>(&copy_stream_, 1), *board_,
+          DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16},
+                         .handoff = 16,
+                         .poll_sleep = std::chrono::microseconds(0)},
+          nullptr);
+    }
     ASSERT_LE(slots, kMostSlots);
     LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     for (std::size_t i = 0; i < slots; ++i) {
@@ -286,7 +297,8 @@ class PageInTest : public ::testing::TestWithParam<bool> {
                                     Lanes{.storage = storage_lane_.get(),
                                           .device = device_lane_.get(),
                                           .cpu = nullptr,
-                                          .backing = backing_lane_.get()},
+                                          .backing = backing_lane_.get(),
+                                          .copy = copy_lane_.get()},
                                     SchedulerSettings{.tasks = 16,
                                                       .priorities = 2,
                                                       .aging_limit = 4,
@@ -333,14 +345,23 @@ class PageInTest : public ::testing::TestWithParam<bool> {
       if (backing_lane_ != nullptr) {
         backing_lane_->Close();
       }
+      if (copy_lane_ != nullptr) {
+        copy_lane_->Close();
+      }
       for (int i = 0; i < 100; ++i) {
         (void)storage_lane_->Turn(false);
         if (backing_lane_ != nullptr) {
           (void)backing_lane_->Turn();
         }
         (void)device_lane_->SubmissionTurn();
+        if (copy_lane_ != nullptr) {
+          (void)copy_lane_->SubmissionTurn();
+        }
         execution_.Drain();
         (void)device_lane_->CompletionTurn();
+        if (copy_lane_ != nullptr) {
+          (void)copy_lane_->CompletionTurn();
+        }
       }
     }
   }
@@ -365,17 +386,29 @@ class PageInTest : public ::testing::TestWithParam<bool> {
 
   // One turn of each lane and of the scheduler, in a fixed order. With
   // `device`, the fake device runs what is queued on its streams; without
-  // `vmm`, the VMM lane (if there is one) does not turn.
-  bool Round(bool device = true, bool vmm = true) {
+  // `vmm`, the VMM lane (if there is one) does not turn; without
+  // `device_lane`, the device lane does not (its submission thread is, as
+  // far as the test goes, blocked in a launch: RE-029).
+  bool Round(bool device = true, bool vmm = true, bool device_lane = true) {
     bool progress = storage_lane_->Turn(false);
     if (vmm && backing_lane_ != nullptr) {
       progress = backing_lane_->Turn() || progress;
     }
-    progress = device_lane_->SubmissionTurn() || progress;
+    if (device_lane) {
+      progress = device_lane_->SubmissionTurn() || progress;
+    }
+    if (copy_lane_ != nullptr) {
+      progress = copy_lane_->SubmissionTurn() || progress;
+    }
     if (device) {
       execution_.Drain();
     }
-    progress = device_lane_->CompletionTurn() || progress;
+    if (device_lane) {
+      progress = device_lane_->CompletionTurn() || progress;
+    }
+    if (copy_lane_ != nullptr) {
+      progress = copy_lane_->CompletionTurn() || progress;
+    }
     return scheduler_->Turn() || progress;
   }
   void Settle(bool device = true) {
@@ -491,8 +524,10 @@ class PageInTest : public ::testing::TestWithParam<bool> {
   std::unique_ptr<StorageService> storage_lane_;
   std::unique_ptr<DeviceService> device_lane_;
   std::unique_ptr<BackingService> backing_lane_;
+  std::unique_ptr<DeviceService> copy_lane_;
   std::unique_ptr<Scheduler> scheduler_;
 
+  StreamId copy_stream_;
   ReservationId zone_;
   jitllm::providers::BackingId zone_backing_;
   ReservationId weights_;
@@ -2215,8 +2250,365 @@ TEST_P(PageInTest, ThreadedLoadsAndEvictionsThroughTheZoneKeepEveryByte) {
   scheduler_.reset();  // stopped: TearDown has nothing more to drain
 }
 
+// The handoff (D-033; scheduler.h): evicts `out` with its backing kept,
+// all at once, then materializes `in`. With `hold`, it does not finish
+// while the flag is set, so what no load took stays parked.
+class HandoffProgram final : public TaskProgram {
+ public:
+  struct Report {
+    std::optional<TaskOutcome> outcome;
+    bool retired = false;
+    std::optional<WorkError> error;
+    bool loaded = false;
+  };
+  HandoffProgram(Report& report, std::vector<ExtentId> out, Closure in,
+                 const std::atomic<bool>* hold = nullptr)
+      : report_(report), out_(std::move(out)), in_(std::move(in)), hold_(hold) {}
+
+  Step Advance(TaskContext& context) override {
+    if (context.TakeFailure()) {
+      return Step::Finish(TaskOutcome::kFailed);
+    }
+    if (!evicted_) {
+      evicted_ = true;
+      bool waiting = false;
+      for (const ExtentId extent : out_) {
+        const auto evicted = context.Evict(extent, {.handoff = true});
+        if (!evicted) {
+          report_.error = evicted.error();
+          return Step::Finish(TaskOutcome::kFailed);
+        }
+        waiting = waiting || *evicted == Readiness::kWaiting;
+      }
+      if (waiting) {
+        return Step::Wait();
+      }
+    }
+    if (!report_.loaded) {
+      const auto ready = context.Materialize(in_);
+      if (!ready) {
+        report_.error = ready.error();
+        return Step::Finish(TaskOutcome::kFailed);
+      }
+      if (*ready == Readiness::kWaiting) {
+        return Step::Wait();
+      }
+      report_.loaded = true;
+    }
+    if (hold_ != nullptr && hold_->load()) {
+      return Step::Yield();
+    }
+    return Step::Finish(TaskOutcome::kSucceeded);
+  }
+  void Finished(TaskOutcome outcome) override { report_.outcome = outcome; }
+  void Retired() override { report_.retired = true; }
+
+ private:
+  Report& report_;
+  std::vector<ExtentId> out_;
+  Closure in_;
+  const std::atomic<bool>* hold_;
+  bool evicted_ = false;
+};
+
+// Three resident extents are evicted with their backing kept, and three
+// others load into it: no backing is created or released, the catalog
+// counts the kept backing throughout and never exceeds B (exactly the
+// three extents' bytes), and every byte loaded is the file's.
+TEST_P(PageInTest, AHandoffMovesEvictedBackingToTheLoadsThatFollow) {
+  Build(kSlots, 32, kSize * 3);
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  ASSERT_EQ(memory_.backings(), baseline_ + 3);
+
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(2, std::make_unique<HandoffProgram>(
+                         report, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]},
+                         Of({3, 4, 5})))
+          .has_value());
+  std::size_t most_backings = 0;
+  Bytes most_occupied;
+  for (int i = 0; i < 1000 && Round(); ++i) {
+    most_backings = std::max(most_backings, memory_.backings());
+    most_occupied = std::max(most_occupied, Occupied().Total());
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(most_backings, baseline_ + 3);  // never a fourth: nothing created
+  EXPECT_LE(most_occupied, Bytes(kSize * 3));
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(View(extents_[i]).state, ExtentState::kNonresident) << i;
+    EXPECT_EQ(View(extents_[i + 3]).state, ExtentState::kResident) << i + 3;
+    EXPECT_TRUE(Loaded(i + 3, weights_)) << i + 3;
+  }
+  EXPECT_EQ(memory_.backings(), baseline_ + 3);
+  EXPECT_EQ(scheduler_->stats().parked, 3U);
+  EXPECT_EQ(scheduler_->stats().handed_off, 3U);
+  EXPECT_EQ(scheduler_->stats().released_unused, 0U);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+  EXPECT_EQ(scheduler_->parked(), 0U);
+  EXPECT_EQ(Occupied().Total(), Bytes(kSize * 3));
+}
+
+// B is each domain's: backing parked in one domain is never handed to a
+// load in another, whose occupancy the move would take over its B.
+TEST_P(PageInTest, AHandoffNeverMovesAChargeBetweenDomains) {
+  Build(kSlots, 32, kSize);  // B: one extent per domain
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  // A second domain, full: Y resident; X would need room it does not have.
+  const auto other = catalog_.AddDomain("other");
+  std::vector<ExtentId> there(2);
+  for (std::size_t i = 0; i < there.size(); ++i) {
+    there.at(i) =
+        catalog_
+            .AddExtent(
+                {.domain = other,
+                 .memory_class = jitllm::catalog::MemoryClass::kWeights,
+                 .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                 .size = Bytes(kSize),
+                 .content = {.artifact = {}, .group = 1, .chunk = static_cast<std::uint32_t>(i)}})
+            .value();
+    ASSERT_TRUE(scheduler_->SetSource(there.at(i), Source(i + 1, moved_)).has_value());
+  }
+  LoadProgram::Report full;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(2, Load(full, catalog_.ClosureOfExtents(std::vector<ExtentId>{there[0]}).value()))
+          .has_value());
+  Settle();
+  ASSERT_EQ(full.outcome, TaskOutcome::kSucceeded);
+
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(3, std::make_unique<HandoffProgram>(
+                         report, std::vector<ExtentId>{extents_[0]},
+                         catalog_.ClosureOfExtents(std::vector<ExtentId>{there[1]}).value()))
+          .has_value());
+  Bytes most;
+  for (int i = 0; i < 1000 && Round(); ++i) {
+    most = std::max(most, catalog_.OccupancyOf(other).Total());
+  }
+  EXPECT_EQ(report.error, WorkError::kOverBudget);
+  EXPECT_EQ(report.outcome, TaskOutcome::kFailed);
+  EXPECT_LE(most, Bytes(kSize));
+  EXPECT_EQ(View(there[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(scheduler_->stats().handed_off, 0U);
+  // The parked backing was released when its evictor finished.
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kNonresident);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);  // Y's alone
+
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(4, Evicting(evicted, {there[0]})).has_value());
+  Settle();
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+}
+
+// Kept backing no load takes stays charged (EVICTING) while its evictor
+// runs, and is released when it finishes: no idle pool (D-033).
+TEST_P(PageInTest, ParkedBackingNoLoadTookIsReleasedWhenItsEvictorFinishes) {
+  Build();
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  std::atomic<bool> hold{true};
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(2, std::make_unique<HandoffProgram>(
+                         report, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]},
+                         Of({3}), &hold))
+          .has_value());
+  for (int i = 0; i < 200; ++i) {
+    (void)Round();
+  }
+  ASSERT_TRUE(report.loaded);
+  EXPECT_FALSE(report.outcome.has_value());
+  EXPECT_EQ(scheduler_->parked(), 2U);
+  EXPECT_EQ(Occupied().evicting, Bytes(kSize * 2));  // kept, and counted
+  EXPECT_EQ(memory_.backings(), baseline_ + 3);
+  EXPECT_TRUE(Loaded(3, weights_));
+
+  hold = false;
+  Settle();
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(report.retired);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+  EXPECT_EQ(scheduler_->stats().released_unused, 2U);
+  EXPECT_EQ(scheduler_->stats().handed_off, 1U);
+  EXPECT_EQ(Occupied().evicting, Bytes());
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(View(extents_[i]).state, ExtentState::kNonresident) << i;
+  }
+}
+
+// A parked extent materialized again takes its own kept backing back.
+TEST_P(PageInTest, AParkedExtentTakesItsOwnBackingBack) {
+  Build(kSlots, 32, kSize);
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0}))).has_value());
+  Settle();
+  HandoffProgram::Report report;
+  ASSERT_TRUE(scheduler_
+                  ->Start(2, std::make_unique<HandoffProgram>(
+                                 report, std::vector<ExtentId>{extents_[0]}, Of({0})))
+                  .has_value());
+  std::size_t most = 0;
+  for (int i = 0; i < 1000 && Round(); ++i) {
+    most = std::max(most, memory_.backings());
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(most, baseline_ + 1);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kResident);
+  EXPECT_TRUE(Loaded(0, weights_));
+  EXPECT_EQ(scheduler_->stats().handed_off, 1U);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+}
+
+// Live state written back through the zone and parked, then restored into
+// its own kept backing: every byte comes back.
+TEST_P(PageInTest, HandedOffStateIsWrittenBackAndRestoredWhole) {
+  Build();
+  const ExtentId state = AddState(0);
+  const std::size_t backings = memory_.backings();
+  HandoffProgram::Report report;
+  ASSERT_TRUE(scheduler_
+                  ->Start(1, std::make_unique<HandoffProgram>(
+                                 report, std::vector<ExtentId>{state},
+                                 catalog_.ClosureOfExtents(std::vector<ExtentId>{state}).value()))
+                  .has_value());
+  Settle();
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(Writes().size(), 4U);  // written back, in pieces of 16 KiB
+  EXPECT_EQ(View(state).state, ExtentState::kResident);
+  EXPECT_TRUE(StateIs(0));
+  EXPECT_EQ(memory_.backings(), backings);
+  EXPECT_EQ(scheduler_->stats().handed_off, 1U);
+}
+
+// A load that took kept backing and is cancelled before mapping it
+// releases it: nothing kept, nothing charged, nothing left.
+TEST_P(PageInTest, CancellingALoadThatTookKeptBackingReleasesIt) {
+  Build(1);  // one slot: two landed loads in flight, the third waits unstarted
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  HoldNext(64);
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(2, std::make_unique<HandoffProgram>(
+                         report, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]},
+                         Of({3, 4, 5})))
+          .has_value());
+  Settle();
+  EXPECT_EQ(scheduler_->loads(), 3U);
+  EXPECT_EQ(memory_.backings(), baseline_ + 3);  // taken, none created
+  ASSERT_TRUE(scheduler_->Cancel(2));
+  for (int round = 0; round < 40 && scheduler_->loads() > 0; ++round) {
+    ReleaseReads();
+    Settle();
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kCancelled);
+  EXPECT_EQ(scheduler_->loads(), 0U);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+  EXPECT_EQ(Occupied().Total(), Bytes());
+  EXPECT_EQ(memory_.backings(), baseline_);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+  EXPECT_GE(scheduler_->stats().released_unused, 1U);
+}
+
+// A kept backing whose map is refused goes back, and the load that took
+// it releases it as it unwinds.
+TEST_P(PageInTest, AKeptBackingWhoseMapIsRefusedIsReleased) {
+  Build();
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0}))).has_value());
+  Settle();
+  memory_.FailNext(jitllm::providers::fake::Operation::kMap, ProviderError::kFailed);
+  HandoffProgram::Report report;
+  ASSERT_TRUE(scheduler_
+                  ->Start(2, std::make_unique<HandoffProgram>(
+                                 report, std::vector<ExtentId>{extents_[0]}, Of({1})))
+                  .has_value());
+  Settle();
+  EXPECT_EQ(report.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kNonresident);
+  EXPECT_EQ(memory_.backings(), baseline_);
+  EXPECT_EQ(Occupied().Total(), Bytes());
+  EXPECT_FALSE(scheduler_->fault().has_value());
+  EXPECT_EQ(scheduler_->stats().released_unused, 1U);
+}
+
+// RE-029: with a copy lane (and a VMM lane, as the paged node has them), a
+// landed page-in never needs the device lane, whose submission thread a
+// job may hold in a launch into a full stream; a job still runs on the
+// device lane. Only with a VMM lane: VMM work on the device lane needs it.
+class CopyLaneTest : public PageInTest {};
+
+TEST_P(CopyLaneTest, ACopyLaneLandsPageInsWhileTheDeviceLaneIsHeld) {
+  Build(kSlots, 32, kSize * 64, jitllm::providers::kNoCoalescing, /*copy=*/true);
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(1, Load(report, All())).has_value());
+  for (int i = 0; i < 1000 && Round(true, true, /*device_lane=*/false); ++i) {
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  for (std::size_t i = 0; i < kExtents; ++i) {
+    EXPECT_TRUE(Loaded(i, weights_)) << i;
+  }
+  LoadProgram::Report job;
+  ASSERT_TRUE(scheduler_->Start(2, Load(job, Of({0}), JobResult::kQueued)).has_value());
+  for (int i = 0; i < 100; ++i) {
+    (void)Round(true, true, false);
+  }
+  EXPECT_EQ(job.job_runs, 0);  // the device lane is held
+  Settle();
+  EXPECT_EQ(job.job_runs, 1);
+  EXPECT_EQ(job.outcome, TaskOutcome::kSucceeded);
+}
+
+// A landed read may land in pieces, each copied to its own destination
+// (an expert slab's page); pieces are refused for write-back and beyond
+// the read.
+TEST_P(PageInTest, ALandedReadLandsInPieces) {
+  Build();
+  const std::uint64_t half = kSize / 2;
+  PageSource source = Source(0, weights_);
+  source.destination = 0;
+  source.piece_count = 2;
+  source.pieces[0] = {
+      .slot_offset = 0, .destination = Place(weights_, 0) + half, .length = Bytes(half)};
+  source.pieces[1] = {
+      .slot_offset = half, .destination = Place(weights_, 0), .length = Bytes(half)};
+  ASSERT_TRUE(scheduler_->SetSource(extents_[0], source).has_value());
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
+  Settle();
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(std::memcmp(At(Place(weights_, 0)), file_.data() + half, half), 0);
+  EXPECT_EQ(std::memcmp(At(Place(weights_, 0) + half), file_.data(), half), 0);
+
+  PageSource beyond = source;
+  beyond.pieces[1].slot_offset = half + 1;
+  EXPECT_EQ(Failed(scheduler_->SetSource(extents_[1], beyond)), WorkError::kInvalid);
+  PageSource written = source;
+  written.write_back = true;
+  EXPECT_EQ(Failed(scheduler_->SetSource(extents_[1], written)), WorkError::kInvalid);
+}
+
 INSTANTIATE_TEST_SUITE_P(VmmWork, PageInTest, ::testing::Bool(), [](const auto& info) {
   return info.param ? std::string("OnAVmmLane") : std::string("OnTheDeviceLane");
 });
+INSTANTIATE_TEST_SUITE_P(VmmWork, CopyLaneTest, ::testing::Values(true),
+                         [](const auto& /*info*/) { return std::string("OnAVmmLane"); });
 
 }  // namespace

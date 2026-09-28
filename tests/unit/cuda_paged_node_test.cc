@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// BP-S3's node on a real device (tests/support/paged_node.h): two models,
+// BP-S3's node on a real device (tests/support/paged_node.h), and M3's
+// swap path on it (a full swap with the handoff; the copy lane beside a
+// job whose stream is full, RE-029). Two models,
 // each on its own stream, share one catalog domain, one scheduler with its
 // lanes, one landing zone and one workspace, under an execution budget
 // that holds the larger model's weights and half the smaller's. They
@@ -13,19 +15,28 @@
 // the budget, and teardown leaves no backing. The real models alternate in
 // benchmarks/alternate_paged.cc.
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <print>
 #include <set>
+#include <stop_token>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "base/bytes.h"
@@ -246,6 +257,177 @@ TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
   EXPECT_TRUE(ran.has_value()) << ran.error();
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+std::filesystem::path Scratch() {
+  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  std::filesystem::path directory = scratch != nullptr
+                                        ? std::filesystem::path(scratch)
+                                        : std::filesystem::path(::testing::TempDir());
+  std::filesystem::create_directories(directory);
+  return directory;
+}
+
+// M3's full swap (SwapProgram) with the handoff (D-033) on the real VMM
+// provider: each model's evicted backing is unmapped, kept, and mapped
+// again under the other's weights, which are read back whole; what no load
+// took is released once the swap is done, and teardown leaves no backing.
+TEST(CudaPagedNodeTest, SwapsHandBackingOverAndEveryByteReadsBack) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  // B: room for the larger model's weights only, so no swap can create
+  // backing beside what it evicts.
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + (kExtents[0] * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = first.ReadBack();
+  EXPECT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(first.Intact());
+  const std::array<std::pair<Model*, Model*>, 2> swaps = {{{&first, &second}, {&second, &first}}};
+  for (const auto& [out, in] : swaps) {
+    if (!ran) {
+      break;
+    }
+    const auto before = node.Stats();
+    ASSERT_TRUE(before.has_value());
+    ts::SwapReport report;
+    ran = node.Swap(out->weights(), in->closure(), /*handoff=*/true, report);
+    ASSERT_TRUE(ran.has_value()) << ran.error();
+    ran = in->ReadBack();
+    ASSERT_TRUE(ran.has_value()) << ran.error();
+    EXPECT_TRUE(in->Intact());
+    // What no load took is released after the swap: wait for it.
+    std::size_t left = 1;
+    for (int i = 0; i < 5000 && left > 0; ++i) {
+      ASSERT_TRUE(node.Call(
+                          [&]() -> ts::Status {
+                            left = node.scheduler().evictions();
+                            return {};
+                          },
+                          "counting evictions")
+                      .has_value());
+    }
+    EXPECT_EQ(left, 0U);
+    const auto after = node.Stats();
+    ASSERT_TRUE(after.has_value());
+    const std::size_t taken = std::min(out->weights().size(), in->weights().size());
+    EXPECT_EQ(report.evictions, out->weights().size());
+    EXPECT_EQ(report.loads, in->weights().size());
+    EXPECT_EQ(after->parked - before->parked, out->weights().size());
+    EXPECT_EQ(after->handed_off - before->handed_off, taken);
+    EXPECT_EQ(after->released_unused - before->released_unused, out->weights().size() - taken);
+    EXPECT_EQ(out->Resident(), 0U);
+    EXPECT_EQ(in->Resident(), in->weights().size());
+  }
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+// RE-029 on the real device: a job whose stream fills (a wait on a host
+// flag, then more operations than the stream holds pending) blocks the
+// device lane's submission thread in a launch. With the zone's copies on a
+// copy lane of their own (the paged node's default), and fences from the
+// provider's pool of events (cuEventCreate blocks for as long as that
+// launch does), a page-in completes meanwhile; the job finishes once the
+// flag is set.
+TEST(CudaPagedNodeTest, ACopyLaneLandsPageInsWhileAJobFillsItsStream) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = first.ReadBack();  // the first model's weights, resident
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+
+  void* flag = nullptr;
+  ASSERT_EQ(cudaHostAlloc(&flag, sizeof(std::uint32_t), cudaHostAllocMapped), cudaSuccess);
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(0);
+  void* device_flag = nullptr;
+  ASSERT_EQ(cudaHostGetDevicePointer(&device_flag, flag, 0), cudaSuccess);
+  constexpr int kOperations = 1500;  // well past the ~1,020 a stream holds (RE-029)
+  std::atomic<int> queued{0};
+  const std::uint64_t workspace = node.activations().base;
+  ts::Done done;
+  const std::uint64_t request = node.Submit(std::make_unique<ts::RunProgram>(
+      done, first.closure(),
+      [&queued, device_flag, workspace](jitllm::providers::NativeStream native) {
+        if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
+                                reinterpret_cast<CUdeviceptr>(device_flag), 1,
+                                CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {
+          return sc::JobResult::kUnknown;
+        }
+        for (int i = 0; i < kOperations; ++i) {
+          // NOLINTNEXTLINE(performance-no-int-to-ptr)
+          if (cudaMemsetAsync(reinterpret_cast<void*>(workspace), 0, 4,
+                              static_cast<cudaStream_t>(native.handle)) != cudaSuccess) {
+            return sc::JobResult::kUnknown;
+          }
+          queued.store(i + 1);
+        }
+        return sc::JobResult::kQueued;
+      },
+      0));
+  // The job's launches stop short: its stream is full and the device
+  // lane's thread is blocked in the next one.
+  for (int i = 0; i < 1000 && queued.load() < 1000; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_GE(queued.load(), 1000);
+  EXPECT_LT(queued.load(), kOperations);
+  // A watchdog opens the gate after 30 s, so a regression fails instead of
+  // hanging.
+  std::atomic<bool> fired{false};
+  std::jthread watchdog([&](const std::stop_token& stop) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!stop.stop_requested()) {
+      fired = true;
+      std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
+    }
+  });
+  std::vector<ts::LoadStats> log;
+  const auto start = std::chrono::steady_clock::now();
+  ran = node.Load(second.weights(), "a page-in beside a full stream", log);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  EXPECT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_FALSE(fired.load()) << "the page-in waited for the job's stream";
+  EXPECT_FALSE(done.gone.load());  // the job is still held
+  EXPECT_LT(queued.load(), kOperations);
+  std::println("page-in of {} bytes beside a full stream: {:.4f} s",
+               second.weights().size() * kExtent, seconds);
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
+  watchdog.request_stop();
+  const ts::Status job = node.Await(done, "the gated job", request);
+  EXPECT_TRUE(job.has_value()) << job.error();
+  EXPECT_EQ(queued.load(), kOperations);
+  ran = second.ReadBack();
+  EXPECT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(second.Intact());
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  (void)cudaFreeHost(flag);
 }
 
 }  // namespace

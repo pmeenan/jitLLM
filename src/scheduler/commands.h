@@ -70,13 +70,24 @@ struct DeviceWork {
 // result, and whether the provider's state is known, directly. A kMap
 // whose later step fails undoes the earlier ones, so a known failure
 // changed nothing.
+//
+// The handoff (D-033): a kUnmap with `retain` unmaps the backing but keeps
+// it, unreleased, among the lane's handed-off backing; a kMap with `reuse`
+// maps one of those (of the same class and size) instead of creating
+// backing, and on a known failure puts it back; kRelease releases one of
+// them. The scheduler keeps each such backing charged to an extent
+// throughout (scheduler.h), so the lane never holds one the catalog does
+// not count. A reuse or release that finds none of that class and size
+// changes nothing and is refused as not started.
 struct BackingWork {
-  enum class Kind : std::uint8_t { kMap, kUnmap };
+  enum class Kind : std::uint8_t { kMap, kUnmap, kRelease };
   Kind kind = Kind::kMap;
   providers::ReservationId reservation;
   Bytes offset;
   Bytes size;
   std::size_t allocation_class = 0;
+  bool retain = false;  // kUnmap: keep the backing for a handoff
+  bool reuse = false;   // kMap: map a handed-off backing
 };
 
 // Device submission lane: a job that queues kernel work on one of the

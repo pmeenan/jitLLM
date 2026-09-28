@@ -249,8 +249,11 @@ DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
 in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. Landed: its models
 and baselines pinned, with licenses recorded; GGML widened for the two
 LLMs' operations; the native tokenizer, chat renderers and sampling, in
-tests only until the owner accepts D-088; and DeepSeek V4 Flash imported
-and run natively and resident (bit-identical to llama.cpp unfused on the
-same GGUF; not yet on leased closures). D-087 moved the
+tests only until the owner accepts D-088; DeepSeek V4 Flash imported
+and run natively (bit-identical to llama.cpp unfused on the same GGUF),
+now as device jobs over leased closures on the paged node; and the swap
+path's core (full swaps with the D-033 backing handoff, state spill and
+restore, a copy lane for RE-029) in a harness swap runner: DeepSeek↔the
+FP16 fixture A→B→A, bit-identical after the return. D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

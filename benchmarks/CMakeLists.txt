@@ -83,7 +83,7 @@ if(JITLLM_CUDA)
   # hold either or both (BP-S3). Their binaries link the launch recorder
   # themselves (an object library, whose wrappers must be in the link).
   add_library(jitllm_paged_runners STATIC fp16_runner.cc fp16_common.cc exl3_runner.cc
-                                          exl3_common.cc)
+                                          exl3_common.cc dsv4_common.cc dsv4_runner.cc)
   target_include_directories(jitllm_paged_runners SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_include_directories(jitllm_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -112,6 +112,15 @@ if(JITLLM_CUDA)
                                                        jitllm_warnings)
   target_link_options(jitllm_alternate_paged PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  # M3's swap runner: DeepSeek V4 Flash and the FP16 fixture on one paged
+  # node, full swaps A→B→A with each part timed, state spilled and restored
+  # (docs/experiments/fast-swap/swap.md). A harness: it links the native
+  # tokenizer, which production binaries may not until D-088 is accepted.
+  add_executable(jitllm_swap_runner swap_runner.cc)
+  target_link_libraries(jitllm_swap_runner PRIVATE jitllm_paged_runners jitllm_launch_recorder
+                                                   jitllm_tokenizer jitllm_warnings)
+  target_link_options(jitllm_swap_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through jitLLM's launchers at upstream's forced plans,

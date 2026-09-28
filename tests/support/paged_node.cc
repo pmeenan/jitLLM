@@ -7,10 +7,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <print>
+#include <span>
 #include <utility>
 
 #include "base/bounded_queue.h"
@@ -28,6 +30,16 @@ using catalog::ExtentId;
 using catalog::MemoryClass;
 
 constexpr auto kPatience = std::chrono::minutes(10);
+
+// Each device-type lane's completion handoff; a lane holds at most twice
+// that many fences unreleased (queued for its completion lane, and
+// watched there) and one more waiting to be handed over.
+constexpr std::size_t kLaneHandoff = 256;
+// The provider's events made ahead: every fence the device and copy lanes
+// can hold at once, and a few for the node's own fences, so neither lane
+// ever makes one as it goes (RE-029: cuEventCreate blocks while another
+// thread launches into a full stream).
+constexpr std::size_t kEventsAhead = (2 * ((2 * kLaneHandoff) + 1)) + 16;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -94,6 +106,9 @@ PagedNode::~PagedNode() {
   storage_lane_->Close();
   device_lane_->Close();
   backing_lane_->Close();
+  if (copy_lane_ != nullptr) {
+    copy_lane_->Close();
+  }
   threads_.clear();
 }
 
@@ -106,7 +121,8 @@ Status PagedNode::Open() {
     return Error(std::format("OpenDeviceMemory: {}", memory.error().detail));
   }
   memory_ = std::move(*memory);
-  auto execution = providers::cuda::OpenDeviceExecution(0);
+  auto execution = providers::cuda::OpenDeviceExecution(
+      0, {.events_ahead = kEventsAhead, .events_kept = std::max<std::size_t>(kEventsAhead, 4096)});
   if (!execution) {
     return Error("OpenDeviceExecution failed");
   }
@@ -130,6 +146,9 @@ Status PagedNode::Open() {
   if (!host_found || memory_->Granularity() != Bytes(kPagedExtent)) {
     return Error("this device has no host-NUMA VMM at 2 MiB (D-034, D-081)");
   }
+  if (settings_.slot_bytes < kPagedExtent || settings_.slot_bytes % 4096 != 0) {
+    return Error("a landing slot is at least 2 MiB, in 4 KiB units");
+  }
   auto storage = providers::UringStorage::Create(kPagedDepth);
   if (!storage) {
     return Error(std::format("io_uring: {}", storage.error().message()));
@@ -138,7 +157,7 @@ Status PagedNode::Open() {
   counting_ = std::make_unique<CountingStorage>(*storage_);
   domain_ = catalog_.AddDomain("gb10");
   // The zone first: a persistent pool, mapped before anything pages.
-  return MapResident(zone_, "the landing zone", settings_.slots * kPagedExtent,
+  return MapResident(zone_, "the landing zone", settings_.slots * settings_.slot_bytes,
                      providers::BackingKind::kHost, MemoryClass::kStaging,
                      catalog::Recovery::kPinned, kShared);
 }
@@ -269,7 +288,7 @@ Status PagedNode::Start(Bytes budget) {
       *counting_,
       providers::ReaderSettings{
           .alignment = 4096,
-          .request_bytes = 2U << 20U,
+          .request_bytes = static_cast<std::uint32_t>(settings_.slot_bytes),
           .retries = 3,
           .reads = 1024,
           .waiters = 8,
@@ -279,27 +298,41 @@ Status PagedNode::Start(Bytes budget) {
   device_lane_ = std::make_unique<sc::DeviceService>(
       *execution_, streams_, *board_,
       sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
-                         .handoff = 256,
+                         .handoff = kLaneHandoff,
                          .poll_sleep = std::chrono::microseconds(0)},
       nullptr);
+  if (settings_.copy_lane) {
+    // The zone's copies on their own submission and completion lanes, on
+    // the copy stream alone: a model's job launching into a full stream
+    // (RE-029) blocks only the device lane.
+    copy_lane_ = std::make_unique<sc::DeviceService>(
+        *execution_, std::span<const providers::StreamId>(&streams_.back(), 1), *board_,
+        sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
+                           .handoff = kLaneHandoff,
+                           .poll_sleep = std::chrono::microseconds(0)},
+        nullptr);
+  }
   // Managed backing's VMM work on a lane of its own, so the zone's copies
   // never wait behind it (docs/experiments/pagein-perf/); that lane alone
   // calls the device-memory provider (device_memory.h).
   backing_lane_ = std::make_unique<sc::BackingService>(
       memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32});
-  sc::LandingZone landing{.slots = {},
-                          .slot_bytes = Bytes(kPagedExtent),
-                          .stream = static_cast<std::uint32_t>(settings_.compute_streams)};
+  sc::LandingZone landing{
+      .slots = {},
+      .slot_bytes = Bytes(settings_.slot_bytes),
+      .stream = copy_lane_ != nullptr ? 0 : static_cast<std::uint32_t>(settings_.compute_streams)};
   for (std::size_t i = 0; i < settings_.slots; ++i) {
-    landing.slots.push_back(zone_.base + (i * kPagedExtent));
+    landing.slots.push_back(zone_.base + (i * settings_.slot_bytes));
   }
   scheduler_ = std::make_unique<sc::Scheduler>(
       catalog_, *board_, wake_,
       sc::Lanes{.storage = storage_lane_.get(),
                 .device = device_lane_.get(),
                 .cpu = nullptr,
-                .backing = backing_lane_.get()},
-      sc::SchedulerSettings{.tasks = 16, .budget = budget, .landing = landing});
+                .backing = backing_lane_.get(),
+                .copy = copy_lane_.get()},
+      sc::SchedulerSettings{
+          .tasks = 16, .budget = budget, .landing = landing, .observer = settings_.observer});
   return {};
 }
 
@@ -313,6 +346,10 @@ void PagedNode::Run() {
   threads_.emplace_back([this] { device_lane_->RunSubmission(); });
   threads_.emplace_back([this] { device_lane_->RunCompletion(); });
   threads_.emplace_back([this] { backing_lane_->Run(); });
+  if (copy_lane_ != nullptr) {
+    threads_.emplace_back([this] { copy_lane_->RunSubmission(); });
+    threads_.emplace_back([this] { copy_lane_->RunCompletion(); });
+  }
 }
 
 void PagedNode::Round() {
@@ -320,6 +357,10 @@ void PagedNode::Round() {
   (void)backing_lane_->Turn();
   (void)device_lane_->SubmissionTurn();
   (void)device_lane_->CompletionTurn();
+  if (copy_lane_ != nullptr) {
+    (void)copy_lane_->SubmissionTurn();
+    (void)copy_lane_->CompletionTurn();
+  }
   (void)scheduler_->Turn();
 }
 
@@ -428,9 +469,31 @@ Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
   return {};
 }
 
-Status PagedNode::Evict(std::vector<ExtentId> extents) {
+Status PagedNode::Evict(std::vector<ExtentId> extents, sc::EvictOptions options) {
   Done done;
-  return Post(std::make_unique<EvictProgram>(done, std::move(extents)), done, "an eviction");
+  return Post(std::make_unique<EvictProgram>(done, std::move(extents), options), done,
+              "an eviction");
+}
+
+Status PagedNode::Swap(std::vector<ExtentId> out, const catalog::Closure& in, bool handoff,
+                       SwapReport& report) {
+  Done done;
+  return Post(std::make_unique<SwapProgram>(done, std::move(out), in, handoff, report), done,
+              "a swap");
+}
+
+std::expected<sc::SchedulerStats, std::string> PagedNode::Stats() {
+  sc::SchedulerStats stats;
+  if (auto r = Call(
+          [&]() -> Status {
+            stats = scheduler_->stats();
+            return {};
+          },
+          "reading the scheduler's counters");
+      !r) {
+    return std::unexpected(r.error());
+  }
+  return stats;
 }
 
 Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what,
@@ -507,12 +570,19 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     storage_lane_->Close();
     device_lane_->Close();
     backing_lane_->Close();
+    if (copy_lane_ != nullptr) {
+      copy_lane_->Close();
+    }
     if (driven) {
       for (int i = 0; i < 1000 && (storage_->in_flight() > 0 || i < 10); ++i) {
         (void)storage_lane_->Turn(false);
         (void)backing_lane_->Turn();
         (void)device_lane_->SubmissionTurn();
         (void)device_lane_->CompletionTurn();
+        if (copy_lane_ != nullptr) {
+          (void)copy_lane_->SubmissionTurn();
+          (void)copy_lane_->CompletionTurn();
+        }
       }
     }
     threads_.clear();

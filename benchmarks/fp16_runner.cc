@@ -98,6 +98,18 @@ std::vector<ExtentId> Fp16Runner::weights() const {
   return all;
 }
 
+std::uint64_t Fp16Runner::weight_read_bytes() const {
+  std::uint64_t bytes = 0;
+  const auto groups = artifact_->groups();
+  for (const auto& group : groups) {
+    bytes += group.stored.value();
+  }
+  if (!table_extents_.empty()) {
+    bytes += groups[artifact_->resources()[binding_.token_embd].group].stored.value();
+  }
+  return bytes;
+}
+
 std::vector<ExtentId> Fp16Runner::managed_extents() const {
   std::vector<ExtentId> all = weights();
   if (o_.spill == "managed") {
@@ -648,6 +660,9 @@ Status Fp16Runner::Evaluate(int evaluation, std::vector<float>& result) {
     // The job's fence has completed: the logits are in.
     const auto* values = static_cast<const float*>(logits_);
     result.insert(result.end(), values, values + (chunk_logits / sizeof(float)));
+    if (k == 0) {
+      first_chunk_done_ = std::chrono::steady_clock::now();
+    }
     // The chunk shape's guaranteed bound against what it reached.
     Peak& peak = peaks_[rows];
     ++peak.chunks;

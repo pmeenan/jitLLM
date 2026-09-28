@@ -153,7 +153,9 @@ is the likely share of the 6% decode gap, not measured.
   attention's sums.
 - **Resident on `cudaMalloc`** like the backend proof's rung 3; jobs over
   leased closures on the paged node need the slab's placement in the
-  catalog's extents, which is the swap path's.
+  catalog's extents, which is the swap path's. *Done since:* the paged
+  runner's logits equal this harness's bit for bit on all 8 prompts
+  ([swap](../fast-swap/swap.md)).
 
 ## Limits
 

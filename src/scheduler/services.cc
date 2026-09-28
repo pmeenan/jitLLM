@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -43,9 +44,10 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
 }
 
 // Carries out VMM work and publishes its acceptance and result at once
-// (DeviceService and BackingService alike).
-void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, OperationId operation,
-              const BackingWork& work) {
+// (DeviceService and BackingService alike), keeping handed-off backing in
+// the lane's `stash`.
+void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBoard& board,
+              OperationId operation, const BackingWork& work) {
   if (memory == nullptr) {
     (void)board.Accept(operation, Acceptance::kNotStarted);
     return;
@@ -61,18 +63,54 @@ void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, Operation
   const auto unknown = [](const providers::Failure& failure) {
     return failure.error == providers::ProviderError::kUnknown;
   };
-  if (work.kind == BackingWork::Kind::kMap) {
-    const auto created = memory->Create(work.allocation_class, work.size);
-    if (!created) {
-      unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
+  if (work.kind == BackingWork::Kind::kRelease) {
+    // One handed-off backing of the class and size, released: no longer
+    // charged once this succeeds.
+    const std::optional<providers::BackingId> kept = stash.Take(work.allocation_class, work.size);
+    if (!kept) {
+      not_started();  // none kept: nothing changed
       return;
     }
-    const auto mapped = memory->Map(work.reservation, work.offset, *created);
+    if (const auto released = memory->Release(*kept); !released) {
+      if (unknown(released.error())) {
+        unproven(Acceptance::kUnknown);
+      } else {
+        stash.Put(work.allocation_class, work.size, *kept);  // still there, still kept
+        not_started();
+      }
+      return;
+    }
+  } else if (work.kind == BackingWork::Kind::kMap) {
+    // Handed-off backing goes back to the stash on a known failure, so a
+    // refusal still changed nothing: the scheduler releases it later.
+    std::optional<providers::BackingId> backing;
+    if (work.reuse) {
+      backing = stash.Take(work.allocation_class, work.size);
+      if (!backing) {
+        not_started();  // none kept: nothing changed
+        return;
+      }
+    } else {
+      const auto created = memory->Create(work.allocation_class, work.size);
+      if (!created) {
+        unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
+        return;
+      }
+      backing = *created;
+    }
+    const auto undo = [&]() -> bool {
+      if (work.reuse) {
+        stash.Put(work.allocation_class, work.size, *backing);
+        return true;
+      }
+      return memory->Release(*backing).has_value();
+    };
+    const auto mapped = memory->Map(work.reservation, work.offset, *backing);
     if (!mapped) {
       if (unknown(mapped.error())) {
         unproven(Acceptance::kUnknown);
       } else {
-        memory->Release(*created) ? not_started() : unproven(Acceptance::kAccepted);
+        undo() ? not_started() : unproven(Acceptance::kAccepted);
       }
       return;
     }
@@ -81,8 +119,7 @@ void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, Operation
     if (!access) {
       if (unknown(access.error())) {
         unproven(Acceptance::kUnknown);
-      } else if (memory->Unmap(work.reservation, work.offset, work.size) &&
-                 memory->Release(*created)) {
+      } else if (memory->Unmap(work.reservation, work.offset, work.size) && undo()) {
         not_started();
       } else {
         unproven(Acceptance::kAccepted);
@@ -110,9 +147,13 @@ void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, Operation
       }
       return;
     }
-    // Unmapped, but the backing still exists until it is released: a
-    // refusal here leaves it charged.
-    if (const auto released = memory->Release(*backing); !released) {
+    if (work.retain) {
+      // Kept for a handoff: the scheduler keeps it charged until a load
+      // maps it or a kRelease releases it.
+      stash.Put(work.allocation_class, work.size, *backing);
+    } else if (const auto released = memory->Release(*backing); !released) {
+      // Unmapped, but the backing still exists until it is released: a
+      // refusal here leaves it charged.
       unproven(unknown(released.error()) ? Acceptance::kUnknown : Acceptance::kAccepted);
       return;
     }
@@ -124,6 +165,17 @@ void CarryOut(providers::DeviceMemory* memory, CompletionBoard& board, Operation
 }
 
 }  // namespace
+
+std::optional<providers::BackingId> HandoffStash::Take(std::size_t allocation_class, Bytes size) {
+  for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
+    if (it->allocation_class == allocation_class && it->size == size) {
+      const providers::BackingId backing = it->backing;
+      entries_.erase(std::next(it).base());
+      return backing;
+    }
+  }
+  return std::nullopt;
+}
 
 StorageService::StorageService(providers::Storage& storage, providers::ReaderSettings reader,
                                CompletionBoard& board, QueueSettings queue,
@@ -309,7 +361,7 @@ void DeviceService::Fence(OperationId operation, providers::StreamId stream, boo
 }
 
 void DeviceService::Back(OperationId operation, const BackingWork& work) {
-  CarryOut(memory_, board_, operation, work);
+  CarryOut(memory_, stash_, board_, operation, work);
 }
 
 void DeviceService::Hand(const Watch& watch) {
@@ -487,7 +539,7 @@ BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard&
 
 void BackingService::Handle(DeviceCommand& command) {
   if (const auto* work = std::get_if<BackingWork>(&command.work)) {
-    CarryOut(memory_, board_, command.operation, *work);
+    CarryOut(memory_, stash_, board_, command.operation, *work);
     return;
   }
   (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work

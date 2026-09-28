@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // One node for the paged harnesses (docs/backend-proof.md, P2-P5 and
-// BP-S3): CUDA device 0 with its providers, a stream per model plus the
-// copy stream, io_uring, one catalog domain, the landing zone (D-081), the
-// scheduler and its lanes, and the workspace the models share. Model
+// BP-S3; M3's swap runner): CUDA device 0 with its providers, a stream per
+// model plus the copy stream, io_uring, one catalog domain, the landing
+// zone (D-081), the scheduler and its lanes (the zone's copies on a copy
+// lane of their own by default, RE-029), and the workspace the models
+// share. Model
 // runners (benchmarks/fp16_runner.h, exl3_runner.h) register their memory
 // and sources with it and post their work through it, so two models can
 // share one catalog, one scheduler and one zone (BP-S3). CUDA builds only;
@@ -110,6 +112,17 @@ struct NodeSettings {
   // BP-P1's coalesced reads (64 MiB spans): the reader's option, off by
   // default as the reader's own default is.
   bool coalesce = false;
+  // The zone's copies on a lane of their own (RE-029; scheduler.h), on
+  // the copy stream, so a model's long job never holds them up; otherwise
+  // on the device lane, as in M2.
+  bool copy_lane = true;
+  // Each slot's bytes (and the reader's largest request): 2 MiB, or more
+  // for reads longer than their extent (a DeepSeek expert slab's pages,
+  // benchmarks/dsv4_runner.h). A multiple of 4 KiB.
+  std::uint64_t slot_bytes = kPagedExtent;
+  // Told of each page-in's progress, on the scheduler's thread; outlives
+  // the node. Optional.
+  scheduler::PageInObserver* observer = nullptr;
 };
 
 // What the storage lane hands io_uring (BP-P1): requests, and the pieces
@@ -223,7 +236,15 @@ class PagedNode {
 
   Status Load(std::vector<catalog::ExtentId> extents, std::string what,
               std::vector<LoadStats>& log);
-  Status Evict(std::vector<catalog::ExtentId> extents);
+  Status Evict(std::vector<catalog::ExtentId> extents, scheduler::EvictOptions options = {});
+  // A full swap (SwapProgram): `out` evicted, with their backing handed
+  // to `in`'s loads if `handoff`, then `in` materialized.
+  Status Swap(std::vector<catalog::ExtentId> out, const catalog::Closure& in, bool handoff,
+              SwapReport& report);
+  // The scheduler's counters, read on its thread.
+  std::expected<scheduler::SchedulerStats, std::string> Stats();
+  // Requests and pieces the storage lane has handed io_uring so far.
+  std::uint64_t requests() const { return counting_->requests.load(); }
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
              std::uint32_t stream);
   // Runs `call` on the scheduler's thread.
@@ -259,6 +280,7 @@ class PagedNode {
   std::unique_ptr<scheduler::StorageService> storage_lane_;
   std::unique_ptr<scheduler::DeviceService> device_lane_;
   std::unique_ptr<scheduler::BackingService> backing_lane_;
+  std::unique_ptr<scheduler::DeviceService> copy_lane_;  // settings_.copy_lane
   std::unique_ptr<scheduler::Scheduler> scheduler_;
   std::vector<std::jthread> threads_;  // the scheduler first
   std::optional<std::expected<void, scheduler::Fault>> stopped_;

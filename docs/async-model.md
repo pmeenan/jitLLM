@@ -42,7 +42,11 @@ The initial service roles are:
 Start with a dedicated scheduler thread and separate storage, device
 submission and device-completion lanes; paging through the landing zone
 (D-081) adds a VMM lane, so creating and mapping backing never delays a
-page-in's copies ([pagein-perf](experiments/pagein-perf/README.md)).
+page-in's copies ([pagein-perf](experiments/pagein-perf/README.md)), and
+a copy lane (its own submission and completion threads on the zone's
+stream), so a phase whose launches fill its stream, which blocks the
+launching thread past about 1,020 pending operations (RE-029), never
+delays them either ([swap](experiments/fast-swap/swap.md)).
 The network role arrives with M3/M4. Worker counts and sleep/poll intervals are implementation settings to measure,
 not performance claims or new pins. A lane can contain multiple workers only
 if its provider's ordering/context contract permits it. Keep completion

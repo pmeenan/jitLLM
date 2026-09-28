@@ -18,10 +18,12 @@
 #define JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,9 +99,17 @@ class RunProgram final : public HarnessProgram {
     if (!job_) {
       return scheduler::Step::Finish(scheduler::TaskOutcome::kSucceeded);
     }
-    const auto submitted = context.SubmitLaunch(
-        closure_, scheduler::LaunchWork{.stream = stream_, .job = std::move(job_)});
+    // A refused launch is left in `work`.
+    scheduler::LaunchWork work{.stream = stream_, .job = std::move(job_)};
+    const auto submitted = context.SubmitLaunch(closure_, std::move(work));
     if (!submitted) {
+      if (submitted.error() == scheduler::WorkError::kBusy) {
+        // No mailbox now (other work holds them): the job, untouched,
+        // again next turn.
+        // NOLINTNEXTLINE(bugprone-use-after-move): SubmitLaunch leaves a refused launch in work
+        job_ = std::move(work.job);
+        return scheduler::Step::Yield();
+      }
       return Fail(submitted.error());
     }
     submitted_ = true;
@@ -132,40 +142,138 @@ class CallProgram final : public HarnessProgram {
   std::expected<void, std::string> status_;
 };
 
-// Evicts extents one by one, each unmap (and write-back) waited for; those
-// not resident are passed over.
-class EvictProgram final : public HarnessProgram {
+// Evicts extents in order, up to kWindow at once (each unmap, and
+// write-back, in flight together), then waits for them all before the
+// next; those not resident are passed over. With a handoff
+// (scheduler::EvictOptions) each eviction keeps its managed backing
+// parked, and a load this task starts may take it; whatever no load took
+// is released when the task finishes.
+class EvictingProgram : public HarnessProgram {
  public:
-  EvictProgram(Done& done, std::vector<catalog::ExtentId> extents)
-      : HarnessProgram(done), extents_(std::move(extents)) {}
-  scheduler::Step Advance(scheduler::TaskContext& context) override {
-    if (context.TakeFailure()) {
-      return scheduler::Step::Finish(scheduler::TaskOutcome::kFailed);
-    }
-    while (next_ < extents_.size()) {
+  static constexpr std::size_t kWindow = 256;
+
+  EvictingProgram(Done& done, std::vector<catalog::ExtentId> extents,
+                  scheduler::EvictOptions options)
+      : HarnessProgram(done), extents_(std::move(extents)), options_(options) {}
+
+ protected:
+  // One round of evictions: nullopt once every one has ended, else the
+  // step to return.
+  std::optional<scheduler::Step> EvictRound(scheduler::TaskContext& context) {
+    std::size_t issued = 0;
+    while (next_ < extents_.size() && issued < kWindow) {
       const catalog::ExtentId extent = extents_[next_];
       if (context.catalog().Describe(extent).value().state != catalog::ExtentState::kResident) {
         ++next_;
         continue;
       }
-      const auto evicted = context.Evict(extent);
+      const auto evicted = context.Evict(extent, options_);
       if (!evicted) {
         if (evicted.error() == scheduler::WorkError::kBusy) {
-          return scheduler::Step::Yield();  // no mailbox now
+          // No mailbox now: wait for those in flight, or try next turn.
+          return issued > 0 ? scheduler::Step::Wait() : scheduler::Step::Yield();
         }
         return Fail(evicted.error());
       }
       ++next_;
+      ++evicted_;
       if (*evicted == scheduler::Readiness::kWaiting) {
-        return scheduler::Step::Wait();
+        ++issued;
       }
     }
+    if (issued > 0) {
+      return scheduler::Step::Wait();
+    }
+    return std::nullopt;
+  }
+  std::uint64_t evicted() const { return evicted_; }
+
+ private:
+  std::vector<catalog::ExtentId> extents_;
+  scheduler::EvictOptions options_;
+  std::size_t next_ = 0;
+  std::uint64_t evicted_ = 0;
+};
+
+class EvictProgram final : public EvictingProgram {
+ public:
+  EvictProgram(Done& done, std::vector<catalog::ExtentId> extents,
+               scheduler::EvictOptions options = {})
+      : EvictingProgram(done, std::move(extents), options) {}
+  scheduler::Step Advance(scheduler::TaskContext& context) override {
+    if (context.TakeFailure()) {
+      return scheduler::Step::Finish(scheduler::TaskOutcome::kFailed);
+    }
+    if (auto step = EvictRound(context)) {
+      return *step;
+    }
+    return scheduler::Step::Finish(scheduler::TaskOutcome::kSucceeded);
+  }
+};
+
+// What a swap did, and when (steady clock, on the scheduler thread): read
+// by the poster once the Done is gone.
+struct SwapReport {
+  std::chrono::steady_clock::time_point started;
+  std::chrono::steady_clock::time_point evicted;  // every eviction ended (or parked)
+  std::chrono::steady_clock::time_point loaded;   // the incoming closure resident
+  std::uint64_t evictions = 0;                    // extents resident when it began
+  std::uint64_t loads = 0;                        // closure extents nonresident then
+};
+
+// A full swap (M3): evicts the outgoing extents (write-back first for live
+// state at a write-back place), then materializes the incoming closure.
+// With a handoff the evicted backing is parked, the incoming loads take it
+// instead of creating their own (scheduler.h), and what they leave is
+// released when this task finishes, after `loaded`. Nothing is leased.
+class SwapProgram final : public EvictingProgram {
+ public:
+  SwapProgram(Done& done, std::vector<catalog::ExtentId> out, catalog::Closure in, bool handoff,
+              SwapReport& report)
+      : EvictingProgram(done, std::move(out), scheduler::EvictOptions{.handoff = handoff}),
+        in_(std::move(in)),
+        report_(report) {}
+
+  scheduler::Step Advance(scheduler::TaskContext& context) override {
+    if (context.TakeFailure()) {
+      return scheduler::Step::Finish(scheduler::TaskOutcome::kFailed);
+    }
+    if (!started_) {
+      started_ = true;
+      report_.started = std::chrono::steady_clock::now();
+    }
+    if (!evicted_all_) {
+      if (auto step = EvictRound(context)) {
+        return *step;
+      }
+      evicted_all_ = true;
+      report_.evicted = std::chrono::steady_clock::now();
+      report_.evictions = evicted();
+      for (const auto& [extent, generation] : in_.extents) {
+        report_.loads +=
+            context.catalog().Describe(extent).value().state == catalog::ExtentState::kResident ? 0
+                                                                                                : 1;
+      }
+    }
+    const auto ready = context.Materialize(in_);
+    if (!ready) {
+      if (ready.error() == scheduler::WorkError::kBusy) {
+        return scheduler::Step::Yield();
+      }
+      return Fail(ready.error());
+    }
+    if (*ready == scheduler::Readiness::kWaiting) {
+      return scheduler::Step::Wait();
+    }
+    report_.loaded = std::chrono::steady_clock::now();
     return scheduler::Step::Finish(scheduler::TaskOutcome::kSucceeded);
   }
 
  private:
-  std::vector<catalog::ExtentId> extents_;
-  std::size_t next_ = 0;
+  catalog::Closure in_;
+  SwapReport& report_;
+  bool started_ = false;
+  bool evicted_all_ = false;
 };
 
 // Submits a job over a closure without materializing it first: with any
