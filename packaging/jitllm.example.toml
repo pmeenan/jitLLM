@@ -39,6 +39,26 @@ schema_version = 2
 # The v2 bounds (docs/cluster-design.md); the only profile.
 # profile = "initial-v2"
 
+# The models the node serves (D-096), a table each, by the name a request
+# uses: an installed artifact (or, for a pipeline, a composition) by its ID,
+# the directory's name under `installed`. `jitllm-runtime chat` and
+# `jitllm-runtime swap-table` serve them; the service does not yet.
+# [models.deepseek]
+# artifact = "<64 hex digits>"
+# A speculative drafter's artifact; speculation is then the default decode.
+# drafter = "<64 hex digits>"
+# speculation = true
+# Tokens of conversation state, 512 to 262144.
+# context = 8704
+# For an artifact whose metadata keeps no tokenizer or chat template: the
+# checkpoint's, owned by root or the runtime's user and writable by nobody
+# else.
+# tokenizer = "/path/to/tokenizer.json"
+# chat_template = "/path/to/chat_template.jinja"
+#
+# [models.image]
+# composition = "<64 hex digits>"
+
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build
 # refuses to run as a member.

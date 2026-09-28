@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "qwen38_runner.h"
+#include "engine/qwen38_runner.h"
 
 #include <cuda_runtime.h>
 #include <fcntl.h>
@@ -29,22 +29,20 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using catalog::Recovery;
 using providers::BackingKind;
-using Status = test_support::Status;
 
-constexpr std::uint64_t kExtent = test_support::kPagedExtent;
+constexpr std::uint64_t kExtent = kPagedExtent;
 constexpr std::size_t kRingDepth = 32;
 // The slabs' offset in their first page: the stride's own alignment (16),
 // since the 80-byte gap between Qwen3.8's expert groups cannot hold 256.
@@ -522,7 +520,7 @@ Status Qwen38Runner::RegisterState() {
                              std::generic_category().message(errno)));
   }
   std::uint64_t slot = 0;
-  const auto spill = [&](ts::Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
+  const auto spill = [&](Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
     sources.clear();
     for (std::size_t i = 0; i < mapped.extents.size(); ++i, ++slot) {
       const sc::PageSource source{
@@ -552,9 +550,9 @@ Status Qwen38Runner::RegisterState() {
 Status Qwen38Runner::Bind() {
   auto& catalog = node_.catalog();
   std::vector<ExtentId> all = weights();
-  for (const ts::Mapped* mapped : std::initializer_list<const ts::Mapped*>{
-           &state_, &mstate_, &slot_memory_, &node_.activations(), &node_.pool(),
-           &cublas_workspace_, &commit_}) {
+  for (const Mapped* mapped :
+       std::initializer_list<const Mapped*>{&state_, &mstate_, &slot_memory_, &node_.activations(),
+                                            &node_.pool(), &cublas_workspace_, &commit_}) {
     all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
   }
   all.insert(all.end(), staging_.begin(), staging_.end());
@@ -1633,7 +1631,7 @@ Status Qwen38Runner::Release() {
   launch_.reset();
   cublas_.reset();
   auto& memory = node_.memory();
-  for (ts::Mapped* mapped : {&state_, &mstate_, &slot_memory_, &cublas_workspace_, &commit_}) {
+  for (Mapped* mapped : {&state_, &mstate_, &slot_memory_, &cublas_workspace_, &commit_}) {
     if (!mapped->reservation.valid()) {
       continue;
     }
@@ -1682,4 +1680,4 @@ Status Qwen38Runner::Release() {
   return Error(all);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

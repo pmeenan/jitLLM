@@ -125,8 +125,12 @@ far; a shipped binary that links them carries ExLlamaV3's MIT text
 prefill) is included by two jitLLM units: `src/kernels/ggml/moe_cutlass.cu`
 (Apache-2.0), which instantiates its SM120 block-scaled NVFP4 grouped GEMM
 for the routed experts, and `jitllm_ops.cc`, which reads only
-`cutlass/version.h` to pin the version the expert layout follows; it links into tests and benchmarks only so far, and
-a shipped binary that links it carries CUTLASS's BSD-3-Clause text. Every
+`cutlass/version.h` to pin the version the expert layout follows. Since
+D-096 the runtime links the engine and so GGML's and CUTLASS's kernels:
+both are `use: product` in the lock, and the package carries GGML's MIT
+text (with the YaRN line from `rope.cu`) and CUTLASS's BSD-3-Clause text in
+its third-party notices, and ships cuBLAS (D-076, the `cublas` unit
+below). Every
 kept header was checked for its BSD-3-Clause SPDX line and NVIDIA's
 copyright (the lock's `license.evidence`); the CuTe DSL, under NVIDIA's
 EULA, is not kept. The routed experts' activation quantization
@@ -145,7 +149,7 @@ search, so that file keeps GGML's MIT notice.
 | Linux UAPI headers 6.8.0-142.142 | platform | GPL-2.0-only WITH Linux-syscall-note | Constants and macros |
 | CUDA 13.4.92 runtime and headers | platform | NVIDIA CUDA EULA | CUDA builds: `libcudart_static.a`, NVCC's host stubs and registration code, device code |
 | CUDA driver link stub 13.4.92 (`cuda-driver-dev-13-4`) | platform | NVIDIA CUDA EULA | Nothing: CUDA builds need `libcuda.so.1`, which the driver supplies (D-072) |
-| cuBLAS and cuBLASLt 13.8.0.4 (D-076) | platform | NVIDIA CUDA EULA | No packaged binary yet: the GGML kernel tests link `libcublas.so.13` and `libcublasLt.so.13` dynamically and load them from the build tree. When a packaged binary uses cuBLAS, the package ships them unmodified (EULA Attachment A) |
+| cuBLAS and cuBLASLt 13.8.0.4 (D-076) | platform | NVIDIA CUDA EULA | `jitllm-runtime` (CUDA builds, since D-096) links `libcublas.so.13` and `libcublasLt.so.13` dynamically; the package ships both unmodified and unstripped (EULA Attachment A, section 2.3) in `/usr/lib/jitllm`, which the runtime's run path names, carries the EULA notice and depends on `libgcc-s1`, which `libcublas.so.13` needs |
 | CCCL 13.3.4.3.1 (libcu++, `nv/`) | platform | Apache-2.0 WITH LLVM-exception | Through CUDA headers such as `cuda_fp16.h` |
 | NVCC, libNVVM, ptxas and the other CUDA tools | tool | NVIDIA CUDA EULA (internal use) | Generated code |
 | REUSE lint 6.2.0 and nine wheels | tool | GPL-3.0-or-later and others (provenance.toml) | Nothing |
@@ -686,7 +690,7 @@ not vLLM, the container image or the checkpoints they act on. Every path:
 | Paths | Declaration |
 | --- | --- |
 | `LICENSE` | The AGPL-3.0 text |
-| `download.sh`, `start.sh`, `stop.sh`; `bench/mixed.py`, `bench/structured.py`, `bench/sweep.py`; `files/build_draft_vocab.py`, `files/build_ple_packed_table.py`, `files/memwatch.sh`; `scripts/alert.sh`, `health-probe.sh`, `heartbeat.sh`, `launch-lane.sh`, `maintenance-relaunch.sh`, `memwatch-rotate.sh`, `smoke-test.sh`, `start-memwatch.sh`, `supervise.sh`; `systemd/qwen38-flash-heartbeat.timer`, `qwen38-flash-maintenance.service`, `qwen38-flash-maintenance.timer`, `qwen38-flash-supervisor-failure@.service`, `qwen38-flash-supervisor.service` (23) | `SPDX-License-Identifier: AGPL-3.0-or-later` in the file, most with "Copyright (C) 2026 MiaAI Lab" |
+| `download.sh`, `start.sh`, `stop.sh`; `bench/mixed.py`, `bench/structured.py`, `bench/sweep.py`; `files/build_draft_vocab.py`, `files/build_ple_packed_table.py`, `files/memwatch.sh`; `scripts/alert.sh`, `health-probe.sh`, `heartbeat.sh`, `launch-lane.sh`, `maintenance-relaunch.sh`, `memwatch-rotate.sh`, `smoke-test.sh`, `start-memwatch.sh`, `supervise.sh`; `systemd/qwen38-flash-heartbeat.timer`, `qwen38-flash-maintenance.service`, `qwen38-flash-maintenance.timer`, `qwen38-flash-supervisor-failure@.service`, `qwen38-flash-supervisor.service` (23) | an SPDX tag for `AGPL-3.0-or-later` in the file, most with "Copyright (C) 2026 MiaAI Lab" |
 | The patch generators `files/patch_block_drop.py`, `patch_determinism.py`, `patch_modelopt_mxfp8.py`, `patch_mtp_draft_vocab.py`, `patch_mtp_draft_vocab_v030.py`, `patch_ple_layer.py`, `patch_ple_mmap_v030.py`, `patch_ple_offload.py`, `patch_qsa_fp8_kv.py`, `patch_qsa_fp8_kv_v030.py` (10) | The same AGPL-3.0-or-later header. They hold vLLM source fragments as the old side of old-to-new replacement pairs, and at run time write modified copies of files `start.sh` extracts from the image; per the README those copies keep vLLM's Apache-2.0 headers. `patch_qsa_fp8_kv.py` credits its FP8-KV approach to `lancelind/qwen3.8-Flash-DGX` (Apache-2.0) as "reimplemented"; that project was not compared. What they generate is a combined work, not audited |
 | `start-v030.sh`, `files/mtp_block.py`, `files/build_draft_vocab_extend.py`, `bench/audit-spanish.py`, `bench/structured-protocol.py`, `bench/verify-smoke.py`, and the 10 files in `tests/` (16) | No notice in the file; the repository default, AGPL-3.0-or-later |
 | `README.md`, `CHANGELOG.md`, the 5 files in `docs/`, the 6 in `.github/`, `.env.sample`, `.gitignore`, `files/sysctl-spark3.conf`, `files/draft_vocab_en_code_47k.txt`, `files/draft_vocab_es_en_code_65k.txt` (18) | No notice; the repository default. The draft vocabularies are token-ID lists |

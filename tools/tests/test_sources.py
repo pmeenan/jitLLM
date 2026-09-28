@@ -76,7 +76,7 @@ class CheckedInLock(unittest.TestCase):
 
     def test_core_selection(self):
         self.assertEqual(srclib.select(srclib.load_lock(), []),
-                         ["exllamav3", "ggml", "googletest", "tomlplusplus"])
+                         ["cutlass", "exllamav3", "ggml", "googletest", "tomlplusplus"])
 
     def test_mise_tasks(self):
         tasks = tomllib.loads((REPO / "mise.toml").read_text())["tasks"]

@@ -96,7 +96,6 @@
 #include "base/sha256.h"
 #include "catalog/catalog.h"
 #include "dsv4_common.h"
-#include "dsv4_runner.h"
 #include "fp16_runner.h"
 #include "paged_node.h"
 #include "paged_programs.h"

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "dsv4_runner.h"
+#include "engine/dsv4_runner.h"
 
 #include <cuda_runtime.h>
 #include <fcntl.h>
@@ -32,22 +32,20 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using catalog::Recovery;
 using providers::BackingKind;
-using Status = test_support::Status;
 
-constexpr std::uint64_t kExtent = test_support::kPagedExtent;
+constexpr std::uint64_t kExtent = kPagedExtent;
 constexpr std::uint64_t kFileAlignment = 4096;
 // The most snapshot ranges a verify saves: at most 8 rows of about 230
 // ranges each (a cell a layer, a CSA layer's six ring and compressed rows,
@@ -751,7 +749,7 @@ Status Dsv4Runner::RegisterState() {
                              std::generic_category().message(errno)));
   }
   std::uint64_t slot = 0;
-  const auto spill = [&](ts::Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
+  const auto spill = [&](Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
     sources.clear();
     for (std::size_t i = 0; i < mapped.extents.size(); ++i, ++slot) {
       const sc::PageSource source{
@@ -781,9 +779,9 @@ Status Dsv4Runner::RegisterState() {
 Status Dsv4Runner::Bind() {
   auto& catalog = node_.catalog();
   std::vector<ExtentId> all = weights();
-  for (const ts::Mapped* mapped :
-       std::initializer_list<const ts::Mapped*>{&state_, &dstate_, &node_.activations(),
-                                                &node_.pool(), &cublas_workspace_, &snapshot_}) {
+  for (const Mapped* mapped :
+       std::initializer_list<const Mapped*>{&state_, &dstate_, &node_.activations(), &node_.pool(),
+                                            &cublas_workspace_, &snapshot_}) {
     all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
   }
   all.insert(all.end(), staging_.begin(), staging_.end());
@@ -800,9 +798,9 @@ Status Dsv4Runner::Bind() {
         draft.push_back(w.extent);
       }
     }
-    for (const ts::Mapped* mapped :
-         std::initializer_list<const ts::Mapped*>{&state_, &dstate_, &node_.activations(),
-                                                  &node_.pool(), &cublas_workspace_, &snapshot_}) {
+    for (const Mapped* mapped :
+         std::initializer_list<const Mapped*>{&state_, &dstate_, &node_.activations(),
+                                              &node_.pool(), &cublas_workspace_, &snapshot_}) {
       draft.insert(draft.end(), mapped->extents.begin(), mapped->extents.end());
     }
     draft.insert(draft.end(), staging_.begin(), staging_.end());
@@ -1300,9 +1298,9 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   if (meanwhile) {
     // Submitted without waiting; the frame (and `job`'s references) lives
     // until Await has seen the program gone.
-    ts::Done done;
+    sc::ProgramDone done;
     const std::uint64_t request =
-        node_.Submit(std::make_unique<ts::RunProgram>(done, everything_, std::move(job), stream_));
+        node_.Submit(std::make_unique<sc::RunProgram>(done, everything_, std::move(job), stream_));
     alongside = meanwhile();
     posted = node_.Await(done, "a DeepSeek chunk", request);
   } else {
@@ -1994,7 +1992,7 @@ Status Dsv4Runner::Release() {
   launch_.reset();
   cublas_.reset();
   auto& memory = node_.memory();
-  for (ts::Mapped* mapped : {&state_, &dstate_, &cublas_workspace_, &snapshot_}) {
+  for (Mapped* mapped : {&state_, &dstate_, &cublas_workspace_, &snapshot_}) {
     if (!mapped->reservation.valid()) {
       continue;
     }
@@ -2031,4 +2029,4 @@ Status Dsv4Runner::Release() {
   return Error(all);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

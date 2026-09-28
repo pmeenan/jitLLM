@@ -3,7 +3,8 @@
 
 # The swap path: the M3 models on the paged node, full swaps A→B→A (M3)
 
-M3's swap path and swap runner ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress)):
+M3's swap path and swap runner ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress);
+since D-096 the runtime's own, [through jitllm-runtime](#through-jitllm-runtime-d-096)):
 DeepSeek V4 Flash 0731, Qwen3.8 Flash Next and the Qwen-Image-2.1
 pipeline run as device jobs over leased closures on the paged node
 (D-086), paged into device VMM through the landing zone (D-081); a full
@@ -18,7 +19,8 @@ each part: [M3's swap pairs](#m3s-swap-pairs) between the three models
 
 ### Qwen3.8 Flash Next on the paged node
 
-`benchmarks/qwen38_runner.h`: the resident harness's graph, plan and
+`src/engine/qwen38_runner.h` (in `benchmarks/` until D-096, as the other
+runners and helpers named here): the resident harness's graph, plan and
 kernels (`qwen38_common.h`, one planning path that `qwen38_exec.cc` now
 calls too; since the prefill slice, the fused graph and, from the
 CUTLASS-layout artifact, CUTLASS's grouped GEMM and jitLLM's vector
@@ -53,7 +55,7 @@ layout, now one helper (`paged_weights.h`):
 
 ### The n-gram table by rows (D-035)
 
-`benchmarks/ple_rows.h`. The table (28.8 GB of 90-byte NVFP4 rows) is
+`src/engine/ple_rows.h`. The table (28.8 GB of 90-byte NVFP4 rows) is
 never resident. Before each chunk's job the runner computes the chunk's
 rows (16 a token, `Qwen38Chunk`'s hash), deduplicates them, reads them from
 the artifact on a ring of its own (32 in flight) into a pinned landing,
@@ -94,7 +96,7 @@ the binding whose table has the slots' rows (512 × 16 = 8,192 slots,
 
 ### Qwen-Image-2.1 on the paged node
 
-`benchmarks/qwen_image_runner.h`: the three component artifacts, joined by
+`src/engine/qwen_image_runner.h`: the three component artifacts, joined by
 their composition (D-089), each a set of extents (`paged_weights.h`,
 only the groups its phase reads: the text encoder's table and language
 layers, 15.14 GB; the denoiser, 14.23 GB; the VAE's decoder, 1.35 GB of
@@ -122,8 +124,9 @@ F32), with the resident harness's kernels in its call order (copied from
 
 ### The swap pairs runner
 
-`benchmarks/swap_pairs.cc` (`jitllm_swap_pairs`, a harness binary until
-it moves into `jitllm-runtime`): two of the three models on one node, one process per
+`benchmarks/swap_pairs.cc` (`jitllm_swap_pairs`, a harness binary; the
+runtime's `swap-table` runs the same protocol over every configured model
+in one process, [below](#through-jitllm-runtime-d-096)): two of the three models on one node, one process per
 ordered pair, A→B→A as `jitllm_swap_runner` does it (see its header for
 the protocol): a control, a first-use cycle (B never ran in the process;
 A's plans dropped before it returns), a prepared cycle, and for an LLM A a
@@ -392,6 +395,115 @@ at 13.3–14.1 GB/s. The prepared return's first token 0.058–0.062 s. Peak
 memory 95.6–96.5 GiB (98.8 in the 100 ms run; one sample each, the host
 shared).
 
+## Through jitllm-runtime (D-096)
+
+Since D-096 the runtime runs the swap path itself
+([runtime-serving.md](../../runtime-serving.md)): `jitllm-runtime
+swap-table` registers every configured model on one node and runs the
+swap pairs' protocol over every ordered pair in one process, every fast
+path on: the CUTLASS-layout Qwen3.8 artifact (`c4fb47a9…`), decode graphs,
+a lease per request, the runtime wake, the handoff, and speculation, so
+DeepSeek pages its DSpark drafter with it (108.36 GB with its state,
+against 97.46 without) and Qwen3.8 its MTP block (77.03 GB against
+75.39). The differences from `jitllm_swap_pairs`: all three models are
+registered at once (so the fixed memory holds all three's own memory, 4.39
+GiB, and first use means the incoming model's plans and graphs are
+dropped, since it may have run in an earlier pair: the CUDA modules and
+library state an earlier pair loaded stay loaded, which the harness's
+first-use B, new to its process, did not have); B's prompt is the
+fixed set's `capital` rendered by B's chat template from a cleared state
+(the harness fed DeepSeek 6 raw tokens); an LLM A's return continues with
+speculative steps, its endpoint the first step's end (the first token
+generated after the swap), and its 16 tokens and their logits (the verify
+rows') must equal the same state's unswapped continuation; B's
+conversation is dropped after its first output, so a swap never spills or
+restores it.
+
+**Results** (`spark-b`, GB10, driver 580.178.04, the `spark-native`
+build, `CUDA_DISABLE_PTX_JIT=1`; one run, 16:00–16:11, after the memory
+gate; the artifacts' shards 6–15 h old). Seconds, each part from the end
+of the one before; total from the swap request to the endpoint (an LLM B:
+its first token for the short prompt; an LLM A: the first token generated
+after the swap, its state digest excluded; the image: the first denoising
+step's output). Page-in counts the incoming weights and a returning LLM A's
+state. Every row exact: an LLM A's restored state hashed as it left, its
+16 continued tokens and logits equal; B's first output the same every
+cycle; the image regenerated to the reference's pixels (`95fbcbc5…`);
+every prepared return replayed decode graphs captured before the swap.
+
+| A ↔ B | Swap | Total | Evict and spill | Restore | Page-in (GB at GB/s) | First output (planning) | Peak GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DeepSeek ↔ Qwen3.8 | A→B, first use | 8.024 | 1.951 | — | 5.753 (76.60 at 13.3) | 0.318 (0.033) | 108.0 |
+| | B→A, first use | 9.596 | 1.354 | 0.099 | 8.019 (108.36 at 13.3) | 0.120 (0.075) | 108.0 |
+| | A→B, prepared | 7.948 | 1.925 | — | 5.778 (76.60 at 13.3) | 0.242 | 108.1 |
+| | B→A, prepared | 9.535 | 1.328 | 0.100 | 8.007 (108.36 at 13.4) | 0.095 | 108.0 |
+| | A→B, 0 context | 7.913 | 1.892 | — | 5.775 (76.60 at 13.3) | 0.243 | 108.0 |
+| | B→A, 0 context | 9.706 | 1.358 | — | 8.091 (107.89 at 13.3) | 0.253 (0.080) | 108.0 |
+| Qwen3.8 ↔ DeepSeek | A→B, first use | **9.719** | 1.375 | — | 8.080 (107.89 at 13.4) | 0.260 (0.073) | 108.0 |
+| | B→A, first use | 7.892 | 2.011 | 0.065 | 5.720 (77.03 at 13.3) | 0.093 (0.036) | 108.0 |
+| | A→B, prepared | **9.644** | 1.373 | — | 8.084 (107.89 at 13.3) | 0.185 | 108.0 |
+| | B→A, prepared | 7.746 | 1.887 | 0.064 | 5.719 (77.03 at 13.3) | 0.073 | 108.0 |
+| | A→B, 0 context | 9.627 | 1.343 | — | 8.095 (107.89 at 13.3) | 0.186 | 108.4 |
+| | B→A, 0 context | 7.888 | 1.961 | — | 5.750 (76.60 at 13.3) | 0.173 (0.032) | 108.4 |
+| DeepSeek ↔ image | A→B, first use | 6.029 | 1.879 | — | 2.376 (30.72 at 12.9) | 1.771 | 107.7 |
+| | B→A, first use | 8.790 | 0.536 | 0.093 | 8.037 (108.36 at 13.3) | 0.121 (0.075) | 107.8 |
+| | A→B, prepared | 5.827 | 1.856 | — | 2.309 (30.72 at 13.3) | 1.659 | 108.0 |
+| | B→A, prepared | 8.738 | 0.538 | 0.093 | 8.011 (108.36 at 13.4) | 0.093 | 108.0 |
+| | A→B, 0 context | 5.830 | 1.888 | — | 2.312 (30.72 at 13.3) | 1.627 | 108.0 |
+| | B→A, 0 context | 8.879 | 0.553 | — | 8.073 (107.89 at 13.4) | 0.249 (0.074) | 108.0 |
+| image ↔ DeepSeek | A→B, first use | 8.939 | 0.562 | 0.092 | 8.022 (108.36 at 13.4) | 0.259 (0.074) | 108.7 |
+| | B→A, first use | 5.874 | 1.862 | — | 2.311 (30.72 at 13.3) | 1.700 | 108.7 |
+| | A→B, prepared | 8.831 | 0.562 | — | 8.081 (107.89 at 13.4) | 0.185 | 108.4 |
+| | B→A, prepared | 5.964 | 1.848 | — | 2.473 (30.72 at 12.4) | 1.641 | 108.4 |
+| Qwen3.8 ↔ image | A→B, first use | 5.315 | 1.382 | — | 2.330 (30.72 at 13.2) | 1.602 | 78.6 |
+| | B→A, first use | 6.433 | 0.560 | 0.058 | 5.719 (77.03 at 13.3) | 0.094 (0.035) | 78.5 |
+| | A→B, prepared | 5.300 | 1.372 | — | 2.312 (30.72 at 13.3) | 1.614 | 78.5 |
+| | B→A, prepared | 6.393 | 0.540 | 0.058 | 5.721 (77.03 at 13.3) | 0.073 | 78.5 |
+| | A→B, 0 context | 5.255 | 1.321 | — | 2.319 (30.72 at 13.2) | 1.613 | 78.5 |
+| | B→A, 0 context | 6.407 | 0.528 | — | 5.745 (76.60 at 13.3) | 0.132 (0.032) | 78.5 |
+| image ↔ Qwen3.8 | A→B, first use | 6.520 | 0.551 | — | 5.757 (76.60 at 13.3) | 0.211 (0.033) | 78.5 |
+| | B→A, first use | 5.225 | 1.311 | — | 2.311 (30.72 at 13.3) | 1.602 | 78.5 |
+| | A→B, prepared | 6.482 | 0.551 | — | 5.754 (76.60 at 13.3) | 0.176 | 78.4 |
+| | B→A, prepared | 5.266 | 1.323 | — | 2.310 (30.72 at 13.3) | 1.632 | 78.4 |
+
+Setup (DeepSeek's hash-routing check, Qwen3.8's n-gram hash) took 1–5 ms
+every time. Every swap handed off every extent of backing the incoming
+model could take (36,554–36,759 between the LLMs, 14,719 with the image).
+In this run the image ↔ DeepSeek first-use A→B also restored a DeepSeek
+conversation an earlier pair had left spilled (0.092 s); the table now
+drops the other models' conversations at each pair's start, and a rerun of
+that pair and DeepSeek ↔ Qwen3.8 (16:22–16:27) gave 9.016 s with no restore
+there, the rest within 0.2 s of the table's, every row exact.
+
+**Against M3's targets:** all 32 swaps are under the ~10 s goal (so under
+the ~20 s bound; first use has its own ~40 s). **The worst LLM↔LLM swap
+is 9.72 s** (Qwen3.8 → DeepSeek, first use, 8K context), the worst
+prepared at 8K 9.64 s; swaps into the image reach its first denoising step
+in 5.2–6.0 s. Swaps into DeepSeek are page-in bound: 108 GB at the SSD's
+13.3–13.4 GB/s is 8.0–8.1 s, 0.8 s of it the DSpark drafter, which the
+first token does not need (not tried: paging the drafter after the first
+token). Peak memory 107.7–108.7 GiB with DeepSeek resident; the lowest
+`MemAvailable` in the run was 6.8 GiB of 115.5 at its start.
+
+**Speculation off** (`--plain`, no drafters; 16:11–16:15), beside the
+harness's table from the CUTLASS-layout artifact above (one process a
+pair, fresh shards then):
+
+| A ↔ B | Swap | Runtime | Harness |
+| --- | --- | ---: | ---: |
+| DeepSeek ↔ Qwen3.8 | A→B, first use | 7.722 | 7.917 |
+| | B→A, first use | 8.667 | 8.886 |
+| | A→B, prepared | 7.611 | 7.031 |
+| | B→A, prepared | 8.680 | 8.638 |
+| Qwen3.8 ↔ DeepSeek | A→B, first use | 8.903 (0.106 of it the stale restore above) | 8.767 |
+| | B→A, first use | 7.476 | 6.863 |
+| | A→B, prepared | 8.809 | 8.698 |
+| | B→A, prepared | 7.487 | 6.879 |
+
+The swaps into Qwen3.8 are 0.4–0.6 s slower than the harness's: page-in
+at 13.3 GB/s against 14.7–14.8 then, when the new artifact's shards were
+under an hour old (RE-027's recent-write rate).
+
 ## Results: M3's swap pairs (`spark-b`, 2026-09-28)
 
 GB10, kernel 7.0.0-1019-nvidia, driver 580.178.04, the `spark-native`
@@ -547,7 +659,7 @@ process start, jitLLM 5.0–6.3 s from the swap request.
 
 ## What was built (DeepSeek and the FP16 stand-in)
 
-**DeepSeek on the paged node** (`benchmarks/dsv4_runner.h`). The resident
+**DeepSeek on the paged node** (`src/engine/dsv4_runner.h`). The resident
 harness's graph, plan and kernels (`dsv4_common.h`, from `dsv4_exec.cc`),
 over catalog extents:
 - **Dense groups:** each group's 2 MiB chunks are extents at a 2 MiB-aligned
@@ -610,7 +722,7 @@ CUDA provider takes fences' events from a **pool** made when it opens.
 Together, a job that blocks the device lane's thread no longer holds up a
 single copy.
 
-**The full swap** (`tests/support/paged_programs.h` `SwapProgram`): evicts
+**The full swap** (`src/scheduler/programs.h` `SwapProgram`): evicts
 the outgoing extents, state first, 256 at a time, with or without the
 handoff, then materializes the incoming closure, and notes when each ended.
 
@@ -882,7 +994,19 @@ page-in beside the chunk takes 0.07 s more than alone.
 
 ## Reproduction
 
-On `spark-b`, with the `spark-native` build, the artifacts installed as
+Through the runtime (D-096): a configuration naming the three models (as
+[runtime-serving.md](../../runtime-serving.md#configuration) shows, with
+`storage.installed` the store holding the artifacts and the composition,
+and Qwen3.8's `tokenizer` and `chat_template` the checkpoint's), then
+
+    jitllm-runtime --config FILE --anchor PATH swap-table \
+      --context-text decisions.md --image-noise ref1/latents_init.bf16 \
+      --image-expect 95fbcbc5… --report table.json [--plain] [--pairs A:B,...]
+
+It takes about 11 minutes for the whole table (4 for the two LLM pairs)
+and needs about 110 GiB free; it exits 1 on any failed check.
+
+The harnesses: on `spark-b`, with the `spark-native` build, the artifacts installed as
 dsv4-native's and the backend proof's are, and P2's `control-tokens.txt`:
 
     jitllm_swap_runner --dsv4-artifact DSV4 --fp16-artifact FP16 \

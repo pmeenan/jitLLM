@@ -39,6 +39,81 @@ one Spark and on two.
 
 ---
 
+## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057)
+
+**Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
+([runtime-serving.md](runtime-serving.md)):
+- **Layers.** The task programs a driver posts (run, call, evict, a full
+  swap, a request's lease, an acquisition) are the scheduler's
+  (`scheduler/programs.h`, resource core, vendor-free). The paged node and
+  the M3 models' runners, which use the CUDA runtime directly, form a new
+  `engine` module, a layer above the kernels (CUDA builds only). The
+  runtime program composes them (`runtime/serving.h`). The harnesses drive
+  the same engine under their old names; nothing in `tests/support` ships.
+- **Configuration.** `[models.<name>]` names a model the node serves: one
+  installed artifact (`artifact`) or composition (`composition`, D-089) by
+  ID, and for an artifact an optional `drafter` (speculation is then the
+  default decode, `speculation = false` turns it off), `context` (512 to
+  262,144 tokens, default 8,704), and `tokenizer` and `chat_template`
+  paths for an artifact whose metadata keeps neither. Names are 1–64 of
+  `[a-z0-9._-]`, starting with a letter or digit; at most 16 models; an
+  artifact (target or drafter) serves one model. The keys
+  are new, so `schema_version` stays 2.
+- **Registration and the swap.** A serving command registers every
+  configured model on one node (runner by the artifact's architecture;
+  artifacts opened under the store's trust rules; budget = fixed memory +
+  the largest model's weights, refused unless it fits the host's available
+  memory with 4 GiB to spare), keeps one model resident, and swaps with
+  one `SwapProgram`: the outgoing LLM's conversation state spilled if it
+  holds one, its weights evicted with their backing handed off, the
+  incoming closure paged in. Each turn is one request (D-093), greedy and
+  speculative where the model has a drafter.
+- **Commands.** `jitllm-runtime [--config FILE] [--anchor PATH] chat
+  --turn MODEL TEXT...` and `... swap-table` (options in
+  runtime-serving.md) run after the startup steps, in the runtime's own
+  process and under its process lock, open no listener (D-014), and exit;
+  without a command the runtime is the service as before. They are
+  commands of the runtime, not of `jitllm`, which never links runtime code
+  and reaches the runtime only over the management listener (D-064),
+  which does not exist yet.
+- **Shipping.** The runtime now links GGML's and CUTLASS's kernels and
+  cuBLAS: both components become `use: product` (their MIT and
+  BSD-3-Clause notices ship), and the package ships `libcublas.so.13` and
+  `libcublasLt.so.13` unmodified in `/usr/lib/jitllm`, which the runtime's
+  RUNPATH (`$ORIGIN/../../lib/jitllm`, the only run path a packaged
+  executable may have) names, with a `libgcc-s1` dependency (D-076's
+  consequences, now due).
+
+**Why.** plan.md's M3 swap runner must drive A→B→A in a running
+`jitllm-runtime`, with the native tokenizer and renderers (D-088), before
+the loopback chat route. The harnesses' node and runners were already the
+runtime's design (D-086, D-090, D-093, D-094); moving them keeps one
+engine for the harnesses' checks and the runtime's serving. A runtime
+command rather than a `jitllm` subcommand, because a CLI subcommand would
+need the management listener first; a new layer for the engine, because
+the runners call the CUDA runtime, which the resource core and model layer
+must not.
+
+**Evidence** (`spark-b`, 2026-09-28; [swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+Through `jitllm-runtime chat`, greedy tokens equal the speculation
+harnesses' (same engine) for DeepSeek and Qwen3.8 on the fixed prompt set,
+speculative and plain, with equal prompt IDs; the image's pixels are the
+reference's. `swap-table` ran all 32 swaps of M3's table in one process,
+every one exact and under ~10 s (worst LLM↔LLM 9.72 s, with the drafters
+paged in). The harnesses' greedy, forced-rejection and swap checks pass
+over the moved engine.
+
+**Consequences.** The image runner fixes its prompt and initial latents at
+setup, so a process serves one image prompt from a latents file until the
+image slice's interface takes them per generation. The service registers
+no models until the loopback route (next in M3). A chat turn reuses the
+conversation state only when its re-rendered tokens extend it. Packaging
+changes are owed the workstation's package check (`check:full`).
+
+**Reopen if.** The runtime gains its endpoint (the commands may then become
+management API clients), models need several resident at once (M5, M6),
+or the engine's CUDA use moves behind a provider interface.
+
 ## D-095: No CPU latency hold: a PM QoS request cut the wake's round trip but not decode's time, so the runtime does not keep one  (2026-09-28, status: not adopted, by the owner, 2026-09-28; D-094's wake and its margins stay as they are)
 
 **Decision.** The runtime does not hold a PM QoS CPU latency request

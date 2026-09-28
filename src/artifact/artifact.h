@@ -222,6 +222,13 @@ class Artifact {
   // that identity, page-in rests on the store's permissions (D-056).
   std::expected<FileDescriptor, Error> OpenShardForDirectRead(std::uint32_t shard) const;
 
+  // A kept metadata file (`meta/<name>`, listed with the role
+  // source-metadata), read beneath the artifact without following links:
+  // refused (kFileSet) unless the manifest lists it, and (kFileSize,
+  // kHash) unless it still has the listed size and SHA-256. Within
+  // kMaxMetadataBytes by the manifest's caps.
+  std::expected<std::string, Error> ReadMetadata(std::string_view name) const;
+
  private:
   friend class Opener;
   Artifact() = default;

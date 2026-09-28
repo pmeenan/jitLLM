@@ -115,6 +115,70 @@ TEST(RuntimeArguments, Parse) {
        {std::vector<std::string_view>{"--config"}, {"--anchor", ""}, {"serve"}}) {
     EXPECT_FALSE(jitllm::runtime::ParseArguments(bad).has_value());
   }
+  EXPECT_EQ(defaults->command.command, jitllm::runtime::Command::kService);
+}
+
+// The serving commands (D-096): everything after the command's name is its.
+TEST(RuntimeArguments, Commands) {
+  using jitllm::runtime::Command;
+  const std::vector<std::string_view> chat = {
+      "--config",      "a.toml", "chat",   "--max-tokens", "32",   "--ignore-stop",
+      "--turn",        "ds",     "Hi",     "--turn",       "qwen", "--plain here stays text",
+      "--image-noise", "n.bf16", "--plain"};
+  auto options = jitllm::runtime::ParseArguments(chat);
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->config, "a.toml");
+  EXPECT_EQ(options->command.command, Command::kChat);
+  EXPECT_EQ(options->command.chat.max_tokens, 32U);
+  EXPECT_TRUE(options->command.chat.ignore_stop);
+  EXPECT_FALSE(options->command.chat.fresh);
+  ASSERT_EQ(options->command.chat.turns.size(), 2U);
+  EXPECT_EQ(options->command.chat.turns[0].model, "ds");
+  EXPECT_EQ(options->command.chat.turns[1].text, "--plain here stays text");
+  EXPECT_TRUE(options->command.serving.plain);
+  EXPECT_EQ(options->command.serving.image_noise, "n.bf16");
+
+  const std::vector<std::string_view> table = {
+      "swap-table", "--pairs",        "a:b,b:a", "--context-text", "t.md",  "--cycles",
+      "1",          "--zero-context", "off",     "--report",       "r.json"};
+  options = jitllm::runtime::ParseArguments(table);
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.command, Command::kSwapTable);
+  ASSERT_EQ(options->command.table.pairs.size(), 2U);
+  EXPECT_EQ(options->command.table.pairs[1].first, "b");
+  EXPECT_EQ(options->command.table.cycles, 1U);
+  EXPECT_FALSE(options->command.table.zero_context);
+  EXPECT_EQ(options->command.table.context_tokens, 8192U);
+  EXPECT_EQ(options->command.serving.report, "r.json");
+
+  const std::string long_text(jitllm::runtime::kMaxTurnBytes + 1, 'x');
+  const std::string upper_sha(64, 'A');  // hex, but not as the table prints it
+  for (const std::vector<std::string_view>& bad : {
+           std::vector<std::string_view>{"chat"},  // no turn
+           {"chat", "--turn", "ds"},
+           {"chat", "--turn", "ds", ""},
+           {"chat", "--turn", "ds", long_text},
+           {"chat", "--max-tokens", "0", "--turn", "ds", "Hi"},
+           {"chat", "--max-tokens", "8193", "--turn", "ds", "Hi"},
+           {"chat", "--cycles", "1", "--turn", "ds", "Hi"},  // swap-table's
+           {"swap-table", "--turn", "ds", "Hi"},             // chat's
+           {"swap-table", "--pairs", "a:a"},
+           {"swap-table", "--pairs", "a"},
+           {"swap-table", "--pairs", ""},
+           {"swap-table", "--cycles", "9"},
+           {"swap-table", "--cycles", "0"},
+           {"swap-table", "--image-expect", upper_sha},
+           {"swap-table", "--zero-context", "yes"},
+           {"swap-table", "--image-expect", "abc"},
+           {"swap-table", "--report"},
+       }) {
+    EXPECT_FALSE(jitllm::runtime::ParseArguments(bad).has_value()) << bad.front();
+  }
+  std::vector<std::string_view> many = {"chat"};
+  for (std::size_t i = 0; i <= jitllm::runtime::kMaxTurns; ++i) {
+    many.insert(many.end(), {"--turn", "ds", "Hi"});
+  }
+  EXPECT_FALSE(jitllm::runtime::ParseArguments(many).has_value());
 }
 
 // A host without a GPU this build targets (or, as in the workstation

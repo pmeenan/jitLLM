@@ -8,7 +8,7 @@
 
 #include <cstdint>
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t value, void* stream);
 
@@ -34,4 +34,4 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
   return cudaPeekAtLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

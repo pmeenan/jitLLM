@@ -327,7 +327,7 @@ it appears.
       ([dsv4-native](experiments/dsv4-native/README.md)). The KV, indexer
       and compressor state is explicit and bounded (`Dsv4StateLayout`, three
       D-068 representations); its spill and restore are the swap path's.
-      *On the paged node* (`benchmarks/dsv4_runner.h`): each chunk a device
+      *On the paged node* (`engine/dsv4_runner.h`): each chunk a device
       job over its leased closure (D-086), 46,232 extents paged through the
       landing zone, each layer's expert slab as 2 MiB pages whose contents
       land in pieces; all 8 prompts' 32 steps bit-identical to the resident
@@ -366,7 +366,7 @@ it appears.
       the 192 greedy steps now misses the near-tie bound (jitLLM's own
       margin there is 0.18 nats in the reference form)
       ([qwen38-native](experiments/qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness)).
-      *On the paged node* (`benchmarks/qwen38_runner.h`): chunks as device
+      *On the paged node* (`engine/qwen38_runner.h`): chunks as device
       jobs over leased closures, the expert slabs as DeepSeek's pages, the
       28.8 GB n-gram table never resident but read by rows before each
       chunk (4 KiB-aligned direct reads, D-035's evidence recorded: 486×
@@ -392,7 +392,7 @@ it appears.
       diffusers' 52.6 s, 0.89 s per step against 1.26 s, peak memory 31.2
       GiB against 43.4 GiB resident and 15.9 GiB released
       ([qwen-image-native](experiments/qwen-image-native/README.md)).
-      *On the paged node* (`benchmarks/qwen_image_runner.h`): each component
+      *On the paged node* (`engine/qwen_image_runner.h`): each component
       a set of extents, each phase a device job over its own component's
       closure, a generation one request leasing all three (D-093); the
       image pixel for pixel the resident
@@ -519,6 +519,20 @@ it appears.
       regenerated pixel for pixel. Open: overlapping eviction with page-in,
       Qwen3.8's and the image's graphs, and a deterministic top-k for
       Qwen3.8 (RE-031).
+      *Through `jitllm-runtime`* (D-096, [swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)):
+      all three models registered in one process, every fast path on
+      (speculation, so the drafters page in with their targets: DeepSeek
+      108.4 GB, Qwen3.8 77.0), every ordered pair A→B→A, 8K and 0 context,
+      first use and prepared on `spark-b`: all 32 swaps under the ~10 s goal
+      and exact (A's state digest and its 16 continued tokens and logits,
+      B's output, the image's pixels, graphs replayed after prepared
+      returns); **the worst LLM↔LLM swap 9.72 s** (Qwen3.8 → DeepSeek, first
+      use, 8K; 9.64 s prepared), 0.8 s of it paging DSpark's 10.9 GB; the
+      image's first step 5.2–6.0 s after a swap; peak 108.7 GiB. With
+      speculation off the LLM pairs take 7.5–8.9 s, within 0.6 s of the
+      harness's. That is M3's swap table in a running process, against
+      llama.cpp's 77 / 104 s, Mia's vLLM's 13 min 13 s, TensorFold's 141 s
+      and diffusers' 212 s.
 - [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
@@ -628,16 +642,30 @@ it appears.
       disagreement) is flagged. Open: that token's diagnosis; "decisive"
       (about 1.1×) is not reached on any target; the products run at
       about 200–210 GB/s in the model against 230–245 alone, unexplained.
-- [ ] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
+- [x] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
-      *As a harness binary for now* (`jitllm_swap_runner`, on the test
-      harness's paged node): DeepSeek with the FP16 fixture as B,
-      first-use and prepared cycles, 0 context, evict-all reloads and the
-      RE-029 overlap probe; and for the three M3 models `jitllm_swap_pairs`,
-      one process per ordered pair, each part of each swap, bytes, rates
-      and peak memory recorded. Open: moving it into `jitllm-runtime` (D-088
-      no longer holds the tokenizer back).
+      *First as harness binaries* (`jitllm_swap_runner`, `jitllm_swap_pairs`).
+      *Done 2026-09-28 in the runtime* (D-096,
+      [runtime-serving.md](runtime-serving.md)): the paged node and the three
+      models' runners moved into an `engine` module and the task programs
+      into the scheduler; the configuration names the models
+      (`[models.<name>]`: artifact or composition, drafter, context,
+      tokenizer and template); `jitllm-runtime chat --turn MODEL TEXT...`
+      serves turns with the native tokenizer and renderers, speculative by
+      default (DSpark, MTP), swapping as needed, and `jitllm-runtime
+      swap-table` runs every ordered pair in one process. Through the
+      runtime, on `spark-b`: greedy tokens equal the speculation
+      harnesses' on the fixed prompts, speculative and plain, for both LLMs
+      (6 chat prompts at 32 tokens and 2 decode prompts at 256; prompt IDs
+      equal too); the image's pixels the reference's; decode at the
+      harnesses' speeds (DeepSeek 30.6 / 34.6 tok/s speculative on `prose`
+      / `code`, 21.9 / 22.2 plain; Qwen3.8 40.1 / 38.2 and 25.7 / 26.0); the
+      harnesses' greedy, forced-rejection and swap speculation checks pass
+      over the moved engine. The runtime's swap table is below (the swap
+      path). The package now ships cuBLAS and GGML's and CUTLASS's notices.
+      Open: the image takes one prompt a process from a latents file (its
+      runner fixes both at setup); the package check (`check:full`) is owed.
 - [ ] Start the model support matrix (moved from M5), recording template
       hashes.
 - [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible

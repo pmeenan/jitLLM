@@ -25,7 +25,8 @@
 //   CheckQwen38PleHash) before any chunk.
 // - Each chunk: host-built inputs (model/qwen38.h Qwen38Chunk), the GGML
 //   graph (kernels/ggml/qwen38_graph.h) built, bound, planned with fusion
-//   off and placed by the path the paged runner shares (qwen38_common.h),
+//   off and placed by the path the paged runner shares
+//   (engine/qwen38_plan.h),
 //   bound to the registry's implementations and run on one stream; plans
 //   are kept per chunk shape. The graph runs jitLLM's fusions (qwen38_graph.h
 //   Qwen38GraphOptions::fused) in their fast form by default (D-085: speed
@@ -98,6 +99,7 @@
 #include "artifact/artifact.h"
 #include "artifact/layout.h"
 #include "base/bytes.h"
+#include "engine_names.h"
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/cublas.h"
@@ -114,7 +116,6 @@
 #include "model/qwen38.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
-#include "qwen38_common.h"
 
 namespace {
 
@@ -509,7 +510,7 @@ struct Model {
   bool cutlass = true;
 };
 
-// The shared planning path's view of the model (qwen38_common.h): the
+// The shared planning path's view of the model (engine/qwen38_plan.h): the
 // weights and state at their cudaMalloc addresses.
 jitllm::benchmarks::Qwen38Model CommonOf(const Model& m) {
   const jitllm::artifact::Artifact* a = m.artifact;

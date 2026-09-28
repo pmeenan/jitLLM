@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// DeepSeek V4 Flash as a model on a paged node (tests/support/paged_node.h;
-// M3's swap path, docs/experiments/fast-swap/swap.md): its v0 prepared
+// DeepSeek V4 Flash as a model on a paged node (paged_node.h; M3's swap
+// path, docs/experiments/fast-swap/swap.md): its v0 prepared
 // artifact paged into device VMM through the node's landing zone, each
 // chunk run as one device job on the model's own stream under a lease on
 // its whole closure (D-086): the request's, held from its start to its end
-// when the harness opens one on the model's stream (PagedNode::BeginRequest,
+// when the driver opens one on the model's stream (PagedNode::BeginRequest,
 // M3's lease per request), else the job's own. With the graph, plan and
-// kernels of the resident harness (dsv4_exec.cc, via dsv4_common.h). CUDA
-// builds only.
+// kernels of the resident harness (benchmarks/dsv4_exec.cc, via
+// dsv4_plan.h). CUDA builds only.
 //
 // - Memory, registered in the node's one catalog domain, every extent
 //   2 MiB with managed backing (D-033):
@@ -93,8 +93,8 @@
 //   (equal to the host's lookup, CheckDeviceEmbedding), then the verify's
 //   graph.
 
-#ifndef JITLLM_BENCHMARKS_DSV4_RUNNER_H_
-#define JITLLM_BENCHMARKS_DSV4_RUNNER_H_
+#ifndef JITLLM_ENGINE_DSV4_RUNNER_H_
+#define JITLLM_ENGINE_DSV4_RUNNER_H_
 
 #include <array>
 #include <cstddef>
@@ -111,7 +111,8 @@
 
 #include "artifact/artifact.h"
 #include "catalog/catalog.h"
-#include "dsv4_common.h"
+#include "engine/dsv4_plan.h"
+#include "engine/paged_node.h"
 #include "execution/registry.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_graph.h"
@@ -119,9 +120,8 @@
 #include "kernels/ggml/launch.h"
 #include "model/dspark.h"
 #include "model/dsv4.h"
-#include "paged_node.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 struct Dsv4Options {
   std::filesystem::path artifact;
@@ -182,8 +182,7 @@ struct SlabPage {
 };
 // The most a page's read can take: a page's bytes, and 4 KiB before and
 // after for alignment. The node's slot size for this model.
-inline constexpr std::uint64_t kSlabSlotBytes =
-    test_support::kPagedExtent + (std::uint64_t{8} * 1024);
+inline constexpr std::uint64_t kSlabSlotBytes = kPagedExtent + (std::uint64_t{8} * 1024);
 
 // One layer's slab: where its experts' groups are in the file (group e:
 // `shard[e]`, `file[e]`, each `stored` bytes), its stride and the slab's
@@ -195,22 +194,21 @@ struct SlabLayout {
   std::uint64_t stride = 0;
   std::uint64_t delta = 0;
   std::vector<SlabPage> pages;
-  std::uint64_t bytes() const { return pages.size() * test_support::kPagedExtent; }
+  std::uint64_t bytes() const { return pages.size() * kPagedExtent; }
 };
 std::expected<SlabLayout, std::string> LayOutSlab(std::span<const std::uint32_t> shard,
                                                   std::span<const std::uint64_t> file,
                                                   std::uint64_t stored, std::uint64_t stride,
                                                   std::uint64_t alignment = 256);
 
-class Dsv4Runner final : public test_support::PagedModel {
+class Dsv4Runner final : public PagedModel {
  public:
-  using Status = test_support::Status;
+  using Status = engine::Status;
   // The most decode graphs kept (D-090): driver memory outside the
   // catalog, tens of MiB each; capturing another destroys the oldest.
   static constexpr std::size_t kMaxGraphs = 8;
 
-  Dsv4Runner(test_support::PagedNode& node, const Dsv4Options& options, int owner,
-             std::uint32_t stream)
+  Dsv4Runner(PagedNode& node, const Dsv4Options& options, int owner, std::uint32_t stream)
       : node_(node), o_(options), owner_(owner), stream_(stream), graphs_(options.graphs) {}
 
   // Before the scheduler exists: the artifact, binding and state layout,
@@ -351,6 +349,11 @@ class Dsv4Runner final : public test_support::PagedModel {
   std::uint64_t weight_read_bytes() const { return read_bytes_; }
   std::uint64_t state_bytes() const { return layout_.bytes; }
   std::uint64_t state_base() const { return state_.base; }
+  // The drafter's ring (0 bytes without speculation): with the target's
+  // state, the conversation state a check saves and puts back
+  // (fence_closure() leases both).
+  std::uint64_t drafter_state_base() const { return dstate_.base; }
+  std::uint64_t drafter_state_bytes() const { return speculative() ? dlayout_.bytes : 0; }
   std::uint64_t slab_padding() const { return slab_padding_; }
   std::uint64_t coverage_tensors() const { return coverage_tensors_; }
   std::uint64_t coverage_violations() const { return coverage_violations_; }
@@ -456,7 +459,7 @@ class Dsv4Runner final : public test_support::PagedModel {
   // A verify's snapshot: the ranges it writes, saved.
   Status PlanSnapshot(const model::Dsv4ChunkInputs& in);
 
-  test_support::PagedNode& node_;
+  PagedNode& node_;
   const Dsv4Options& o_;
   int owner_;
   std::uint32_t stream_;
@@ -488,9 +491,9 @@ class Dsv4Runner final : public test_support::PagedModel {
   std::uint64_t read_bytes_ = 0;
   std::uint64_t slab_padding_ = 0;
 
-  test_support::Mapped state_;
+  Mapped state_;
   std::vector<scheduler::PageSource> state_sources_;  // registered, by state extent
-  test_support::Mapped cublas_workspace_;
+  Mapped cublas_workspace_;
   std::vector<catalog::ExtentId> staging_;
   void* inputs_ = nullptr;
   std::uint64_t input_bytes_ = 0;
@@ -532,11 +535,11 @@ class Dsv4Runner final : public test_support::PagedModel {
   DsparkModel dmodel_;
   Part drafter_;
   std::uint64_t dread_bytes_ = 0;
-  test_support::Mapped dstate_;  // its ring
+  Mapped dstate_;  // its ring
   std::vector<scheduler::PageSource> dstate_sources_;
   // A verify's snapshot (working state), its save and restore descriptors
   // (pinned, read by the copy kernel), and the drafts' pinned row.
-  test_support::Mapped snapshot_;
+  Mapped snapshot_;
   kernels::ggml::RangeCopy* save_ = nullptr;
   kernels::ggml::RangeCopy* restore_ = nullptr;
   std::uint32_t range_capacity_ = 0;
@@ -560,6 +563,6 @@ class Dsv4Runner final : public test_support::PagedModel {
   std::vector<ggml_tensor*> draft_rows_;  // by draft count - 1
 };
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_DSV4_RUNNER_H_
+#endif  // JITLLM_ENGINE_DSV4_RUNNER_H_

@@ -53,23 +53,17 @@ if(JITLLM_CUDA)
                       "LINKER:--wrap=cublasGemmBatchedEx,--wrap=cublasGemmStridedBatchedEx")
 endif()
 
-# The paged harnesses' task programs (paged_programs.h), which the fake
-# backend's tests check too, and in CUDA builds their node
-# (paged_node.h): the providers, the scheduler and its lanes, the landing
-# zone and the shared workspace that the benchmarks' model runners share
-# (docs/backend-proof.md, BP-S3). jitllm_ggml_kernels brings the CUDA
-# runtime.
+# The scheduler's task programs (src/scheduler/programs.h) under the paged
+# harnesses' names, with LaunchOnlyProgram, which only tests post
+# (paged_programs.h); and in CUDA builds the engine's paged node
+# (src/engine/paged_node.h) under the same names (paged_node.h).
 add_library(jitllm_paged_programs INTERFACE)
 target_include_directories(jitllm_paged_programs INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jitllm_paged_programs INTERFACE jitllm_scheduler jitllm_memory)
 if(JITLLM_CUDA)
-  add_library(jitllm_paged_node STATIC paged_node.cc)
-  target_include_directories(jitllm_paged_node SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(jitllm_paged_node PUBLIC jitllm_paged_programs jitllm_scheduler
-                                                 jitllm_storage jitllm_cuda_device_memory
-                                                 jitllm_ggml_kernels
-                        PRIVATE jitllm_base jitllm_warnings)
+  add_library(jitllm_paged_node INTERFACE)
+  target_include_directories(jitllm_paged_node INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(jitllm_paged_node INTERFACE jitllm_paged_programs jitllm_engine)
 endif()
 
 # No production binary links the support libraries, directly or through

@@ -12,7 +12,8 @@ SDK, this writes the package's documentation and control facts:
 
 The dependencies follow the binaries: libc6 at the highest GLIBC_ symbol
 version they import, and in CUDA builds the driver's libcuda.so.1 at
-NVIDIA's minimum for the toolkit's major version (CUDA_DRIVER_FLOOR).
+NVIDIA's minimum for the toolkit's major version (CUDA_DRIVER_FLOOR) and,
+for the cuBLAS the package ships in /usr/lib/jitllm (D-076), libgcc-s1.
 Notices are included for every platform unit that ships and every product
 component, whether or not this build's code reaches the part a notice
 covers: an extra notice costs nothing, a missing one is a defect. Third-party
@@ -53,12 +54,25 @@ EXECUTABLES = (("src/cli/jitllm", "usr/bin/jitllm"),
 # Toolkit release notes, table 3, ">= 580", checked 2026-09-24); the build
 # carries SASS only, so no PTX JIT needs a newer one.
 CUDA_DRIVER_FLOOR = "580"
-# The shared libraries a packaged binary may need, and where they come from.
+# The shared libraries a packaged binary may need, and where they come from:
+# the package itself for cuBLAS (PRIVATE_LIBRARIES).
 ALLOWED_NEEDED = {"libc.so.6": "libc6", "libm.so.6": "libc6", "ld-linux-aarch64.so.1": "libc6",
-                  "ld-linux-x86-64.so.2": "libc6", "libcuda.so.1": "libcuda.so.1"}
+                  "ld-linux-x86-64.so.2": "libc6", "libcuda.so.1": "libcuda.so.1",
+                  "libcublas.so.13": PACKAGE, "libcublasLt.so.13": PACKAGE}
+# cuBLAS (D-076): the SDK's two shared libraries, which the package ships
+# unmodified and unstripped (the EULA's Attachment A and section 2.3) in a
+# private directory off the system linker's path; the one executable that
+# needs them, the runtime, finds them through its run path, the only run path
+# a packaged executable may have. libcublas.so.13 itself needs libgcc_s.so.1.
+PRIVATE_LIBRARIES = {"usr/lib/jitllm/libcublas.so.13": "lib/jitllm/libcublas.so.13",
+                     "usr/lib/jitllm/libcublasLt.so.13": "lib/jitllm/libcublasLt.so.13"}
+PRIVATE_RUNPATH = {"usr/libexec/jitllm/jitllm-runtime": "$ORIGIN/../../lib/jitllm"}
+CUBLAS_DEPENDS = "libgcc-s1"
+# What those libraries need beyond ALLOWED_NEEDED: glibc's (libc6) and libgcc_s (CUBLAS_DEPENDS).
+PRIVATE_LIBRARY_NEEDS = {"librt.so.1", "libpthread.so.0", "libdl.so.2", "libgcc_s.so.1"}
 DEBIAN_ARCH = {"aarch64-linux-gnu": "arm64", "x86_64-linux-gnu": "amd64"}
 # Provenance units whose code reaches only CUDA builds.
-CUDA_UNITS = ("cuda-runtime", "cccl")
+CUDA_UNITS = ("cuda-runtime", "cccl", "cublas")
 # jitLLM's own files that hold third-party data under a license beyond
 # Apache-2.0 and belong to no source-lock component (docs/licensing.md). A
 # unit ships when a packaged executable is built from any of its `files`, as
@@ -139,15 +153,41 @@ def component_notice(source: pathlib.Path, notice: str) -> str:
 
 
 def binary_facts(readelf: pathlib.Path, binary: pathlib.Path) -> dict:
-    """The shared libraries a binary needs, the highest GLIBC_ version it imports, and whether it has a run path."""
+    """The shared libraries a binary needs, the highest GLIBC_ version it imports, and its run paths (RPATH
+    and RUNPATH entries, as written)."""
     dynamic = subprocess.run([readelf, "--dynamic", "--wide", binary], capture_output=True, text=True)
     versions = subprocess.run([readelf, "--version-info", "--wide", binary], capture_output=True, text=True)
     if dynamic.returncode or versions.returncode:
         raise PackageError(f"llvm-readelf cannot read {binary}: {dynamic.stderr or versions.stderr}")
     needed = re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", dynamic.stdout)
     glibc = [tuple(int(p) for p in v.split(".")) for v in re.findall(r"GLIBC_([0-9]+(?:\.[0-9]+)+)", versions.stdout)]
-    return {"needed": needed, "glibc": max(glibc) if glibc else None,
-            "runpath": bool(re.search(r"\((RPATH|RUNPATH)\)", dynamic.stdout))}
+    runpaths = re.findall(r"\((?:RPATH|RUNPATH)\)\s+Library (?:rpath|runpath): \[([^\]]*)\]", dynamic.stdout)
+    return {"needed": needed, "glibc": max(glibc) if glibc else None, "runpath": runpaths}
+
+
+def binary_problem(installed: str, facts: dict) -> str | None:
+    """Why a packaged executable's needs or run path are not allowed, or None: every needed library has a
+    source (ALLOWED_NEEDED), and the only run path is the runtime's, exactly PRIVATE_RUNPATH's, when it needs
+    cuBLAS (D-060, D-076)."""
+    unknown = sorted(set(facts["needed"]) - set(ALLOWED_NEEDED))
+    if unknown:
+        return f"{installed} needs {', '.join(unknown)}, which no dependency provides"
+    cublas = any(ALLOWED_NEEDED[n] == PACKAGE for n in facts["needed"])
+    if cublas and installed not in PRIVATE_RUNPATH:
+        return f"{installed} needs cuBLAS, which only the runtime's run path finds"
+    if facts["runpath"] and (not cublas or facts["runpath"] != [PRIVATE_RUNPATH[installed]]):
+        return f"{installed} has a run path ({', '.join(facts['runpath'])}) other than its private cuBLAS directory"
+    if cublas and not facts["runpath"]:
+        return f"{installed} needs cuBLAS but has no run path to find it"
+    return None
+
+
+def expected_files(cuda: bool) -> dict[str, int]:
+    """Every file the package installs, with its mode: EXPECTED_FILES, and in CUDA builds cuBLAS (D-076)."""
+    files = dict(EXPECTED_FILES)
+    if cuda:
+        files.update({name: 0o644 for name in PRIVATE_LIBRARIES})
+    return files
 
 
 def _unit_version(sdk: sdklib.Sdk, unit: dict, arch: str) -> str:
@@ -279,19 +319,30 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
     cuda = bool(receipt["cuda"])
 
     # Dependencies, from what the binaries import.
-    glibc, needs_cuda = (0,), False
+    glibc, needs_cuda, needs_cublas = (0,), False, False
     for built, installed in EXECUTABLES:
         facts = binary_facts(readelf, build / built)
-        unknown = sorted(set(facts["needed"]) - set(ALLOWED_NEEDED))
-        if unknown:
-            raise PackageError(f"{installed} needs {', '.join(unknown)}, which no dependency provides")
-        if facts["runpath"]:
-            raise PackageError(f"{installed} has a run path (D-060)")
+        if problem := binary_problem(installed, facts):
+            raise PackageError(problem)
         glibc = max(glibc, facts["glibc"] or (0,))
         needs_cuda = needs_cuda or "libcuda.so.1" in facts["needed"]
+        needs_cublas = needs_cublas or any(ALLOWED_NEEDED[n] == PACKAGE for n in facts["needed"])
+    if needs_cublas != cuda:
+        raise PackageError("the runtime needs cuBLAS exactly in CUDA builds, whose package ships it")
+    if needs_cublas:
+        # The libraries the package ships beside the runtime set the glibc floor too, and may need only
+        # glibc's libraries, libgcc_s (CUBLAS_DEPENDS) and each other.
+        for installed, built in PRIVATE_LIBRARIES.items():
+            facts = binary_facts(readelf, build / built)
+            glibc = max(glibc, facts["glibc"] or (0,))
+            unknown = sorted(set(facts["needed"]) - set(ALLOWED_NEEDED) - PRIVATE_LIBRARY_NEEDS)
+            if unknown:
+                raise PackageError(f"{installed} needs {', '.join(unknown)}, which no dependency provides")
     depends = [f"libc6 (>= {'.'.join(map(str, glibc))})"]
     if needs_cuda:
         depends.append(f"libcuda.so.1 (>= {CUDA_DRIVER_FLOOR})")
+    if needs_cublas:
+        depends.append(CUBLAS_DEPENDS)
     # systemd-sysusers and systemd-tmpfiles run from the maintainer scripts.
     depends.append("systemd")
 
@@ -524,10 +575,11 @@ def check_package(deb: pathlib.Path, build: pathlib.Path, sdk: sdklib.Sdk) -> li
                    .decode().splitlines() if "  " in line)
 
     # The files.
+    expected = expected_files(bool(receipt["cuda"]))
     files = {name: entry for name, entry in data.items() if name and not entry[0].isdir()}
-    for name in sorted(set(files) - set(EXPECTED_FILES)):
+    for name in sorted(set(files) - set(expected)):
         problems.append(f"data: {name} is not part of the installed layout")
-    for name, mode in EXPECTED_FILES.items():
+    for name, mode in expected.items():
         entry = files.get(name)
         if entry is None:
             problems.append(f"data: {name} is missing")
@@ -540,6 +592,10 @@ def check_package(deb: pathlib.Path, build: pathlib.Path, sdk: sdklib.Sdk) -> li
             problems.append(f"control: md5sums does not match {name}")
         if name in VERBATIM and content != (REPO / VERBATIM[name]).read_bytes():
             problems.append(f"data: {name} differs from {VERBATIM[name]}")
+        # cuBLAS as the SDK has it, unmodified and unstripped (D-076): the
+        # build tree's lib/jitllm holds hard links to the SDK's files.
+        if name in PRIVATE_LIBRARIES and content != (build / PRIVATE_LIBRARIES[name]).read_bytes():
+            problems.append(f"data: {name} is not the SDK's {pathlib.PurePosixPath(name).name}, unmodified")
     for name, (info, _) in data.items():
         if info.isdir() and (info.mode & 0o7777 != 0o755 or info.uid != 0):
             problems.append(f"data: directory {name or '.'} is not root's with mode 0755")
@@ -557,9 +613,11 @@ def check_package(deb: pathlib.Path, build: pathlib.Path, sdk: sdklib.Sdk) -> li
             copy = pathlib.Path(scratch) / pathlib.PurePosixPath(installed).name
             copy.write_bytes(entry[1])
             facts = binary_facts(sdk.root / "bin" / "llvm-readelf", copy)
-            unknown = sorted(set(facts["needed"]) - set(ALLOWED_NEEDED))
-            if unknown or facts["runpath"]:
-                problems.append(f"{installed}: needs {unknown} or has a run path")
+            if problem := binary_problem(installed, facts):
+                problems.append(problem)
+            if any(ALLOWED_NEEDED[n] == PACKAGE for n in facts["needed"] if n in ALLOWED_NEEDED) and \
+                    CUBLAS_DEPENDS not in control_facts["depends"]:
+                problems.append(f"{installed}: needs cuBLAS, but the package does not depend on {CUBLAS_DEPENDS}")
             floor = re.search(r"libc6 \(>= ([0-9.]+)\)", control_facts["depends"])
             if facts["glibc"] and (floor is None or facts["glibc"] > tuple(int(p) for p in floor[1].split("."))):
                 problems.append(f"{installed}: imports GLIBC_{'.'.join(map(str, facts['glibc']))}, "

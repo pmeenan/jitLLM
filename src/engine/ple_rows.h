@@ -27,8 +27,8 @@
 // - No CPU payload copy: the reads land by direct I/O and a kernel copies
 //   each row into its slot (D-081's GPU copy, by an SM kernel here).
 
-#ifndef JITLLM_BENCHMARKS_PLE_ROWS_H_
-#define JITLLM_BENCHMARKS_PLE_ROWS_H_
+#ifndef JITLLM_ENGINE_PLE_ROWS_H_
+#define JITLLM_ENGINE_PLE_ROWS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -42,7 +42,7 @@ namespace jitllm::providers {
 class Storage;
 }
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 // Where the table is: `rows` rows of `row_bytes` from `file_offset` in one
 // shard, stored contiguously; `chunk_file_offset` is where the table's
@@ -113,6 +113,6 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
                    const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
                    std::byte* slots, void* stream);
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_PLE_ROWS_H_
+#endif  // JITLLM_ENGINE_PLE_ROWS_H_

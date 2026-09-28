@@ -12,9 +12,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "ple_rows.h"
+#include "engine/ple_rows.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
@@ -46,4 +46,4 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
   return cudaPeekAtLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

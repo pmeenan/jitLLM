@@ -3,7 +3,8 @@
 
 // The node's configuration (D-063, D-073): one logical document of strict
 // TOML 1.0, a main file plus the fragments in its drop-in directory, in
-// cluster-design.md's node-local schema version 2 extended with [storage].
+// cluster-design.md's node-local schema version 2 extended with [storage]
+// and the models the node serves ([models.<name>], D-096).
 //
 // Loading reads the files, refusing any that users other than root and the
 // runtime's user could replace (platform/path_trust.h), parses each on its
@@ -82,10 +83,44 @@ struct Membership {
   Control control;
 };
 
+// The models a node serves (D-096): `[models.<name>]`, one table a model.
+inline constexpr std::size_t kMaxModels = 16;
+inline constexpr std::size_t kMaxModelName = 64;
+// A model's conversation state, in tokens: the default, and its bounds.
+inline constexpr std::uint32_t kDefaultContext = 8704;
+inline constexpr std::uint32_t kMinContext = 512;
+inline constexpr std::uint32_t kMaxContext = 262144;
+
+// One model: the name the CLI (and later the API) asks for, and what the
+// installed store holds for it. Nothing here has touched the store.
+struct ModelEntry {
+  // 1-64 characters of [a-z0-9._-], starting with a letter or digit.
+  std::string name;
+  // Exactly one of: an installed artifact's ID (a model of one component),
+  // or an installed composition's ID (a pipeline, D-089). Each is 64
+  // lowercase hex digits, the directory's name under storage.installed.
+  std::optional<std::string> artifact;
+  std::optional<std::string> composition;
+  // With an artifact: its speculative drafter's artifact (DSpark, MTP;
+  // D-089's drafter binding). Speculation is then the default decode.
+  std::optional<std::string> drafter;
+  bool speculation = true;
+  // With an artifact: the tokens of conversation state its runner holds.
+  std::uint32_t context = kDefaultContext;
+  // With an artifact whose kept metadata has no tokenizer or chat template
+  // (M3's Qwen3.8 import kept config.json only): the checkpoint's
+  // tokenizer.json and chat template, absolute paths the runtime reads
+  // under the same trust rules as the configuration.
+  std::optional<std::filesystem::path> tokenizer;
+  std::optional<std::filesystem::path> chat_template;
+};
+
 struct NodeConfig {
   std::optional<Membership> membership;
   std::string limits_profile{kLimitsProfile};
   Storage storage;
+  // Sorted by name.
+  std::vector<ModelEntry> models;
   // The files the document was formed from, in the order read. Empty when
   // the built-in defaults apply.
   std::vector<std::filesystem::path> files;

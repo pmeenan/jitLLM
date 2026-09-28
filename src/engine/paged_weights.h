@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// A v0 artifact's weights as extents on a paged node (tests/support/
-// paged_node.h), for the M3 runners that page Qwen3.8 and Qwen-Image
+// A v0 artifact's weights as extents on a paged node (paged_node.h), for
+// the M3 runners that page Qwen3.8 and Qwen-Image
 // (qwen38_runner.h, qwen_image_runner.h; docs/experiments/fast-swap/):
 // the layout DeepSeek's runner (dsv4_runner.h) introduced, as one helper.
 //
@@ -19,10 +19,10 @@
 //   table's rows are read on demand, qwen38_runner.h; a component's parts
 //   its phases never read).
 //
-// CUDA builds only; harness code.
+// CUDA builds only.
 
-#ifndef JITLLM_BENCHMARKS_PAGED_WEIGHTS_H_
-#define JITLLM_BENCHMARKS_PAGED_WEIGHTS_H_
+#ifndef JITLLM_ENGINE_PAGED_WEIGHTS_H_
+#define JITLLM_ENGINE_PAGED_WEIGHTS_H_
 
 #include <array>
 #include <cstdint>
@@ -33,11 +33,11 @@
 
 #include "artifact/artifact.h"
 #include "catalog/catalog.h"
-#include "paged_node.h"
+#include "engine/paged_node.h"
 #include "providers/device_memory.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 // One layer's routed experts: `count` groups from `first_group`, each at
 // `stride` in the slab, the slab's offset in its first page a multiple of
@@ -51,20 +51,20 @@ struct SlabSpec {
 
 class PagedWeights {
  public:
-  using Status = test_support::Status;
+  using Status = engine::Status;
 
   // Reserves and catalogs the places of the groups `place` marks (one flag
   // per group) and of the slabs, in file order. `shards` are the artifact's
   // direct-read descriptors, which must outlive this. Refused if a placed
   // group is an expert group, a slab's groups are not uniform expert
   // groups, or LayOutSlab refuses one.
-  Status Reserve(test_support::PagedNode& node, const artifact::Artifact& artifact,
+  Status Reserve(PagedNode& node, const artifact::Artifact& artifact,
                  std::span<const artifact::FileDescriptor> shards,
                  const std::array<std::uint8_t, 32>& id, const std::vector<bool>& place,
                  std::span<const SlabSpec> slabs);
   // After the node's Start: every extent's source, and its span for the
   // coverage check.
-  Status Register(test_support::PagedNode& node, int owner);
+  Status Register(PagedNode& node, int owner);
   // Frees the reservation (its extents must have been evicted).
   Status Release(providers::VmmProvider& memory);
 
@@ -110,6 +110,6 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
 // The artifact's identity as the catalog's content key takes it.
 std::array<std::uint8_t, 32> ArtifactKey(const artifact::Artifact& artifact);
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_PAGED_WEIGHTS_H_
+#endif  // JITLLM_ENGINE_PAGED_WEIGHTS_H_

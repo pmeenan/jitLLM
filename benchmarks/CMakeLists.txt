@@ -89,12 +89,13 @@ if(JITLLM_CUDA)
 
   # M3's second model slice: Qwen3.8 Flash Next (Mia's NVFP4 and MXFP8
   # checkpoint), native and resident (docs/experiments/qwen38-native/),
-  # planning through the path the paged runner shares (qwen38_common.h).
-  add_executable(jitllm_qwen38_exec qwen38_exec.cc qwen38_common.cc)
+  # planning through the path the paged runner shares (engine/qwen38_plan.h).
+  add_executable(jitllm_qwen38_exec qwen38_exec.cc)
   target_include_directories(jitllm_qwen38_exec SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(jitllm_qwen38_exec PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
-                                                   jitllm_artifact jitllm_model jitllm_warnings)
+  target_link_libraries(jitllm_qwen38_exec PRIVATE jitllm_engine jitllm_ggml_kernels
+                                                   jitllm_cuda_device_memory jitllm_artifact
+                                                   jitllm_model jitllm_warnings)
   target_link_options(jitllm_qwen38_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # M3's third model slice: the Qwen-Image-2.1 BF16 pipeline, native, from
@@ -111,29 +112,24 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_qwen_image_exec PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # The paged model runners: the FP16 fixture and an EXL3 fixture, each a
-  # model on a paged node (tests/support/paged_node.h), so one process can
-  # hold either or both (BP-S3). Their binaries link the launch recorder
-  # themselves (an object library, whose wrappers must be in the link).
-  # M3's Qwen3.8 runner (its n-gram table paged by rows, ple_rows.h) and the
-  # weights-as-extents helper it shares with the image runner.
+  # The paged harnesses' model runners: the FP16 fixture and an EXL3
+  # fixture, each a model on the engine's paged node
+  # (tests/support/paged_node.h), so one process can hold either or both
+  # (BP-S3), and the M3 harnesses' helpers (dsv4_common.h) over the engine's
+  # M3 runners (src/engine/, under their harness names in engine_names.h).
+  # Their binaries link the launch recorder themselves (an object library,
+  # whose wrappers must be in the link).
   add_library(jitllm_paged_runners STATIC fp16_runner.cc fp16_common.cc exl3_runner.cc
-                                          exl3_common.cc dsv4_common.cc dsv4_runner.cc
-                                          paged_weights.cc paged_weights.cu qwen38_common.cc
-                                          qwen38_runner.cc
-                                          ple_rows.cc ple_rows.cu)
+                                          exl3_common.cc dsv4_common.cc)
   target_include_directories(jitllm_paged_runners SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_include_directories(jitllm_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(jitllm_paged_runners PUBLIC jitllm_paged_node jitllm_exl3_qwen2
-                                                    jitllm_ggml_kernels jitllm_scheduler
-                                                    jitllm_cuda_device_memory jitllm_artifact
-                                                    jitllm_model jitllm_plan_record jitllm_storage
+  target_link_libraries(jitllm_paged_runners PUBLIC jitllm_paged_node jitllm_engine
+                                                    jitllm_exl3_qwen2 jitllm_ggml_kernels
+                                                    jitllm_scheduler jitllm_cuda_device_memory
+                                                    jitllm_artifact jitllm_model
+                                                    jitllm_plan_record jitllm_storage
                                              PRIVATE jitllm_warnings)
-  # The n-gram rows' gather kernel: sm_121a, as the GGML module's units
-  # build, and the profile's discrete GPUs (D-082).
-  set_target_properties(jitllm_paged_runners PROPERTIES
-                        CUDA_ARCHITECTURES "121a-real;${JITLLM_CUDA_DISCRETE_SASS}")
 
   # Backend-proof P2, rungs 4 and 5: the same fixture paged into device VMM
   # through the landing zone by the scheduler and its lanes, executed as
@@ -166,10 +162,10 @@ if(JITLLM_CUDA)
 
   # M3's swap pairs: two of DeepSeek V4 Flash, Qwen3.8 Flash Next and the
   # Qwen-Image-2.1 pipeline on one paged node, full swaps A→B→A with each
-  # part timed (docs/experiments/fast-swap/swap.md). A harness for now; it
-  # links the native tokenizer and the prompt renderer (the image's prompt),
-  # which D-088 clears for production binaries.
-  add_executable(jitllm_swap_pairs swap_pairs.cc qwen_image_runner.cc)
+  # part timed (docs/experiments/fast-swap/swap.md), over the engine's
+  # runners. The harness beside jitllm-runtime's swap-table, which runs the
+  # same protocol over the configured models in one process.
+  add_executable(jitllm_swap_pairs swap_pairs.cc)
   target_include_directories(jitllm_swap_pairs SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(jitllm_swap_pairs PRIVATE jitllm_paged_runners jitllm_launch_recorder

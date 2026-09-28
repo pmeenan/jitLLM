@@ -1,17 +1,17 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// What the Qwen3.8 harnesses share (docs/experiments/qwen38-native/,
+// Qwen3.8 Flash Next's chunk planning (docs/experiments/qwen38-native/,
 // docs/experiments/fast-swap/): each chunk's graph built, bound, planned and
 // placed, with the weights' and state's addresses given by the caller, so
 // the paged runner (qwen38_runner.h) plans over device VMM exactly as the
-// resident harness (qwen38_exec.cc) plans over cudaMalloc, both through
-// this one path; and each chunk's host-built inputs in the graph's copy
-// order. The paged runner's logits are checked equal to the resident
+// resident harness (benchmarks/qwen38_exec.cc) plans over cudaMalloc, both
+// through this one path; and each chunk's host-built inputs in the graph's
+// copy order. The paged runner's logits are checked equal to the resident
 // harness's outputs bit for bit. CUDA builds only.
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_COMMON_H_
-#define JITLLM_BENCHMARKS_QWEN38_COMMON_H_
+#ifndef JITLLM_ENGINE_QWEN38_PLAN_H_
+#define JITLLM_ENGINE_QWEN38_PLAN_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen38.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 // Where a Qwen3.8 model's weights and state live.
 struct Qwen38Places {
@@ -159,6 +159,6 @@ void Qwen38MtpSources(const kernels::ggml::Qwen38MtpGraph& g,
                       std::span<const model::Qwen38ChunkInputs> passes,
                       std::span<const std::int32_t> tokens, Qwen38MtpHostInputs& out);
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_COMMON_H_
+#endif  // JITLLM_ENGINE_QWEN38_PLAN_H_

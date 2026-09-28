@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ple_rows.h"
+#include "engine/ple_rows.h"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@
 
 #include "providers/storage.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
@@ -182,4 +182,4 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
   return {};
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

@@ -24,6 +24,7 @@
 | Conversation-state retention and the M6 workload | [retention-policy.md](retention-policy.md) | D-024, D-031, D-055 |
 | Prepared artifacts and page-in | [artifact-format.md](artifact-format.md) | D-009, D-018, D-035, D-056 |
 | Kernel dispatch and the M2 backend proof | [backend-proof.md](backend-proof.md), [exl3-bringup.md](exl3-bringup.md), [first-slice.md](first-slice.md) | D-051–D-053 |
+| Serving in the runtime: the engine, the configured models, the full swap and the serving commands (M3) | [runtime-serving.md](runtime-serving.md), [swap.md](experiments/fast-swap/swap.md) | D-086, D-090, D-093, D-096 |
 | Cluster membership, transport and placement | [cluster-design.md](cluster-design.md) and [the conductor section](#conductor-ownership-and-admission) | D-037–D-039 |
 | Inference API contract | [client-api-baseline.md](client-api-baseline.md) and the assessments it links | D-040–D-047 |
 | Source dependencies and licensing | [source-dependencies.md](source-dependencies.md), [licensing.md](licensing.md) | D-017, D-057 |
@@ -290,12 +291,14 @@ substitute a fake at any provider boundary.
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `tokenizer`, `chat`, `artifact`, `model`, `execution` | The tokenizer; the chat renderers and, later, output parsers; the artifact reader and verifier; architecture and state adapters; the operation contract, planner and dispatcher, and sampling |
 | Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053) |
-| Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration and storage roles (D-073); protocol adapters, conductor and sessions, the management API, job processes |
+| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU, and each model's runner on it: its weights' places and sources, its state, its chunk plans and decode graphs, its device jobs (D-096, [runtime-serving.md](runtime-serving.md)). CUDA builds only; like the kernel units it may use the CUDA runtime |
+| Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration, storage roles and served models (D-073, D-096); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
 
 - The resource core and the model layer hold no vendor types. The CPU-only
-  build compiles and tests every module except the CUDA provider and CUDA
-  kernel units, with no CUDA SDK visible (D-026, D-061's `check` tier).
+  build compiles and tests every module except the CUDA provider, the CUDA
+  kernel units and the engine, with no CUDA SDK visible (D-026, D-061's
+  `check` tier); its runtime refuses the serving commands.
 - CUDA translation units stay narrow. They include kernel sources and
   provider code, never scheduler or catalog headers (AGENTS.md rule 6).
 - A build-generated table registers the compiled implementations, and the

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "qwen38_common.h"
+#include "engine/qwen38_plan.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -10,7 +10,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
@@ -398,4 +398,4 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   }
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

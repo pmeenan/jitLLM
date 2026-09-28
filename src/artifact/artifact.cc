@@ -1697,4 +1697,30 @@ std::expected<FileDescriptor, Error> Artifact::OpenShardForDirectRead(std::uint3
   return fd;
 }
 
+std::expected<std::string, Error> Artifact::ReadMetadata(std::string_view name) const {
+  const std::string path = "meta/" + std::string(name);
+  const auto listed = std::ranges::find_if(files_, [&path](const ListedFile& f) {
+    return f.role == FileRole::kSourceMetadata && f.path == path;
+  });
+  if (name.empty() || name.contains('/') || listed == files_.end()) {
+    return Fail(Rule::kFileSet, "no such kept metadata file", kNoItem);
+  }
+  const Item item = static_cast<Item>(listed - files_.begin());
+  FileDescriptor meta(
+      ::openat(root_.get(), "meta", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+  if (!meta.valid()) {
+    return Fail(Rule::kFileType, "the meta directory is gone or replaced", item);
+  }
+  // The listed size bounds the read (the manifest's caps bound that).
+  auto bytes = ReadDocument(meta.get(), std::string(name).c_str(), listed->bytes.value(),
+                            kMaxMetadataBytes, item);
+  if (!bytes) {
+    return Pass(bytes);
+  }
+  if (Sha256Of(*bytes) != listed->sha256) {
+    return Fail(Rule::kHash, "kept metadata differs from its listed digest", item);
+  }
+  return bytes;
+}
+
 }  // namespace jitllm::artifact

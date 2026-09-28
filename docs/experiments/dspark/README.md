@@ -51,7 +51,8 @@ artifact through `import_m3.py`'s GGUF path unchanged (architecture
 no copy of the target's token table or head: `BindDspark` binds the
 target artifact's `token_embd.weight` and `output.weight`, so one set of
 extents serves both. The drafter's dense groups and expert slabs are paged
-beside the target's by the same runner (`benchmarks/dsv4_runner.h`).
+beside the target's by the same runner (`src/engine/dsv4_runner.h`, in
+`benchmarks/` until D-096).
 
 **Verify** (D-092). A verify chunk of k + 1 rows (anchor and drafts) runs a
 row-invariant plan, so each row computes exactly what its one-row decode

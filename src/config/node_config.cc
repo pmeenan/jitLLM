@@ -12,6 +12,7 @@
 #include <dirent.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -171,11 +172,62 @@ const KeySpec* FindSpec(const KeyPath& path) {
   return nullptr;
 }
 
+// A model's keys (D-096): [models.<name>] holds these.
+enum class ModelKey : std::uint8_t {
+  kArtifact,
+  kComposition,
+  kDrafter,
+  kSpeculation,
+  kContext,
+  kTokenizer,
+  kChatTemplate,
+};
+
+std::optional<ModelKey> FindModelKey(std::string_view key) {
+  static constexpr std::array<std::pair<std::string_view, ModelKey>, 7> kKeys = {{
+      {"artifact", ModelKey::kArtifact},
+      {"composition", ModelKey::kComposition},
+      {"drafter", ModelKey::kDrafter},
+      {"speculation", ModelKey::kSpeculation},
+      {"context", ModelKey::kContext},
+      {"tokenizer", ModelKey::kTokenizer},
+      {"chat_template", ModelKey::kChatTemplate},
+  }};
+  for (const auto& [name, value] : kKeys) {
+    if (name == key) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+// [models] and each [models.<name>]: tables whose keys are names.
+bool IsModelsTable(const KeyPath& path) {
+  return (path.size() == 1 || path.size() == 2) && path.front() == "models";
+}
+
 // Whether path names a table the schema has keys in.
 bool IsSchemaTable(const KeyPath& path) {
-  return std::ranges::any_of(Schema(), [&](const KeySpec& spec) {
-    return spec.path.size() > path.size() && IsPrefix(path, spec.path);
-  });
+  return IsModelsTable(path) || std::ranges::any_of(Schema(), [&](const KeySpec& spec) {
+           return spec.path.size() > path.size() && IsPrefix(path, spec.path);
+         });
+}
+
+// A model's name: 1 to kMaxModelName of [a-z0-9._-], starting with a letter
+// or digit.
+bool IsModelName(std::string_view name) {
+  const auto allowed = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+  };
+  return !name.empty() && name.size() <= kMaxModelName && std::ranges::all_of(name, allowed) &&
+         name.front() != '.' && name.front() != '_' && name.front() != '-';
+}
+
+// An artifact's or a composition's ID: 64 lowercase hex digits.
+bool IsContentId(std::string_view text) {
+  return text.size() == 64 && std::ranges::all_of(text, [](char c) {
+           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+         });
 }
 
 // Adds a file's values (leaves: everything but a table defined by a header
@@ -345,6 +397,9 @@ class Validator {
       if (table.path.front() == "control" || table.path.front() == "credentials") {
         member_ = true;  // even an empty [control] or [credentials] (D-073)
       }
+      if (IsModelsTable(table.path) && table.path.size() == 2) {
+        NoteModel(table.path[1], table);  // even an empty [models.<name>]
+      }
       if (const KeySpec* spec = FindSpec(table.path)) {
         if (spec->kind == Kind::kPeerScopes) {
           continue;  // written as a table: its entries are its keys
@@ -395,12 +450,19 @@ class Validator {
       PeerScope(leaf, leaf.path[2], *leaf.node);
       return;
     }
+    if (leaf.path.size() == 3 && leaf.path.front() == "models") {
+      ModelLeaf(leaf);
+      return;
+    }
     const KeySpec* spec = FindSpec(leaf.path);
     if (spec == nullptr && IsSchemaTable(leaf.path) && leaf.node->is_table()) {
       // An inline table, owned whole by its file: its keys are checked as
       // if written under a header.
       if (leaf.path.front() == "control" || leaf.path.front() == "credentials") {
         member_ = true;
+      }
+      if (IsModelsTable(leaf.path) && leaf.path.size() == 2) {
+        NoteModel(leaf.path[1], leaf);  // even an empty inline table
       }
       for (const auto& [name, value] : *leaf.node->as_table()) {
         KeyPath path = leaf.path;
@@ -550,6 +612,146 @@ class Validator {
     peer_scopes_[id] = text->get();
   }
 
+  // A model's table or key was seen: its entry (for problems about the
+  // model as a whole, the first place it appears), and its name checked
+  // once.
+  void NoteModel(const std::string& name, const Entry& at) {
+    auto [it, inserted] = models_.try_emplace(name);
+    if (!inserted) {
+      return;
+    }
+    it->second.at = &at;
+    it->second.entry.name = name;
+    if (!IsModelName(name)) {
+      it->second.bad_name = true;
+      out_.At(at, std::format("{}: a model's name is 1-{} characters of a-z, 0-9, '.', '_' and "
+                              "'-', starting with a letter or digit",
+                              KeyText({"models", name}), kMaxModelName));
+    }
+  }
+
+  void ModelLeaf(const Entry& leaf) {
+    const std::string key = KeyText(leaf.path);
+    NoteModel(leaf.path[1], leaf);
+    const std::optional<ModelKey> which = FindModelKey(leaf.path[2]);
+    if (!which) {
+      out_.At(leaf, std::format("unknown key {}", key));
+      return;
+    }
+    found_.entries[leaf.path] = &leaf;
+    WorkingModel& model = models_.at(leaf.path[1]);
+    const toml::node& node = *leaf.node;
+    switch (*which) {
+      case ModelKey::kArtifact:
+      case ModelKey::kComposition:
+      case ModelKey::kDrafter: {
+        const auto* text = node.as_string();
+        if (text == nullptr || !IsContentId(text->get())) {
+          out_.At(leaf,
+                  std::format("{} must be an ID string: 64 lowercase hexadecimal digits", key));
+          break;
+        }
+        std::optional<std::string>* into = &model.entry.drafter;
+        if (*which == ModelKey::kArtifact) {
+          into = &model.entry.artifact;
+        } else if (*which == ModelKey::kComposition) {
+          into = &model.entry.composition;
+        }
+        *into = text->get();
+        break;
+      }
+      case ModelKey::kSpeculation: {
+        const auto* value = node.as_boolean();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be a boolean, not {}", key, TypeName(node)));
+          break;
+        }
+        model.entry.speculation = value->get();
+        model.speculation_set = true;
+        break;
+      }
+      case ModelKey::kContext: {
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (std::cmp_less(value->get(), kMinContext) ||
+                   std::cmp_greater(value->get(), kMaxContext)) {
+          out_.At(leaf, std::format("{} must be from {} to {} tokens, not {}", key, kMinContext,
+                                    kMaxContext, value->get()));
+        } else {
+          model.entry.context = static_cast<std::uint32_t>(value->get());
+          model.context_set = true;
+        }
+        break;
+      }
+      case ModelKey::kTokenizer:
+      case ModelKey::kChatTemplate: {
+        const auto* text = node.as_string();
+        if (text == nullptr) {
+          out_.At(leaf, std::format("{} must be a string path, not {}", key, TypeName(node)));
+          break;
+        }
+        if (auto problem = PathProblem(text->get(), true)) {
+          out_.At(leaf, std::format("{} {}", key, *problem));
+          break;
+        }
+        (*which == ModelKey::kTokenizer ? model.entry.tokenizer : model.entry.chat_template) =
+            fs::path(text->get());
+        break;
+      }
+    }
+  }
+
+  // The models, each checked as a whole: exactly one of artifact and
+  // composition, the artifact-only keys only with an artifact, no artifact
+  // serving two models or its own drafter, and at most kMaxModels.
+  std::vector<ModelEntry> Models() {
+    std::vector<ModelEntry> models;
+    std::map<std::string, std::string> used;  // an ID to the model naming it
+    for (auto& [name, model] : models_) {
+      if (model.bad_name) {
+        continue;
+      }
+      ModelEntry& m = model.entry;
+      const std::string key = KeyText({"models", name});
+      bool ok = true;
+      const auto problem = [&](const std::string& message) {
+        out_.At(*model.at, std::format("{}: {}", key, message));
+        ok = false;
+      };
+      if (m.artifact.has_value() == m.composition.has_value()) {
+        problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
+      }
+      if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
+                            model.speculation_set)) {
+        problem(
+            "drafter, speculation, context, tokenizer and chat_template are a model artifact's "
+            "keys, not a composition's");
+      }
+      if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
+        problem("an artifact cannot be its own drafter");
+      }
+      for (const std::optional<std::string>* id : {&m.artifact, &m.composition, &m.drafter}) {
+        if (!id->has_value()) {
+          continue;
+        }
+        const auto [other, inserted] = used.try_emplace(**id, name);
+        if (!inserted && other->second != name) {
+          problem(std::format("{} is also {}'s; an installed artifact serves one model", **id,
+                              KeyText({"models", other->second})));
+        }
+      }
+      if (ok) {
+        models.push_back(m);
+      }
+    }
+    if (models_.size() > kMaxModels) {
+      out_.Document(std::format("the configuration names {} models, more than {}", models_.size(),
+                                kMaxModels));
+    }
+    return models;
+  }
+
   // Reports a problem with a key, where it was set if it was.
   void KeyProblem(const KeyPath& path, const std::string& message) {
     if (const Entry* entry = found_.Get(path)) {
@@ -597,6 +799,7 @@ class Validator {
       config.membership = std::move(membership);
     }
     config.storage = Roles();
+    config.models = Models();
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -693,10 +896,20 @@ class Validator {
     return storage;
   }
 
+  // A model as its table and keys were seen.
+  struct WorkingModel {
+    ModelEntry entry;
+    const Entry* at = nullptr;  // where it first appears
+    bool bad_name = false;
+    bool context_set = false;
+    bool speculation_set = false;
+  };
+
   Collector& out_;
   fs::path anchor_;
   // The entries of inline tables, which found_ points into.
   std::vector<std::unique_ptr<Entry>> inline_entries_;
+  std::map<std::string, WorkingModel> models_;
   Found found_;
   bool member_ = false;
   std::map<KeyPath, fs::path> paths_;

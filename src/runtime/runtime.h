@@ -25,6 +25,11 @@
 // Steps 6, 8 and 9 (job records, the artifact index, authority records)
 // have nothing to act on yet. Stopping (SIGTERM or SIGINT) has nothing to
 // drain yet either.
+//
+// With a serving command (commands.h: chat, swap-table; D-096), the same
+// startup steps run, then instead of readiness the process registers the
+// configured models on its node, runs the command and exits; it holds the
+// process lock throughout, so it never runs beside the service.
 
 #ifndef JITLLM_RUNTIME_RUNTIME_H_
 #define JITLLM_RUNTIME_RUNTIME_H_
@@ -39,6 +44,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "platform/lock_file.h"
+#include "runtime/commands.h"
 
 namespace jitllm::runtime {
 
@@ -62,6 +68,10 @@ struct Options {
   // The enrollment anchor; development runs name their own (D-063).
   std::filesystem::path anchor{config::kDefaultAnchor};
   bool help = false;
+  // A serving command (after the options); kService without one.
+  // Initialized so callers may designate only the fields before it.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  CommandOptions command = {};
 };
 
 std::expected<Options, std::string> ParseArguments(std::span<const std::string_view> args);
@@ -70,6 +80,7 @@ std::expected<Options, std::string> ParseArguments(std::span<const std::string_v
 struct Started {
   platform::LockFile lock;
   config::RuntimeRoles roles;
+  config::NodeConfig config;
 };
 
 // Runs the startup steps, writing what it does and every problem to log.
@@ -77,8 +88,12 @@ struct Started {
 std::expected<Started, int> Start(const Options& options, std::FILE* log);
 
 // The whole program: arguments, startup, readiness, then waiting for
-// SIGTERM or SIGINT, which the caller has blocked in every thread.
-int Run(std::span<const std::string_view> args, std::FILE* log);
+// SIGTERM or SIGINT, which the caller has blocked in every thread; or with
+// a serving command, `serve` (commands.h RunServing, which main links from
+// the serving library) instead of readiness.
+using ServeFunction = int (*)(const config::NodeConfig&, const config::RuntimeRoles&,
+                              const CommandOptions&, std::FILE*, std::FILE*);
+int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction serve);
 
 }  // namespace jitllm::runtime
 

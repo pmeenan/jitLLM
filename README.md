@@ -51,13 +51,13 @@ the work, reviews it, and is the sole committer.
 
 **Pre-release. M0 (plan the plan), M1 (bootstrap) and M2 (the resource
 core and backend proof) are done; M3 (a fast full model swap on one
-Spark) is next.** M2's work is internal: test harnesses run a
-small FP16 model and two EXL3 fixtures natively, paged through device
-memory, but the runtime serves nothing yet.
+Spark) is in progress.** The runtime's `chat` and `swap-table` commands
+serve M3's models by hand, in the runtime's own process, swapping between
+them; the service itself serves nothing yet.
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
 feature matrix, architecture, and decision log are in `docs/`. The application
 so far is a node runtime that reads its configuration, prepares its storage,
-checks the host and waits (it serves nothing yet), packaged as an arm64
+checks the host and waits (as a service it serves nothing yet), packaged as an arm64
 `.deb` with its systemd unit, and a `jitllm` command that reports its version
 and, with `jitllm doctor`, what a host offers it: configuration and storage,
 driver, GPUs, VMM granularity and RDMA.

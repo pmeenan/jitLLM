@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "paged_node.h"
+#include "engine/paged_node.h"
 
 #include <cuda_runtime.h>
 
@@ -16,11 +16,12 @@
 #include <utility>
 
 #include "base/bounded_queue.h"
+#include "platform/crash_policy.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/direct_reader.h"
 
-namespace jitllm::test_support {
+namespace jitllm::engine {
 
 namespace {
 
@@ -28,6 +29,15 @@ namespace sc = jitllm::scheduler;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
+using Done = sc::ProgramDone;
+using sc::AcquireProgram;
+using sc::AcquireReport;
+using sc::CallProgram;
+using sc::EvictProgram;
+using sc::RequestProgram;
+using sc::RunProgram;
+using sc::SwapProgram;
+using sc::SwapReport;
 
 constexpr auto kPatience = std::chrono::minutes(10);
 // A request's driver spins from this long before a step's expected end
@@ -362,14 +372,25 @@ void PagedNode::Run() {
   if (settings_.inline_lanes) {
     return;
   }
-  threads_.emplace_back([this] { stopped_ = scheduler_->Run(); });
-  threads_.emplace_back([this] { storage_lane_->Run(); });
-  threads_.emplace_back([this] { device_lane_->RunSubmission(); });
-  threads_.emplace_back([this] { device_lane_->RunCompletion(); });
-  threads_.emplace_back([this] { backing_lane_->Run(); });
+  // Each lane's thread first gets its own alternate signal stack, so the
+  // crash policy's handler runs even on a stack overflow (D-074); a harness
+  // that installed no policy loses nothing by it.
+  const auto thread = [](auto body) {
+    return [body] {
+      if (auto stack = platform::InstallThreadSignalStack(); !stack) {
+        std::println(stderr, "a lane's thread runs without a signal stack: {}", stack.error());
+      }
+      body();
+    };
+  };
+  threads_.emplace_back(thread([this] { stopped_ = scheduler_->Run(); }));
+  threads_.emplace_back(thread([this] { storage_lane_->Run(); }));
+  threads_.emplace_back(thread([this] { device_lane_->RunSubmission(); }));
+  threads_.emplace_back(thread([this] { device_lane_->RunCompletion(); }));
+  threads_.emplace_back(thread([this] { backing_lane_->Run(); }));
   if (copy_lane_ != nullptr) {
-    threads_.emplace_back([this] { copy_lane_->RunSubmission(); });
-    threads_.emplace_back([this] { copy_lane_->RunCompletion(); });
+    threads_.emplace_back(thread([this] { copy_lane_->RunSubmission(); }));
+    threads_.emplace_back(thread([this] { copy_lane_->RunCompletion(); }));
   }
 }
 
@@ -780,6 +801,25 @@ Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report
   return Post(std::move(program), done, what);
 }
 
+Status PagedNode::Copy(std::uint32_t stream, const catalog::Closure& closure, std::uint64_t device,
+                       void* host, std::uint64_t bytes, bool to_host, std::string_view what) {
+  if (host == nullptr || device == 0 || bytes == 0) {
+    return Error(std::format("{}: nothing to copy", what));
+  }
+  // The device range lies in the closure's extents, which the job leases.
+  return Job(
+      closure,
+      [device, host, bytes, to_host](providers::NativeStream native) {
+        auto* const s = static_cast<cudaStream_t>(native.handle);
+        auto* on_device = reinterpret_cast<void*>(device);  // NOLINT(performance-no-int-to-ptr)
+        const cudaError_t r =
+            to_host ? cudaMemcpyAsync(host, on_device, bytes, cudaMemcpyDeviceToHost, s)
+                    : cudaMemcpyAsync(on_device, host, bytes, cudaMemcpyHostToDevice, s);
+        return r == cudaSuccess ? sc::JobResult::kQueued : sc::JobResult::kUnknown;
+      },
+      what, stream);
+}
+
 Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   if (torn_down_) {
     return {};
@@ -907,4 +947,4 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   return Joined(problems);
 }
 
-}  // namespace jitllm::test_support
+}  // namespace jitllm::engine

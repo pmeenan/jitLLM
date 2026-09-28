@@ -19,7 +19,7 @@
 //   the kept rows' saved inputs), in place, and the n-gram layer's the same.
 //
 // Queued outside any graph, before the next job's own work, like DSpark's
-// restore (benchmarks/dsv4_runner.h). CUDA builds only.
+// restore (engine/dsv4_runner.h). CUDA builds only.
 
 #ifndef JITLLM_KERNELS_GGML_QWEN38_COMMIT_H_
 #define JITLLM_KERNELS_GGML_QWEN38_COMMIT_H_

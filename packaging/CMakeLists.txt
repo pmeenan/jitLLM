@@ -21,6 +21,16 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/NOTICE" "${
               "${package_doc}/copyright" "${package_doc}/THIRD-PARTY-NOTICES" "${package_doc}/jitllm.spdx.json"
         DESTINATION share/doc/jitllm)
 install(FILES jitllm.example.toml DESTINATION share/doc/jitllm/examples RENAME jitllm.toml)
+if(JITLLM_CUDA)
+  # cuBLAS (D-076): the SDK's two shared libraries, as the build tree's
+  # lib/jitllm links them, in the runtime's private directory, which its run
+  # path names (src/runtime/CMakeLists.txt). install(FILES) never strips, so
+  # they ship unmodified and unstripped, as the EULA's section 2.3 requires;
+  # CPACK_STRIP_FILES below strips the installed targets alone.
+  install(FILES "${PROJECT_BINARY_DIR}/lib/jitllm/libcublas.so.13"
+                "${PROJECT_BINARY_DIR}/lib/jitllm/libcublasLt.so.13"
+          DESTINATION lib/jitllm PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+endif()
 
 set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_NAME jitllm)

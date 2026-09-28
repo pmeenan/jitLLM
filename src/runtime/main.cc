@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "platform/crash_policy.h"
+#include "runtime/commands.h"
 #include "runtime/runtime.h"
 
 namespace {
@@ -59,5 +60,5 @@ int main(int argc, char** argv) {
   (void)::setenv("CUDA_CACHE_DISABLE", "1", 1);  // NOLINT(concurrency-mt-unsafe)
   const std::span<char*> all(argv, static_cast<std::size_t>(argc));
   const std::vector<std::string_view> args(all.begin() + (argc > 0 ? 1 : 0), all.end());
-  return jitllm::runtime::Run(args, stderr);
+  return jitllm::runtime::Run(args, stderr, &jitllm::runtime::RunServing);
 }

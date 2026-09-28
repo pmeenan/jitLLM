@@ -55,7 +55,8 @@ layout is the captured one.
   not the context's address).
 - **Pinned places** (`scheduler.h`): `PinPlaces`, `UnpinPlaces`,
   `PlacePinned`, `SourceOf` and `SamePlace`.
-- **The runner** (`benchmarks/dsv4_runner.h`): per chunk shape, a one-row
+- **The runner** (`src/engine/dsv4_runner.h`, in `benchmarks/` until
+  D-096): per chunk shape, a one-row
   chunk whose shape ran once launch by launch is captured (the ~35 input
   copies, the plan's 4,972 steps and the logits copy: 5,920 graph nodes),
   and later chunks of the shape replay it. Prefill chunks run launch by

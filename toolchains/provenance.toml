@@ -101,9 +101,9 @@ notices = ["nvidia-cuda-eula", "nvidia-header-notice", "nvidia-math-juffa", "nvi
 artifacts = ["deb/libcublas-13-4", "deb/libcublas-dev-13-4"]
 category = "platform"
 license = "LicenseRef-NVIDIA-CUDA-EULA"
-ships = false
-enters = "Nothing yet. When a binary first uses cuBLAS, it links libcublas.so.13 and libcublasLt.so.13 dynamically (D-076), and the package ships those two libraries, unmodified and unstripped, in a private directory: both are redistributable under the EULA's Attachment A. That change sets ships = true, adds the nvidia-cuda-eula notice and adds the unit to the package's CUDA units. The headers only declare the API. The static archives are not extracted."
-notices = []
+ships = true
+enters = "CUDA builds: the runtime (jitllm-runtime, which serves models through the engine since D-096) links libcublas.so.13 and libcublasLt.so.13 dynamically (D-076), and the package ships those two libraries, unmodified and unstripped, in /usr/lib/jitllm, a private directory off the system linker's path that the runtime's run path names; both are redistributable under the EULA's Attachment A. libcublas.so.13 needs libgcc_s.so.1, a dependency of the package (libgcc-s1). The headers only declare the API. The static archives are not extracted."
+notices = ["nvidia-cuda-eula"]
 
 [units.cuda-driver-stub]
 artifacts = ["deb/cuda-driver-dev-13-4"]

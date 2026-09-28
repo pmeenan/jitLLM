@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The resident expert slab's pages (benchmarks/dsv4_runner.h LayOutSlab):
+// The resident expert slab's pages (engine/dsv4_runner.h LayOutSlab):
 // each 2 MiB page of the slab's address range reads one 4 KiB-aligned
 // range of one file, at most a slot long, and copies pieces of it into the
 // page; together the pages put every stored byte of every group at
@@ -14,16 +14,16 @@
 #include <cstdint>
 #include <vector>
 
-#include "dsv4_runner.h"
+#include "engine/dsv4_runner.h"
 #include "expected_error.h"
 
 namespace {
 
-using jitllm::benchmarks::kSlabSlotBytes;
-using jitllm::benchmarks::LayOutSlab;
-using jitllm::benchmarks::SlabLayout;
+using jitllm::engine::kPagedExtent;
+using jitllm::engine::kSlabSlotBytes;
+using jitllm::engine::LayOutSlab;
+using jitllm::engine::SlabLayout;
 using jitllm::test_support::Failed;
-using jitllm::test_support::kPagedExtent;
 
 // Each page's read and pieces: aligned, within the slot and the page, each
 // piece's first and last byte landing where its group's byte belongs and
@@ -132,7 +132,7 @@ TEST(SlabLayoutTest, AShardChangeTheGapCannotAlignIsRefused) {
   CheckCovers(*whole, one, consecutive, stored);
 }
 
-// Qwen3.8's slabs (benchmarks/qwen38_runner.h): 512 groups of 2,768,896
+// Qwen3.8's slabs (engine/qwen38_runner.h): 512 groups of 2,768,896
 // stored bytes at a stride of 2,768,976, an 80-byte gap. Where the change
 // of shard needs δ ≡ r (mod 256) with r's remainder leaving more than 80
 // bytes to the next 256, the default alignment is refused; at the stride's

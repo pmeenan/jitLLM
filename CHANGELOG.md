@@ -44,3 +44,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 - `jitllm doctor --config FILE` reads a configuration other than the
   default, and doctor now reports the configuration and the storage roles:
   their owners, modes and filesystems.
+- The configuration names the models a node serves, `[models.<name>]`
+  (still `schema_version = 2`: the keys are new): an installed artifact or
+  composition by ID, a speculative drafter, whether to speculate, the
+  conversation's context, and a tokenizer and chat template where the
+  artifact keeps none (D-096).
+- `jitllm-runtime` serves models by hand, in its own process (D-096):
+  `jitllm-runtime chat --turn MODEL TEXT...` sends each turn to its model,
+  swapping models as needed, and `jitllm-runtime swap-table` measures M3's
+  swap table between the configured models. Replies are greedy, and
+  speculative where a model has a drafter (`--plain` turns it off). CUDA
+  builds only. The service itself still serves nothing.
+- The arm64 package ships NVIDIA's cuBLAS (`libcublas.so.13`,
+  `libcublasLt.so.13`, unmodified) in `/usr/lib/jitllm` for the runtime, and
+  depends on `libgcc-s1`; its third-party notices now include GGML's and
+  CUTLASS's, whose kernels the runtime links (D-076, D-096).

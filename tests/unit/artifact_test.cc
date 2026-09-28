@@ -1079,6 +1079,43 @@ TEST_F(ArtifactFilesTest, DirectReadsOpenTheValidatedShard) {
   EXPECT_EQ(replaced.error().rule, Rule::kFileType);
 }
 
+TEST_F(ArtifactFilesTest, KeptMetadataIsReadAsListed) {
+  const auto opened = Artifact::Open(root_);
+  ASSERT_TRUE(opened.has_value());
+  const Artifact& a = *opened;
+  const fs::path kv = root_ / "meta" / "tiny.kv.gguf";
+  const std::string bytes = ReadFile(kv);
+  const auto read = a.ReadMetadata("tiny.kv.gguf");
+  ASSERT_TRUE(read.has_value()) << read.error().ToString();
+  EXPECT_EQ(*read, bytes);
+  // Only a listed metadata file, by its name alone.
+  for (const char* name : {"nope", "", "../index.json", "meta/tiny.kv.gguf"}) {
+    const auto refused = a.ReadMetadata(name);
+    ASSERT_FALSE(refused.has_value()) << name;
+    EXPECT_EQ(refused.error().rule, Rule::kFileSet) << name;
+  }
+  // Changed in place since open: its digest differs; its size, if that
+  // changed.
+  std::string changed = bytes;
+  changed.back() = static_cast<char>(changed.back() ^ 1);
+  WriteFile(kv, changed);
+  auto differs = a.ReadMetadata("tiny.kv.gguf");
+  ASSERT_FALSE(differs.has_value());
+  EXPECT_EQ(differs.error().rule, Rule::kHash);
+  WriteFile(kv, bytes + "x");
+  differs = a.ReadMetadata("tiny.kv.gguf");
+  ASSERT_FALSE(differs.has_value());
+  EXPECT_EQ(differs.error().rule, Rule::kFileSize);
+  // A link in its place is never followed.
+  std::error_code error;
+  fs::remove(kv, error);
+  WriteFile(scratch_ / "kv", bytes);
+  fs::create_symlink(scratch_ / "kv", kv, error);
+  differs = a.ReadMetadata("tiny.kv.gguf");
+  ASSERT_FALSE(differs.has_value());
+  EXPECT_EQ(differs.error().rule, Rule::kFileType);
+}
+
 // ---------------------------------------------------------------- fuzz
 
 // Seeded random mutations of the valid artifacts' documents, built and

@@ -38,13 +38,14 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr std::string_view kUsage =
-    "Usage: jitllm-runtime [--config FILE] [--anchor PATH]\n"
+    "Usage: jitllm-runtime [--config FILE] [--anchor PATH] [COMMAND [ARGS...]]\n"
     "\n"
-    "The jitLLM node runtime, which jitllm.service starts; it is not run by hand.\n"
+    "The jitLLM node runtime, which jitllm.service starts without a command.\n"
     "  --config FILE  the node's configuration (default /etc/jitllm/jitllm.toml\n"
     "                 and /etc/jitllm/jitllm.d/)\n"
     "  --anchor PATH  the enrollment anchor (default /var/lib/jitllm/enrollment);\n"
-    "                 the process lock is PATH.lock\n";
+    "                 the process lock is PATH.lock\n"
+    "\n";
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
 
@@ -92,6 +93,15 @@ std::expected<Options, std::string> ParseArguments(std::span<const std::string_v
   Options options;
   for (std::size_t i = 0; i < args.size(); ++i) {
     const std::string_view arg = args[i];
+    if (!arg.starts_with("-")) {
+      // A serving command, and every argument after it its own.
+      auto command = ParseCommand(arg, args.subspan(i + 1));
+      if (!command) {
+        return std::unexpected(command.error());
+      }
+      options.command = std::move(*command);
+      break;
+    }
     if (arg == "--help" || arg == "-h") {
       options.help = true;
     } else if (arg == "--config" || arg == "--anchor") {
@@ -215,10 +225,17 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
     Log(log, "refusing to start: this host cannot run this build now (see `jitllm doctor`)");
     return std::unexpected(kExitHostNotReady);
   }
-  return Started{.lock = std::move(*lock), .roles = std::move(*roles)};
+  for (const config::ModelEntry& model : loaded->models) {
+    Log(log,
+        std::format("model {}: {} {}{}", model.name, model.composition ? "composition" : "artifact",
+                    model.composition ? *model.composition : model.artifact.value_or(""),
+                    model.drafter ? " with drafter " + *model.drafter : std::string()));
+  }
+  return Started{
+      .lock = std::move(*lock), .roles = std::move(*roles), .config = std::move(*loaded)};
 }
 
-int Run(std::span<const std::string_view> args, std::FILE* log) {
+int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction serve) {
   auto options = ParseArguments(args);
   if (!options) {
     Log(log, options.error());
@@ -227,11 +244,25 @@ int Run(std::span<const std::string_view> args, std::FILE* log) {
   }
   if (options->help) {
     (void)std::fwrite(kUsage.data(), 1, kUsage.size(), stdout);
+    (void)std::fwrite(kCommandUsage.data(), 1, kCommandUsage.size(), stdout);
     return std::fflush(stdout) == 0 ? kExitOk : kExitFailure;
   }
   auto started = Start(*options, log);
   if (!started) {
     return started.error();
+  }
+  if (options->command.command != Command::kService) {
+    // A serving command in this process: no readiness, no waiting. Run by
+    // hand, it stops on SIGINT or SIGTERM at once (their default action,
+    // unblocked before any of its threads start); the kernel then frees
+    // its device memory and the unnamed spill files.
+    sigset_t stop;
+    (void)::sigemptyset(&stop);
+    (void)::sigaddset(&stop, SIGTERM);
+    (void)::sigaddset(&stop, SIGINT);
+    (void)::sigaddset(&stop, SIGHUP);
+    (void)::pthread_sigmask(SIG_UNBLOCK, &stop, nullptr);
+    return serve(started->config, started->roles, options->command, stdout, log);
   }
   // 10. Ready. A minimal loopback endpoint arrives in M3 and the front door
   // in M5; until then there is nothing to serve.

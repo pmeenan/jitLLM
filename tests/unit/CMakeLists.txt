@@ -172,21 +172,20 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(cuda_graph_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The DeepSeek runner's expert-slab pages (benchmarks/dsv4_runner.h): a
+  # The DeepSeek runner's expert-slab pages (engine/dsv4_runner.h): a
   # host-only check, in the CUDA build that has the runner.
   add_executable(slab_layout_test slab_layout_test.cc)
   target_include_directories(slab_layout_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(slab_layout_test PRIVATE jitllm_paged_runners jitllm_launch_recorder)
+  target_link_libraries(slab_layout_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(slab_layout_test)
 
-  # Qwen3.8's n-gram rows read on demand (benchmarks/ple_rows.h): the read
+  # Qwen3.8's n-gram rows read on demand (engine/ple_rows.h): the read
   # plan on the host, and the reads and the gather kernel on a GB10.
   add_executable(ple_rows_test ple_rows_test.cc)
   target_include_directories(ple_rows_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(ple_rows_test PRIVATE jitllm_paged_runners jitllm_launch_recorder
-                                              jitllm_fake_providers)
+  target_link_libraries(ple_rows_test PRIVATE jitllm_engine jitllm_fake_providers)
   jitllm_gpu_gtest(ple_rows_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 

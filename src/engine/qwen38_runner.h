@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Qwen3.8 Flash Next as a model on a paged node (tests/support/paged_node.h;
-// M3's swap path, docs/experiments/fast-swap/swap.md): its v0 prepared
+// Qwen3.8 Flash Next as a model on a paged node (paged_node.h; M3's swap
+// path, docs/experiments/fast-swap/swap.md): its v0 prepared
 // artifact paged into device VMM through the node's landing zone, each
 // chunk run as one device job on the model's own stream under a lease on
 // its whole closure (D-086): the request's, held from its start to its end
-// when the harness opens one on the model's stream (PagedNode::BeginRequest,
+// when the driver opens one on the model's stream (PagedNode::BeginRequest,
 // M3's lease per request), else the job's own. With the graph, plan and
-// kernels of the resident harness (qwen38_exec.cc, via qwen38_common.h).
+// kernels of the resident harness (benchmarks/qwen38_exec.cc, via
+// qwen38_plan.h).
 // The layout of DeepSeek's runner (dsv4_runner.h), through paged_weights.h:
 //
 // - Weights: every dense group but the n-gram table's in a 2 MiB-aligned
@@ -68,8 +69,8 @@
 //   would have left. A failed verify is undone whole; any other failure
 //   after a job may have written the state quarantines it until Clear.
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_RUNNER_H_
-#define JITLLM_BENCHMARKS_QWEN38_RUNNER_H_
+#ifndef JITLLM_ENGINE_QWEN38_RUNNER_H_
+#define JITLLM_ENGINE_QWEN38_RUNNER_H_
 
 #include <array>
 #include <cstddef>
@@ -86,7 +87,11 @@
 
 #include "artifact/artifact.h"
 #include "catalog/catalog.h"
-#include "dsv4_runner.h"  // Dsv4Path, Dsv4GraphStats: how a model's chunks ran
+#include "engine/dsv4_runner.h"  // Dsv4Path, Dsv4GraphStats: how a model's chunks ran
+#include "engine/paged_node.h"
+#include "engine/paged_weights.h"
+#include "engine/ple_rows.h"
+#include "engine/qwen38_plan.h"
 #include "execution/registry.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -94,13 +99,9 @@
 #include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "model/qwen38.h"
-#include "paged_node.h"
-#include "paged_weights.h"
-#include "ple_rows.h"
 #include "providers/uring_storage.h"
-#include "qwen38_common.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 struct Qwen38Options {
   std::filesystem::path artifact;
@@ -131,17 +132,16 @@ struct PleStats {
   double seconds = 0;              // planning and reading, on the caller's thread
 };
 
-class Qwen38Runner final : public test_support::PagedModel {
+class Qwen38Runner final : public PagedModel {
  public:
-  using Status = test_support::Status;
+  using Status = engine::Status;
   // The most graphs kept (D-090): with speculation a context window holds
   // a decode step's, a verify's two (with and without its logits' copy) and
   // a draft's four (its catch-up of 1 to 4 rows); two windows' worth, so a
   // step past a 256-cell boundary does not recapture the steps before it.
   static constexpr std::size_t kMaxGraphs = 16;
 
-  Qwen38Runner(test_support::PagedNode& node, const Qwen38Options& options, int owner,
-               std::uint32_t stream)
+  Qwen38Runner(PagedNode& node, const Qwen38Options& options, int owner, std::uint32_t stream)
       : node_(node), o_(options), owner_(owner), stream_(stream), graphs_(options.graphs) {}
   ~Qwen38Runner() override;
   Qwen38Runner(const Qwen38Runner&) = delete;
@@ -223,6 +223,15 @@ class Qwen38Runner final : public test_support::PagedModel {
   std::uint64_t weight_read_bytes() const { return weights_.read_bytes() + dweights_.read_bytes(); }
   std::uint64_t state_bytes() const { return layout_.bytes; }
   std::uint64_t state_base() const { return state_.base; }
+  // The drafter's state (0 bytes without speculation), and the streams rows
+  // its next draft catches up on (host-side): with the target's state, the
+  // conversation state a check saves and puts back (fence_closure() leases
+  // both regions). set_pending_rows only after Rollback, restoring a value
+  // pending_rows() gave for the same state.
+  std::uint64_t drafter_state_base() const { return mstate_.base; }
+  std::uint64_t drafter_state_bytes() const { return speculative() ? mtp_layout_.bytes : 0; }
+  std::uint32_t pending_rows() const { return pending_rows_; }
+  void set_pending_rows(std::uint32_t rows) { pending_rows_ = rows; }
   std::uint64_t slab_padding() const { return weights_.slab_padding(); }
   std::uint64_t table_bytes() const { return table_.rows * table_.row_bytes; }
   std::uint64_t coverage_tensors() const { return coverage_tensors_; }
@@ -318,7 +327,7 @@ class Qwen38Runner final : public test_support::PagedModel {
   MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
             std::int64_t hidden_row) const;
 
-  test_support::PagedNode& node_;
+  PagedNode& node_;
   const Qwen38Options& o_;
   int owner_;
   std::uint32_t stream_;
@@ -339,7 +348,7 @@ class Qwen38Runner final : public test_support::PagedModel {
   // landing and the slots' sources (pinned), the runner's own ring.
   PleTable table_;
   std::uint64_t slots_ = 0;  // row slots: max_rows x ple_heads
-  test_support::Mapped slot_memory_;
+  Mapped slot_memory_;
   std::byte* landing_ = nullptr;
   std::uint64_t landing_bytes_ = 0;
   std::uint32_t* sources_ = nullptr;
@@ -349,9 +358,9 @@ class Qwen38Runner final : public test_support::PagedModel {
   providers::UringStorage* abandoned_ring_ = nullptr;  // such a ring, never destroyed
   PleStats ple_;
 
-  test_support::Mapped state_;
+  Mapped state_;
   std::vector<scheduler::PageSource> state_sources_;
-  test_support::Mapped cublas_workspace_;
+  Mapped cublas_workspace_;
   std::vector<catalog::ExtentId> staging_;
   void* inputs_ = nullptr;
   std::uint64_t input_bytes_ = 0;
@@ -389,12 +398,12 @@ class Qwen38Runner final : public test_support::PagedModel {
   std::vector<artifact::FileDescriptor> dshards_;
   std::array<std::uint8_t, 32> did_{};
   PagedWeights dweights_;
-  test_support::Mapped mstate_;  // its state (spilled with the target's)
+  Mapped mstate_;  // its state (spilled with the target's)
   std::vector<scheduler::PageSource> mstate_sources_;
   // A verify's saves and its cells' snapshot (D-068 working state, charged
   // with the model, never spilled: mapped for the model's life, it stays
   // across a swap, and a commit still pending then runs at the next job).
-  test_support::Mapped commit_;
+  Mapped commit_;
   std::uint64_t snapshot_offset_ = 0;            // in commit_, after the saves
   kernels::ggml::Qwen38CommitArgs commit_args_;  // every place but `keep`, from Bind
   std::uint64_t mtp_base_ = 0;                   // a drafter pass's inputs are staged from here
@@ -414,6 +423,6 @@ class Qwen38Runner final : public test_support::PagedModel {
   void* state_host_ = nullptr;  // ReadState's pinned host copy (harness only)
 };
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_RUNNER_H_
+#endif  // JITLLM_ENGINE_QWEN38_RUNNER_H_

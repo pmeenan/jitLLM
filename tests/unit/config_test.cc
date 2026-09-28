@@ -387,6 +387,114 @@ TEST(NodeConfigTest, TheDocumentHasASizeLimit) {
   EXPECT_THAT(Failures(big), ElementsAre(HasSubstr("more than the 1048576-byte limit")));
 }
 
+// D-096's models: a table each, sorted by name, with their defaults.
+constexpr std::string_view kDsv4 =
+    "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
+constexpr std::string_view kDspark =
+    "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
+constexpr std::string_view kImage =
+    "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd";
+
+TEST(NodeConfigTest, ReadsModels) {
+  const NodeConfig config = Parsed(std::format(R"(schema_version = 2
+[models."qwen3.8"]
+artifact = "{0}"
+speculation = false
+context = 4096
+tokenizer = "/opt/qwen/tokenizer.json"
+chat_template = "/opt/qwen/chat_template.jinja"
+
+[models.deepseek]
+artifact = "{1}"
+drafter = "{2}"
+
+[models]
+image = {{ composition = "{3}" }}
+)",
+                                               std::string(64, 'a'), kDsv4, kDspark, kImage));
+  ASSERT_THAT(config.models, SizeIs(3));
+  const auto& deepseek = config.models[0];
+  EXPECT_EQ(deepseek.name, "deepseek");
+  EXPECT_EQ(deepseek.artifact, std::string(kDsv4));
+  EXPECT_EQ(deepseek.drafter, std::string(kDspark));
+  EXPECT_TRUE(deepseek.speculation);
+  EXPECT_EQ(deepseek.context, jitllm::config::kDefaultContext);
+  EXPECT_FALSE(deepseek.composition.has_value());
+  const auto& image = config.models[1];
+  EXPECT_EQ(image.name, "image");
+  EXPECT_EQ(image.composition, std::string(kImage));
+  EXPECT_FALSE(image.artifact.has_value());
+  const auto& qwen = config.models[2];
+  EXPECT_EQ(qwen.name, "qwen3.8");
+  EXPECT_FALSE(qwen.speculation);
+  EXPECT_EQ(qwen.context, 4096U);
+  EXPECT_EQ(qwen.tokenizer, fs::path("/opt/qwen/tokenizer.json"));
+  EXPECT_EQ(qwen.chat_template, fs::path("/opt/qwen/chat_template.jinja"));
+}
+
+TEST(NodeConfigTest, ChecksModels) {
+  const std::string id(64, 'b');
+  const auto failures = Failures(std::format(
+      R"(schema_version = 2
+[models.Upper]
+artifact = "{0}"
+[models.none]
+context = 4096
+[models.both]
+artifact = "{1}"
+composition = "{2}"
+[models.pipeline]
+composition = "{3}"
+drafter = "{4}"
+[models.short]
+artifact = "abc"
+[models.small]
+artifact = "{5}"
+context = 16
+[models.self]
+artifact = "{6}"
+drafter = "{6}"
+[models.again]
+artifact = "{1}"
+[models.odd]
+artifact = "{7}"
+tokenizer = "relative/tokenizer.json"
+colour = "blue"
+[models.deep.er]
+artifact = "{0}"
+)",
+      id, std::string(64, 'c'), std::string(64, 'd'), std::string(64, 'e'), std::string(64, 'f'),
+      std::string(64, '1'), std::string(64, '2'), std::string(64, '3')));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.Upper: a model's name is 1-64 characters")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.none: a model names exactly one of")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.both: a model names exactly one of")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.short.artifact must be an ID string")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.self: an artifact cannot be its own drafter")));
+  EXPECT_THAT(failures, Contains(HasSubstr("an installed artifact serves one model")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.odd.tokenizer must be an absolute path")));
+  EXPECT_THAT(failures, Contains(HasSubstr("unknown key models.odd.colour")));
+  EXPECT_THAT(failures, Contains(HasSubstr("unknown table models.deep.er")));
+}
+
+TEST(NodeConfigTest, ModelsAreBoundedAndOwnedOnce) {
+  std::string many = "schema_version = 2\n";
+  for (int i = 0; i < 17; ++i) {
+    many += std::format("[models.m{}]\nartifact = \"{:064x}\"\n", i, i + 1);
+  }
+  EXPECT_THAT(Failures(many), Contains(HasSubstr("names 17 models, more than 16")));
+  // A model's table in two files merges; one key set twice does not.
+  const std::string a = std::format("schema_version = 2\n[models.x]\nartifact = \"{}\"\n", kDsv4);
+  const NodeConfig merged = Parsed(
+      {{"a.toml", a},
+       {"b.toml", std::format("schema_version = 2\n[models.x]\ndrafter = \"{}\"\n", kDspark)}});
+  ASSERT_THAT(merged.models, SizeIs(1));
+  EXPECT_EQ(merged.models[0].drafter, std::string(kDspark));
+  EXPECT_THAT(Failures({{"a.toml", a}, {"b.toml", a}}),
+              Contains(HasSubstr("each key belongs to exactly one file")));
+}
+
 // Where scratch trees go: JITLLM_TEST_SCRATCH, in the build tree, so that
 // no other user shares their parent directories as they may in /tmp.
 fs::path Scratch() {

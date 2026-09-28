@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "qwen_image_runner.h"
+#include "engine/qwen_image_runner.h"
 
 #include <cuda_runtime.h>
 
@@ -30,7 +30,7 @@
 #include "tokenizer/hf.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
@@ -39,17 +39,15 @@ namespace kg = jitllm::kernels::ggml;
 namespace ki = jitllm::kernels::image;
 namespace md = jitllm::model;
 namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using catalog::Recovery;
 using providers::BackingKind;
-using Status = test_support::Status;
 using Bf16 = std::uint16_t;
 using Clock = std::chrono::steady_clock;
 
-constexpr std::uint64_t kExtent = test_support::kPagedExtent;
+constexpr std::uint64_t kExtent = kPagedExtent;
 // The VAE's im2col buffer: the resident harness's size, which sets how its
 // 3x3 convolutions are split, and so their products' shapes.
 constexpr std::uint64_t kCol = std::uint64_t{256} << 20U;
@@ -243,8 +241,8 @@ struct QwenImageRunner::State {
   std::vector<float> freqs;
   std::vector<std::uint64_t> vae_f32_bytes;
 
-  test_support::Mapped own_memory;
-  test_support::Mapped cublas_workspace;
+  Mapped own_memory;
+  Mapped cublas_workspace;
   std::uint64_t cublas_bytes = 0;
   std::unique_ptr<kg::CublasHandle> cublas;
   Own own;
@@ -266,8 +264,8 @@ struct QwenImageRunner::State {
   std::uint64_t generations = 0;
 };
 
-QwenImageRunner::QwenImageRunner(test_support::PagedNode& node, const QwenImageOptions& options,
-                                 int owner, std::uint32_t stream)
+QwenImageRunner::QwenImageRunner(PagedNode& node, const QwenImageOptions& options, int owner,
+                                 std::uint32_t stream)
     : node_(node), o_(options), owner_(owner), stream_(stream), s_(std::make_unique<State>()) {}
 
 QwenImageRunner::~QwenImageRunner() = default;
@@ -482,7 +480,7 @@ Status QwenImageRunner::Bind() {
   State& s = *s_;
   auto& catalog = node_.catalog();
   std::vector<ExtentId> common;
-  for (const ts::Mapped* mapped : std::initializer_list<const ts::Mapped*>{
+  for (const Mapped* mapped : std::initializer_list<const Mapped*>{
            &s.own_memory, &node_.activations(), &s.cublas_workspace}) {
     common.insert(common.end(), mapped->extents.begin(), mapped->extents.end());
   }
@@ -1089,7 +1087,7 @@ Status QwenImageRunner::Release() {
   std::vector<std::string> problems;
   s.cublas.reset();
   auto& memory = node_.memory();
-  for (ts::Mapped* mapped : {&s.own_memory, &s.cublas_workspace}) {
+  for (Mapped* mapped : {&s.own_memory, &s.cublas_workspace}) {
     if (!mapped->reservation.valid()) {
       continue;
     }
@@ -1120,4 +1118,4 @@ Status QwenImageRunner::Release() {
   return Error(all);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

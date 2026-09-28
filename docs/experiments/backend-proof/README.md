@@ -250,7 +250,8 @@ every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
 ## BP-S3: FP16 and EXL3 in one process
 
 **The harness.** The paged harnesses became model runners on one node:
-- [`paged_node.h`](../../../tests/support/paged_node.h) holds what the
+- [`paged_node.h`](../../../src/engine/paged_node.h) (then in
+  `tests/support/`; the engine's since D-096) holds what the
   models share: the providers, one catalog domain, the scheduler with its
   lanes, the landing zone, and one workspace (the activation region and
   the GGML pool) sized for the larger need of each part.
@@ -277,7 +278,8 @@ every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
 - **The budget** B is the node's fixed occupancy plus the larger model's
   weights plus half the smaller's. Both models' weights never fit at once.
 - **Before each evaluation** the model's whole closure is acquired
-  ([`AcquireProgram`](../../../tests/support/paged_programs.h)):
+  ([`AcquireProgram`](../../../src/scheduler/programs.h), then in
+  `tests/support/paged_programs.h`):
   - the memory module plans the materialization against B
     (`PlanMaterialization`), the shared workspace protected;
   - the victims it chooses are evicted and their backing released;

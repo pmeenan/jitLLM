@@ -11,8 +11,10 @@ explains the mechanism and why it was chosen.
 
 It holds five core components: GoogleTest, toml++, GGML (D-077),
 ExLlamaV3's kernels for the native EXL3 linear, and CUTLASS's headers for
-Qwen3.8's NVFP4 grouped GEMM; all but toml++ link only into tests and
-benchmarks so far (`use: test`). The last three are adapted sources: each
+Qwen3.8's NVFP4 grouped GEMM. toml++, GGML and CUTLASS ship (`use:
+product`: since D-096 the runtime links the engine's kernels); GoogleTest
+and ExLlamaV3 link only into tests and benchmarks (`use: test`). The last
+three are adapted sources: each
 is its upstream archive narrowed by `archive.keep`, with the reviewed
 patches in [patches/](patches/)`<id>/` that add jitLLM's build of the files
 it compiles (and, for GGML, link only the quantized kernels of the types it

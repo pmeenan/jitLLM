@@ -105,7 +105,6 @@
 #include "catalog/catalog.h"
 #include "chat/chat.h"
 #include "dsv4_common.h"
-#include "dsv4_runner.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
 #include "ggml.h"
@@ -1003,16 +1002,26 @@ Status Harness::Greedy() {
         spec.decode_seconds * per_step_ms);
     std::string escaped;
     jitllm::base::json::AppendQuoted(text.substr(0, 160), escaped);
+    // Every token, for comparisons with other drivers of the same engine
+    // (jitllm-runtime's chat).
+    const auto ids = [](const std::vector<std::int32_t>& tokens) {
+      std::string out;
+      for (const std::int32_t t : tokens) {
+        out += std::format("{}{}", out.empty() ? "" : ",", t);
+      }
+      return out;
+    };
     results_.push_back(std::format(
         R"({{"check":"greedy","prompt":"{}","prompt_tokens":{},"generated":{},"plain_tok_s":{:.3f},)"
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},"verifies":{},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},)"
-        R"("draft_path":{{"eager":{},"captured":{},"replayed":{}}},"text":{}}})",
+        R"("draft_path":{{"eager":{},"captured":{},"replayed":{}}},"text":{},)"
+        R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}]}})",
         prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
         acceptance, spec.verifies, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms,
         dsv4_.draft_stats().eager, dsv4_.draft_stats().captured, dsv4_.draft_stats().replayed,
-        escaped));
+        escaped, ids(prompt.ids), ids(plain.tokens), ids(spec.tokens)));
   }
   return {};
 }

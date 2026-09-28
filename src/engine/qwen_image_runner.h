@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The Qwen-Image-2.1 pipeline as a model on a paged node
-// (tests/support/paged_node.h; M3's swap path,
-// docs/experiments/fast-swap/swap.md): its three component artifacts,
+// The Qwen-Image-2.1 pipeline as a model on a paged node (paged_node.h;
+// M3's swap path, docs/experiments/fast-swap/swap.md): its three component
+// artifacts,
 // joined by their composition (D-089), paged into device VMM through the
 // node's landing zone, and each phase run as device jobs over the closure
 // of its own component (D-086), with the kernels and the call order of the
-// resident harness (qwen_image_exec.cc, whose phases this copies, as
-// dsv4_common.h copies DeepSeek's: the resident harness and its comparison
+// resident harness (benchmarks/qwen_image_exec.cc, whose phases this
+// copies, as dsv4_plan.h copies DeepSeek's: the resident harness and its comparison
 // with diffusers need no rerun; the pixels are checked equal to its image's
 // instead).
 //
@@ -24,7 +24,7 @@
 //   image's own memory, the shared workspace (every per-job buffer), the
 //   cuBLAS workspace and the staging: encode (one job), denoise (a job per
 //   step; the first also projects the text rows and fills the prefix K/V
-//   cache), decode (one job). A generation is one request: the harness
+//   cache), decode (one job). A generation is one request: the driver
 //   opens it on the image's stream over everything() (all three
 //   components; PagedNode::BeginRequest, M3's lease per request), leased
 //   once, and each phase's job runs under that lease, its closure within
@@ -40,8 +40,8 @@
 //   the first denoising step; Finish runs the rest and the decoder, and
 //   hashes the image's RGBA pixels.
 
-#ifndef JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
-#define JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
+#ifndef JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
+#define JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
 
 #include <array>
 #include <cstdint>
@@ -53,12 +53,12 @@
 
 #include "artifact/artifact.h"
 #include "catalog/catalog.h"
+#include "engine/paged_node.h"
+#include "engine/paged_weights.h"
 #include "kernels/ggml/cublas.h"
 #include "model/qwen_image.h"
-#include "paged_node.h"
-#include "paged_weights.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 struct QwenImageOptions {
   std::filesystem::path store;  // the installed artifacts
@@ -70,11 +70,11 @@ struct QwenImageOptions {
   std::uint32_t steps = 40;
 };
 
-class QwenImageRunner final : public test_support::PagedModel {
+class QwenImageRunner final : public PagedModel {
  public:
-  using Status = test_support::Status;
+  using Status = engine::Status;
 
-  QwenImageRunner(test_support::PagedNode& node, const QwenImageOptions& options, int owner,
+  QwenImageRunner(PagedNode& node, const QwenImageOptions& options, int owner,
                   std::uint32_t stream);
   ~QwenImageRunner() override;
   QwenImageRunner(const QwenImageRunner&) = delete;
@@ -89,7 +89,7 @@ class QwenImageRunner final : public test_support::PagedModel {
   Status Setup();
   std::uint64_t activations_needed() const { return work_bytes_; }
   // The image runs no GGML plan, so needs no GGML pool: one extent.
-  static std::uint64_t pool_needed() { return test_support::kPagedExtent; }
+  static std::uint64_t pool_needed() { return kPagedExtent; }
   Status Register();
   Status Bind();
 
@@ -118,7 +118,7 @@ class QwenImageRunner final : public test_support::PagedModel {
   Status Step(std::uint32_t index, bool hash, std::string* sha);
   Status Decode(std::string& sha);
 
-  test_support::PagedNode& node_;
+  PagedNode& node_;
   const QwenImageOptions& o_;
   int owner_;
   std::uint32_t stream_;
@@ -128,6 +128,6 @@ class QwenImageRunner final : public test_support::PagedModel {
   catalog::Closure fence_;
 };
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine
 
-#endif  // JITLLM_BENCHMARKS_QWEN_IMAGE_RUNNER_H_
+#endif  // JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_

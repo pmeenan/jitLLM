@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "paged_weights.h"
+#include "engine/paged_weights.h"
 
 #include <algorithm>
 #include <charconv>
@@ -12,9 +12,9 @@
 #include <utility>
 
 #include "artifact/layout.h"
-#include "dsv4_runner.h"
+#include "engine/dsv4_runner.h"
 
-namespace jitllm::benchmarks {
+namespace jitllm::engine {
 
 namespace {
 
@@ -24,7 +24,7 @@ using catalog::ExtentId;
 using catalog::MemoryClass;
 using catalog::Recovery;
 
-constexpr std::uint64_t kExtent = test_support::kPagedExtent;
+constexpr std::uint64_t kExtent = kPagedExtent;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -39,8 +39,7 @@ std::array<std::uint8_t, 32> ArtifactKey(const artifact::Artifact& artifact) {
   return id;
 }
 
-PagedWeights::Status PagedWeights::Reserve(test_support::PagedNode& node,
-                                           const artifact::Artifact& artifact,
+PagedWeights::Status PagedWeights::Reserve(PagedNode& node, const artifact::Artifact& artifact,
                                            std::span<const artifact::FileDescriptor> shards,
                                            const std::array<std::uint8_t, 32>& id,
                                            const std::vector<bool>& place,
@@ -209,7 +208,7 @@ PagedWeights::Status PagedWeights::Reserve(test_support::PagedNode& node,
   return {};
 }
 
-PagedWeights::Status PagedWeights::Register(test_support::PagedNode& node, int owner) {
+PagedWeights::Status PagedWeights::Register(PagedNode& node, int owner) {
   for (std::size_t i = 0; i < extents_.size(); ++i) {
     auto set = node.scheduler().SetSource(extents_[i], sources_[i].source);
     if (!set) {
@@ -261,4 +260,4 @@ PagedWeights::Status PagedWeights::Release(providers::VmmProvider& memory) {
   return {};
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace jitllm::engine

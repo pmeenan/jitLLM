@@ -89,6 +89,45 @@ class ReadDeb(unittest.TestCase):
             package.read_deb(self.deb({"debian-binary": b"3.0\n"}))
 
 
+class Binaries(unittest.TestCase):
+    """What a packaged executable may need and where it may look (D-060, D-076)."""
+
+    RUNTIME = "usr/libexec/jitllm/jitllm-runtime"
+
+    def facts(self, needed, runpath=()):
+        return {"needed": list(needed), "glibc": (2, 38), "runpath": list(runpath)}
+
+    def test_plain_executables_need_no_run_path(self):
+        self.assertIsNone(package.binary_problem("usr/bin/jitllm", self.facts(["libc.so.6", "libcuda.so.1"])))
+        self.assertIn("run path", package.binary_problem(
+            "usr/bin/jitllm", self.facts(["libc.so.6"], ["$ORIGIN/../../lib/jitllm"])))
+        self.assertIn("no dependency provides", package.binary_problem(
+            "usr/bin/jitllm", self.facts(["libstdc++.so.6"])))
+
+    def test_only_the_runtime_finds_cublas_and_only_privately(self):
+        cublas = ["libc.so.6", "libcuda.so.1", "libcublas.so.13", "libcublasLt.so.13"]
+        self.assertIsNone(package.binary_problem(self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/jitllm"])))
+        self.assertIn("no run path", package.binary_problem(self.RUNTIME, self.facts(cublas)))
+        self.assertIn("other than", package.binary_problem(self.RUNTIME, self.facts(cublas, ["/usr/local/cuda/lib64"])))
+        self.assertIn("other than", package.binary_problem(
+            self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/jitllm", "/tmp"])))
+        self.assertIn("only the runtime", package.binary_problem(
+            "usr/bin/jitllm", self.facts(cublas, ["$ORIGIN/../../lib/jitllm"])))
+        # A run path with nothing private to find is refused too.
+        self.assertIn("run path", package.binary_problem(
+            self.RUNTIME, self.facts(["libc.so.6"], ["$ORIGIN/../../lib/jitllm"])))
+
+    def test_cuda_packages_list_cublas(self):
+        self.assertNotIn("usr/lib/jitllm/libcublas.so.13", package.expected_files(False))
+        cuda = package.expected_files(True)
+        self.assertEqual(cuda["usr/lib/jitllm/libcublas.so.13"], 0o644)
+        self.assertEqual(cuda["usr/lib/jitllm/libcublasLt.so.13"], 0o644)
+        self.assertIn("cublas", package.CUDA_UNITS)
+        units = dict(package.shipped_units(tomllib.loads(package.PROVENANCE.read_text()), True))
+        self.assertIn("nvidia-cuda-eula", units["cublas"]["notices"])
+        self.assertNotIn("cublas", dict(package.shipped_units(tomllib.loads(package.PROVENANCE.read_text()), False)))
+
+
 class InTreeUnits(unittest.TestCase):
     """jitLLM's files with third-party data are listed exactly when an executable is built from them (D-088)."""
 

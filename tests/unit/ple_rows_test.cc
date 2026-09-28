@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Qwen3.8's n-gram table paged by rows (benchmarks/ple_rows.h): each
+// Qwen3.8's n-gram table paged by rows (engine/ple_rows.h): each
 // lookup's slot holds its row's bytes once the plan's reads have landed and
 // the gather has run; reads are 4 KiB-aligned direct reads within the
 // table's stored range, merged where their blocks touch, up to the most a
@@ -12,7 +12,7 @@
 // through io_uring from a real file and the gather kernel put every row in
 // its slot.
 
-#include "ple_rows.h"
+#include "engine/ple_rows.h"
 
 #include <cuda_runtime.h>
 #include <fcntl.h>
@@ -39,13 +39,13 @@
 
 namespace {
 
-using jitllm::benchmarks::GatherPleRows;
-using jitllm::benchmarks::kPleBlock;
-using jitllm::benchmarks::PlanPleRows;
-using jitllm::benchmarks::PleLandingBound;
-using jitllm::benchmarks::PleRowPlan;
-using jitllm::benchmarks::PleTable;
-using jitllm::benchmarks::ReadPleRows;
+using jitllm::engine::GatherPleRows;
+using jitllm::engine::kPleBlock;
+using jitllm::engine::PlanPleRows;
+using jitllm::engine::PleLandingBound;
+using jitllm::engine::PleRowPlan;
+using jitllm::engine::PleTable;
+using jitllm::engine::ReadPleRows;
 
 constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
 
@@ -134,7 +134,7 @@ TEST(PleRowsTest, EachLookupsSlotHoldsItsRowOnceTheReadsLand) {
   }
   const auto plan = PlanPleRows(table, lookups, PleLandingBound(lookups.size()), lookups.size());
   ASSERT_TRUE(plan.has_value()) << plan.error();
-  CheckReads(*plan, table, jitllm::benchmarks::kPleMaxRead);
+  CheckReads(*plan, table, jitllm::engine::kPleMaxRead);
   const std::set<std::int32_t> distinct(lookups.begin(), lookups.end());
   EXPECT_EQ(plan->sources.size(), distinct.size());
   EXPECT_EQ(plan->useful_bytes, distinct.size() * 90);
@@ -177,8 +177,8 @@ TEST(PleRowsTest, RowsWhoseBlocksTouchShareARead) {
   }
   const auto merged = PlanPleRows(table, dense, PleLandingBound(dense.size()), dense.size());
   ASSERT_TRUE(merged.has_value()) << merged.error();
-  CheckReads(*merged, table, jitllm::benchmarks::kPleMaxRead);
-  EXPECT_EQ(merged->reads.front().length, jitllm::benchmarks::kPleMaxRead);
+  CheckReads(*merged, table, jitllm::engine::kPleMaxRead);
+  EXPECT_EQ(merged->reads.front().length, jitllm::engine::kPleMaxRead);
   EXPECT_GT(merged->reads.size(), 1U);
   // A smaller limit makes more reads over the same rows.
   const auto small =
