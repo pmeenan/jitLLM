@@ -30,6 +30,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/tensors.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 
 namespace jitllm::benchmarks {
@@ -55,6 +56,29 @@ struct Dsv4Model {
   std::vector<float> rot;  // the indexer's Hadamard matrix
 };
 
+// DeepSeek's DSpark drafter beside its target (model/dspark.h): its places
+// (its own resources, expert arrays and strides, and its ring as
+// places.state) and its target's resources, whose head it reads.
+struct DsparkModel {
+  const artifact::Artifact* artifact = nullptr;
+  const model::DsparkProfile* profile = nullptr;
+  const model::DsparkBinding* binding = nullptr;
+  const model::DsparkStateLayout* state = nullptr;
+  Dsv4Places places;
+  std::function<std::uint64_t(std::uint32_t resource)> target_resource;
+};
+
+// How a target chunk runs beside a drafter.
+struct Dsv4Speculation {
+  // A speculative verify (D-092): the row-invariant plan (graph_plan.h
+  // DeviceChoices::row_invariant, dsv4_graph.h Dsv4GraphOptions).
+  bool verify = false;
+  // With a drafter: the chunk's features and its last `inject_rows` rows'
+  // KV injection into the drafter's ring (dsv4_graph.h Dsv4Injection).
+  const DsparkModel* drafter = nullptr;
+  std::int64_t inject_rows = 0;
+};
+
 // One chunk shape's graph, plan, placement and bound implementations.
 struct Dsv4Planned {
   std::optional<kernels::ggml::TensorArena> arena;
@@ -76,6 +100,28 @@ void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::span<const std::string> keep,
+    std::uint64_t activations, std::uint64_t activation_bytes,
+    const Dsv4Speculation& speculation = {});
+
+// Binds a chunk graph's DSpark injection: the drafter's fc, norms and wkv,
+// and its ring.
+void BindDsparkInjection(const DsparkModel& d, kernels::ggml::Dsv4Graph& g);
+
+// A draft block's graph, plan, placement and bound implementations.
+struct DsparkPlanned {
+  std::optional<kernels::ggml::TensorArena> arena;
+  kernels::ggml::DsparkGraph graph;
+  kernels::ggml::GraphPlan plan;
+  kernels::ggml::Placement placement;
+  std::optional<kernels::ggml::BoundGraph> bound;
+  std::uint64_t scratch = 0;
+  std::uint64_t inputs_bytes = 0;
+};
+
+// Builds, binds, plans and places a draft block of `rows` rows, as
+// PlanDsv4Chunk does a chunk (activations 0: measure only).
+std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
+    const DsparkModel& d, std::int64_t rows, const kernels::ggml::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes);
 
 // A chunk's host-built inputs, in the graph's copy order: each input
@@ -94,7 +140,24 @@ struct Dsv4HostInputs {
 // plan's indices and masks. Refused for a token outside the vocabulary.
 std::expected<void, std::string> BuildDsv4Inputs(
     const Dsv4Model& m, const kernels::ggml::Dsv4Graph& g, const model::Dsv4ChunkInputs& in,
-    std::span<const std::int32_t> tokens, std::span<const std::byte> table, Dsv4HostInputs& out);
+    std::span<const std::int32_t> tokens, std::span<const std::byte> table, Dsv4HostInputs& out,
+    std::span<const std::int64_t> inject_cells = {});
+
+// The embedding rows of `tokens`, dequantized on the host from `table`
+// (the token table group's bytes) as every chunk looks them up.
+std::expected<void, std::string> Dsv4EmbeddingRows(const Dsv4Model& m,
+                                                   std::span<const std::int32_t> tokens,
+                                                   std::span<const std::byte> table,
+                                                   std::vector<float>& embd);
+
+// A draft block's inputs: its tokens' embedding rows from the target's
+// table (`m`'s, on the host), and the block's positions, ring cells and
+// mask.
+std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m,
+                                                   const kernels::ggml::DsparkGraph& g,
+                                                   const model::DsparkBlockInputs& in,
+                                                   std::span<const std::byte> table,
+                                                   Dsv4HostInputs& out);
 
 // A file of token lines: `name<TAB>ids...`, or ids alone.
 struct TokenLine {

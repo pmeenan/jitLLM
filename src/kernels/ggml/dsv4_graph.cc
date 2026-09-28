@@ -23,7 +23,9 @@
 
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 
 namespace jitllm::kernels::ggml {
@@ -86,11 +88,19 @@ constexpr int kRopeMode = 0;
 class Builder {
  public:
   Builder(ggml_context* c, const model::Dsv4Profile& p, const model::Dsv4Binding& b,
-          const Dsv4ChunkShape& s, Dsv4Graph& g)
-      : c_(c), p_(p), b_(b), s_(s), g_(g) {}
+          const Dsv4ChunkShape& s, Dsv4Graph& g, const Dsv4GraphOptions& options)
+      : c_(c), p_(p), b_(b), s_(s), g_(g), o_(options) {}
 
-  std::expected<void, KernelFailure> Leaves(const Dsv4GraphOptions& options);
+  // A target chunk's inputs.
+  void Inputs();
+  // The weights (and every layer's state) of the binding's blocks and head.
+  std::expected<void, KernelFailure> Weights();
+  // A target chunk's DSpark injection leaves: the drafter's weights and ring.
+  std::expected<void, KernelFailure> InjectLeaves(const Dsv4Injection& inject);
   void Build();
+  // A DSpark draft block (the drafter's blocks over the binding's head).
+  std::expected<void, KernelFailure> DraftInputs(DsparkGraph& d, const model::DsparkBinding& b);
+  void BuildDraft(DsparkGraph& d);
 
  private:
   // A named intermediate, as llama.cpp's callback names it.
@@ -130,6 +140,11 @@ class Builder {
   ggml_tensor* TopKMask(ggml_tensor* kq_mask, ggml_tensor* top_k);
   ggml_tensor* AttnMha(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask, ggml_tensor* sinks,
                        std::int64_t n_kv_max);
+  ggml_tensor* AttnMhaRow(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask, ggml_tensor* sinks,
+                          std::int64_t n_kv_max);
+  // dsv4_hc_mean (deepseek4.cpp:270-278): the mean of x's streams.
+  ggml_tensor* HcMean(ggml_tensor* x);
+  void Inject(const DsparkInjectTensors& t, const Dsv4Injection& inject);
   ggml_tensor* CpyK(ggml_tensor* cache, ggml_tensor* k_cur, ggml_tensor* idxs);
   ggml_tensor* GetK(ggml_tensor* cache, std::int64_t n_kv);
   ggml_tensor* Attention(std::uint32_t il, ggml_tensor* cur);
@@ -140,6 +155,7 @@ class Builder {
   const model::Dsv4Binding& b_;
   const Dsv4ChunkShape& s_;
   Dsv4Graph& g_;
+  const Dsv4GraphOptions& o_;
   std::vector<ggml_tensor*> expanded_;
 };
 
@@ -162,7 +178,7 @@ std::expected<ggml_tensor*, KernelFailure> Leaf(ggml_context* c, const model::Ds
   return ggml_new_tensor(c, *type, static_cast<int>(t.ne.size()), ne.data());
 }
 
-std::expected<void, KernelFailure> Builder::Leaves(const Dsv4GraphOptions& options) {
+void Builder::Inputs() {
   const std::int64_t n = s_.rows;
   g_.embd = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.width, n);
   g_.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
@@ -187,7 +203,10 @@ std::expected<void, KernelFailure> Builder::Leaves(const Dsv4GraphOptions& optio
   g_.lid_rot = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.indexer_head_dim, p_.indexer_head_dim);
   const std::int64_t top_k = std::min<std::int64_t>(s_.csa_n_kv, p_.indexer_top_k);
   g_.top_k_zeros = ggml_new_tensor_4d(c_, GGML_TYPE_F16, 1, top_k, n, 1);
+}
 
+std::expected<void, KernelFailure> Builder::Weights() {
+  const Dsv4GraphOptions& options = o_;
   const auto leaf = [&](ggml_tensor*& into, const model::Dsv4Tensor& t,
                         std::string_view role) -> std::expected<void, KernelFailure> {
     auto made = Leaf(c_, t, role);
@@ -309,6 +328,39 @@ std::expected<void, KernelFailure> Builder::Leaves(const Dsv4GraphOptions& optio
     }
   }
 #undef JITLLM_LEAF
+  return {};
+}
+
+std::expected<void, KernelFailure> Builder::InjectLeaves(const Dsv4Injection& inject) {
+  if (inject.profile == nullptr || inject.binding == nullptr || inject.rows <= 0 ||
+      inject.rows > s_.rows || inject.ring <= 0) {
+    return Rejected("not a DSpark injection of this chunk");
+  }
+  const model::Dsv4Profile& dp = inject.profile->blocks;
+  const model::DsparkBinding& db = *inject.binding;
+  if (db.blocks.layers.size() != dp.layers || dp.width != p_.width) {
+    return Rejected("the injection's binding is not its drafter's");
+  }
+  DsparkInjectTensors t;
+  t.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, inject.rows);
+  auto fc = Leaf(c_, db.fc, "fc");
+  auto enc_norm = Leaf(c_, db.enc_norm, "enc_norm");
+  if (!fc || !enc_norm) {
+    return std::unexpected(!fc ? fc.error() : enc_norm.error());
+  }
+  t.fc = *fc;
+  t.enc_norm = *enc_norm;
+  for (std::uint32_t il = 0; il < dp.layers; ++il) {
+    auto kv = Leaf(c_, db.blocks.layers[il].kv, "drafter kv");
+    auto kv_norm = Leaf(c_, db.blocks.layers[il].kv_norm, "drafter kv_norm");
+    if (!kv || !kv_norm) {
+      return std::unexpected(!kv ? kv.error() : kv_norm.error());
+    }
+    t.kv.push_back(*kv);
+    t.kv_norm.push_back(*kv_norm);
+    t.ring.push_back(ggml_new_tensor_3d(c_, GGML_TYPE_F16, dp.head_dim, inject.ring, 1));
+  }
+  g_.inject = std::move(t);
   return {};
 }
 
@@ -444,9 +496,32 @@ ggml_tensor* Builder::GetK(ggml_tensor* cache, std::int64_t n_kv) {
                       ggml_row_size(cache->type, head * cache->ne[1]), 0);
 }
 
-// build_attn_mha with flash attention, one stream (llama-graph.cpp:2591-2650).
+// A speculative verify's attention (D-092): each query row alone, over
+// views of its q and mask rows, as a one-row chunk at its position runs it
+// (the MMA kernel's column tiles and stream-k split follow the query rows),
+// the rows' outputs concatenated.
 ggml_tensor* Builder::AttnMha(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask,
                               ggml_tensor* sinks, std::int64_t n_kv_max) {
+  const std::int64_t nt = q->ne[2];
+  if (!o_.row_invariant || nt == 1) {
+    return AttnMhaRow(q, k, kq_mask, sinks, n_kv_max);
+  }
+  ggml_tensor* out = nullptr;
+  for (std::int64_t t = 0; t < nt; ++t) {
+    const auto row = static_cast<std::size_t>(t);
+    ggml_tensor* q_t =
+        ggml_view_3d(c_, q, q->ne[0], q->ne[1], 1, q->nb[1], q->nb[2], row * q->nb[2]);
+    ggml_tensor* mask_t = ggml_view_4d(c_, kq_mask, kq_mask->ne[0], 1, 1, 1, kq_mask->nb[1],
+                                       kq_mask->nb[2], kq_mask->nb[3], row * kq_mask->nb[1]);
+    ggml_tensor* one = AttnMhaRow(q_t, k, mask_t, sinks, n_kv_max);
+    out = out != nullptr ? ggml_concat(c_, out, one, 1) : one;
+  }
+  return out;
+}
+
+// build_attn_mha with flash attention, one stream (llama-graph.cpp:2591-2650).
+ggml_tensor* Builder::AttnMhaRow(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask,
+                                 ggml_tensor* sinks, std::int64_t n_kv_max) {
   ggml_tensor* v = k;
   q = ggml_view_4d(c_, q, q->ne[0], q->ne[1], q->ne[2], 1, q->nb[1], q->nb[2], q->nb[3], 0);
   q = ggml_permute(c_, q, 0, 2, 1, 3);
@@ -727,15 +802,69 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
   return out;
 }
 
+ggml_tensor* Builder::HcMean(ggml_tensor* x) {
+  const std::int64_t hc = x->ne[1];
+  ggml_tensor* acc = ggml_view_2d(c_, x, x->ne[0], x->ne[2], x->nb[2], 0);
+  for (std::int64_t s = 1; s < hc; ++s) {
+    acc = ggml_add(
+        c_, acc,
+        ggml_view_2d(c_, x, x->ne[0], x->ne[2], x->nb[2], static_cast<std::size_t>(s) * x->nb[1]));
+  }
+  return ggml_scale(c_, acc, 1.0f / static_cast<float>(hc));
+}
+
+// graph_dsv4's embd batch (dflash.cpp:844-883) over the chunk's features:
+// fc and the encoder's norm, then each drafter block's wkv, kv norm and
+// uncompressed RoPE, stored at the injected rows' ring cells.
+void Builder::Inject(const DsparkInjectTensors& t, const Dsv4Injection& inject) {
+  const model::Dsv4Profile& dp = inject.profile->blocks;
+  const std::int64_t n = s_.rows;
+  const std::int64_t r = inject.rows;
+  ggml_tensor* features = g_.features;
+  ggml_tensor* positions = g_.positions;
+  if (r < n) {
+    const auto skip = static_cast<std::size_t>(n - r);
+    features =
+        ggml_view_2d(c_, features, features->ne[0], r, features->nb[1], skip * features->nb[1]);
+    positions = ggml_view_1d(c_, positions, r, skip * positions->nb[0]);
+  }
+  ggml_tensor* inp_g = ggml_mul_mat(c_, t.fc, features);
+  inp_g = ggml_mul(c_, ggml_rms_norm(c_, inp_g, dp.rms_eps), t.enc_norm);
+  Name(inp_g, "inp_g_embeddings", -1);
+  const Rope rope = LayerRope(dp, 0);
+  const std::int64_t head = dp.head_dim;
+  for (std::uint32_t il = 0; il < dp.layers; ++il) {
+    ggml_tensor* kv = ggml_mul_mat(c_, t.kv[il], inp_g);
+    kv = ggml_mul(c_, ggml_rms_norm(c_, kv, dp.rms_eps), t.kv_norm[il]);
+    kv = ggml_reshape_3d(c_, kv, head, 1, r);
+    kv = ggml_rope_ext(c_, kv, positions, nullptr, static_cast<int>(dp.rope_dims), kRopeMode,
+                       rope.n_ctx_orig, rope.base, rope.scale, rope.ext, rope.attn, rope.beta_fast,
+                       rope.beta_slow);
+    kv = ggml_rope_set_offset(kv, static_cast<int>(head - dp.rope_dims));
+    Name(kv, "kv_injected", static_cast<int>(il));
+    Expand(CpyK(t.ring[il], kv, t.cells));
+  }
+}
+
 void Builder::Build() {
   const std::int64_t nt = s_.rows;
   const std::int64_t hc = p_.hc;
   ggml_tensor* inp = ggml_reshape_3d(c_, g_.embd, p_.width, 1, nt);
   ggml_tensor* inpl = ggml_repeat_4d(c_, inp, p_.width, hc, nt, 1);
   Name(inpl, "hc_init", -1);
+  // The streams entering each feature layer (DSpark's target layers).
+  std::vector<ggml_tensor*> features(o_.features.size(), nullptr);
+  const auto capture = [&](std::uint32_t layer, ggml_tensor* streams) {
+    for (std::size_t k = 0; k < o_.features.size(); ++k) {
+      if (o_.features[k] == layer) {
+        features[k] = streams;
+      }
+    }
+  };
   for (std::uint32_t il_u = 0; il_u < p_.layers; ++il_u) {
     const int il = static_cast<int>(il_u);
     const Dsv4LayerTensors& l = g_.layers[il_u];
+    capture(il_u, inpl);
     ggml_tensor* residual = inpl;
     ggml_tensor* post = nullptr;
     ggml_tensor* comb = nullptr;
@@ -758,6 +887,7 @@ void Builder::Build() {
     inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
     Name(inpl, "l_last", il);
   }
+  capture(p_.layers, inpl);
   // Every row is an output, gathered as llama.cpp gathers them.
   ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
   ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
@@ -769,6 +899,94 @@ void Builder::Build() {
   g_.logits = ggml_mul_mat(c_, g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
+  // The drafter's part after the target's own, so the target's nodes keep
+  // their order: the features (the streams' means, llama.cpp's layer_inp
+  // extraction), and the injection.
+  for (ggml_tensor* streams : features) {
+    ggml_tensor* mean = HcMean(streams);
+    g_.features = g_.features != nullptr ? ggml_concat(c_, g_.features, mean, 0) : mean;
+  }
+  if (g_.features != nullptr) {
+    Name(g_.features, "layer_inp", -1);
+    Expand(g_.features);
+    if (g_.inject && o_.inject) {
+      Inject(*g_.inject, *o_.inject);
+    }
+  }
+  g_.nodes = GraphOrder(expanded_);
+}
+
+std::expected<void, KernelFailure> Builder::DraftInputs(DsparkGraph& d,
+                                                        const model::DsparkBinding& b) {
+  const std::int64_t n = s_.rows;
+  g_.embd = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.width, n);
+  d.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  g_.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
+  g_.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.raw_n_kv, n, 1, 1);
+  auto w1 = Leaf(c_, b.markov_w1, "markov_w1");
+  auto w2 = Leaf(c_, b.markov_w2, "markov_w2");
+  if (!w1 || !w2) {
+    return std::unexpected(!w1 ? w1.error() : w2.error());
+  }
+  d.markov_w1 = *w1;
+  d.markov_w2 = *w2;
+  return {};
+}
+
+// graph_dsv4's token batch (dflash.cpp:886-1001) and
+// build_dspark_markov_head (dflash.cpp:293-404) for one block, anchor
+// first (sample_from_anchor), without the confidence head.
+void Builder::BuildDraft(DsparkGraph& d) {
+  const std::int64_t nt = s_.rows;
+  const std::int64_t hc = p_.hc;
+  ggml_tensor* inp = ggml_reshape_3d(c_, g_.embd, p_.width, 1, nt);
+  ggml_tensor* inpl = ggml_repeat_4d(c_, inp, p_.width, hc, nt, 1);
+  Name(inpl, "hc_init", -1);
+  for (std::uint32_t il_u = 0; il_u < p_.layers; ++il_u) {
+    const int il = static_cast<int>(il_u);
+    const Dsv4LayerTensors& l = g_.layers[il_u];
+    ggml_tensor* residual = inpl;
+    ggml_tensor* post = nullptr;
+    ggml_tensor* comb = nullptr;
+    ggml_tensor* cur = HcPre(inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base, &post, &comb, il);
+    cur = Norm(cur, l.attn_norm);
+    cur = Attention(il_u, cur);
+    inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
+    residual = inpl;
+    cur = HcPre(inpl, l.hc_ffn_fn, l.hc_ffn_scale, l.hc_ffn_base, &post, &comb, il);
+    Expand(residual);
+    Expand(post);
+    Expand(comb);
+    cur = Norm(cur, l.ffn_norm);
+    cur = Moe(il_u, cur);
+    inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
+    Name(inpl, "l_out", il);
+  }
+  ggml_tensor* cur = HcHead(inpl);
+  cur = Norm(cur, g_.output_norm);
+  g_.logits = ggml_mul_mat(c_, g_.output, cur);  // [vocab, rows]
+  Expand(g_.logits);
+  // The Markov head: each slot's logits biased by the slot before it, the
+  // anchor before slot 0.
+  const std::int64_t vocab = g_.logits->ne[0];
+  ggml_tensor* prev = ggml_view_1d(c_, d.tokens, 1, 0);
+  ggml_tensor* cat = nullptr;
+  for (std::int64_t i = 0; i < nt; ++i) {
+    ggml_tensor* w1_prev = ggml_get_rows(c_, d.markov_w1, prev);  // [rank, 1]
+    ggml_tensor* bias = ggml_mul_mat(c_, d.markov_w2, w1_prev);   // [vocab, 1]
+    ggml_tensor* base = ggml_view_2d(c_, g_.logits, vocab, 1, g_.logits->nb[1],
+                                     static_cast<std::size_t>(i) * g_.logits->nb[1]);
+    ggml_tensor* col = ggml_add(c_, base, bias);
+    cat = cat != nullptr ? ggml_concat(c_, cat, col, 1) : col;
+    if (i + 1 < nt) {
+      prev = Argmax(c_, col);
+    }
+  }
+  d.logits = cat;
+  Name(d.logits, "dspark_logits", -1);
+  d.drafts = Argmax(c_, cat);
+  Expand(d.drafts);
   g_.nodes = GraphOrder(expanded_);
 }
 
@@ -799,7 +1017,14 @@ std::vector<ggml_tensor*> Dsv4Graph::inputs() const {
   }
   all.push_back(lid_rot);
   all.push_back(top_k_zeros);
+  if (inject) {
+    all.push_back(inject->cells);
+  }
   return all;
+}
+
+std::vector<ggml_tensor*> DsparkGraph::inputs() const {
+  return {core.embd, tokens, core.positions, core.raw_k_idxs, core.raw_mask};
 }
 
 ggml_tensor* Dsv4Graph::Named(std::string_view name) const {
@@ -813,8 +1038,15 @@ ggml_tensor* Dsv4Graph::Named(std::string_view name) const {
 
 std::size_t Dsv4GraphTensors(const model::Dsv4Profile& profile) {
   // Leaves: about 60 per layer; nodes: at most about 330 per layer (a CSA
-  // layer with its indexer), 40 for the head. Rounded up generously.
-  return 256 + (std::size_t{profile.layers} * 512);
+  // layer with its indexer), 40 for the head; a row-invariant verify adds
+  // about 10 per row and layer for its attention (up to 8 rows), a
+  // drafter's features and injection about 60. Rounded up generously.
+  return 512 + (std::size_t{profile.layers} * (512 + 96));
+}
+
+std::size_t DsparkGraphTensors(const model::DsparkProfile& profile, std::int64_t rows) {
+  // The blocks as a target chunk's layers, and the Markov head's six a slot.
+  return 256 + (std::size_t{profile.blocks.layers} * 512) + (static_cast<std::size_t>(rows) * 8);
 }
 
 std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name) {
@@ -876,16 +1108,59 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
       profile.hc != 4 || profile.heads % profile.o_groups != 0) {
     return Rejected("the binding is not the profile's");
   }
+  if (options.inject && options.features.empty()) {
+    return Rejected("a DSpark injection reads the chunk's features");
+  }
+  for (const std::uint32_t layer : options.features) {
+    if (layer > profile.layers) {
+      return Rejected("a feature layer past the stream leaving the last layer");
+    }
+  }
   if (auto room = arena.Reserve(Dsv4GraphTensors(profile)); !room) {
     return std::unexpected(room.error());
   }
   Dsv4Graph g;
-  Builder builder(arena.context(), profile, binding, shape, g);
-  if (auto leaves = builder.Leaves(options); !leaves) {
-    return std::unexpected(leaves.error());
+  Builder builder(arena.context(), profile, binding, shape, g, options);
+  builder.Inputs();
+  if (auto weights = builder.Weights(); !weights) {
+    return std::unexpected(weights.error());
+  }
+  if (options.inject) {
+    if (auto leaves = builder.InjectLeaves(*options.inject); !leaves) {
+      return std::unexpected(leaves.error());
+    }
   }
   builder.Build();
   return g;
+}
+
+std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
+                                                           const model::DsparkProfile& profile,
+                                                           const model::DsparkBinding& binding,
+                                                           std::int64_t rows, std::int64_t ring,
+                                                           const Dsv4GraphOptions& options) {
+  const model::Dsv4Profile& p = profile.blocks;
+  if (rows <= 0 || std::cmp_greater(rows, profile.block_size) ||
+      std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
+      binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
+      !options.features.empty() || options.inject || options.row_invariant) {
+    return Rejected("not a DSpark draft block this drafter runs");
+  }
+  if (auto room = arena.Reserve(DsparkGraphTensors(profile, rows)); !room) {
+    return std::unexpected(room.error());
+  }
+  // The blocks' attention reads the whole ring, window only.
+  const Dsv4ChunkShape shape{.rows = rows, .raw_n_kv = ring, .raw_cells = ring};
+  DsparkGraph d;
+  Builder builder(arena.context(), p, binding.blocks, shape, d.core, options);
+  if (auto inputs = builder.DraftInputs(d, binding); !inputs) {
+    return std::unexpected(inputs.error());
+  }
+  if (auto weights = builder.Weights(); !weights) {
+    return std::unexpected(weights.error());
+  }
+  builder.BuildDraft(d);
+  return d;
 }
 
 }  // namespace jitllm::kernels::ggml

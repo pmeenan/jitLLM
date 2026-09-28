@@ -269,6 +269,10 @@ BF16; 0.70× its generation time with weights resident, one prompt at
 paged node (Qwen3.8's n-gram table read by rows, D-035), every swap
 under ~10 s (worst LLM↔LLM 9.38 s, page-in bound), an LLM's return
 bit-identical to its saved state's continuation (RE-031 rules out a
-rerun). D-087 moved the
+rerun); and DeepSeek's speculative decoding with its DSpark drafter
+(D-092): greedy bit-identical to plain greedy, exact rollback of rejected
+drafts, across swaps too, decode 0.91–0.92× llama.cpp's with the same
+drafter (a narrow pass of D-085's gate, within run-to-run spread).
+D-087 moved the
 later milestones back two places (the old M3 is M5). Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

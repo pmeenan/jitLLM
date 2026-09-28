@@ -94,6 +94,11 @@ bool LaunchesNothing(const ggml_tensor* node) {
 
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                                                   const DeviceChoices& device) {
+  if (fusion && device.row_invariant) {
+    // Upstream's fused vector products pick their launch by the column
+    // count: a row-invariant plan (D-092) cannot take them.
+    return Rejected("a row-invariant plan is planned without fusion");
+  }
   GraphPlan plan;
   std::vector<bool> taken(graph.size(), false);
   const auto add = [&](Operation operation, std::string_view name, std::size_t first,
@@ -163,6 +168,18 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           add(Operation::kMatMul, kMulMatHadamard, i, {node}, 1);
           break;
         }
+        if (device.row_invariant) {
+          if (node->src[1] == nullptr || node->src[1]->ne[1] > kRowInvariantColumns) {
+            return Rejected(
+                std::format("{}: a row-invariant plan takes products of at most {} "
+                            "columns",
+                            Where(graph, i), kRowInvariantColumns));
+          }
+          add(Operation::kMatMul,
+              IsQuantizedWeightType(node->src[0]->type) ? kMulMatVecQRows : kMulMatVecFRows, i,
+              {node}, 1);
+          break;
+        }
         if (IsQuantizedWeightType(node->src[0]->type)) {
           if (!device.quant) {
             return Rejected(std::format("{}: no quantized product here", Where(graph, i)));
@@ -183,6 +200,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         break;
       }
       case GGML_OP_MUL_MAT_ID: {
+        if (device.row_invariant) {
+          if (node->ne[2] > kRowInvariantColumns) {
+            return Rejected(
+                std::format("{}: a row-invariant plan takes expert products of at "
+                            "most {} tokens",
+                            Where(graph, i), kRowInvariantColumns));
+          }
+          add(Operation::kMulMatId, kMulMatIdVecQRows, i, {node}, 1);
+          break;
+        }
         if (!device.quant) {
           return Rejected(std::format("{}: no quantized product here", Where(graph, i)));
         }
@@ -361,6 +388,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case JitllmOp::kGdnNormGate:
             add(Operation::kNormGate, kGdnNormGateName, i, {node}, 1);
+            break;
+          case JitllmOp::kArgmax:
+            add(Operation::kTopK, kArgmaxName, i, {node}, 1);
             break;
           case JitllmOp::kNone:
             return Rejected(

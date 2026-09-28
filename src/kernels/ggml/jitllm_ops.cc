@@ -58,6 +58,7 @@ void JitllmCustomTag(ggml_tensor* /*dst*/, int /*ith*/, int /*nth*/, void* /*use
 constinit std::array kTagMxfp8MulMatVec = std::to_array("jitllm.mxfp8.mul_mat_vec");
 constinit std::array kTagMxfp8Dequant = std::to_array("jitllm.mxfp8.dequant");
 constinit std::array kTagNvfp4Rows = std::to_array("jitllm.nvfp4.get_rows");
+constinit std::array kTagArgmax = std::to_array("jitllm.argmax");
 constinit std::array kTagHcCombine = std::to_array("jitllm.hc.combine");
 constinit std::array kTagHcNorm = std::to_array("jitllm.hc.norm");
 constinit std::array kTagHcMix = std::to_array("jitllm.hc.mix");
@@ -156,6 +157,9 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagNvfp4Rows.data()) {
     return JitllmOp::kNvfp4Rows;
   }
+  if (params.userdata == kTagArgmax.data()) {
+    return JitllmOp::kArgmax;
+  }
   const std::array<std::pair<const char*, JitllmOp>, 15> fused = {{
       {kTagGdnConv.data(), JitllmOp::kGdnConv},
       {kTagGdnNormGate.data(), JitllmOp::kGdnNormGate},
@@ -209,6 +213,29 @@ std::int32_t JitllmOpInt(const ggml_tensor* node, int index) {
                   (static_cast<std::size_t>(index) * sizeof(value)),
               sizeof(value));
   return value;
+}
+
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x) {
+  return Custom(context, GGML_TYPE_I32, {x->ne[1], 1, 1, 1}, {x}, kTagArgmax.data());
+}
+
+std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kArgmax, 1); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  if (!IsF32(x) || node->type != GGML_TYPE_I32 || AnyEmpty({x, node}) || !AllSane({x, node}) ||
+      !Matrix2d(x) || node->ne[0] != x->ne[1] || ggml_nrows(node) != 1) {
+    return Rejected("F32 rows into one I32 index a row");
+  }
+  if (!Packed(x) || !Packed(node) || !Aligned(x, 4) || !Aligned(node, 4) ||
+      std::cmp_greater(x->ne[0], kInt32Max) || x->ne[1] > 65535) {
+    return Rejected("packed operands within the kernel's grid");
+  }
+  if (!AllCurrent({node, x}) || !Disjoint(node, x, false)) {
+    return Rejected("a stale view, or an output overlapping its operand");
+  }
+  return {};
 }
 
 ggml_tensor* Mxfp8MulMatVec(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales,

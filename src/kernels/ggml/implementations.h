@@ -78,6 +78,14 @@
 // and a second implementation of GGML's gated_delta_net node, chosen where
 // it takes the shape (jitllm_ops.h GatedDeltaNetColumnsFits):
 //   jitllm.gated_delta_net.columns {gated_delta_net}     RunGatedDeltaNetColumns
+// A speculative verify's row-invariant plan (D-092; graph_plan.h
+// DeviceChoices::row_invariant) runs every product of up to 8 columns
+// through
+//   jitllm.mul_mat.mmvq_rows     {mul_mat}               ops_ext.h MulMatVecQRows
+//   jitllm.mul_mat_id.mmvq_rows  {mul_mat_id}            ops_ext.h MulMatVecQRows
+//   jitllm.mul_mat.mmvf_rows     {mul_mat}               ops_ext.h MulMatVecFRows
+// and DeepSeek's DSpark drafter chains its Markov head on
+//   jitllm.argmax                {custom}                RunArgmax
 // The quantized products' two implementations are GGML's kernel families,
 // which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
 // ggml.unary and ggml.rope.ext compute the function the node names.

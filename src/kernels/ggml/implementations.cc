@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 65> kKernels = {{
+constexpr std::array<Kernel::Entry, 69> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -548,6 +548,36 @@ constexpr std::array<Kernel::Entry, 65> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeGemv(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemv(launch, n[0]); }},
+    // A speculative verify's row-invariant products (D-092) and DeepSeek's
+    // DSpark drafter's argmax.
+    {.name = "jitllm.mul_mat.mmvq_rows",
+     .operation = execution::Operation::kMatMul,
+     .variant = "MulMatVecQRowsKernel<type, columns 1-8>: quantize_row_q8_1_cuda, then GGML's "
+                "mul_mat_vec_q body with the one-column launch's warps, rows per block, small-K "
+                "and halved iterations for every column; GGML's device flags",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQRows(launch, n[0]); }},
+    {.name = "jitllm.mul_mat_id.mmvq_rows",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "MulMatVecQRowsKernel<type, 1, per token>: quantize_row_q8_1_cuda, then GGML's "
+                "one-token mul_mat_vec_q launch with ids for every token, over grid z",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQRows(launch, n[0]); }},
+    {.name = "jitllm.mul_mat.mmvf_rows",
+     .operation = execution::Operation::kMatMul,
+     .variant = "ggml_cuda_mul_mat_vec_f: mul_mat_vec_f<T, type_acc, columns 1-8, block, false, "
+                "false> whatever upstream would route; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMat(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecFRows(launch, n[0]); }},
+    {.name = "jitllm.argmax",
+     .operation = execution::Operation::kTopK,
+     .variant = "ArgmaxKernel: a block a row, the highest value, the lowest index among equals",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckArgmax(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunArgmax(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,

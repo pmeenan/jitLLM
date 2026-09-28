@@ -141,4 +141,73 @@ TEST(Sample, RefusesBadParameters) {
             ex::SamplingError::kInvalidLogits);
 }
 
+// Speculative sampling with a greedy drafter: the verdict's token is
+// distributed as Sample's, the draft accepted with its probability.
+TEST(VerifyDraft, PreservesTheDistribution) {
+  std::vector<ex::SamplingCandidate> scratch;
+  const std::vector<float> logits = {2.0F, 1.0F, 0.0F, -1.0F, 0.5F};
+  std::vector<double> p(logits.size());
+  double total = 0;
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    p[i] = std::exp(static_cast<double>(logits[i]));
+    total += p[i];
+  }
+  for (double& x : p) {
+    x /= total;
+  }
+  constexpr std::uint64_t kDraws = 200000;
+  for (const std::int32_t draft : {0, 1, 3}) {
+    std::vector<double> seen(logits.size(), 0.0);
+    std::uint64_t accepted = 0;
+    for (std::uint64_t s = 0; s < kDraws; ++s) {
+      auto v = ex::VerifyDraft(logits, draft, {}, {.seed = s, .stream = 0, .position = 9}, scratch);
+      ASSERT_TRUE(v.has_value());
+      seen[static_cast<std::size_t>(v->token)] += 1.0;
+      accepted += v->accepted ? 1 : 0;
+      // A rejected draft is never the token.
+      EXPECT_TRUE(v->accepted || v->token != draft);
+    }
+    EXPECT_NEAR(static_cast<double>(accepted) / kDraws, p[static_cast<std::size_t>(draft)], 0.01)
+        << draft;
+    for (std::size_t i = 0; i < p.size(); ++i) {
+      EXPECT_NEAR(seen[i] / kDraws, p[i], 0.01) << draft << " " << i;
+    }
+  }
+  // Reproducible from the key.
+  const auto a = ex::VerifyDraft(logits, 1, {}, {.seed = 3, .stream = 1, .position = 2}, scratch);
+  const auto b = ex::VerifyDraft(logits, 1, {}, {.seed = 3, .stream = 1, .position = 2}, scratch);
+  ASSERT_TRUE(a && b);
+  EXPECT_EQ(a->accepted, b->accepted);
+  EXPECT_EQ(a->token, b->token);
+}
+
+TEST(VerifyDraft, GreedyAndFilteredDrafts) {
+  std::vector<ex::SamplingCandidate> scratch;
+  const std::vector<float> logits = {0.0F, 3.0F, 1.0F};
+  // Temperature 0: accepted exactly when the draft is the greedy token.
+  auto yes = ex::VerifyDraft(logits, 1, {.temperature = 0}, {}, scratch);
+  auto no = ex::VerifyDraft(logits, 2, {.temperature = 0}, {}, scratch);
+  ASSERT_TRUE(yes && no);
+  EXPECT_TRUE(yes->accepted);
+  EXPECT_EQ(yes->token, 1);
+  EXPECT_FALSE(no->accepted);
+  EXPECT_EQ(no->token, 1);
+  // A draft top-k filters out has probability 0: always rejected, and the
+  // replacement is from what top-k keeps.
+  for (std::uint64_t s = 0; s < 1000; ++s) {
+    auto v =
+        ex::VerifyDraft(logits, 0, {.top_k = 2}, {.seed = s, .stream = 0, .position = 0}, scratch);
+    ASSERT_TRUE(v.has_value());
+    EXPECT_FALSE(v->accepted);
+    EXPECT_NE(v->token, 0);
+  }
+  // A draft holding all the weight is always accepted.
+  auto only =
+      ex::VerifyDraft(logits, 1, {.top_k = 1}, {.seed = 5, .stream = 0, .position = 0}, scratch);
+  ASSERT_TRUE(only.has_value());
+  EXPECT_TRUE(only->accepted);
+  EXPECT_EQ(Failed(ex::VerifyDraft(logits, 1, {.top_p = 0}, {}, scratch)),
+            ex::SamplingError::kInvalidParams);
+}
+
 }  // namespace

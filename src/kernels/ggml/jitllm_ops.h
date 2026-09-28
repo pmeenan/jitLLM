@@ -19,6 +19,14 @@
 //                             then its v/16 E4M3 scales, times the table's
 //                             global F32 scale, as F32 [v, ids]: Qwen3.8's
 //                             n-gram embedding lookup.
+//   jitllm.argmax             I32 [rows]: each F32 row's highest value's
+//                             index, the lowest index among equals (the rule
+//                             of execution/sampling.h's Greedy); a NaN never
+//                             wins, and a row of NaN only gives 0 (the
+//                             index feeds unchecked row lookups, so it is
+//                             always in the row). DeepSeek's DSpark drafter
+//                             chains its Markov head on it (GGML's argmax
+//                             is not in jitLLM's subset).
 //
 // and, for Qwen3.8's prefill, fusions of the elementwise work the
 // hyper-connections and the MoE output do at four streams' width, each the
@@ -75,6 +83,7 @@ enum class JitllmOp : std::uint8_t {
   kMxfp8MulMatVec,
   kMxfp8Dequant,
   kNvfp4Rows,
+  kArgmax,
   kHcCombine,
   kHcNorm,
   kHcMix,
@@ -113,6 +122,8 @@ ggml_tensor* Mxfp8Dequant(ggml_context* context, ggml_tensor* codes, ggml_tensor
 // [1]: F32 [values, n].
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
                        ggml_tensor* scale, std::int64_t values);
+// `x` F32 [n, rows]: I32 [rows].
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x);
 
 // The fusions. `res` F32 [width, hc, t], `out` F32 [width, t], `inject` F32
 // [hc, t]: F32 [width, hc, t].
@@ -152,6 +163,9 @@ ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* 
 std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckMxfp8Dequant(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckNvfp4Rows(const ggml_tensor* node);
+// Packed F32 rows of at most 2^31 - 1 values into a packed I32 row of one
+// index a row, at most 65,535 rows.
+std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node);
 // The fusions' checks: every operand bound, typed and shaped as its
 // builder's, packed (the expert ids may have a longer row stride), 16-byte
 // aligned where a kernel loads four floats, within 32-bit grids, and the
@@ -290,6 +304,7 @@ class LaunchContext;
 std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMxfp8Dequant(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunNvfp4Rows(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcCombine(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcNorm(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcMix(LaunchContext& launch, ggml_tensor* node);
@@ -312,6 +327,22 @@ std::expected<void, KernelFailure> RunMoeGemm(LaunchContext& launch, ggml_tensor
 std::expected<void, KernelFailure> RunMoeGluQuantize(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeCombineSorted(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeGemv(LaunchContext& launch, ggml_tensor* node);
+
+// Byte ranges copied device to device in one kernel, not a graph node: a
+// speculative verify's snapshot of the state rows it will write, and the
+// restore of the rows a rejected draft wrote (D-068's truncation at a
+// snapshot; benchmarks/dsv4_runner.h). Each range is 16-byte aligned at
+// both ends and a multiple of 16 bytes; no destination overlaps another
+// range. `ranges` is memory the device reads (pinned host memory, or
+// device memory), valid until the copy completes; at most kMaxRangeCopies.
+struct RangeCopy {
+  std::uint64_t from = 0;
+  std::uint64_t to = 0;
+  std::uint64_t bytes = 0;
+};
+inline constexpr std::uint32_t kMaxRangeCopies = 65535;
+std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
+                                              std::uint32_t count);
 
 }  // namespace jitllm::kernels::ggml
 

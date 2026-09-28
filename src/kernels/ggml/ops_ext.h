@@ -57,6 +57,23 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
+// Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
+// every output column of a quantized product (up to kRowsMaxColumns
+// activation columns, or tokens of a mul_mat_id) is computed with the
+// arithmetic of GGML's one-column MMVQ launch, so a verify's row equals the
+// decode step it stands for bit for bit; a dense block still reads its
+// weight rows once for every column. Weights of the types jitLLM's models
+// bring (Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS, MXFP4); the scratch is
+// MMVQ's Q8_1 activations.
+inline constexpr std::int64_t kRowsMaxColumns = 8;
+std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQRows(const LaunchContext& launch,
+                                                               const ggml_tensor* node);
+std::expected<void, KernelFailure> MulMatVecQRows(LaunchContext& launch, ggml_tensor* node);
+// GGML's float vector kernel (MMVF) for up to 8 columns whatever upstream
+// would route there (MMF or cuBLAS on the GB10 past one BF16 column or
+// three F32 ones): its columns' sums are independent of their count.
+std::expected<void, KernelFailure> MulMatVecFRows(LaunchContext& launch, ggml_tensor* node);
+
 // A ggml_mul_mat node with GGML_HINT_SRC0_IS_HADAMARD, as upstream runs it:
 // the fast Walsh-Hadamard transform of the activations (ggml_cuda_op_fwht).
 std::expected<void, KernelFailure> MulMatHadamard(LaunchContext& launch, ggml_tensor* node);

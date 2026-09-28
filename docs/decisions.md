@@ -39,6 +39,69 @@ one Spark and on two.
 
 ---
 
+## D-092: A speculative verify runs a row-invariant plan: each row computes what its one-row decode step computes, bit for bit  (2026-09-28, status: accepted by the M3 speculation slice under the owner's overnight delegation, for review with it; specializes D-068's numerical contract for speculation and D-053's plan selection for verify chunks)
+
+**Decision.**
+- **What a verify must compute.** Greedy speculation returns exactly the
+  tokens, and each token exactly the logits, that plain one-token decoding
+  returns in the same engine (plan.md's M3 exit). A verify chunk of k + 1
+  rows therefore runs a *row-invariant plan*: every row's arithmetic is the
+  arithmetic of the one-row chunk at its position, and every state byte
+  its row writes is the byte that step writes.
+- **How.** Where a kernel's arithmetic follows the chunk's row count, the
+  verify's plan takes an implementation whose rows do not
+  (`DeviceChoices::row_invariant`, `Dsv4GraphOptions::row_invariant`):
+  - quantized products take `jitllm.mul_mat.mmvq_rows` and
+    `jitllm.mul_mat_id.mmvq_rows` (`mmvq_rows.cu`): GGML's MMVQ body with
+    the one-column launch's warps, rows per block, small-K and halved-K
+    choices for every column (a dense block still reads its weight rows
+    once for all columns; an expert product runs each token's one-token
+    launch over grid z). Upstream's kernel changes its warps with the
+    column count (on the GB10, 8 warps for one Q8_0/Q4_K/Q5_K/Q6_K column,
+    4 for two to four), so its multi-column sums differ in their last bits;
+  - float products take GGML's MMVF for up to 8 columns
+    (`jitllm.mul_mat.mmvf_rows`), where upstream would take MMF or cuBLAS;
+  - attention runs per query row, over views of its q and mask rows, and
+    the rows are concatenated (the MMA kernel's column tiles and stream-k
+    split follow the query rows);
+  - a verify never crosses a mask width its rows' one-row steps would not
+    (the window cells attention reads and the compressed rows each mask
+    spans are padded to 256): the draft is shortened to end before it
+    (`Dsv4SameWidths`, about one step in 64).
+  Every other operation's rows are independent of the chunk already
+  (norms, RoPE, elementwise, the indexer, top-k, the compressors' blocks).
+  A row-invariant plan takes no fusion (upstream's fused vector products
+  follow the column count; the planner refuses the pair). Prefill chunks
+  keep upstream's plan.
+- **Proof obligations.** Each row-invariant implementation equals GGML's
+  one-column (one-token) launch bit for bit on every weight type and
+  reduction length the models bring (`unit.SpecRowsTest.*`, GB10); a
+  verify's rows equal plain decoding's logits bit for bit on the model
+  (docs/experiments/dspark/).
+
+**Why.** D-068 allowed divergence when verify and decode plans differ
+numerically, and llama.cpp's own speculation is not bit-identical (its
+issue #25618). The owner's exit asks for bit-identity, which a batched
+verify only gives when its kernels are row-invariant. Running the k + 1
+rows as k + 1 decode steps would be exact but would read the dense weights
+(two thirds of DeepSeek's bytes a token) k + 1 times, losing the speed-up;
+patching GGML's MMVQ would change the source lock. A jitLLM-owned copy of
+MMVQ with the one-column launch's configuration reads the weights once and
+is exact by construction.
+
+**Consequences.** A verify's plan is its own plan identity (plans and
+graphs are keyed by chunk kind). Its products run MMVQ's one-column
+reduction width at up to 8 columns, slightly slower per column than
+upstream's multi-column launch (not isolated; the verify's time is
+measured with the whole step). A new weight type needs its row
+implementation before speculation runs on it (refused otherwise), and a
+new operation whose kernel configuration follows the row count needs a
+row-invariant form before it enters a verify.
+
+**Reopen if.** A row-invariant verify costs more than the speed-up
+speculation brings, a kernel family with no exact row-invariant form is
+needed, or the owner relaxes the exit to D-068's bounded divergence.
+
 ## D-091: Any permissive license may enter the core without a decision of its own; CUB is approved  (2026-09-28, status: accepted by the owner on 2026-09-28; amends D-017's core allowlist and D-002 where they require a license to be named before use; subsumes D-088's admission of Unicode-3.0)
 
 **Decision.** The owner, on 2026-09-28: "All permissive licenses are
@@ -226,6 +289,14 @@ drafter that reads its target's tables (DSpark) is expressed the same way,
 as a composition of the drafter's artifact and its target's, the drafter
 binding the shared tables from the target's artifact; that binding is
 settled with its import. The M5 C++ verifier gains the composition's rules.
+*DSpark's import (M3 speculation slice, 2026-09-28):* the drafter is its
+own v0 artifact (`dflash`, 10.89 GB) and binds its target's token table
+and output head at load (`model/dspark.h` `BindDspark`), reading the
+target artifact's resources, so the target's extents serve both and
+nothing is copied. No composition document is written for the pair yet:
+version 0 requires model_index.json, a diffusers file a drafter pair does
+not have; a drafter composition form comes with the installer's
+dependency tracking (M5).
 
 **Reopen if.** A component needs another artifact's resources at finer
 than artifact granularity in a way roles cannot express; the installer's

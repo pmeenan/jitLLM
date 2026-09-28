@@ -157,8 +157,17 @@ const Dsv4Profile& Dsv4Flash() {
 std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& p,
                                                  std::string_view architecture,
                                                  std::span<const Dsv4Resource> resources) {
-  if (architecture != "deepseek4") {
-    return Refused(std::format("the artifact's architecture is {}, not deepseek4", architecture));
+  return BindDsv4Roles(p, "deepseek4", architecture, true, resources, {});
+}
+
+std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& p,
+                                                      std::string_view want_architecture,
+                                                      std::string_view architecture, bool tables,
+                                                      std::span<const Dsv4Resource> resources,
+                                                      std::span<Dsv4ExtraRole> extra) {
+  if (architecture != want_architecture) {
+    return Refused(
+        std::format("the artifact's architecture is {}, not {}", architecture, want_architecture));
   }
   if (!ProfileIsSane(p)) {
     return Refused("the profile is not a DeepSeek V4 model's");
@@ -176,9 +185,14 @@ std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& p,
                     .expert_array = expert_array,
                     .into = into});
   };
-  add("token_embd.weight", Kind::kMatrix, {width, p.vocab}, &b.token_embd);
+  if (tables) {
+    add("token_embd.weight", Kind::kMatrix, {width, p.vocab}, &b.token_embd);
+    add("output.weight", Kind::kMatrix, {width, p.vocab}, &b.output);
+  }
+  for (Dsv4ExtraRole& e : extra) {
+    add(e.role, e.f32 ? Kind::kF32 : Kind::kMatrix, e.ne, e.into);
+  }
   add("output_norm.weight", Kind::kF32, {width}, &b.output_norm);
-  add("output.weight", Kind::kMatrix, {width, p.vocab}, &b.output);
   add("output_hc_fn.weight", Kind::kMatrix, {p.hc_width(), p.hc}, &b.hc_head_fn);
   add("output_hc_base.weight", Kind::kF32, {p.hc}, &b.hc_head_base);
   add("output_hc_scale.weight", Kind::kF32, {1}, &b.hc_head_scale);
@@ -282,6 +296,13 @@ std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& p,
 
 std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& profile,
                                                  const artifact::Artifact& artifact) {
+  return BindDsv4Roles(profile, "deepseek4", artifact, true, {});
+}
+
+std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& profile,
+                                                      std::string_view want_architecture,
+                                                      const artifact::Artifact& artifact,
+                                                      bool tables, std::span<Dsv4ExtraRole> extra) {
   std::vector<Dsv4Resource> all;
   all.reserve(artifact.resources().size() + artifact.expert_arrays().size());
   for (const artifact::Resource& resource : artifact.resources()) {
@@ -303,7 +324,8 @@ std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& profile,
                    .expert_array = true,
                    .count = array.count});
   }
-  auto bound = BindDsv4(profile, artifact.model().architecture, all);
+  auto bound =
+      BindDsv4Roles(profile, want_architecture, artifact.model().architecture, tables, all, extra);
   if (!bound) {
     return bound;
   }
@@ -342,7 +364,7 @@ std::int64_t Dsv4StateLayout::Find(std::uint32_t layer, Dsv4StateTensor::Kind ki
   return -1;
 }
 
-std::vector<StateRepresentation> Dsv4StateLayout::Representations() const {
+std::vector<StateRepresentation> Dsv4StateLayout::Representations(std::uint32_t max_verify) const {
   using K = Dsv4StateTensor::Kind;
   std::uint64_t window = 0;
   std::uint64_t caches = 0;
@@ -362,11 +384,14 @@ std::vector<StateRepresentation> Dsv4StateLayout::Representations() const {
         break;
     }
   }
-  const auto fixed = [](std::string name, std::uint64_t bytes) {
+  const std::uint8_t capabilities = max_verify == 0
+                                        ? static_cast<std::uint8_t>(StateCapability::kAppend)
+                                        : (StateCapability::kAppend | StateCapability::kTruncate);
+  const auto fixed = [capabilities](std::string name, std::uint64_t bytes) {
     return StateRepresentation{.name = std::move(name),
                                .block_positions = 0,
                                .block_bytes = Bytes(bytes),
-                               .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
+                               .capabilities = capabilities,
                                .max_snapshots = 0,
                                .snapshot_bytes = Bytes(0)};
   };
@@ -599,6 +624,115 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
   in.hca_mask = mask(in.hca);
   in.lid_mask = mask(in.lid);
   return in;
+}
+
+// ---------------------------------------------------------------- speculation
+
+namespace {
+
+// The widths Dsv4Chunk gives a chunk ending before `total`: the window
+// cells attention reads and each compressor's mask.
+struct Widths {
+  std::uint64_t raw = 0;
+  std::uint64_t csa = 0;
+  std::uint64_t hca = 0;
+  bool operator==(const Widths&) const = default;
+};
+
+Widths WidthsAt(const Dsv4StateLayout& state, std::uint64_t total) {
+  const std::uint64_t cells = state.raw_cells;
+  const auto comp = [&](std::uint32_t ratio) {
+    return std::max<std::uint64_t>(Pad(total / ratio, 256), 256);
+  };
+  return {.raw = std::min<std::uint64_t>(
+              cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))),
+          .csa = comp(kDsv4CsaRatio),
+          .hca = comp(kDsv4HcaRatio)};
+}
+
+}  // namespace
+
+bool Dsv4SameWidths(const Dsv4StateLayout& state, std::uint32_t n_past, std::uint32_t rows) {
+  if (rows == 0) {
+    return false;
+  }
+  // Each width grows with the position: equal at the first and last rows,
+  // equal at every row between.
+  return WidthsAt(state, std::uint64_t{n_past} + 1) ==
+         WidthsAt(state, std::uint64_t{n_past} + rows);
+}
+
+Dsv4Writes Dsv4ChunkWrites(const Dsv4Profile& profile, const Dsv4StateLayout& state,
+                           const Dsv4ChunkInputs& chunk) {
+  using K = Dsv4StateTensor::Kind;
+  Dsv4Writes out;
+  out.rows.resize(chunk.rows);
+  const auto tensor = [&](std::uint32_t layer, K kind) -> const Dsv4StateTensor* {
+    const std::int64_t i = state.Find(layer, kind);
+    return i < 0 ? nullptr : &state.tensors[static_cast<std::size_t>(i)];
+  };
+  const auto row_bytes = [](const Dsv4StateTensor& t) { return t.ne0 * (t.f16 ? 2U : 4U); };
+  const auto at = [&](const Dsv4StateTensor& t, std::uint64_t row) {
+    return StateRange{.offset = t.offset + (row * row_bytes(t)), .bytes = row_bytes(t)};
+  };
+  // A compressor's ring rows (by the chunk row that persists each) and its
+  // blocks' compressed rows (by the row completing each; the dummy's are
+  // scratch).
+  const auto compressor = [&](const Dsv4CompPlan& plan, const Dsv4StateTensor* kv,
+                              const Dsv4StateTensor* score, const Dsv4StateTensor* cache) {
+    for (std::size_t i = 0; i < plan.persist_src.size(); ++i) {
+      const auto src = static_cast<std::size_t>(plan.persist_src[i]);
+      const auto dst = static_cast<std::uint64_t>(plan.persist_dst[i]);
+      out.rows.at(src).push_back(at(*kv, dst));
+      out.rows.at(src).push_back(at(*score, dst));
+    }
+    for (std::size_t b = 0; b < plan.write_idxs.size(); ++b) {
+      const auto block = static_cast<std::uint64_t>(plan.write_idxs[b]);
+      const std::uint64_t last = (block * plan.ratio) + plan.ratio - 1;
+      const bool real = std::cmp_equal(plan.write_pos[b], block * plan.ratio) &&
+                        last >= chunk.n_past && last < std::uint64_t{chunk.n_past} + chunk.rows;
+      if (real) {
+        out.rows.at(last - chunk.n_past).push_back(at(*cache, block));
+      } else {
+        out.scratch.push_back(at(*cache, block));
+      }
+    }
+  };
+  for (std::uint32_t il = 0; il < profile.layers; ++il) {
+    const Dsv4StateTensor* raw = tensor(il, K::kRawK);
+    for (std::uint32_t i = 0; i < chunk.rows; ++i) {
+      out.rows[i].push_back(at(*raw, static_cast<std::uint64_t>(chunk.raw_cells[i])));
+    }
+    const std::uint32_t ratio = profile.compress_ratios[il];
+    if (ratio == kDsv4CsaRatio) {
+      compressor(chunk.csa, tensor(il, K::kCsaStateKv), tensor(il, K::kCsaStateScore),
+                 tensor(il, K::kCsaK));
+      compressor(chunk.lid, tensor(il, K::kLidStateKv), tensor(il, K::kLidStateScore),
+                 tensor(il, K::kLidK));
+    } else if (ratio == kDsv4HcaRatio) {
+      compressor(chunk.hca, tensor(il, K::kHcaStateKv), tensor(il, K::kHcaStateScore),
+                 tensor(il, K::kHcaK));
+    }
+  }
+  return out;
+}
+
+std::uint64_t Dsv4VerifySnapshotBytes(const Dsv4Profile& profile, const Dsv4StateLayout& state,
+                                      std::uint32_t max_rows) {
+  using K = Dsv4StateTensor::Kind;
+  // At most: every row writes its cell, its ring rows and a compressed row
+  // in every layer, and every compressed cache's scratch row is written.
+  std::uint64_t per_row = 0;
+  std::uint64_t scratch = 0;
+  for (const Dsv4StateTensor& t : state.tensors) {
+    const std::uint64_t row = t.ne0 * (t.f16 ? 2U : 4U);
+    per_row += row;
+    if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
+      scratch += row;
+    }
+  }
+  (void)profile;
+  return (per_row * max_rows) + scratch;
 }
 
 }  // namespace jitllm::model

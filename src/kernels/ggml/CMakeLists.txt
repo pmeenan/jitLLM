@@ -21,7 +21,8 @@
 #                        graphs (executor.h). CUDA builds only.
 #                        The M3 models' operations add their checks
 #                        (validate_ext.h) here and their implementations
-#                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, fattn_mma*.cu)
+#                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
+#                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
 add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
@@ -57,7 +58,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu
                                          cublas.cc executor.cc implementations.cc)
@@ -133,7 +134,7 @@ if(JITLLM_CUDA)
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
                    jitllm_ops.h launch.cu launch.h
-                   module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
+                   mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_graph.cc qwen38_graph.h
                    tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
@@ -176,7 +177,7 @@ if(JITLLM_CUDA)
   # (jitllm_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
   set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
-                              mul_mat_q.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
+                              mul_mat_q.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
                               PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

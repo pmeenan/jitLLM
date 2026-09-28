@@ -19,6 +19,15 @@
 //     llama.cpp looks them up on the CPU;
 //   - the indexer's Hadamard matrix is an input the transform never reads.
 //
+// Speculation (M3; docs/experiments/dspark/) adds, by option: a verify's
+// row-invariant plan (D-092: attention per query row; the planner picks
+// the row-invariant products); the target's features and their injection
+// into the DSpark drafter's ring after the logits (dflash.cpp's
+// feature capture and KV injection); and BuildDsparkGraph, the drafter's
+// own block (dflash.cpp graph_dsv4). Rollback is not llama.cpp's rollback
+// planes: the runner saves the bytes a verify writes and restores the
+// rejected rows' outside the graph (model/dsv4.h Dsv4ChunkWrites).
+//
 // Routed experts are 3D weights [k, n, experts] whose expert stride (nb[2])
 // is the caller's: the GGUF's packed stride, or the stride of the repacked
 // expert groups laid out at a uniform stride (the resident expert layout,
@@ -37,12 +46,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 
 namespace jitllm::kernels::ggml {
@@ -131,10 +142,45 @@ struct Dsv4LayerTensors {
   ggml_tensor* hca_state_score = nullptr;
 };
 
+// The DSpark drafter's part of a target chunk (model/dspark.h): the chunk's
+// features fused and projected into the drafter's KV ring, as llama.cpp's
+// draft-dspark decodes every target batch's features into its context
+// (common/speculative.cpp process, dflash.cpp graph_dsv4's embd batch).
+struct Dsv4Injection {
+  const model::DsparkProfile* profile = nullptr;
+  const model::DsparkBinding* binding = nullptr;
+  std::int64_t rows = 0;  // the chunk's last rows injected (model/dspark.h DsparkInject)
+  std::int64_t ring = 0;  // the drafter ring's cells
+};
+
+// The drafter's weights and ring a chunk's injection binds.
+struct DsparkInjectTensors {
+  ggml_tensor* cells = nullptr;  // I64 [injected rows]: each row's ring cell (an input)
+  ggml_tensor* fc = nullptr;
+  ggml_tensor* enc_norm = nullptr;
+  std::vector<ggml_tensor*> kv;       // per drafter block: wkv
+  std::vector<ggml_tensor*> kv_norm;  // per drafter block
+  std::vector<ggml_tensor*> ring;     // per drafter block: F16 [head, ring, 1]
+};
+
 struct Dsv4GraphOptions {
   // Each layer's routed-expert stride in bytes (nb[2] of the three expert
   // weights); 0 for the packed stride of one [k, n] slice.
-  std::vector<std::uint64_t> expert_stride;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated initializers may omit it
+  std::vector<std::uint64_t> expert_stride = {};
+  // A speculative verify (D-092): flash attention runs each query row
+  // alone, as its one-row chunk runs it, and the rows are concatenated;
+  // the plan's products are the row-invariant ones (graph_plan.h
+  // DeviceChoices::row_invariant). Every other operation's rows are
+  // independent of the chunk's already.
+  bool row_invariant = false;
+  // The layers whose inputs a drafter reads (DSpark's target layers; the
+  // layer count names the stream leaving the last layer): each's residual
+  // streams' mean, concatenated per row into Dsv4Graph::features.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated initializers may omit it
+  std::vector<std::uint32_t> features = {};
+  // With `features`, the drafter's KV injection in the same graph.
+  std::optional<Dsv4Injection> inject = std::nullopt;
 };
 
 struct Dsv4Graph {
@@ -153,7 +199,12 @@ struct Dsv4Graph {
   ggml_tensor* hc_head_fn = nullptr;
   ggml_tensor* hc_head_base = nullptr;
   ggml_tensor* hc_head_scale = nullptr;
-  ggml_tensor* logits = nullptr;    // F32 [vocab, rows]: the last node
+  ggml_tensor* logits = nullptr;  // F32 [vocab, rows]
+  // With options.features: F32 [width · features, rows], each row the
+  // listed layers' stream means in order (DSpark's fc input).
+  ggml_tensor* features = nullptr;
+  // With options.inject.
+  std::optional<DsparkInjectTensors> inject;
   std::vector<ggml_tensor*> nodes;  // GGML's order, views included
   // Intermediate tensors under llama.cpp's callback names ("l_last-7",
   // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...), for comparisons.
@@ -176,6 +227,42 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
                                                        const model::Dsv4Binding& binding,
                                                        const Dsv4ChunkShape& shape,
                                                        const Dsv4GraphOptions& options);
+
+// ---------------------------------------------------------------- DSpark
+
+// The DSpark drafter's draft block (model/dspark.h), as dflash.cpp's
+// graph_dsv4 builds its token batch: the block's rows embedded from the
+// target's table (an input, as for the target), through the drafter's
+// DeepSeek V4 blocks over its KV ring (each block's K written at its rows'
+// cells, then attention over the whole ring under the block's non-causal
+// window mask), its hyper-connection head and final norm, the target's
+// head, and the Markov head: slot i's logits plus markov_w2 · markov_w1[prev],
+// prev the anchor for slot 0 and slot i - 1's argmax after it. Each slot's
+// draft is its biased logits' argmax (llama.cpp's draft sampler, top-k 10
+// then the most probable, is that argmax).
+struct DsparkGraph {
+  Dsv4Graph core;  // embd, positions, raw_k_idxs (the ring cells) and raw_mask are inputs
+  ggml_tensor* tokens = nullptr;  // I32 [rows]: the block's tokens (the anchor first)
+  ggml_tensor* markov_w1 = nullptr;
+  ggml_tensor* markov_w2 = nullptr;
+  ggml_tensor* logits = nullptr;  // F32 [vocab, rows]: the Markov-biased slots
+  ggml_tensor* drafts = nullptr;  // I32 [rows]: the last node
+
+  // The host-built inputs, in the order they are copied.
+  std::vector<ggml_tensor*> inputs() const;
+};
+
+// How many tensors a draft block's graph creates at most.
+std::size_t DsparkGraphTensors(const model::DsparkProfile& profile, std::int64_t rows);
+
+// Builds a draft block of `rows` rows over a ring of `ring` cells. Refused
+// if the rows or ring are not the profile's, a weight type is not a GGML
+// type, or the arena lacks room.
+std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
+                                                           const model::DsparkProfile& profile,
+                                                           const model::DsparkBinding& binding,
+                                                           std::int64_t rows, std::int64_t ring,
+                                                           const Dsv4GraphOptions& options);
 
 // The GGML type of a type name, if GGML has one.
 std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name);

@@ -62,6 +62,25 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
                                                   const SamplingKey& key,
                                                   std::vector<SamplingCandidate>& scratch);
 
+// Speculative sampling's verdict on a token a greedy drafter proposed for
+// the position `key` names, whose draft distribution is therefore a point
+// mass (Leviathan et al., ICML 2023, and Chen et al. 2023, with q =
+// δ(draft)): accepted with the probability `params` give it; otherwise a
+// token drawn from that distribution without it, renormalized. Either way
+// the token is distributed as Sample's. The acceptance draws UniformAt with
+// the key's stream xor kAcceptStream, the replacement the key itself.
+// Temperature 0 accepts exactly the greedy token, and otherwise gives it.
+struct DraftVerdict {
+  bool accepted = false;
+  std::int32_t token = 0;  // the draft if accepted, else its replacement
+};
+inline constexpr std::uint64_t kAcceptStream = std::uint64_t{1} << 63U;
+std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> logits,
+                                                       std::int32_t draft,
+                                                       const SamplingParams& params,
+                                                       const SamplingKey& key,
+                                                       std::vector<SamplingCandidate>& scratch);
+
 // Philox4x32-10's block for a 128-bit counter and 64-bit key.
 std::array<std::uint32_t, 4> Philox4x32(std::array<std::uint32_t, 4> counter,
                                         std::array<std::uint32_t, 2> key);

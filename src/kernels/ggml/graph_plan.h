@@ -57,6 +57,13 @@ struct DeviceChoices {
   // ops_ext.h SelectMulMatQ: the family upstream routes a quantized
   // mul_mat or mul_mat_id to. Without it, quantized products are refused.
   std::function<std::expected<QuantMulMatPath, KernelFailure>(const ggml_tensor*)> quant;
+  // A speculative verify's plan (D-092): every matrix product of up to
+  // kRowsMaxColumns columns (tokens) runs a row-invariant implementation
+  // (the quantized ones jitllm.mul_mat*.mmvq_rows, the float ones MMVF),
+  // whatever upstream would route it to, so that each row equals the
+  // one-row plan's; a wider product is refused. Everything else as
+  // upstream.
+  bool row_invariant = false;
 };
 
 // One implementation's run over its nodes, in the order implementations.h
@@ -141,6 +148,14 @@ inline constexpr std::string_view kMoeCombineSortedName = "jitllm.moe.combine_so
 inline constexpr std::string_view kMoeGemvName = "jitllm.moe.gemv";
 inline constexpr std::string_view kGdnConvName = "jitllm.gdn.conv";
 inline constexpr std::string_view kGdnNormGateName = "jitllm.gdn.norm_gate";
+inline constexpr std::string_view kArgmaxName = "jitllm.argmax";
+// A speculative verify's row-invariant products (D-092; ops_ext.h).
+inline constexpr std::string_view kMulMatVecQRows = "jitllm.mul_mat.mmvq_rows";
+inline constexpr std::string_view kMulMatIdVecQRows = "jitllm.mul_mat_id.mmvq_rows";
+inline constexpr std::string_view kMulMatVecFRows = "jitllm.mul_mat.mmvf_rows";
+// The most columns (tokens) a row-invariant product takes (ops_ext.h
+// kRowsMaxColumns).
+inline constexpr std::int64_t kRowInvariantColumns = 8;
 
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);

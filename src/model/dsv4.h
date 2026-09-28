@@ -144,6 +144,31 @@ std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& profile,
 std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& profile,
                                                  const artifact::Artifact& artifact);
 
+// A role a binder asks of an artifact beside its DeepSeek V4 blocks' (the
+// DSpark drafter's, model/dspark.h).
+struct Dsv4ExtraRole {
+  std::string role;
+  bool f32 = false;  // F32, else a matrix type
+  std::vector<std::uint64_t> ne;
+  Dsv4Tensor* into = nullptr;
+};
+
+// BindDsv4's rules for an artifact of `architecture` whose stages are
+// DeepSeek V4 blocks: the profile's layers, its hyper-connection head and
+// final norm; with `tables` the token table and the head too; and every
+// `extra` role. Every role the artifact binds must be one of these.
+std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& profile,
+                                                      std::string_view want_architecture,
+                                                      std::string_view architecture, bool tables,
+                                                      std::span<const Dsv4Resource> resources,
+                                                      std::span<Dsv4ExtraRole> extra);
+// The same over a validated v0 artifact, its expert arrays indexed among
+// the artifact's.
+std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& profile,
+                                                      std::string_view want_architecture,
+                                                      const artifact::Artifact& artifact,
+                                                      bool tables, std::span<Dsv4ExtraRole> extra);
+
 // A hash-routed layer's token-to-expert table (ffn_gate_tid2eid, I32
 // [experts_used, vocab]) as the artifact holds it. Its entries are untrusted
 // data that the graph's get_rows and mul_mat_id kernels index device memory
@@ -203,11 +228,16 @@ struct Dsv4StateLayout {
 
   // The index of layer `layer`'s tensor of `kind`, or -1.
   std::int64_t Find(std::uint32_t layer, Dsv4StateTensor::Kind kind) const;
-  // The state as D-068 representations: the window ring and the compressor
-  // rings (each one fixed-size block, append only: rollback needs the
-  // snapshot planes a drafter brings), and the compressed and indexer caches
-  // (one fixed-size block sized for the context, append only).
-  std::vector<StateRepresentation> Representations() const;
+  // The state as D-068 representations: the window cache, the compressor
+  // rings and the compressed and indexer caches, each one fixed-size block
+  // sized for the context. Append only without speculation; with a
+  // speculative verify of up to `max_verify` rows (a DSpark drafter), each
+  // also truncates to any position at or above the committed prefix: a
+  // verify first saves every row it will write (Dsv4ChunkWrites), and a
+  // rejection restores the rejected positions' rows and the chunk's scratch
+  // rows from that snapshot, which is the request's working state
+  // (Dsv4VerifySnapshotBytes), not a representation's.
+  std::vector<StateRepresentation> Representations(std::uint32_t max_verify = 0) const;
 };
 
 // Refused if the context or chunk bound is zero, the context is past the
@@ -269,6 +299,43 @@ std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio,
                                                             std::uint32_t cache_rows,
                                                             std::uint32_t n_past,
                                                             std::uint32_t rows);
+
+// ---------------------------------------------------------------- speculation
+
+// A byte range of the state region.
+struct StateRange {
+  std::uint64_t offset = 0;
+  std::uint64_t bytes = 0;
+};
+
+// Every state byte a chunk writes, by what writes it (D-068 truncation for
+// a speculative verify): row i's own writes (its position's window cell in
+// every layer, the compressor ring rows its position persists, and the
+// compressed and indexer rows of the blocks its position completes), and
+// the chunk's scratch writes, whatever is accepted: the dummy blocks' rows
+// (each compressed cache's last row, always masked). A verify saves all of
+// them before it runs; after accepting rows [0, m], it restores rows m + 1
+// onwards and the scratch rows, which leaves exactly what a chunk of the
+// accepted rows alone would have left. Ranges are 256-byte aligned
+// multiples of 256 bytes, disjoint within a chunk of at most 8 rows (the
+// rings hold 8 and 128 positions).
+struct Dsv4Writes {
+  std::vector<std::vector<StateRange>> rows;
+  std::vector<StateRange> scratch;
+};
+Dsv4Writes Dsv4ChunkWrites(const Dsv4Profile& profile, const Dsv4StateLayout& state,
+                           const Dsv4ChunkInputs& chunk);
+// The bytes a verify of up to `max_rows` rows saves at most: the request's
+// rollback snapshot (D-068 working state).
+std::uint64_t Dsv4VerifySnapshotBytes(const Dsv4Profile& profile, const Dsv4StateLayout& state,
+                                      std::uint32_t max_rows);
+
+// Whether a verify of `rows` rows after `n_past` runs at every mask width a
+// one-row step of each of its positions would (the window cells attention
+// reads and the compressed rows each layer's mask spans are padded to 256):
+// only then can its rows equal those steps bit for bit (D-092). A draft
+// that would cross a width is shortened to end before it.
+bool Dsv4SameWidths(const Dsv4StateLayout& state, std::uint32_t n_past, std::uint32_t rows);
 
 inline constexpr std::uint16_t kHalfZero = 0x0000;
 inline constexpr std::uint16_t kHalfNegInf = 0xFC00;

@@ -691,8 +691,12 @@ one and removes it. The source must remain available (D-018).
   and decoder is settled as a composition ([above](#compositions), D-089).
   A speculative drafter that uses its target's embedding table is to be a
   composition of its own artifact and its target's, binding the shared
-  table from the target's artifact; how a drafter's binding names that
-  table is settled with DeepSeek V4's DSpark import. Stored MTP layers are
+  table from the target's artifact. DeepSeek V4's DSpark import settled
+  the binding: the drafter's own artifact holds no copy of the tables, and
+  at load it binds the target artifact's `token_embd.weight` and
+  `output.weight` by name (`model/dspark.h`); the composition document for
+  such a pair waits for a version without model_index.json (D-089).
+  Stored MTP layers are
   ordinary tensors in their checkpoints and group like any layer.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M4 entry, where each node

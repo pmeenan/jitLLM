@@ -92,20 +92,25 @@ std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits)
   return static_cast<std::int32_t>(best);
 }
 
-std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
-                                                  const SamplingParams& p, const SamplingKey& key,
-                                                  std::vector<SamplingCandidate>& scratch) {
+namespace {
+
+bool ParamsValid(const SamplingParams& p) {
   // NaN fails every comparison, so each range is checked for it too.
-  if (!std::isfinite(p.temperature) || p.temperature < 0 || std::isnan(p.top_p) || p.top_p <= 0 ||
-      p.top_p > 1 || std::isnan(p.min_p) || p.min_p < 0 || p.min_p > 1) {
-    return std::unexpected(SamplingError::kInvalidParams);
-  }
-  if (p.temperature == 0) {
-    return Greedy(logits);
-  }
-  if (auto c = CheckLogits(logits); !c) {
-    return std::unexpected(c.error());
-  }
+  return std::isfinite(p.temperature) && p.temperature >= 0 && !std::isnan(p.top_p) &&
+         p.top_p > 0 && p.top_p <= 1 && !std::isnan(p.min_p) && p.min_p >= 0 && p.min_p <= 1;
+}
+
+// What sampling draws from: `scratch`'s first `keep` candidates, in draw
+// order, each with its unnormalized weight, `total` their sum.
+struct Kept {
+  std::size_t keep = 0;
+  double total = 0;
+};
+
+// Temperature, top-k, softmax, min-p and top-p, in that order (p.temperature
+// above 0, the logits checked).
+Kept Distribution(std::span<const float> logits, const SamplingParams& p,
+                  std::vector<SamplingCandidate>& scratch) {
   scratch.clear();
   for (std::size_t i = 0; i < logits.size(); ++i) {
     if (std::isfinite(logits[i])) {
@@ -154,15 +159,81 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
     keep = n;
     total = cumulative;
   }
-  const double target = UniformAt(key) * total;
+  return {.keep = keep, .total = total};
+}
+
+// The candidate `u` (in [0, 1)) falls on, weights summing to `total`,
+// skipping `skip` (-1: none).
+std::int32_t Draw(const std::vector<SamplingCandidate>& scratch, Kept kept, double u,
+                  std::int32_t skip) {
+  const double target = u * kept.total;
   double cumulative = 0;
-  for (std::size_t i = 0; i < keep; ++i) {
+  std::int32_t last = scratch[0].id;
+  for (std::size_t i = 0; i < kept.keep; ++i) {
+    if (scratch[i].id == skip) {
+      continue;
+    }
+    last = scratch[i].id;
     cumulative += scratch[i].value;
     if (target < cumulative) {
       return scratch[i].id;
     }
   }
-  return scratch[keep - 1].id;
+  return last;
+}
+
+}  // namespace
+
+std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
+                                                  const SamplingParams& p, const SamplingKey& key,
+                                                  std::vector<SamplingCandidate>& scratch) {
+  if (!ParamsValid(p)) {
+    return std::unexpected(SamplingError::kInvalidParams);
+  }
+  if (p.temperature == 0) {
+    return Greedy(logits);
+  }
+  if (auto c = CheckLogits(logits); !c) {
+    return std::unexpected(c.error());
+  }
+  const Kept kept = Distribution(logits, p, scratch);
+  return Draw(scratch, kept, UniformAt(key), -1);
+}
+
+std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> logits,
+                                                       std::int32_t draft, const SamplingParams& p,
+                                                       const SamplingKey& key,
+                                                       std::vector<SamplingCandidate>& scratch) {
+  if (!ParamsValid(p)) {
+    return std::unexpected(SamplingError::kInvalidParams);
+  }
+  if (p.temperature == 0) {
+    auto greedy = Greedy(logits);
+    if (!greedy) {
+      return std::unexpected(greedy.error());
+    }
+    return DraftVerdict{.accepted = *greedy == draft, .token = *greedy};
+  }
+  if (auto c = CheckLogits(logits); !c) {
+    return std::unexpected(c.error());
+  }
+  const Kept kept = Distribution(logits, p, scratch);
+  double weight = 0;
+  for (std::size_t i = 0; i < kept.keep; ++i) {
+    if (scratch[i].id == draft) {
+      weight = scratch[i].value;
+    }
+  }
+  // Accepted with the draft's probability.
+  const SamplingKey accept{
+      .seed = key.seed, .stream = key.stream ^ kAcceptStream, .position = key.position};
+  if (weight > 0 && UniformAt(accept) * kept.total < weight) {
+    return DraftVerdict{.accepted = true, .token = draft};
+  }
+  // Rejected: the distribution without the draft, renormalized. (A draft
+  // holding all the weight is never rejected: its probability is 1.)
+  const Kept rest{.keep = kept.keep, .total = kept.total - weight};
+  return DraftVerdict{.accepted = false, .token = Draw(scratch, rest, UniformAt(key), draft)};
 }
 
 }  // namespace jitllm::execution

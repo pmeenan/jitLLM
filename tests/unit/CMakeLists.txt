@@ -278,6 +278,12 @@ add_executable(dsv4_test dsv4_test.cc)
 target_link_libraries(dsv4_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
+# graph (model/dspark.h; D-092).
+add_executable(dspark_test dspark_test.cc)
+target_link_libraries(dspark_test PRIVATE jitllm_ggml_tensors jitllm_model)
+jitllm_gtest(dspark_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The Qwen3.8 Flash Next adapter: binding, n-gram hash, state, chunk inputs
 # and QSA tables, and its chunk graph's plan and placement (model/qwen38.h,
 # kernels/ggml/qwen38_graph.h).
@@ -362,6 +368,15 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(qwen38_ops_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(qwen38_ops_test)
+
+  # A speculative verify's row-invariant products (D-092), the drafter's
+  # argmax and the snapshot's range copies, against GGML's own one-column
+  # launches bit for bit.
+  add_executable(spec_rows_test spec_rows_test.cc)
+  target_include_directories(spec_rows_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(spec_rows_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(spec_rows_test)
 
   # jitLLM's Qwen-Image kernels (kernels/image) against host references.
   add_executable(image_kernels_test image_kernels_test.cc)

@@ -147,6 +147,73 @@ __global__ void Nvfp4RowsKernel(const std::uint8_t* __restrict__ table, std::int
   *dst = ((code & 8) != 0 ? -magnitude : magnitude) * scale * global[0];
 }
 
+// The better of two (value, index) candidates: the higher value, the lower
+// index among equals, a NaN never (index -1 is no candidate).
+struct Best {
+  float value;
+  int index;
+};
+
+__device__ __forceinline__ Best Better(Best a, Best b) {
+  if (b.index < 0) {
+    return a;
+  }
+  if (a.index < 0) {
+    return b;
+  }
+  if (b.value > a.value || (b.value == a.value && b.index < a.index)) {
+    return b;
+  }
+  return a;
+}
+
+constexpr int kArgmaxThreads = 256;
+
+// One block a row. Each thread scans a strided part of the row, then the
+// block reduces; Better is commutative and associative over non-NaN
+// candidates, so the order of either step never changes the answer.
+__global__ void __launch_bounds__(kArgmaxThreads)
+    ArgmaxKernel(const float* __restrict__ x, std::int32_t* __restrict__ out, int n) {
+  const float* row = x + static_cast<std::int64_t>(blockIdx.x) * n;
+  Best best{0.0f, -1};
+  for (int i = static_cast<int>(threadIdx.x); i < n; i += kArgmaxThreads) {
+    const float v = row[i];
+    if (!isnan(v)) {
+      best = Better(best, Best{v, i});
+    }
+  }
+  __shared__ float values[kArgmaxThreads];
+  __shared__ int indices[kArgmaxThreads];
+  values[threadIdx.x] = best.value;
+  indices[threadIdx.x] = best.index;
+  __syncthreads();
+  for (int stride = kArgmaxThreads / 2; stride > 0; stride /= 2) {
+    if (static_cast<int>(threadIdx.x) < stride) {
+      const Best other{values[threadIdx.x + stride], indices[threadIdx.x + stride]};
+      best = Better(Best{values[threadIdx.x], indices[threadIdx.x]}, other);
+      values[threadIdx.x] = best.value;
+      indices[threadIdx.x] = best.index;
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    // A row of NaN gives 0, never -1: the index feeds unchecked row
+    // lookups (the Markov head's, the verify's embedding rows).
+    out[blockIdx.x] = indices[0] < 0 ? 0 : indices[0];
+  }
+}
+
+// One block a range, 16 bytes a thread per step.
+__global__ void CopyRangesKernel(const RangeCopy* __restrict__ ranges) {
+  const RangeCopy r = ranges[blockIdx.x];
+  const std::uint64_t vectors = r.bytes / 16;
+  const auto* from = reinterpret_cast<const uint4*>(r.from);  // NOLINT(performance-no-int-to-ptr)
+  auto* to = reinterpret_cast<uint4*>(r.to);                  // NOLINT(performance-no-int-to-ptr)
+  for (std::uint64_t v = threadIdx.x; v < vectors; v += blockDim.x) {
+    to[v] = from[v];
+  }
+}
+
 template <int kColumns>
 void LaunchGemv(const ggml_tensor* node, cudaStream_t stream) {
   const ggml_tensor* codes = node->src[0];
@@ -208,6 +275,40 @@ std::expected<void, KernelFailure> RunMxfp8Dequant(LaunchContext& launch, ggml_t
                   context.stream()>>>(static_cast<const std::uint8_t*>(node->src[0]->data),
                                       static_cast<const std::uint8_t*>(node->src[1]->data),
                                       static_cast<__nv_bfloat16*>(node->data), vectors);
+  });
+}
+
+std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckArgmax(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* x = node->src[0];
+    ArgmaxKernel<<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
+        static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
+        static_cast<int>(x->ne[0]));
+  });
+}
+
+std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
+                                              std::uint32_t count) {
+  if (count == 0) {
+    return {};
+  }
+  if (ranges == nullptr || count > kMaxRangeCopies) {
+    return std::unexpected(KernelFailure{.error = KernelError::kRejected,
+                                         .detail = "range copies: none given, or too many"});
+  }
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const RangeCopy& r = ranges[i];
+    if (r.from == 0 || r.to == 0 || r.from % 16 != 0 || r.to % 16 != 0 || r.bytes % 16 != 0) {
+      return std::unexpected(KernelFailure{
+          .error = KernelError::kRejected,
+          .detail = "range copies: every range 16-byte aligned, a multiple of 16 bytes"});
+    }
+  }
+  return launch.Run(base::Bytes(0), [ranges, count](ggml_backend_cuda_context& context) {
+    CopyRangesKernel<<<count, 256, 0, context.stream()>>>(ranges);
   });
 }
 

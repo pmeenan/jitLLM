@@ -54,6 +54,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = cublas->scratch;
     } else if (step.implementation == kMulMatVecQ || step.implementation == kMulMatIdVecQ) {
       planned = PlanMulMatVecQ(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatVecQRows || step.implementation == kMulMatIdVecQRows) {
+      planned = PlanMulMatVecQRows(launch, step.nodes.front());
     } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
       planned = PlanMulMatQ(launch, step.nodes.front());
     } else if (step.implementation == kTopKName) {

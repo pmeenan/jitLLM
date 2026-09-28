@@ -28,6 +28,24 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-033: GGML's MMVQ changes its launch with the column count, so a multi-token verify's rows differ in their last bits from one-token decoding  (2026-09-28, status: worked-around)
+
+`spark-b`, GB10, the pinned llama.cpp `b29c606e2`'s `mmvq.cu` as jitLLM
+builds it. `calc_nwarps` and `calc_rows_per_block` depend on `ncols_dst`:
+on the GB10's table one column of Q8_0, Q4_K, Q5_K or Q6_K runs 8 warps,
+two to four columns run 4, so each dot product's partial sums are
+reduced in a different order and a column of a 4-column product differs
+in the last bits from the same column run alone. Flash attention's MMA
+kernel tiles and splits by query rows too, and a float product above one
+column leaves MMVF for MMF or cuBLAS. A speculative verify of k + 1 rows
+through upstream's plan is therefore not bit-identical to k + 1 decode
+steps, one reason llama.cpp's own speculation is not (its issue #25618).
+Worked around by D-092's row-invariant plan
+(`mmvq_rows.cu`: MMVQ's body with the one-column launch for every
+column, attention per query row). Bites again: any new multi-row path
+expected to equal one-row decoding, and any comparison of llama.cpp's
+speculative and plain outputs.
+
 ## RE-032: GGML's ssm_conv reads up to 31 floats past its window when the tokens exceed 32 and are not a multiple of 32  (2026-09-28, status: worked-around)
 
 Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s `ssm-conv.cu` under

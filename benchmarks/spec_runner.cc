@@ -1,0 +1,1330 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// M3's speculation harness (docs/plan.md, "Speculative decoding in the
+// core" and the exit's "Speculation correctness";
+// docs/experiments/dspark/README.md): DeepSeek V4 Flash with its DSpark
+// drafter on one paged node (dsv4_runner.h), greedy and sampled
+// speculation, the forced-rejection checks and speed. A harness binary: it
+// links the native tokenizer and chat renderer, which production binaries
+// may not until D-088 is accepted.
+//
+//   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
+//                      --check greedy|forced|swap|sampled-plain|sampled-spec
+//                      [--tokens N] [--context N] [--graphs on|off] [--draft N]
+//                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
+//                      [--seeds N] [--sampled FILE]
+//
+// Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
+// rendered by the native DeepSeek V4 renderer and tokenized by the native
+// tokenizer from the target artifact's GGUF metadata; the `capital` chat
+// prompt's IDs must equal those the llama.cpp reference recorded
+// (reference-deepseek-v4-flash-0731-llamacpp.json, beside the prompts).
+//
+// - greedy: for the decode prompts (`prose`, `code`) and the chat prompts,
+//   plain greedy decoding (one-row chunks, decode graphs on) against greedy
+//   speculation (the drafter's blocks, row-invariant verifies): every
+//   generated token, and the logits it was chosen from, bit for bit; the
+//   prefill with the drafter's injection gives the plain prefill's logits
+//   bit for bit. Decode speed, acceptance (accepted ÷ drafted) and tokens
+//   per verify, per prompt, the speculative run three times.
+// - forced: rejections forced at chosen draft positions (all-reject, then
+//   each partial acceptance, and at the rows that complete a CSA or an HCA
+//   compressor block): after each verify's rollback the whole state (every
+//   state tensor, and the drafter's ring) is hashed, and a control that
+//   drafted exactly the accepted tokens must hash the same at every step;
+//   the tokens and logits equal plain greedy decoding's.
+// - swap: forced rejections, then A swapped out (the FP16 fixture as B)
+//   and back with its state spilled and restored, and speculation
+//   continued: tokens, logits and the state's hashes equal the unswapped
+//   run's; B's logits equal --fp16-expect.
+// - sampled-plain, sampled-spec: seeded sampling (temperature 1), plain or
+//   speculative (execution/sampling.h VerifyDraft), for 4 prompts, --seeds
+//   seeds and the first 8 generated tokens; each prompt's token counts to
+//   --out/sampled-<mode>.json. With --sampled FILE (the other mode's), the
+//   total-variation distance over each prompt's 16 most frequent tokens
+//   plus "other" (the exit's bound: 0.1).
+//
+// Exit 1 on any failed check; spec.json in --out has every number.
+
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <expected>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <optional>
+#include <print>
+#include <span>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "base/bytes.h"
+#include "base/json.h"
+#include "base/sha256.h"
+#include "catalog/catalog.h"
+#include "chat/chat.h"
+#include "dsv4_common.h"
+#include "dsv4_runner.h"
+#include "execution/sampling.h"
+#include "fp16_runner.h"
+#include "model/dsv4.h"
+#include "paged_node.h"
+#include "paged_programs.h"
+#include "scheduler/scheduler.h"
+#include "tokenizer/gguf.h"
+#include "tokenizer/tokenizer.h"
+
+namespace {
+
+namespace ts = jitllm::test_support;
+namespace jb = jitllm::benchmarks;
+namespace md = jitllm::model;
+namespace ex = jitllm::execution;
+using jitllm::base::Bytes;
+using Clock = std::chrono::steady_clock;
+using Status = ts::Status;
+
+constexpr int kDsv4 = 0;  // owner and stream
+constexpr int kFp16 = 1;
+constexpr std::uint32_t kSampledTokens = 8;
+constexpr std::size_t kHistogramTop = 16;
+constexpr double kTvBound = 0.1;
+
+std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
+
+double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
+
+std::uint64_t MemAvailable() {
+  std::ifstream file("/proc/meminfo");
+  std::string key;
+  std::uint64_t value = 0;
+  std::string unit;
+  while (file >> key >> value) {
+    std::getline(file, unit);
+    if (key == "MemAvailable:") {
+      return value * 1024;
+    }
+  }
+  return 0;
+}
+
+// The lowest MemAvailable seen while it runs, sampled every 50 ms.
+class MemorySampler {
+ public:
+  MemorySampler() : low_(MemAvailable()), thread_([this] { Loop(); }) {}
+  MemorySampler(const MemorySampler&) = delete;
+  MemorySampler& operator=(const MemorySampler&) = delete;
+  MemorySampler(MemorySampler&&) = delete;
+  MemorySampler& operator=(MemorySampler&&) = delete;
+  ~MemorySampler() {
+    stop_ = true;
+    thread_.join();
+  }
+  std::uint64_t low() const { return low_.load(); }
+
+ private:
+  void Loop() {
+    while (!stop_) {
+      const std::uint64_t now = MemAvailable();
+      std::uint64_t seen = low_.load();
+      while (now < seen && !low_.compare_exchange_weak(seen, now)) {
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  std::atomic<std::uint64_t> low_;
+  std::atomic<bool> stop_{false};
+  std::thread thread_;
+};
+
+bool SameBits(std::span<const float> a, std::span<const float> b) {
+  return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size_bytes()) == 0;
+}
+
+// FNV-1a over 64-bit words (and the tail's bytes): a fingerprint of state
+// bytes, for comparing two runs' states without keeping either.
+std::uint64_t Fingerprint(std::span<const std::byte> bytes) {
+  std::uint64_t h = 0xcbf29ce484222325ULL;
+  const std::size_t words = bytes.size() / 8;
+  for (std::size_t i = 0; i < words; ++i) {
+    std::uint64_t w = 0;
+    std::memcpy(&w, bytes.data() + (i * 8), 8);
+    h = (h ^ w) * 0x100000001b3ULL;
+  }
+  for (std::size_t i = words * 8; i < bytes.size(); ++i) {
+    h = (h ^ static_cast<std::uint64_t>(bytes[i])) * 0x100000001b3ULL;
+  }
+  return h;
+}
+
+struct Options {
+  jb::Dsv4Options dsv4;
+  jb::Fp16Options fp16;
+  std::filesystem::path out;
+  std::filesystem::path prompts;
+  std::string check;
+  std::uint32_t tokens = 256;
+  std::string fp16_expect;
+  std::uint32_t seeds = 256;
+  std::filesystem::path sampled;
+  std::string only;  // greedy: this prompt alone
+};
+
+struct Prompt {
+  std::string id;
+  std::vector<std::int32_t> ids;
+};
+
+// One speculative step's record.
+struct Step {
+  std::uint32_t pos = 0;     // the anchor's position
+  std::uint32_t rows = 0;    // the verify's rows
+  std::uint32_t kept = 0;    // rows kept: the anchor and the accepted drafts
+  std::int32_t forced = -1;  // the draft position forced wrong, or -1
+  std::vector<std::int32_t> drafts;
+  std::vector<std::uint64_t> state;  // fingerprints after the rollback (forced checks)
+};
+
+// A generation: the tokens after the prompt (the first from the prefill)
+// and the logits each was chosen from (the first's: the prefill's last row).
+struct Generation {
+  std::vector<std::int32_t> tokens;
+  std::vector<std::vector<float>> logits;
+  std::vector<Step> steps;
+  std::uint64_t drafted = 0;
+  std::uint64_t accepted = 0;
+  std::uint64_t verifies = 0;
+  double decode_seconds = 0;  // after the first token
+  double draft_seconds = 0;   // in Draft
+  double verify_seconds = 0;  // in the verifies' Chunk
+};
+
+// How a speculative run chooses its drafts.
+struct Forcing {
+  // Per step: the draft position made wrong (-1: none).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated initializers name it
+  std::function<std::int32_t(std::size_t step, std::uint32_t pos, std::uint32_t rows)> wrong = {};
+  // A control: per step, exactly these drafts (the other run's accepted).
+  const std::vector<Step>* control = nullptr;
+  bool fingerprint = false;
+  // Stop after this many steps, whatever the tokens left.
+  std::size_t max_steps = SIZE_MAX;
+};
+
+class Harness {
+ public:
+  explicit Harness(const Options& options)
+      : o_(options),
+        node_({.compute_streams = 2,
+               .slots = ts::kPagedSlots,
+               .inline_lanes = false,
+               .coalesce = false,
+               .copy_lane = true,
+               .slot_bytes = jb::kSlabSlotBytes,
+               .observer = nullptr}),
+        dsv4_(node_, o_.dsv4, kDsv4, kDsv4),
+        fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_) {}
+
+  Status Run();
+  Status TearDown() {
+    std::vector<ts::PagedModel*> models = {&dsv4_};
+    if (with_fp16()) {
+      models.push_back(&fp16_);
+    }
+    return node_.TearDown(models);
+  }
+
+ private:
+  bool with_fp16() const { return !o_.fp16.artifact.empty(); }
+  Status Tokenize();
+  Status Prefill(const Prompt& prompt, bool inject, std::vector<float>& last);
+  Status Plain(const Prompt& prompt, std::uint32_t count, Generation& out);
+  // Speculation from a prefilled prompt, until `count` tokens.
+  Status Speculate(const Prompt& prompt, std::uint32_t count, const std::vector<float>& first,
+                   const Forcing& forcing, Generation& out,
+                   const ex::SamplingParams* sampling = nullptr, std::uint64_t seed = 0);
+  Status Judge(Step& step, const std::vector<float>& logits, std::uint32_t& pos,
+               std::int32_t& anchor, const ex::SamplingParams* sampling, std::uint64_t seed,
+               std::vector<ex::SamplingCandidate>& scratch, Generation& out);
+  Status Fingerprints(std::vector<std::uint64_t>& out);
+  Status Greedy();
+  Status Forced();
+  Status Swap();
+  Status Sampled(bool speculative);
+  Status Compare(const Generation& plain, const Generation& spec, std::string_view what);
+  Status SwapOut();
+  Status SwapIn();
+  Status Write();
+
+  const Options& o_;
+  std::string record_;
+  MemorySampler memory_;
+  std::uint64_t available_before_ = MemAvailable();
+  ts::PagedNode node_;
+  jb::Dsv4Runner dsv4_;
+  jb::Fp16Runner fp16_;
+  std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
+  std::vector<Prompt> decode_;
+  std::vector<Prompt> chat_;
+  std::vector<std::vector<float>> fp16_results_;
+  std::vector<std::string> results_;  // JSON objects
+  std::vector<std::string> problems_;
+  double load_seconds_ = 0;
+};
+
+// ------------------------------------------------------------------ prompts
+
+std::expected<std::string, std::string> ReadFile(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return Error(std::format("cannot read {}", path.string()));
+  }
+  return std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+Status Harness::Tokenize() {
+  // The tokenizer from the target artifact's GGUF metadata (import rule 7).
+  std::filesystem::path meta;
+  for (const auto& entry : std::filesystem::directory_iterator(o_.dsv4.artifact / "meta")) {
+    if (entry.path().filename().string().contains("00001-of")) {
+      meta = entry.path();
+    }
+  }
+  auto header = ReadFile(meta);
+  if (!header) {
+    return std::unexpected(header.error());
+  }
+  auto read = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*header)));
+  if (!read) {
+    return Error(std::format("{}: {}", meta.string(), read.error().ToString()));
+  }
+  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(read->spec));
+  if (!tokenizer) {
+    return Error(tokenizer.error().ToString());
+  }
+  tokenizer_ = std::make_unique<jitllm::tokenizer::Tokenizer>(std::move(*tokenizer));
+  auto text = ReadFile(o_.prompts);
+  if (!text) {
+    return std::unexpected(text.error());
+  }
+  auto doc = jitllm::base::json::Parse(*text);
+  if (!doc) {
+    return Error(std::format("{} is not JSON", o_.prompts.string()));
+  }
+  const auto render = [&](jitllm::base::json::Value entry) -> std::expected<Prompt, std::string> {
+    Prompt p;
+    const auto id = entry.find("id");
+    const auto messages = entry.find("messages");
+    if (!id || !messages || !messages->is_array()) {
+      return Error("a prompt without an id or messages");
+    }
+    p.id = std::string(id->string());
+    jitllm::chat::Conversation c;
+    // As llama-server's /apply-template rendered the baselines' prompts: its
+    // default turns the template's thinking on (the generation prompt ends
+    // in <think>).
+    c.enable_thinking = true;
+    for (std::size_t i = 0; i < messages->size(); ++i) {
+      const auto content = messages->at(i).find("content");
+      c.messages.push_back({.role = jitllm::chat::Role::kUser,
+                            .content = std::string(content ? content->string() : ""),
+                            .reasoning_content = std::nullopt,
+                            .tool_calls = {}});
+    }
+    auto rendered = jitllm::chat::RenderDeepSeekV4(c);
+    if (!rendered) {
+      return Error(rendered.error().ToString());
+    }
+    std::vector<jitllm::tokenizer::TokenId> ids;
+    if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids); !r) {
+      return Error(r.error().ToString());
+    }
+    p.ids.assign(ids.begin(), ids.end());
+    return p;
+  };
+  for (const auto& [key, into] :
+       std::initializer_list<std::pair<std::string_view, std::vector<Prompt>*>>{
+           {"decode", &decode_}, {"chat", &chat_}}) {
+    const auto list = doc->root().find(key);
+    if (!list || !list->is_array()) {
+      return Error(std::format("{} has no {} prompts", o_.prompts.string(), key));
+    }
+    for (std::size_t i = 0; i < list->size(); ++i) {
+      auto p = render(list->at(i));
+      if (!p) {
+        return std::unexpected(p.error());
+      }
+      into->push_back(std::move(*p));
+    }
+  }
+  // The renderer and tokenizer against llama.cpp's own IDs for `capital`.
+  const std::filesystem::path reference =
+      o_.prompts.parent_path() / "reference-deepseek-v4-flash-0731-llamacpp.json";
+  if (auto ref = ReadFile(reference); ref) {
+    if (auto rdoc = jitllm::base::json::Parse(*ref); rdoc) {
+      const auto prompts = rdoc->root().find("prompts");
+      for (std::size_t i = 0; prompts && i < prompts->size(); ++i) {
+        const auto entry = prompts->at(i);
+        const auto id = entry.find("id");
+        const auto ids = entry.find("prompt_token_ids");
+        if (!id || !ids) {
+          continue;
+        }
+        for (const Prompt& p : chat_) {
+          if (p.id != id->string()) {
+            continue;
+          }
+          std::vector<std::int32_t> want;
+          want.reserve(ids->size());
+          for (std::size_t k = 0; k < ids->size(); ++k) {
+            want.push_back(static_cast<std::int32_t>(ids->at(k).int64().value_or(-1)));
+          }
+          if (want != p.ids) {
+            std::string ours;
+            std::string theirs;
+            for (const std::int32_t t : p.ids) {
+              ours += std::format(" {}", t);
+            }
+            for (const std::int32_t t : want) {
+              theirs += std::format(" {}", t);
+            }
+            problems_.push_back(std::format(
+                "prompt {}: the native IDs [{}] differ from llama.cpp's [{}]", p.id, ours, theirs));
+          }
+        }
+      }
+    }
+  } else {
+    problems_.push_back(std::format("no reference IDs at {}", reference.string()));
+  }
+  return {};
+}
+
+// ------------------------------------------------------------------ runs
+
+Status Harness::Prefill(const Prompt& prompt, bool inject, std::vector<float>& last) {
+  if (auto r = dsv4_.Clear(); !r) {
+    return r;
+  }
+  const std::uint32_t rows = o_.dsv4.max_rows;
+  for (std::uint32_t at = 0; at < prompt.ids.size(); at += rows) {
+    const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(rows, prompt.ids.size() - at));
+    if (auto r = dsv4_.Chunk(at, std::span(prompt.ids).subspan(at, n), last, {},
+                             inject ? jb::Dsv4ChunkKind::kInject : jb::Dsv4ChunkKind::kPlain);
+        !r) {
+      return Error(std::format("{}'s prefill at {}: {}", prompt.id, at, r.error()));
+    }
+  }
+  return {};
+}
+
+Status Harness::Plain(const Prompt& prompt, std::uint32_t count, Generation& out) {
+  std::vector<float> last;
+  if (auto r = Prefill(prompt, false, last); !r) {
+    return r;
+  }
+  out.tokens = {jb::Argmax(last)};
+  out.logits = {last};
+  auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+  const auto start = Clock::now();
+  while (out.tokens.size() < count) {
+    std::vector<float> row;
+    const std::int32_t token = out.tokens.back();
+    if (auto r = dsv4_.Chunk(pos, std::span(&token, 1), row); !r) {
+      return r;
+    }
+    ++pos;
+    out.tokens.push_back(jb::Argmax(row));
+    out.logits.push_back(std::move(row));
+  }
+  out.decode_seconds = Seconds(Clock::now() - start);
+  return {};
+}
+
+Status Harness::Fingerprints(std::vector<std::uint64_t>& out) {
+  if (auto r = dsv4_.Rollback(); !r) {
+    return r;
+  }
+  std::vector<std::byte> target;
+  std::vector<std::byte> ring;
+  if (auto r = dsv4_.ReadState(target, ring); !r) {
+    return r;
+  }
+  out.clear();
+  for (const md::Dsv4StateTensor& t : dsv4_.state_layout().tensors) {
+    out.push_back(Fingerprint(std::span(target).subspan(t.offset, t.bytes)));
+  }
+  out.push_back(Fingerprint(ring));
+  return {};
+}
+
+// A verify's verdict: accept drafts while the target agrees (greedy) or its
+// speculative sampling accepts them; the first disagreement, or the row
+// after the last draft, gives the next token. Then the rows kept, the
+// tokens, their logits, the counts, and the next position and anchor.
+Status Harness::Judge(Step& step, const std::vector<float>& logits, std::uint32_t& pos,
+                      std::int32_t& anchor, const ex::SamplingParams* sampling, std::uint64_t seed,
+                      std::vector<ex::SamplingCandidate>& scratch, Generation& out) {
+  const std::uint32_t vocab = dsv4_.vocab();
+  const std::uint32_t rows = step.rows;
+  const auto row = [&](std::uint32_t i) {
+    return std::span<const float>(logits).subspan(std::size_t{i} * vocab, vocab);
+  };
+  std::uint32_t m = 0;
+  std::int32_t next = -1;
+  for (; m < rows - 1; ++m) {
+    if (sampling == nullptr) {
+      const std::int32_t want = jb::Argmax(row(m));
+      if (want != step.drafts[m]) {
+        next = want;
+        break;
+      }
+    } else {
+      auto verdict = ex::VerifyDraft(row(m), step.drafts[m], *sampling,
+                                     {.seed = seed, .stream = 0, .position = pos + m + 1}, scratch);
+      if (!verdict) {
+        return Error("a draft's verdict");
+      }
+      if (!verdict->accepted) {
+        next = verdict->token;
+        break;
+      }
+    }
+  }
+  if (next < 0) {
+    if (sampling == nullptr) {
+      next = jb::Argmax(row(m));
+    } else {
+      auto t = ex::Sample(row(m), *sampling, {.seed = seed, .stream = 0, .position = pos + m + 1},
+                          scratch);
+      if (!t) {
+        return Error("a sample");
+      }
+      next = *t;
+    }
+  }
+  step.kept = m + 1;
+  if (auto r = dsv4_.Accept(step.kept); !r) {
+    return r;
+  }
+  for (std::uint32_t i = 0; i <= m; ++i) {
+    out.tokens.push_back(i < m ? step.drafts[i] : next);
+    out.logits.emplace_back(row(i).begin(), row(i).end());
+  }
+  out.drafted += rows - 1;
+  out.accepted += m;
+  ++out.verifies;
+  pos += m + 1;
+  anchor = next;
+  return {};
+}
+
+Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
+                          const std::vector<float>& first, const Forcing& forcing, Generation& out,
+                          const ex::SamplingParams* sampling, std::uint64_t seed) {
+  std::vector<ex::SamplingCandidate> scratch;
+  auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+  const std::uint32_t vocab = dsv4_.vocab();
+  const auto choose = [&](std::span<const float> row, std::uint32_t at) -> std::int32_t {
+    if (sampling == nullptr) {
+      return jb::Argmax(row);
+    }
+    auto t = ex::Sample(row, *sampling, {.seed = seed, .stream = 0, .position = at}, scratch);
+    return t.value_or(-1);
+  };
+  out.tokens = {choose(first, pos)};
+  out.logits = {first};
+  std::int32_t anchor = out.tokens.back();
+  const auto start = Clock::now();
+  while (out.tokens.size() < count && out.steps.size() < forcing.max_steps) {
+    Step step;
+    step.pos = pos;
+    const std::size_t index = out.steps.size();
+    const auto left = static_cast<std::uint32_t>(count - out.tokens.size());
+    // Unforced, the draft and its verify run as one job (DraftVerify).
+    if (!forcing.wrong && forcing.control == nullptr) {
+      auto rows = std::min<std::uint32_t>(
+          {o_.dsv4.draft_rows + 1, o_.dsv4.max_verify, left, o_.dsv4.context - pos});
+      while (rows > 1 && !md::Dsv4SameWidths(dsv4_.state_layout(), pos, rows)) {
+        --rows;
+      }
+      step.rows = rows;
+      std::vector<float> logits;
+      const auto verifying = Clock::now();
+      if (auto r = dsv4_.DraftVerify(pos, anchor, rows, step.drafts, logits); !r) {
+        return r;
+      }
+      out.verify_seconds += Seconds(Clock::now() - verifying);
+      step.drafts.resize(rows - 1);
+      if (auto r = Judge(step, logits, pos, anchor, sampling, seed, scratch, out); !r) {
+        return r;
+      }
+      if (forcing.fingerprint) {
+        if (auto r = Fingerprints(step.state); !r) {
+          return r;
+        }
+      }
+      out.steps.push_back(std::move(step));
+      continue;
+    }
+    const auto drafting = Clock::now();
+    if (auto r = dsv4_.Draft(pos, anchor, step.drafts); !r) {
+      return r;
+    }
+    out.draft_seconds += Seconds(Clock::now() - drafting);
+    if (forcing.control != nullptr) {
+      if (index >= forcing.control->size()) {
+        return Error("the control ran past the run it follows");
+      }
+      const Step& other = (*forcing.control)[index];
+      step.drafts.assign(other.drafts.begin(), other.drafts.begin() + (other.kept - 1));
+    }
+    // The verify: the anchor and its drafts, within the tokens left, the
+    // verify's bound, the context and the steps' mask widths (D-092).
+    auto rows = std::min<std::uint32_t>({static_cast<std::uint32_t>(step.drafts.size()) + 1,
+                                         o_.dsv4.max_verify, left, o_.dsv4.context - pos});
+    while (rows > 1 && !md::Dsv4SameWidths(dsv4_.state_layout(), pos, rows)) {
+      --rows;
+    }
+    step.rows = rows;
+    step.drafts.resize(rows - 1);
+    if (forcing.wrong) {
+      step.forced = forcing.wrong(index, pos, rows);
+      if (step.forced >= 0 && std::cmp_less(step.forced, step.drafts.size())) {
+        auto& d = step.drafts[static_cast<std::size_t>(step.forced)];
+        d = static_cast<std::int32_t>((static_cast<std::uint32_t>(d) + 1) % vocab);
+      } else {
+        step.forced = -1;
+      }
+    }
+    std::vector<std::int32_t> input = {anchor};
+    input.insert(input.end(), step.drafts.begin(), step.drafts.end());
+    std::vector<float> logits;
+    const auto verifying = Clock::now();
+    if (auto r = dsv4_.Chunk(pos, input, logits, {}, jb::Dsv4ChunkKind::kVerify); !r) {
+      return r;
+    }
+    out.verify_seconds += Seconds(Clock::now() - verifying);
+    if (auto r = Judge(step, logits, pos, anchor, sampling, seed, scratch, out); !r) {
+      return r;
+    }
+    if (forcing.fingerprint) {
+      if (auto r = Fingerprints(step.state); !r) {
+        return r;
+      }
+    }
+    out.steps.push_back(std::move(step));
+  }
+  if (auto r = dsv4_.Rollback(); !r) {
+    return r;
+  }
+  out.decode_seconds = Seconds(Clock::now() - start);
+  return {};
+}
+
+Status Harness::Compare(const Generation& plain, const Generation& spec, std::string_view what) {
+  std::size_t tokens = 0;
+  std::size_t logits = 0;
+  std::optional<std::size_t> first;
+  for (std::size_t i = 0; i < std::min(plain.tokens.size(), spec.tokens.size()); ++i) {
+    const bool token_differs = plain.tokens[i] != spec.tokens[i];
+    const bool logits_differ = !SameBits(plain.logits[i], spec.logits[i]);
+    tokens += token_differs ? 1 : 0;
+    logits += logits_differ ? 1 : 0;
+    if ((token_differs || logits_differ) && !first) {
+      first = i;
+    }
+  }
+  if (plain.tokens.size() != spec.tokens.size() || tokens != 0 || logits != 0) {
+    problems_.push_back(std::format(
+        "{}: {} of {} tokens and {} logits rows differ from plain greedy decoding's (first at {})",
+        what, tokens, plain.tokens.size(), logits, first.value_or(0)));
+  }
+  return {};
+}
+
+// ------------------------------------------------------------------ checks
+
+Status Harness::Greedy() {
+  // The chained draft-verify looks the drafts' embedding rows up on the
+  // device: every token's row must equal the host's lookup bit for bit.
+  const auto embedding_start = Clock::now();
+  auto embedding = dsv4_.CheckDeviceEmbedding();
+  if (!embedding) {
+    problems_.push_back(std::format("the device's embedding lookup: {}", embedding.error()));
+  } else {
+    const double seconds = Seconds(Clock::now() - embedding_start);
+    std::println("device embedding lookup: {} tokens' rows equal the host's ({:.1f} s)", *embedding,
+                 seconds);
+    results_.push_back(std::format(R"({{"check":"device_embedding","tokens":{},"seconds":{:.3f}}})",
+                                   *embedding, seconds));
+  }
+  std::vector<Prompt> prompts = decode_;
+  prompts.insert(prompts.end(), chat_.begin(), chat_.end());
+  if (!o_.only.empty()) {
+    std::erase_if(prompts, [&](const Prompt& p) { return p.id != o_.only; });
+  }
+  for (const Prompt& prompt : prompts) {
+    const bool decode =
+        std::ranges::any_of(decode_, [&](const Prompt& p) { return p.id == prompt.id; });
+    const std::uint32_t count = decode ? o_.tokens : std::min<std::uint32_t>(o_.tokens, 32);
+    Generation plain;
+    if (auto r = Plain(prompt, count, plain); !r) {
+      return r;
+    }
+    const std::size_t repeats = decode ? 3 : 1;
+    std::vector<double> rates;
+    Generation spec;
+    for (std::size_t k = 0; k < repeats; ++k) {
+      std::vector<float> first;
+      if (auto r = Prefill(prompt, true, first); !r) {
+        return r;
+      }
+      if (!SameBits(first, plain.logits.front())) {
+        problems_.push_back(std::format(
+            "{}: the prefill with the injection differs from the plain prefill", prompt.id));
+      }
+      spec = {};
+      if (auto r = Speculate(prompt, count, first, {}, spec); !r) {
+        return r;
+      }
+      if (auto r = Compare(plain, spec, prompt.id); !r) {
+        return r;
+      }
+      rates.push_back(static_cast<double>(count - 1) / spec.decode_seconds);
+    }
+    std::string text;
+    if (auto decoded = tokenizer_->Decode(
+            std::vector<jitllm::tokenizer::TokenId>(spec.tokens.begin(), spec.tokens.end()), {},
+            text);
+        !decoded) {
+      text = "(not decodable)";
+    }
+    const double plain_rate = static_cast<double>(count - 1) / plain.decode_seconds;
+    const double acceptance =
+        spec.drafted > 0 ? static_cast<double>(spec.accepted) / static_cast<double>(spec.drafted)
+                         : 0.0;
+    std::string rates_json;
+    for (const double r : rates) {
+      rates_json += std::format("{}{:.3f}", rates_json.empty() ? "" : ",", r);
+    }
+    const double per_step_ms = 1000.0 / static_cast<double>(spec.verifies);
+    std::println(
+        "{}: {} prompt tokens, {} generated; plain {:.2f} tok/s, speculative [{}] "
+        "tok/s; acceptance {:.3f} ({} of {}), {:.2f} tokens a verify; a step: draft "
+        "{:.2f} ms, verify {:.2f} ms, of {:.2f} ms",
+        prompt.id, prompt.ids.size(), count, plain_rate, rates_json, acceptance, spec.accepted,
+        spec.drafted, static_cast<double>(count - 1) / static_cast<double>(spec.verifies),
+        spec.draft_seconds * per_step_ms, spec.verify_seconds * per_step_ms,
+        spec.decode_seconds * per_step_ms);
+    std::string escaped;
+    jitllm::base::json::AppendQuoted(text.substr(0, 160), escaped);
+    results_.push_back(std::format(
+        R"({{"check":"greedy","prompt":"{}","prompt_tokens":{},"generated":{},"plain_tok_s":{:.3f},)"
+        R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},"verifies":{},)"
+        R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},)"
+        R"("draft_path":{{"eager":{},"captured":{},"replayed":{}}},"text":{}}})",
+        prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
+        acceptance, spec.verifies, spec.draft_seconds * per_step_ms,
+        spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms,
+        dsv4_.draft_stats().eager, dsv4_.draft_stats().captured, dsv4_.draft_stats().replayed,
+        escaped));
+  }
+  return {};
+}
+
+// Forced rejections: all-reject, each partial acceptance, and wherever a
+// verify's rows reach the row completing a compressor block (a CSA block
+// every 4 positions, an HCA block every 128), the rejection placed on that
+// row or before it, so that its compressed row is written and restored.
+Status Harness::Forced() {
+  const Prompt& prompt = chat_.front();
+  const std::uint32_t count = o_.tokens;
+  Generation plain;
+  if (auto r = Plain(prompt, count, plain); !r) {
+    return r;
+  }
+  std::map<std::string, std::uint64_t> covered;
+  const auto wrong = [&](std::size_t step, std::uint32_t pos, std::uint32_t rows) -> std::int32_t {
+    if (rows < 2) {
+      return -1;
+    }
+    // An HCA block completes at a rejected row when one ends in the rows.
+    for (std::uint32_t i = 1; i < rows; ++i) {
+      if ((pos + i + 1) % md::kDsv4HcaRatio == 0) {
+        ++covered["hca block rejected"];
+        return static_cast<std::int32_t>(i - 1);
+      }
+    }
+    switch (step % 6) {
+      case 0:
+        ++covered["all rejected"];
+        return 0;
+      case 1:
+        ++covered["one accepted"];
+        return 1;
+      case 2:
+        ++covered["two accepted"];
+        return 2;
+      case 3:
+        return -1;  // as drafted
+      default: {
+        // A CSA block's row rejected: the first row completing one.
+        for (std::uint32_t i = 1; i < rows; ++i) {
+          if ((pos + i + 1) % md::kDsv4CsaRatio == 0) {
+            ++covered["csa block rejected"];
+            return static_cast<std::int32_t>(i - 1);
+          }
+        }
+        return 0;
+      }
+    }
+  };
+  std::vector<float> first;
+  if (auto r = Prefill(prompt, true, first); !r) {
+    return r;
+  }
+  Generation spec;
+  if (auto r = Speculate(prompt, count, first, {.wrong = wrong, .fingerprint = true}, spec); !r) {
+    return r;
+  }
+  if (auto r = Compare(plain, spec, "forced rejections"); !r) {
+    return r;
+  }
+  // The control: the same steps, each drafting exactly what the forced run
+  // accepted.
+  if (auto r = Prefill(prompt, true, first); !r) {
+    return r;
+  }
+  Generation control;
+  if (auto r =
+          Speculate(prompt, count, first, {.control = &spec.steps, .fingerprint = true}, control);
+      !r) {
+    return r;
+  }
+  if (auto r = Compare(plain, control, "the forced run's control"); !r) {
+    return r;
+  }
+  std::size_t differing = 0;
+  std::size_t rejected = 0;
+  std::string first_difference;
+  for (std::size_t s = 0; s < spec.steps.size() && s < control.steps.size(); ++s) {
+    const Step& a = spec.steps[s];
+    const Step& b = control.steps[s];
+    rejected += a.kept < a.rows ? 1 : 0;
+    if (a.state != b.state || a.pos != b.pos || a.kept != b.kept) {
+      if (differing++ == 0) {
+        for (std::size_t t = 0; t < a.state.size() && t < b.state.size(); ++t) {
+          if (a.state[t] != b.state[t]) {
+            first_difference = t < dsv4_.state_layout().tensors.size()
+                                   ? std::format("state tensor {} (layer {})", t,
+                                                 dsv4_.state_layout().tensors[t].layer)
+                                   : std::string("the drafter's ring");
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (spec.steps.size() != control.steps.size() || differing != 0) {
+    problems_.push_back(
+        std::format("forced: {} of {} steps' states differ from the control's (first: {})",
+                    differing, spec.steps.size(), first_difference));
+  }
+  std::string steps_json;
+  for (const Step& s : spec.steps) {
+    steps_json += std::format("{}[{},{},{},{}]", steps_json.empty() ? "" : ",", s.pos, s.rows,
+                              s.kept, s.forced);
+  }
+  std::string covered_json;
+  for (const auto& [what, n] : covered) {
+    covered_json += std::format("{}\"{}\":{}", covered_json.empty() ? "" : ",", what, n);
+  }
+  std::println(
+      "forced: {} steps, {} with rejected rows, {} states differing from the control; "
+      "covered {}",
+      spec.steps.size(), rejected, differing, covered_json);
+  results_.push_back(std::format(
+      R"({{"check":"forced","prompt":"{}","generated":{},"steps":{},"rejected_steps":{},)"
+      R"("state_differs":{},"covered":{{{}}},"pos_rows_kept_forced":[{}]}})",
+      prompt.id, count, spec.steps.size(), rejected, differing, covered_json, steps_json));
+  return {};
+}
+
+Status Harness::SwapOut() {
+  std::vector<jitllm::catalog::ExtentId> out = dsv4_.state();
+  const auto weights = dsv4_.weights();
+  out.insert(out.end(), weights.begin(), weights.end());
+  ts::SwapReport report;
+  if (auto r = node_.Swap(std::move(out), fp16_.everything(), true, report); !r) {
+    return r;
+  }
+  std::vector<float>& result = fp16_results_.emplace_back();
+  if (auto r = fp16_.Evaluate(1, result); !r) {
+    return r;
+  }
+  jitllm::base::Sha256 hash;
+  hash.Update(std::as_bytes(std::span(result)));
+  const std::string digest = jitllm::base::ToHex(hash.Finish());
+  if (!o_.fp16_expect.empty() && digest != o_.fp16_expect) {
+    problems_.push_back(std::format("B's logits {} differ from {}", digest, o_.fp16_expect));
+  }
+  return {};
+}
+
+Status Harness::SwapIn() {
+  ts::SwapReport report;
+  if (auto r = node_.Swap(fp16_.weights(), dsv4_.everything(), true, report); !r) {
+    return r;
+  }
+  if (auto r = dsv4_.CheckHashRouting(); !r) {
+    return r;
+  }
+  return dsv4_.CheckPlaces();
+}
+
+// Rollback composes with swap: forced rejections, A out and back after a
+// rejected step, and speculation continued; against the same run unswapped.
+Status Harness::Swap() {
+  if (!with_fp16()) {
+    return Error("the swap check needs the FP16 fixture");
+  }
+  const Prompt& prompt = chat_.front();
+  const std::uint32_t count = o_.tokens;
+  const auto wrong = [](std::size_t step, std::uint32_t, std::uint32_t) -> std::int32_t {
+    return static_cast<std::int32_t>(step % 3);
+  };
+  // The unswapped run.
+  std::vector<float> first;
+  if (auto r = Prefill(prompt, true, first); !r) {
+    return r;
+  }
+  Generation control;
+  if (auto r = Speculate(prompt, count, first, {.wrong = wrong, .fingerprint = true}, control);
+      !r) {
+    return r;
+  }
+  // The swapped run: the same, with A swapped out after the first half of
+  // its steps (the last of which rejected rows) and back.
+  if (auto r = Prefill(prompt, true, first); !r) {
+    return r;
+  }
+  std::size_t steps = control.steps.size() / 2;
+  while (steps > 1 && control.steps[steps - 1].kept == control.steps[steps - 1].rows) {
+    --steps;  // end on a step that rejected rows
+  }
+  Generation before;
+  if (auto r = Speculate(prompt, count, first,
+                         {.wrong = wrong, .fingerprint = true, .max_steps = steps}, before);
+      !r) {
+    return r;
+  }
+  const bool rejected =
+      !before.steps.empty() && before.steps.back().kept < before.steps.back().rows;
+  if (auto r = SwapOut(); !r) {
+    return r;
+  }
+  if (auto r = SwapIn(); !r) {
+    return r;
+  }
+  // Continue from where the first half ended: the prompt and the tokens so
+  // far are the context; the last token is the anchor.
+  Prompt rest = prompt;
+  rest.ids.insert(rest.ids.end(), before.tokens.begin(), before.tokens.end() - 1);
+  const std::size_t done = before.steps.size();
+  Generation after;
+  {
+    // Speculate continues from the anchor at the context's end; its first
+    // token is the first half's last, whose logits it takes as given.
+    std::vector<float> anchor_logits = before.logits.back();
+    const auto wrong_after = [&](std::size_t step, std::uint32_t pos, std::uint32_t rows) {
+      return wrong(step + done, pos, rows);
+    };
+    const auto remaining = static_cast<std::uint32_t>(count - before.tokens.size() + 1);
+    if (auto r = Speculate(rest, remaining, anchor_logits,
+                           {.wrong = wrong_after, .fingerprint = true}, after);
+        !r) {
+      return r;
+    }
+  }
+  Generation swapped = before;
+  swapped.tokens.insert(swapped.tokens.end(), after.tokens.begin() + 1, after.tokens.end());
+  swapped.logits.insert(swapped.logits.end(), after.logits.begin() + 1, after.logits.end());
+  swapped.steps.insert(swapped.steps.end(), after.steps.begin(), after.steps.end());
+  if (auto r = Compare(control, swapped, "resumed after a swap"); !r) {
+    return r;
+  }
+  std::size_t differing = 0;
+  for (std::size_t s = 0; s < control.steps.size() && s < swapped.steps.size(); ++s) {
+    differing += control.steps[s].state != swapped.steps[s].state ? 1 : 0;
+  }
+  if (control.steps.size() != swapped.steps.size() || differing != 0) {
+    problems_.push_back(std::format("swap: {} of {} steps' states differ from the unswapped run's",
+                                    differing, control.steps.size()));
+  }
+  std::println("swap: A out and back after step {} ({}), {} steps compared, {} states differ", done,
+               rejected ? "rows rejected" : "all accepted", control.steps.size(), differing);
+  results_.push_back(
+      std::format(R"({{"check":"swap","prompt":"{}","generated":{},"swapped_after_step":{},)"
+                  R"("last_step_rejected":{},"steps":{},"state_differs":{},"draft_replayed":{}}})",
+                  prompt.id, count, done, rejected ? "true" : "false", control.steps.size(),
+                  differing, dsv4_.draft_stats().replayed));
+  if (!rejected) {
+    problems_.emplace_back("swap: the step before the swap rejected no rows");
+  }
+  return {};
+}
+
+// Seeded sampling, plain or speculative: each prompt's token counts over
+// --seeds seeds and the first 8 generated tokens.
+Status Harness::Sampled(bool speculative) {
+  const ex::SamplingParams params{.temperature = 1.0F, .top_k = 0, .top_p = 1.0F, .min_p = 0.0F};
+  std::vector<Prompt> prompts(
+      chat_.begin(),
+      chat_.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(4, chat_.size())));
+  std::string json;
+  std::vector<std::map<std::int32_t, std::uint64_t>> counts(prompts.size());
+  const auto start = Clock::now();
+  std::vector<ex::SamplingCandidate> scratch;
+  for (std::size_t p = 0; p < prompts.size(); ++p) {
+    const Prompt& prompt = prompts[p];
+    for (std::uint64_t seed = 0; seed < o_.seeds; ++seed) {
+      std::vector<float> first;
+      if (auto r = Prefill(prompt, speculative, first); !r) {
+        return r;
+      }
+      Generation g;
+      if (speculative) {
+        if (auto r = Speculate(prompt, kSampledTokens, first, {}, g, &params, seed); !r) {
+          return r;
+        }
+      } else {
+        auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+        auto token =
+            ex::Sample(first, params, {.seed = seed, .stream = 0, .position = pos}, scratch);
+        g.tokens = {token.value_or(-1)};
+        while (g.tokens.size() < kSampledTokens) {
+          std::vector<float> row;
+          const std::int32_t input = g.tokens.back();
+          if (auto r = dsv4_.Chunk(pos, std::span(&input, 1), row); !r) {
+            return r;
+          }
+          ++pos;
+          token = ex::Sample(row, params, {.seed = seed, .stream = 0, .position = pos}, scratch);
+          g.tokens.push_back(token.value_or(-1));
+        }
+      }
+      for (const std::int32_t t : g.tokens) {
+        ++counts[p][t];
+      }
+    }
+    std::string entries;
+    for (const auto& [token, n] : counts[p]) {
+      entries += std::format("{}[{},{}]", entries.empty() ? "" : ",", token, n);
+    }
+    json += std::format(R"({}{{"prompt":"{}","counts":[{}]}})", json.empty() ? "" : ",", prompt.id,
+                        entries);
+    std::println("{} {}: {} seeds, {} distinct tokens, {:.1f} s so far",
+                 speculative ? "speculative" : "plain", prompt.id, o_.seeds, counts[p].size(),
+                 Seconds(Clock::now() - start));
+  }
+  const double seconds = Seconds(Clock::now() - start);
+  const std::string mode = speculative ? "spec" : "plain";
+  std::ofstream(o_.out / std::format("sampled-{}.json", mode))
+      << std::format(R"({{"mode":"{}","seeds":{},"tokens":{},"seconds":{:.1f},"prompts":[{}]}})",
+                     mode, o_.seeds, kSampledTokens, seconds, json)
+      << '\n';
+  results_.push_back(std::format(R"({{"check":"sampled-{}","seeds":{},"seconds":{:.1f}}})", mode,
+                                 o_.seeds, seconds));
+  if (o_.sampled.empty()) {
+    return {};
+  }
+  // Against the other mode's counts: each prompt's histogram over its 16
+  // most frequent tokens (in this mode's and the other's pooled counts)
+  // plus "other".
+  auto other_text = ReadFile(o_.sampled);
+  if (!other_text) {
+    return std::unexpected(other_text.error());
+  }
+  auto other = jitllm::base::json::Parse(*other_text);
+  if (!other) {
+    return Error(std::format("{} is not JSON", o_.sampled.string()));
+  }
+  const auto list = other->root().find("prompts");
+  std::string tv_json;
+  for (std::size_t p = 0; list && p < list->size() && p < prompts.size(); ++p) {
+    std::map<std::int32_t, std::uint64_t> theirs;
+    const auto entries = list->at(p).find("counts");
+    for (std::size_t k = 0; entries && k < entries->size(); ++k) {
+      theirs[static_cast<std::int32_t>(entries->at(k).at(0).int64().value_or(-1))] =
+          static_cast<std::uint64_t>(entries->at(k).at(1).int64().value_or(0));
+    }
+    std::map<std::int32_t, std::uint64_t> pooled = counts[p];
+    std::uint64_t ours_total = 0;
+    std::uint64_t theirs_total = 0;
+    for (const auto& [t, n] : counts[p]) {
+      ours_total += n;
+    }
+    for (const auto& [t, n] : theirs) {
+      pooled[t] += n;
+      theirs_total += n;
+    }
+    std::vector<std::pair<std::uint64_t, std::int32_t>> order;
+    order.reserve(pooled.size());
+    for (const auto& [t, n] : pooled) {
+      order.emplace_back(n, t);
+    }
+    std::ranges::sort(order, [](const auto& a, const auto& b) {
+      return a.first > b.first || (a.first == b.first && a.second < b.second);
+    });
+    double tv = 0;
+    double other_ours = 1;
+    double other_theirs = 1;
+    for (std::size_t k = 0; k < std::min(kHistogramTop, order.size()); ++k) {
+      const std::int32_t t = order[k].second;
+      const double a = static_cast<double>(counts[p].contains(t) ? counts[p][t] : 0) /
+                       static_cast<double>(ours_total);
+      const double b = static_cast<double>(theirs.contains(t) ? theirs[t] : 0) /
+                       static_cast<double>(theirs_total);
+      tv += std::abs(a - b);
+      other_ours -= a;
+      other_theirs -= b;
+    }
+    tv = 0.5 * (tv + std::abs(other_ours - other_theirs));
+    tv_json += std::format(R"({}{{"prompt":"{}","tv":{:.4f}}})", tv_json.empty() ? "" : ",",
+                           prompts[p].id, tv);
+    std::println("{}: total variation {:.4f} (bound {})", prompts[p].id, tv, kTvBound);
+    if (tv > kTvBound) {
+      problems_.push_back(
+          std::format("{}: total variation {:.4f} over {}", prompts[p].id, tv, kTvBound));
+    }
+  }
+  results_.push_back(std::format(R"({{"check":"sampled-tv","against":"{}","prompts":[{}]}})",
+                                 o_.sampled.string(), tv_json));
+  return {};
+}
+
+// ------------------------------------------------------------------ run
+
+Status Harness::Run() {
+  if (auto r = Tokenize(); !r) {
+    return r;
+  }
+  if (auto r = node_.Open(); !r) {
+    return r;
+  }
+  if (auto r = dsv4_.Setup(); !r) {
+    return r;
+  }
+  if (with_fp16()) {
+    if (auto r = fp16_.Setup(); !r) {
+      return r;
+    }
+  }
+  if (auto r = node_.MapWorkspace(std::max(dsv4_.activations_needed(), fp16_.activations_needed()),
+                                  std::max(dsv4_.pool_needed(), fp16_.pool_needed()));
+      !r) {
+    return r;
+  }
+  const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  const std::uint64_t budget =
+      fixed +
+      ((dsv4_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
+  if (auto r = node_.Start(Bytes(budget)); !r) {
+    return r;
+  }
+  if (auto r = dsv4_.Register(); !r) {
+    return r;
+  }
+  if (with_fp16()) {
+    if (auto r = fp16_.Register(); !r) {
+      return r;
+    }
+  }
+  if (auto r = dsv4_.Bind(); !r) {
+    return r;
+  }
+  if (with_fp16()) {
+    if (auto r = fp16_.Bind(); !r) {
+      return r;
+    }
+  }
+  node_.Run();
+  std::vector<ts::LoadStats> log;
+  const auto start = Clock::now();
+  if (auto r = node_.Load(dsv4_.weights(), "A's first load", log); !r) {
+    return r;
+  }
+  load_seconds_ = Seconds(Clock::now() - start);
+  std::println("loaded: {} bytes ({} the drafter's) in {:.2f} s", dsv4_.weight_read_bytes(),
+               dsv4_.drafter_read_bytes(), load_seconds_);
+  if (auto r = dsv4_.CheckHashRouting(); !r) {
+    return r;
+  }
+  Status checked;
+  if (o_.check == "greedy") {
+    checked = Greedy();
+  } else if (o_.check == "forced") {
+    checked = Forced();
+  } else if (o_.check == "swap") {
+    checked = Swap();
+  } else if (o_.check == "sampled-plain") {
+    checked = Sampled(false);
+  } else if (o_.check == "sampled-spec") {
+    checked = Sampled(true);
+  } else {
+    checked = Error(std::format("no check {}", o_.check));
+  }
+  if (!checked) {
+    return checked;
+  }
+  if (dsv4_.coverage_violations() != 0) {
+    problems_.push_back(
+        std::format("{} bound tensors outside cataloged extents of their class; "
+                    "first {}",
+                    dsv4_.coverage_violations(), dsv4_.first_violation()));
+  }
+  return Write();
+}
+
+Status Harness::Write() {
+  std::string all;
+  for (const std::string& r : results_) {
+    all += (all.empty() ? "" : ",") + r;
+  }
+  std::string problems;
+  for (const std::string& p : problems_) {
+    std::string quoted;
+    jitllm::base::json::AppendQuoted(p, quoted);
+    problems += (problems.empty() ? "" : ",") + quoted;
+  }
+  const std::uint64_t drop = available_before_ - std::min(available_before_, memory_.low());
+  std::ofstream(o_.out / "spec.json")
+      << std::format(
+             R"({{"check":"{}","load_seconds":{:.2f},"read_bytes":{},"drafter_read_bytes":{},)"
+             R"("peak_memavailable_drop_bytes":{},"graphs":{{"eager":{},"captured":{},"replayed":{},)"
+             R"("refused":{}}},"results":[{}],"problems":[{}]}})",
+             o_.check, load_seconds_, dsv4_.weight_read_bytes(), dsv4_.drafter_read_bytes(), drop,
+             dsv4_.graph_stats().eager, dsv4_.graph_stats().captured, dsv4_.graph_stats().replayed,
+             dsv4_.graph_stats().refused, all, problems)
+      << '\n';
+  std::println("peak MemAvailable drop: {:.2f} GiB", static_cast<double>(drop) / (1U << 30U));
+  if (!problems_.empty()) {
+    std::string joined;
+    for (const std::string& p : problems_) {
+      joined += (joined.empty() ? "" : "; ") + p;
+    }
+    return Error(joined);
+  }
+  return {};
+}
+
+std::expected<Options, std::string> Parse(std::span<char*> args) {
+  Options o;
+  o.fp16.trajectory = "control";
+  o.fp16.fusion = true;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const std::string_view a = args[i];
+    if (i + 1 >= args.size()) {
+      return Error(std::format("{} needs a value", a));
+    }
+    const std::string_view v = args[++i];
+    const auto number = [&](auto& into) -> bool {
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage): bounded by its end
+      const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), into);
+      return ec == std::errc() && end == v.data() + v.size();
+    };
+    bool ok = true;
+    if (a == "--dsv4-artifact") {
+      o.dsv4.artifact = v;
+    } else if (a == "--drafter") {
+      o.dsv4.drafter = v;
+    } else if (a == "--prompts") {
+      o.prompts = v;
+    } else if (a == "--out") {
+      o.out = v;
+    } else if (a == "--check") {
+      o.check = v;
+    } else if (a == "--tokens") {
+      ok = number(o.tokens) && o.tokens >= 2;
+    } else if (a == "--context") {
+      ok = number(o.dsv4.context);
+    } else if (a == "--graphs") {
+      o.dsv4.graphs = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--draft") {
+      ok = number(o.dsv4.draft_rows) && o.dsv4.draft_rows >= 1;
+      o.dsv4.max_verify = o.dsv4.draft_rows + 1;
+    } else if (a == "--fp16-artifact") {
+      o.fp16.artifact = v;
+    } else if (a == "--fp16-tokens") {
+      o.fp16.tokens = v;
+    } else if (a == "--fp16-expect") {
+      o.fp16_expect = v;
+    } else if (a == "--seeds") {
+      ok = number(o.seeds) && o.seeds >= 1;
+    } else if (a == "--sampled") {
+      o.sampled = v;
+    } else if (a == "--only") {
+      o.only = v;
+    } else {
+      return Error(std::format("unknown argument {}", a));
+    }
+    if (!ok) {
+      return Error(std::format("{} does not take {}", a, v));
+    }
+  }
+  if (o.dsv4.artifact.empty() || o.dsv4.drafter.empty() || o.prompts.empty() || o.out.empty() ||
+      o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty())) {
+    return Error(
+        "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
+        "--check greedy|forced|swap|sampled-plain|sampled-spec [--tokens N] [--context N] "
+        "[--graphs on|off] [--draft N] [--fp16-artifact DIR --fp16-tokens FILE "
+        "--fp16-expect SHA256] [--seeds N] [--sampled FILE]");
+  }
+  std::filesystem::create_directories(o.out);
+  o.dsv4.out = o.out / "dsv4";
+  o.fp16.out = o.out / "fp16";
+  return o;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const auto options = Parse(std::span(argv, static_cast<std::size_t>(argc)));
+  if (!options) {
+    std::println(stderr, "{}", options.error());
+    return 2;
+  }
+  Status ran;
+  {
+    Harness harness(*options);
+    ran = harness.Run();
+    if (auto finished = harness.TearDown(); !finished && ran) {
+      ran = finished;
+    }
+  }
+  if (!ran) {
+    std::println(stderr, "FAILED: {}", ran.error());
+    return 1;
+  }
+  std::println("DONE {}", options->out.string());
+  return 0;
+}

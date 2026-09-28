@@ -420,6 +420,22 @@ it appears.
       keep only the accepted prefix, and forced draft rejection for the
       exit's speculation checks (moved from M9). Every published Mia and
       TensorFold decode number uses speculation.
+      *DeepSeek's DSpark landed* ([dspark](experiments/dspark/README.md),
+      D-092): the drafter its own artifact, binding the target's token
+      table and head; its KV ring a D-068 representation; a verify of the
+      anchor and 3 drafts on a row-invariant plan, so greedy speculation is
+      bit-identical to greedy decoding; rollback by restoring the bytes a
+      verify saved; draft and verify one job, both replayed as graphs.
+      All four speculation checks pass on `spark-b`: greedy bit-identical
+      (8 prompts), forced rejections equal to their control state by state
+      (91 steps), rollback across a swap, and sampled speculation (total
+      variation 0.0005–0.027, bound 0.1; plain sampling's run took 10.6
+      min at a host load of 16–20, over D-085's 10). Decode 27.9 / 29.3
+      tok/s on `prose` / `code` against llama.cpp's 30.8 / 31.9 with the
+      same drafter (0.91× / 0.92× on the medians, a narrow pass: one
+      `prose` repeat of three was 0.87×; acceptance 0.55 / 0.58), peak
+      memory equal (104.7 GiB). Open: Qwen3.8's MTP layer, and the
+      verify's device time.
 - [ ] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
       page-in through the landing zone overlapping the rest. Creating and
@@ -589,7 +605,8 @@ it appears.
   delegation; the owner may amend):* one
   artifact per component and a composition naming them by ID; the
   pipeline is imported that way, and a drafter is to be a composition with
-  its target, its binding settled with the DSpark import.
+  its target. DSpark's binding is settled: its own artifact, binding the
+  target artifact's token table and head at load (D-089's note).
 
 ## M4 — Two-Spark fast full swap  `pending`
 

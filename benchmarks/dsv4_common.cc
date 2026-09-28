@@ -99,25 +99,93 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
   }
 }
 
+namespace {
+
+// Places a graph's computed tensors as PlanDsv4Chunk describes: first every
+// computed tensor at its own address, then in `activations` by that plan,
+// planned again, which must give the same plan.
+template <typename Planned>
+std::expected<void, std::string> PlaceAndPlan(Planned& out, std::span<ggml_tensor* const> nodes,
+                                              std::span<ggml_tensor* const> inputs,
+                                              std::span<ggml_tensor* const> keep,
+                                              const kg::DeviceChoices& choices,
+                                              std::uint64_t activations,
+                                              std::uint64_t activation_bytes) {
+  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
+  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
+  for (ggml_tensor* input : inputs) {
+    kg::TensorArena::Bind(input, leaf);
+    leaf += Round(ggml_nbytes(input), 256) + 256;
+  }
+  kg::BindDistinct(nodes, kDistinct);
+  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices);
+  if (!first) {
+    return Error(first.error().detail);
+  }
+  auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, keep);
+  if (!placement) {
+    return Error(placement.error().detail);
+  }
+  out.placement = std::move(*placement);
+  for (ggml_tensor* input : inputs) {
+    out.inputs_bytes += ggml_nbytes(input);
+  }
+  if (activations == 0) {
+    out.plan = std::move(*first);
+    return {};
+  }
+  if (out.placement.extent > activation_bytes) {
+    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
+                             out.placement.extent, activation_bytes));
+  }
+  for (const auto& [tensor, offset] : out.placement.offsets) {
+    kg::TensorArena::Bind(tensor, activations + offset);
+  }
+  kg::BindViews(nodes);
+  auto second = kg::PlanGraph(nodes, false, choices);
+  if (!second) {
+    return Error(second.error().detail);
+  }
+  if (!kg::SamePlan(*first, *second)) {
+    return Error("the plan changed once the activations were placed");
+  }
+  out.plan = std::move(*second);
+  return {};
+}
+
+}  // namespace
+
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
-    std::uint64_t activation_bytes) {
+    std::uint64_t activation_bytes, const Dsv4Speculation& speculation) {
   auto out = std::make_unique<Dsv4Planned>();
   auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(*m.profile));
   if (!arena) {
     return Error(arena.error().detail);
   }
   out->arena.emplace(std::move(*arena));
-  auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape,
-                                  {.expert_stride = m.places.stride});
+  kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
+                               .row_invariant = speculation.verify};
+  if (const DsparkModel* d = speculation.drafter; d != nullptr) {
+    options.features = d->profile->target_layers;
+    options.inject = kg::Dsv4Injection{.profile = d->profile,
+                                       .binding = d->binding,
+                                       .rows = speculation.inject_rows,
+                                       .ring = d->state->ring};
+  }
+  auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape, options);
   if (!graph) {
     return Error(graph.error().detail);
   }
   out->graph = std::move(*graph);
   kg::Dsv4Graph& g = out->graph;
   BindDsv4Weights(m, g);
-  std::vector<ggml_tensor*> keep;
+  if (speculation.drafter != nullptr) {
+    BindDsparkInjection(*speculation.drafter, g);
+  }
+  // The logits are read after the run whatever node comes last.
+  std::vector<ggml_tensor*> keep = {g.logits};
   for (const std::string& name : keep_names) {
     if (ggml_tensor* t = g.Named(name); t != nullptr) {
       keep.push_back(t);
@@ -125,57 +193,106 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
       return Error(std::format("the graph names no {}", name));
     }
   }
-  // First pass: every computed tensor at its own address.
-  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
-  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
+  kg::DeviceChoices device = choices;
+  device.row_invariant = speculation.verify;
   const auto inputs = g.inputs();
-  for (ggml_tensor* input : inputs) {
-    kg::TensorArena::Bind(input, leaf);
-    leaf += Round(ggml_nbytes(input), 256) + 256;
+  if (auto placed =
+          PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes);
+      !placed) {
+    return std::unexpected(placed.error());
   }
-  kg::BindDistinct(g.nodes, kDistinct);
-  auto first = kg::PlanGraph(g.nodes, /*fusion=*/false, choices);
-  if (!first) {
-    return Error(first.error().detail);
-  }
-  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 256, keep);
-  if (!placement) {
-    return Error(placement.error().detail);
-  }
-  out->placement = std::move(*placement);
-  for (ggml_tensor* input : inputs) {
-    out->inputs_bytes += ggml_nbytes(input);
-  }
-  if (activations == 0) {
-    out->plan = std::move(*first);
-    return out;
-  }
-  if (out->placement.extent > activation_bytes) {
-    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
-                             out->placement.extent, activation_bytes));
-  }
-  for (const auto& [tensor, offset] : out->placement.offsets) {
-    kg::TensorArena::Bind(tensor, activations + offset);
-  }
-  kg::BindViews(g.nodes);
-  auto second = kg::PlanGraph(g.nodes, false, choices);
-  if (!second) {
-    return Error(second.error().detail);
-  }
-  if (!kg::SamePlan(*first, *second)) {
-    return Error("the plan changed once the activations were placed");
-  }
-  out->plan = std::move(*second);
   return out;
 }
 
-std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::Dsv4Graph& g,
-                                                 const md::Dsv4ChunkInputs& in,
-                                                 std::span<const std::int32_t> tokens,
-                                                 std::span<const std::byte> table,
-                                                 Dsv4HostInputs& out) {
-  const auto rows = static_cast<std::uint32_t>(tokens.size());
-  // The embedding rows, dequantized on the host.
+void BindDsparkInjection(const DsparkModel& d, kg::Dsv4Graph& g) {
+  if (!g.inject) {
+    return;
+  }
+  const md::DsparkBinding& b = *d.binding;
+  kg::DsparkInjectTensors& t = *g.inject;
+  kg::TensorArena::Bind(t.fc, d.places.resource(b.fc.index));
+  kg::TensorArena::Bind(t.enc_norm, d.places.resource(b.enc_norm.index));
+  for (std::size_t il = 0; il < t.kv.size(); ++il) {
+    kg::TensorArena::Bind(t.kv[il], d.places.resource(b.blocks.layers[il].kv.index));
+    kg::TensorArena::Bind(t.kv_norm[il], d.places.resource(b.blocks.layers[il].kv_norm.index));
+    kg::TensorArena::Bind(t.ring[il], d.places.state + d.state->offsets[il]);
+  }
+}
+
+std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
+    const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes) {
+  auto out = std::make_unique<DsparkPlanned>();
+  auto arena = kg::TensorArena::Create(kg::DsparkGraphTensors(*d.profile, rows));
+  if (!arena) {
+    return Error(arena.error().detail);
+  }
+  out->arena.emplace(std::move(*arena));
+  auto graph = kg::BuildDsparkGraph(*out->arena, *d.profile, *d.binding, rows, d.state->ring,
+                                    {.expert_stride = d.places.stride});
+  if (!graph) {
+    return Error(graph.error().detail);
+  }
+  out->graph = std::move(*graph);
+  kg::DsparkGraph& g = out->graph;
+  // The drafter's blocks at its places, its head's output the target's.
+  const md::DsparkBinding& b = *d.binding;
+  const auto bind = [](ggml_tensor* t, std::uint64_t address) {
+    kg::TensorArena::Bind(t, address);
+  };
+  for (std::uint32_t il = 0; il < d.profile->blocks.layers; ++il) {
+    const md::Dsv4Layer& r = b.blocks.layers[il];
+    kg::Dsv4LayerTensors& l = g.core.layers[il];
+    for (const auto& [t, w] : std::initializer_list<std::pair<ggml_tensor*, const md::Dsv4Tensor*>>{
+             {l.attn_norm, &r.attn_norm},
+             {l.attn_sinks, &r.attn_sinks},
+             {l.q_a, &r.q_a},
+             {l.q_a_norm, &r.q_a_norm},
+             {l.q_b, &r.q_b},
+             {l.kv, &r.kv},
+             {l.kv_norm, &r.kv_norm},
+             {l.out_a, &r.out_a},
+             {l.out_b, &r.out_b},
+             {l.hc_attn_fn, &r.hc_attn_fn},
+             {l.hc_attn_base, &r.hc_attn_base},
+             {l.hc_attn_scale, &r.hc_attn_scale},
+             {l.hc_ffn_fn, &r.hc_ffn_fn},
+             {l.hc_ffn_base, &r.hc_ffn_base},
+             {l.hc_ffn_scale, &r.hc_ffn_scale},
+             {l.ffn_norm, &r.ffn_norm},
+             {l.router, &r.router},
+             {l.router_bias, &r.router_bias},
+             {l.up_shexp, &r.up_shexp},
+             {l.gate_shexp, &r.gate_shexp},
+             {l.down_shexp, &r.down_shexp}}) {
+      bind(t, d.places.resource(w->index));
+    }
+    bind(l.up_exps, d.places.array(r.up_exps.index));
+    bind(l.gate_exps, d.places.array(r.gate_exps.index));
+    bind(l.down_exps, d.places.array(r.down_exps.index));
+    bind(l.raw_k, d.places.state + d.state->offsets[il]);
+  }
+  bind(g.core.output_norm, d.places.resource(b.blocks.output_norm.index));
+  bind(g.core.hc_head_fn, d.places.resource(b.blocks.hc_head_fn.index));
+  bind(g.core.hc_head_base, d.places.resource(b.blocks.hc_head_base.index));
+  bind(g.core.hc_head_scale, d.places.resource(b.blocks.hc_head_scale.index));
+  bind(g.core.output, d.target_resource(b.blocks.output.index));
+  bind(g.markov_w1, d.places.resource(b.markov_w1.index));
+  bind(g.markov_w2, d.places.resource(b.markov_w2.index));
+  const std::vector<ggml_tensor*> keep = {g.logits, g.drafts};
+  const auto inputs = g.inputs();
+  if (auto placed =
+          PlaceAndPlan(*out, g.core.nodes, inputs, keep, choices, activations, activation_bytes);
+      !placed) {
+    return std::unexpected(placed.error());
+  }
+  return out;
+}
+
+std::expected<void, std::string> Dsv4EmbeddingRows(const Dsv4Model& m,
+                                                   std::span<const std::int32_t> tokens,
+                                                   std::span<const std::byte> table,
+                                                   std::vector<float>& embd) {
   const md::Dsv4Tensor& embedding = m.binding->token_embd;
   auto type = kg::GgmlTypeOf(embedding.type);
   if (!type) {
@@ -184,8 +301,8 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
   const auto* traits = ggml_get_type_traits(*type);
   const std::uint64_t row_bytes = ggml_row_size(*type, m.profile->width);
   const std::uint64_t table_offset = m.artifact->resources()[embedding.index].offset.value();
-  out.embd.assign(std::size_t{rows} * m.profile->width, 0.0F);
-  for (std::uint32_t i = 0; i < rows; ++i) {
+  embd.assign(tokens.size() * m.profile->width, 0.0F);
+  for (std::size_t i = 0; i < tokens.size(); ++i) {
     if (tokens[i] < 0 || std::cmp_greater_equal(tokens[i], m.profile->vocab)) {
       return Error(std::format("token {} is outside the vocabulary", tokens[i]));
     }
@@ -193,8 +310,36 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
     if (at + row_bytes > table.size()) {
       return Error("the token table is shorter than its rows");
     }
-    traits->to_float(table.data() + at, out.embd.data() + (std::size_t{i} * m.profile->width),
-                     m.profile->width);
+    traits->to_float(table.data() + at, embd.data() + (i * m.profile->width), m.profile->width);
+  }
+  return {};
+}
+
+std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m, const kg::DsparkGraph& g,
+                                                   const md::DsparkBlockInputs& in,
+                                                   std::span<const std::byte> table,
+                                                   Dsv4HostInputs& out) {
+  if (auto rows = Dsv4EmbeddingRows(m, in.tokens, table, out.embd); !rows) {
+    return rows;
+  }
+  out.tokens = in.tokens;
+  out.sources = {{g.core.embd, out.embd.data()},
+                 {g.tokens, out.tokens.data()},
+                 {g.core.positions, in.positions.data()},
+                 {g.core.raw_k_idxs, in.cells.data()},
+                 {g.core.raw_mask, in.mask.data()}};
+  return {};
+}
+
+std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::Dsv4Graph& g,
+                                                 const md::Dsv4ChunkInputs& in,
+                                                 std::span<const std::int32_t> tokens,
+                                                 std::span<const std::byte> table,
+                                                 Dsv4HostInputs& out,
+                                                 std::span<const std::int64_t> inject_cells) {
+  const auto rows = static_cast<std::uint32_t>(tokens.size());
+  if (auto embedded = Dsv4EmbeddingRows(m, tokens, table, out.embd); !embedded) {
+    return embedded;
   }
   out.tokens.assign(tokens.begin(), tokens.end());
   out.out_ids.resize(rows);
@@ -225,6 +370,12 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
   }
   out.sources.emplace_back(g.lid_rot, m.rot.data());
   out.sources.emplace_back(g.top_k_zeros, out.zeros.data());
+  if (g.inject) {
+    if (std::cmp_not_equal(inject_cells.size(), g.inject->cells->ne[0])) {
+      return Error("the injection's cells are not its rows'");
+    }
+    out.sources.emplace_back(g.inject->cells, inject_cells.data());
+  }
   return {};
 }
 
