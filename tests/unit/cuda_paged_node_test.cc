@@ -131,7 +131,7 @@ class Model final : public ts::PagedModel {
                 cudaMemcpyAsync(staging + (i * kExtent), reinterpret_cast<void*>(workspace),
                                 kExtent, cudaMemcpyDeviceToHost, stream) != cudaSuccess) {
               // NOLINTEND(performance-no-int-to-ptr)
-              return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kUnknown;
+              return sc::JobResult::kUnknown;  // a runtime error, even the first (AfterRefusal)
             }
           }
           return sc::JobResult::kQueued;

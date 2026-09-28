@@ -264,8 +264,11 @@ std::expected<Exl3Binding, std::string> BindQwen2Exl3(const Qwen2Profile& p,
   if (architecture != "qwen2") {
     return Refused(std::format("the artifact's architecture is {}, not qwen2", architecture));
   }
-  if (p.layers == 0 || p.width % 128 != 0 || p.ffn % 128 != 0 || p.heads % p.kv_heads != 0 ||
-      (std::uint64_t{p.heads} * p.head_dim) != p.width || p.kv_width() % 128 != 0) {
+  // Every count nonzero before any is divided by or taken as a shape.
+  if (p.layers == 0 || p.width == 0 || p.heads == 0 || p.kv_heads == 0 || p.head_dim == 0 ||
+      p.ffn == 0 || p.vocab == 0 || p.width % 128 != 0 || p.ffn % 128 != 0 ||
+      p.heads % p.kv_heads != 0 || (std::uint64_t{p.heads} * p.head_dim) != p.width ||
+      p.kv_width() % 128 != 0) {
     return Refused("a profile the EXL3 plan cannot run");
   }
   Binder bind(resources);

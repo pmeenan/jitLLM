@@ -607,7 +607,6 @@ Status Fp16Runner::Evaluate(int evaluation, std::vector<float>& result) {
            {g.mask, inputs->mask.data()},
            {g.out_ids, inputs->out_ids.data()}}};
       std::uint64_t staged = 0;
-      bool queued = false;
       for (const auto& [tensor, source] : sources) {
         auto* at = static_cast<std::byte*>(inputs_) + staged;
         std::memcpy(at, source, ggml_nbytes(tensor));
@@ -616,9 +615,8 @@ Status Fp16Runner::Evaluate(int evaluation, std::vector<float>& result) {
                           "an input copy");
             !r) {
           ran = r;
-          return queued ? sc::JobResult::kUnknown : sc::JobResult::kNotStarted;
+          return sc::JobResult::kUnknown;  // a runtime error, even the first: its effect is unknown
         }
-        queued = true;
         staged += RoundUp(ggml_nbytes(tensor), 128);
       }
       if (auto r = bound->Run(*launch_); !r) {
@@ -843,7 +841,7 @@ Status Fp16Runner::GatherRows(std::span<const std::int32_t> tokens, std::vector<
                       Pointer(table + (static_cast<std::uint64_t>(tokens[i]) * row_bytes)),
                       row_bytes, cudaMemcpyDeviceToHost,
                       static_cast<cudaStream_t>(stream.handle)) != cudaSuccess) {
-                return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kUnknown;
+                return sc::JobResult::kUnknown;  // a runtime error, even the first
               }
             }
             return sc::JobResult::kQueued;

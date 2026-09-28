@@ -176,6 +176,7 @@ the commit gate.
 | [docs/plan.md](docs/plan.md) | What to work on, milestone scope, exit criteria — what "done" means |
 | [docs/m0-record.md](docs/m0-record.md) | Where an M0 result came from: each planning task, spike and reference run with its evidence links and caveats. Frozen history |
 | [docs/m1-record.md](docs/m1-record.md) | Where an M1 result came from: each bootstrap item's outcome, verification hosts and hand-offs. Frozen history |
+| [docs/m2-record.md](docs/m2-record.md) | Where an M2 result came from: each resource-core and backend-proof item's outcome, commits, reports and caveats, and the gate. Frozen once M2 exits |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
 | [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
@@ -240,34 +241,14 @@ the commit gate.
 **M0 (plan the plan) and M1 (Bootstrap) are done**
 ([docs/m0-record.md](docs/m0-record.md), [docs/m1-record.md](docs/m1-record.md)).
 The runtime starts, checks and waits; it serves nothing yet. **M2
-(resource core and backend proof) is in progress**
-([docs/plan.md](docs/plan.md)). Landed: the catalog, ledgers and
-admission; D-048's task lanes; the fake and CUDA providers; the v0
-artifact reader; GGML's kernels under jitLLM's dispatch; plan selection
-between implementations; shape expressibility; native Qwen2.5-0.5B FP16
-matching the bridge bit for bit at rung 3; and (P3) both EXL3 fixtures
-end to end under the native operation plan, its executed plan equal to
-the record, exact at operation level, within Tier C's bounds and
-bit-identical when paged, evicted and restored. BP-F1 showed
-host VMM too slow for kernels, so weights and state move to device VMM
-behind a landing-zone copy (D-081), where BP-F1's rerun passed; D-080
-sets the license policy. The
-scheduler now pages through that zone into device VMM and releases
-backing on eviction, and FP16 rungs 4–5 (paged, evicted, restored,
-relocated) are bit-identical. The x86-64 build's CUDA code and kernels
-also target the workstation's discrete GPU (D-082), where the providers,
-the page-in path and a kernel smoke pass. D-085 replaced the allocation
-census with a coarse peak check: native's peak is within 1.1× of its
-reference's on every FP16 arm and both EXL3 fixtures. P4–P6 landed
-(D-086, [aggregate report](docs/experiments/backend-proof/README.md)):
-write-back of live state through the zone, partial evictions, state
-spill and lifetime cases on both representations and the real
-providers, and the operation contract; BP-S3 alternates FP16 and EXL3 in
-one process, each evicting the other's weights. BP-P1's coalesced,
-vectored chunk reads are built and restore bit-identically, but stay off
-by default: a quick A/B measured them slower than one read per chunk.
-The parts of D-050's rows whose features come later moved to their
-milestones. D-033 is retained; per D-085, BP-F2 does not run and each
-engine is held to its reference's speed end to end once operational.
-Keep this
+(resource core and backend proof) has passed its gate and awaits the
+owner's word to exit** ([docs/m2-record.md](docs/m2-record.md)). It
+built the catalog, ledgers, admission, D-048's task lanes and the fake
+and CUDA providers; native Qwen2.5-0.5B FP16 and both EXL3 fixtures run
+under jitLLM's dispatch, exact against their references, and page
+through a host-VMM landing zone into device VMM (D-081), evicted,
+written back and restored bit-identically; FP16 and EXL3 alternate in
+one process; D-086 records the operation contract. D-033 is retained.
+Under D-085, BP-F2 did not run: each engine is held to its reference's
+speed end to end once it serves (M3). Keep this
 paragraph short and current when plan.md milestone status changes (rule 4).

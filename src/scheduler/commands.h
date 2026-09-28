@@ -85,12 +85,27 @@ struct BackingWork {
 // lane's thread and must only queue work, never wait for it. It says what
 // it queued:
 enum class JobResult : std::uint8_t {
-  kNotStarted,  // nothing: refused before any launch
+  kNotStarted,  // nothing: refused before any launch, or its first a known refusal
   kQueued,      // everything it meant to
   kFailed,      // some work, then a known refusal: it fails once its fence completes
   kUnknown,     // a launch reported an error whose effect is unknown (a fault)
 };
 using DeviceJob = std::move_only_function<JobResult(providers::NativeStream)>;
+
+// What a job reports when the provider refuses a copy or launch it tried
+// to queue, `queued` telling whether it queued anything before. An unknown
+// outcome stays unknown even on the first try: the work may still run and
+// touch the job's closure, whose lease must then hold until the fence.
+// Only a known refusal of the first queued nothing (DeviceService's own
+// copies follow the same rule). A job that calls a vendor API directly
+// has no provider classification and reports any error of it as unknown.
+constexpr JobResult AfterRefusal(providers::ProviderError error, bool queued) {
+  if (error == providers::ProviderError::kUnknown) {
+    return JobResult::kUnknown;
+  }
+  return queued ? JobResult::kFailed : JobResult::kNotStarted;
+}
+
 struct LaunchWork {
   std::uint32_t stream = 0;  // an index into the lane's streams
   DeviceJob job;

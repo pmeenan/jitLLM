@@ -397,7 +397,7 @@ each row stays at its gate.
 | Slow/disconnected client or endless high-priority arrivals | M2 fake: output/queue limits and fairness produce progress; intake cannot starve admitted cleanup. *Moved to M3* (the front door): a stalled or disconnected client's explicit termination |
 | Continuation/prefix expires while an admitted request is suspended | M2 lifetime / M4 retention: preserve admitted state and independent shared-prefix claims; idle expiry cannot release its allowance |
 | Envelope upgrade, grant retirement and cached-state promotion race | M2: envelope upgrade and grant retirement as single-owner atomic transitions; no gap in protection, double grant or lost backing charge. *Moved to M4* (retention): the race with cached-state promotion |
-| Smaller configured budget, unexpected external pressure, unknown provider completion | M2 injection / provider proof: refuse/defer policy reduction; quarantine remains charged; timeout is never reclaim. *Moved to M4* (multi-model pressure): injected capacity loss, which faults |
+| Smaller configured budget, unexpected external pressure, unknown provider completion | M2 injection / provider proof: refuse/defer policy reduction; quarantine remains charged; timeout is never reclaim. *Moved to M3* (the first serving under a real memory budget; owner, 2026-09-27): injected capacity loss, which faults |
 | All-resident concurrent cohort and subsequent serial handoff | M4: full cohort fits and both progress; bounds still admit the next serial phase after retirement |
 | Local fit inferred from aggregate cluster capacity or stale report | M4a: each node rechecks its own guarantees; M6 adds per-rank coordinated admission and failure/collective tests |
 

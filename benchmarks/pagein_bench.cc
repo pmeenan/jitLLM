@@ -772,10 +772,12 @@ Status Bench::Decode() {
       while (Clock::now() < until) {
         // the step's host-side work
       }
-      if (cuCtxSetCurrent(context_) != CUDA_SUCCESS ||
-          cuMemsetD32Async(decode_buffer_, ++decode_value_, (o_.gpu_mib << 20U) / 4,
+      if (cuCtxSetCurrent(context_) != CUDA_SUCCESS) {
+        return sc::JobResult::kNotStarted;  // nothing was queued
+      }
+      if (cuMemsetD32Async(decode_buffer_, ++decode_value_, (o_.gpu_mib << 20U) / 4,
                            static_cast<CUstream>(stream.handle)) != CUDA_SUCCESS) {
-        return sc::JobResult::kNotStarted;
+        return sc::JobResult::kUnknown;  // a driver error: its effect is unknown
       }
       return sc::JobResult::kQueued;
     };

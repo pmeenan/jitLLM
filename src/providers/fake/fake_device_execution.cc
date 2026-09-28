@@ -72,12 +72,19 @@ std::expected<void, Failure> FakeDeviceExecution::Copy(StreamId stream, std::uin
   if (found == nullptr) {
     return Invalid("stale or unknown stream");
   }
+  const auto fault = Take(copy_fault_, FenceId{});
+  if (fault && *fault != ProviderError::kUnknown) {
+    return std::unexpected(Failure{.error = *fault, .detail = "scripted copy refusal"});
+  }
   found->unfenced = true;
   found->steps.push_back(Queued{.kind = Queued::Kind::kCopy,
                                 .destination = destination,
                                 .source = source,
                                 .size = size,
                                 .fence = {}});
+  if (fault) {
+    return std::unexpected(Failure{.error = *fault, .detail = "scripted copy fault"});
+  }
   return {};
 }
 

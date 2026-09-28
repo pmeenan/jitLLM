@@ -109,10 +109,10 @@ struct Placement {
 // `inputs` (leaves the region also holds), in one region at offsets
 // aligned to `alignment`, each rounded up to it (ggml-alloc's rule). A
 // tensor lives from the step that computes it (inputs from the start) to
-// the last step reading it or a view of it; the graph's last node lives to
-// the end. Tensors whose lifetimes meet never share bytes, so a step's
-// outputs share none with its inputs. Placed largest first, each at the
-// lowest offset free for its whole lifetime.
+// the last step reading it or a view of it; the graph's last node, or the
+// tensor it views, lives to the end. Tensors whose lifetimes meet never
+// share bytes, so a step's outputs share none with its inputs. Placed
+// largest first, each at the lowest offset free for its whole lifetime.
 std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const GraphPlan& plan,
                                                          std::span<ggml_tensor* const> inputs,
                                                          std::uint64_t alignment);

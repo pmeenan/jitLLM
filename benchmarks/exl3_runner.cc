@@ -476,7 +476,7 @@ Status Exl3Runner::Derive() {
                                           WeightAddress(sources[i]), Bytes(half));
                   !c) {
                 copied = Error(c.error().detail);
-                return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kFailed;
+                return sc::AfterRefusal(c.error().error, i > 0);
               }
             }
             return sc::JobResult::kQueued;
@@ -500,7 +500,7 @@ Status Exl3Runner::Derive() {
                                         Bytes(sources.size() * norm_bytes));
                 !c) {
               copied = Error(c.error().detail);
-              return sc::JobResult::kNotStarted;
+              return sc::AfterRefusal(c.error().error, false);
             }
             // Each layer's record is set only once its tables' copies are
             // queued: after a failure here, Bind refuses a stale table.
@@ -511,7 +511,8 @@ Status Exl3Runner::Derive() {
                                                memory_map_);
                 !c) {
               copied = Error(c.error().detail);
-              return sc::JobResult::kFailed;
+              return c.error().error == exl3::KernelError::kUnknown ? sc::JobResult::kUnknown
+                                                                    : sc::JobResult::kFailed;
             }
             return sc::JobResult::kQueued;
           },
@@ -911,7 +912,7 @@ Status Exl3Runner::CancelInFlight() {
                             reinterpret_cast<CUdeviceptr>(device_gate), 1,
                             CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {
       ran = Error("cuStreamWaitValue32 was refused");
-      return sc::JobResult::kNotStarted;
+      return sc::JobResult::kUnknown;  // a driver error: its effect is unknown
     }
     started.store(true);
     if (auto r = (*program)->Run(*ggml_, *launch_, *gemm_, node_.execution(), node_.stream(stream_),

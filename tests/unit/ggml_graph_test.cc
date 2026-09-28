@@ -15,13 +15,15 @@
 // - the planner refuses a graph where an unimplemented pattern might apply;
 // - placed activations reproduce the pre-registered limit A exactly (rows ×
 //   611,328 bytes: the head's F32 input and logits), and no step's output
-//   shares a byte with anything it reads.
+//   shares a byte with anything it reads, and a graph ending in a view
+//   keeps the viewed tensor's bytes to the end.
 // A model of GB10's kernel-family choice stands in for the device, which
 // the GPU runs check (docs/experiments/backend-proof-p2/).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -290,6 +292,38 @@ TEST(Qwen2GraphTest, PlacesActivationsInTheLimitA) {
         EXPECT_EQ(offset % 128, 0U);
       }
     }
+  }
+}
+
+// A graph whose last node is a view keeps the viewed tensor alive to the
+// end: in `a, b, view(a)`, b must not take a's bytes, or it overwrites the
+// output. The same through a view of the view.
+TEST(Qwen2GraphTest, AFinalViewKeepsItsSourceAlive) {
+  for (const bool chained : {false, true}) {
+    auto arena = kg::TensorArena::Create(8);
+    ASSERT_TRUE(arena.has_value());
+    ggml_context* c = arena->context();
+    ggml_tensor* x = ggml_new_tensor_1d(c, GGML_TYPE_F32, 1024);
+    ggml_tensor* a = ggml_add(c, x, x);
+    ggml_tensor* b = ggml_mul(c, x, x);
+    ggml_tensor* last = ggml_view_1d(c, a, 512, 0);
+    std::vector<ggml_tensor*> nodes = {a, b, last};
+    if (chained) {
+      last = ggml_view_1d(c, last, 256, 0);
+      nodes.push_back(last);
+    }
+    const auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
+    ASSERT_EQ(plan->steps.size(), 2U);
+    const std::array<ggml_tensor*, 1> inputs = {x};
+    const auto placement = kg::PlaceActivations(nodes, *plan, inputs, 128);
+    ASSERT_TRUE(placement.has_value()) << placement.error().detail;
+    const auto ranges = Ranges(*placement);
+    ASSERT_TRUE(ranges.contains(a) && ranges.contains(b));
+    const auto [alo, ahi] = ranges.at(a);
+    const auto [blo, bhi] = ranges.at(b);
+    EXPECT_TRUE(ahi <= blo || bhi <= alo)
+        << "chained " << chained << ": a at " << alo << ", b at " << blo;
   }
 }
 

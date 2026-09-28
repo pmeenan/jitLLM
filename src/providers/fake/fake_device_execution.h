@@ -55,6 +55,13 @@ class FakeDeviceExecution final : public DeviceExecution {
     const std::scoped_lock lock(mutex_);
     fault_ = {.fence = FenceId{}, .error = error, .times = times};
   }
+  // The next `times` copies report this failure. A known one queues
+  // nothing; kUnknown queues the copy anyway, as a fault whose effect is
+  // unknown may have, and it runs when the stream is stepped. Zero stops.
+  void FailNextCopy(ProviderError error, std::size_t times = 1) {
+    const std::scoped_lock lock(mutex_);
+    copy_fault_ = {.fence = FenceId{}, .error = error, .times = times};
+  }
   // The next `times` releases of any fence report this failure and change
   // nothing; zero stops.
   void FailNextRelease(ProviderError error, std::size_t times) {
@@ -105,6 +112,7 @@ class FakeDeviceExecution final : public DeviceExecution {
   static std::optional<ProviderError> Take(Fault& fault, FenceId fence);
   Fault fault_;          // queries
   Fault release_fault_;  // releases
+  Fault copy_fault_;     // copies
   std::uint64_t next_native_ = 0;
 };
 

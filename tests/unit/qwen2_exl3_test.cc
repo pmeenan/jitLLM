@@ -208,6 +208,26 @@ TEST(Qwen2Exl3Test, BindsEveryTensorAndRefusesAnythingElse) {
   }
 }
 
+// A profile with a zero count is refused with an error, never divided by.
+TEST(Qwen2Exl3Test, RefusesAProfileWithAZeroCount) {
+  const std::vector<Exl3Resource> resources = Resources();
+  using Field = std::uint32_t jitllm::model::Qwen2Profile::*;
+  for (const auto& [name, field] : std::vector<std::pair<std::string, Field>>{
+           {"kv_heads", &jitllm::model::Qwen2Profile::kv_heads},
+           {"heads", &jitllm::model::Qwen2Profile::heads},
+           {"head_dim", &jitllm::model::Qwen2Profile::head_dim},
+           {"width", &jitllm::model::Qwen2Profile::width},
+           {"ffn", &jitllm::model::Qwen2Profile::ffn},
+           {"vocab", &jitllm::model::Qwen2Profile::vocab},
+           {"layers", &jitllm::model::Qwen2Profile::layers}}) {
+    jitllm::model::Qwen2Profile p = Profile();
+    p.*field = 0;
+    EXPECT_EQ(Failed(jitllm::model::BindQwen2Exl3(p, "qwen2", resources)),
+              "a profile the EXL3 plan cannot run")
+        << name;
+  }
+}
+
 TEST(Qwen2Exl3Test, OnlyRecordedPhaseKindsArePlanned) {
   using jitllm::model::RecordedPhase;
   for (const int rows : {32, 144, 145, 1023, 1024}) {

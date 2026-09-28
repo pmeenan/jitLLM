@@ -13,7 +13,7 @@ scope, ordering, and implementation changes do not (AGENTS.md rule 1).
 Check a box only when the item is done and verified; partially done items stay
 unchecked, optionally with a note. When a milestone exits, its section shrinks
 to a short summary and its task-by-task history moves to a record beside this
-file ([M0](m0-record.md), [M1](m1-record.md)).
+file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md)).
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
@@ -85,12 +85,21 @@ delegated cgroups (D-074), validated on `spark`. The
 [M1 record](m1-record.md) keeps each item's outcome, verification and
 hand-offs. What it handed on: the GPU, VMM, I/O and ARM stress suites in
 `check:spark`, a system-call filter with io_uring, and a single reaper for jobs
-started from other threads (M2); front-door, TLS and switching-policy keys
+started from other threads (M2; the last two moved to M3); front-door, TLS and switching-policy keys
 (M3, M4); the importer on the confined-job mechanism and spill file names
 (M3); cluster-member checks of credential files and enrollment records
 (M4a); drain-before-restart upgrades and the apt repository (M8).
 
 ## M2 — Resource core and backend proof  `in progress`
+
+Ran from 2026-09-24. Every scope item below is done, and the gate ran on
+2026-09-27 under D-085 (the Spark set and short checks): every exit
+criterion is met, BP-F2 by the owner's approved tradeoff; BP-F3 and
+BP-F4's per-token half moved to M3's end-to-end comparison (owner,
+2026-09-27). M2 exits on the owner's word.
+The [M2 record](m2-record.md) keeps each item's outcome, evidence and
+caveats, the gate's checks and what M2 hands on; at exit this section
+shrinks to a summary.
 
 Goal: the node-wide catalog, ledgers, reservation and lease state machine and
 D-048's task lanes, deterministic on a fake backend and real on a Spark.
@@ -288,7 +297,7 @@ reservation policy) were recorded in M0.
       about 14.9 GB/s with 8 MiB in flight as 2 MiB requests, without
       registered buffers. The workstation's btrfs quietly buffers direct I/O
       (RE-018).
-- [ ] **Backend integration proof** ([scope](backend-proof.md), stages
+- [x] **Backend integration proof** ([scope](backend-proof.md), stages
       P0–P6). The frozen bounds and performance protocol are approved at
       P0 (or, since D-079, pre-registered), before any native output is
       seen. The GGML subset and the
@@ -1133,6 +1142,10 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
       tests ([cluster design](cluster-design.md)).
 - [ ] **Local management API and CLI** (D-064): versioned routes for import,
       listing, representation inspection, removal, jobs and node health.
+- [ ] **Service hardening** (D-074; M1's hand-offs, moved from M2 by the
+      owner on 2026-09-27): a system-call filter for `jitllm.service`
+      that admits io_uring, and a single reaper for jobs started from
+      other threads.
 - [ ] **TLS** (D-065): per-name certificate files selected by SNI, reload on
       change, key-match and expiry checks, the name-constrained local CA,
       the certbot deploy hook, and the Tailscale certificate timer. The
@@ -1154,6 +1167,11 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
   serving controls in matched and normal views, with memory inside the
   declared bounds; a regression needs a fix or an explicit owner-approved
   tradeoff (D-052).
+- Each engine, served resident, is at least as fast as its reference end
+  to end (GGML against llama.cpp, EXL3 against ExLlamaV3; D-085's coarse
+  comparison), with BP-F3's resident timings and BP-F4's per-token host
+  cost against upstream's decode reported in it (moved from M2 by the
+  owner, 2026-09-27).
 - The [M3 acceptance cases](client-api-baseline.md#acceptance-owed-in-m3)
   pass as scoped there. At least one named client completes a chat
   unmodified with each representation, and Cursor stays an explicit gap
@@ -1163,7 +1181,7 @@ tokenizer is adopted ([first-slice.md](first-slice.md)).
 - Finite default context and output bounds bound every admitted request,
   and the M3 rows of D-050's matrix pass, with the parts moved to M3
   (suballocation holes, stalled-client termination, every queue full at
-  once). Memory use is bounded and
+  once, capacity-loss injection). Memory use is bounded and
   explained by the memory breakdown.
 - The importer, verifier and front-door parsers pass their adversarial
   challenge; an interrupted import never appears valid.
@@ -1242,7 +1260,7 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
   selected extents were displaced.
 - The [functional and adversarial cases](retention-policy.md#functional-and-adversarial-cases)
   and the M4 rows of D-050's matrix, with the parts moved to M4 (fork and
-  copy-on-write, cached-state promotion, capacity-loss injection), pass
+  copy-on-write, cached-state promotion), pass
   with an EXL3 context in the
   matrix; cache expiry never destroys admitted suspended work.
 - Through at least one unmodified named client: a long conversation on A,

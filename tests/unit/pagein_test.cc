@@ -9,8 +9,9 @@
 // slots reused only after it. Failed and short reads, backing failures,
 // cancellation in every stage, a full zone, unproven copies and unmaps,
 // evictions that really release backing, relocation, and kernel jobs whose
-// lease holds until their fence. The deterministic tests turn each lane
-// themselves; the threaded one runs every lane on its own thread.
+// lease holds until their fence, even when their first copy's outcome is
+// unknown. The deterministic tests turn each lane themselves; the
+// threaded one runs every lane on its own thread.
 
 #include <gtest/gtest.h>
 
@@ -72,11 +73,13 @@ using jitllm::providers::fake::FakeDeviceExecution;
 using jitllm::providers::fake::FakeDeviceMemory;
 using jitllm::providers::fake::FakeStorage;
 using jitllm::providers::fake::kPoison;
+using jitllm::scheduler::AfterRefusal;
 using jitllm::scheduler::BackingPlace;
 using jitllm::scheduler::BackingService;
 using jitllm::scheduler::CancelRequest;
 using jitllm::scheduler::CompletionBoard;
 using jitllm::scheduler::Control;
+using jitllm::scheduler::DeviceJob;
 using jitllm::scheduler::DeviceService;
 using jitllm::scheduler::DeviceSettings;
 using jitllm::scheduler::Fault;
@@ -124,6 +127,9 @@ class LoadProgram final : public TaskProgram {
   };
   LoadProgram(Report& report, Closure closure, std::optional<JobResult> job = std::nullopt)
       : report_(report), closure_(std::move(closure)), job_(job) {}
+  // Holds the closure with `job` in place of one reporting a fixed result.
+  LoadProgram(Report& report, Closure closure, DeviceJob job)
+      : report_(report), closure_(std::move(closure)), custom_(std::move(job)) {}
 
   Step Advance(TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -139,14 +145,18 @@ class LoadProgram final : public TaskProgram {
         return Step::Wait();
       }
       loaded_ = true;
-      if (job_) {
-        const JobResult result = *job_;
+      if (job_ || custom_) {
         Report& report = report_;
+        DeviceJob job = std::move(custom_);
+        if (job_) {
+          job = [result = *job_](auto /*stream*/) { return result; };
+        }
         const auto submitted = context.SubmitLaunch(
-            closure_, LaunchWork{.stream = 0, .job = [result, &report](auto /*stream*/) {
-                                   ++report.job_runs;
-                                   return result;
-                                 }});
+            closure_,
+            LaunchWork{.stream = 0, .job = [job = std::move(job), &report](auto stream) mutable {
+                         ++report.job_runs;
+                         return job(stream);
+                       }});
         if (!submitted) {
           report_.error = submitted.error();
           return Step::Finish(TaskOutcome::kFailed);
@@ -163,6 +173,7 @@ class LoadProgram final : public TaskProgram {
   Report& report_;
   Closure closure_;
   std::optional<JobResult> job_;
+  DeviceJob custom_;
   bool loaded_ = false;
 };
 
@@ -1268,6 +1279,70 @@ TEST_P(PageInTest, AJobsLeaseHoldsUntilItsFence) {
   EXPECT_EQ(refused.job_runs, 1);
   EXPECT_EQ(refused.outcome, TaskOutcome::kFailed);
   EXPECT_EQ(View(extents_[0]).leases, 0U);
+  EXPECT_EQ(execution_.fences(), 0U);
+}
+
+// A job's first copy whose outcome the provider reports unknown may still
+// run and read the job's closure, so the job reports it unknown
+// (AfterRefusal), never not started: the lease holds, and eviction is
+// refused, until the fence after it completes. A first copy the provider
+// refused (a known failure) queued nothing, and releases at once.
+TEST_P(PageInTest, AnUnknownFirstCopyHoldsItsLeaseUntilItsFence) {
+  Build();
+  std::vector<std::byte> out(kSize, std::byte{0});
+  const std::uint64_t source = Place(weights_, 0);
+  const auto destination = reinterpret_cast<std::uint64_t>(out.data());
+  const auto copying = [this, source, destination](ProviderError error) -> DeviceJob {
+    return [this, source, destination, error](jitllm::providers::NativeStream) {
+      execution_.FailNextCopy(error);
+      const auto copied = execution_.Copy(stream_, destination, source, Bytes(kSize));
+      return copied ? JobResult::kQueued : AfterRefusal(copied.error().error, false);
+    };
+  };
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_
+                  ->Start(1, std::make_unique<LoadProgram>(report, Of({0}),
+                                                           copying(ProviderError::kUnknown)))
+                  .has_value());
+  Settle(false);
+  execution_.Drain();  // the load's copy and its fence
+  Settle(false);
+  ASSERT_EQ(report.job_runs, 1);
+  // The copy is queued but has not run: the operation is open, its lease
+  // held, and the extent cannot be evicted.
+  EXPECT_EQ(out.front(), std::byte{0});
+  EXPECT_FALSE(report.outcome.has_value());
+  EXPECT_FALSE(report.retired);
+  EXPECT_EQ(View(extents_[0]).leases, 1U);
+  EXPECT_FALSE(jitllm::catalog::Catalog::Evictable(View(extents_[0])));
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<EvictProgram>(evicted, std::vector{extents_[0]}))
+          .has_value());
+  Settle(false);
+  EXPECT_EQ(evicted.outcome, TaskOutcome::kFailed);
+  ASSERT_EQ(evicted.results.size(), 1U);
+  EXPECT_EQ(Failed(evicted.results.front()), WorkError::kBusy);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kResident);
+  Settle();  // the copy runs, then its fence completes
+  EXPECT_EQ(std::memcmp(out.data(), file_.data(), kSize), 0);
+  EXPECT_EQ(report.outcome, TaskOutcome::kFailed);
+  EXPECT_TRUE(report.retired);
+  EXPECT_EQ(View(extents_[0]).leases, 0U);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+
+  std::ranges::fill(out, std::byte{0});
+  LoadProgram::Report refused;
+  ASSERT_TRUE(scheduler_
+                  ->Start(3, std::make_unique<LoadProgram>(refused, Of({0}),
+                                                           copying(ProviderError::kFailed)))
+                  .has_value());
+  Settle(false);
+  EXPECT_EQ(refused.job_runs, 1);
+  EXPECT_EQ(refused.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(View(extents_[0]).leases, 0U);
+  Settle();
+  EXPECT_EQ(out.front(), std::byte{0});  // nothing was queued
   EXPECT_EQ(execution_.fences(), 0U);
 }
 

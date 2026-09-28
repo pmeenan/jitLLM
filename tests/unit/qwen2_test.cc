@@ -138,6 +138,14 @@ TEST(Qwen2Test, RefusesWhatTheProfileDoesNotDescribe) {
     ASSERT_FALSE(binding.has_value());
     EXPECT_EQ(binding.error(), "the artifact's architecture is llama, not qwen2");
   }
+  // A zero head count is refused, never divided by.
+  for (const auto field : {&Qwen2Profile::heads, &Qwen2Profile::kv_heads}) {
+    Qwen2Profile zero = p;
+    zero.*field = 0;
+    const auto binding = BindQwen2(zero, "qwen2", FixtureIndex(p));
+    ASSERT_FALSE(binding.has_value());
+    EXPECT_EQ(binding.error(), "the profile's head counts are not a Qwen2 model's");
+  }
 }
 
 TEST(Qwen2Test, PadsTheAttendedCellsAsLlamaCpp) {

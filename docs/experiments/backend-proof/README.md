@@ -23,7 +23,9 @@ and failure) and P6 (the contract, recorded as D-086).
 
 BP-F2 (EXL3 kernel timing) and the census protocol did not run: D-085
 replaces them with end-to-end parity once serving works and a loose
-process-level memory comparison. Page-in performance is in
+process-level memory comparison. The owner moved BP-F3 and BP-F4's
+per-token half into that comparison, in M3 (2026-09-27). Page-in
+performance is in
 [pagein-perf](../pagein-perf/README.md).
 
 ## P4: paging, on both representations
@@ -447,8 +449,8 @@ default. When on, the span is 64 MiB, a tuning value
 | BP-V1–V3 | Pass (above) | above |
 | BP-F1 | Passed on device VMM (rule v2) | P1 |
 | BP-F2 | Not run (D-085) | — |
-| BP-F3 | Deferred to serving: D-085 judges each engine end to end against its reference | — |
-| BP-F4 | Per-launch host cost reported; per-token against upstream's decode deferred with BP-F3 | [launch-overhead](../launch-overhead/README.md) |
+| BP-F3 | Moved to M3 by the owner (2026-09-27): part of M3's end-to-end comparison of each engine with its reference (D-085) | — |
+| BP-F4 | Per-launch host cost reported; per-token against upstream's decode moved to M3 with BP-F3 by the owner | [launch-overhead](../launch-overhead/README.md) |
 | BP-S1, S2, S4 | Pass | P1, P2 |
 | BP-S3 | Passes: FP16 and EXL3 alternate in one process, each evicting the other's weights, every evaluation equal to rung 3 | above |
 
@@ -489,7 +491,8 @@ Each M2 row, with the tests that carry it
     output limits exist in `OutputBuffer`);
   - a closure or rounded allocation over its bound detected at runtime
     before submission: M5 (the routing boundary; planning refuses it now);
-  - faulting on injected capacity loss: M4 (multi-model pressure);
+  - faulting on injected capacity loss: M3 (the first serving under a
+    real memory budget; owner, 2026-09-27);
   - every queue full at once during cancellation: M3 (the front door's
     output queues; each queue is covered alone now).
 

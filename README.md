@@ -50,7 +50,10 @@ the work, reviews it, and is the sole committer.
 ## Status
 
 **Pre-release. M0 (plan the plan) and M1 (bootstrap) are done; M2 (the
-resource core) is next.**
+resource core and backend proof) has passed its gate and awaits the
+owner's decision to exit.** M2's work is internal: test harnesses run a
+small FP16 model and two EXL3 fixtures natively, paged through device
+memory, but the runtime serves nothing yet.
 The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
 feature matrix, architecture, and decision log are in `docs/`. The application
 so far is a node runtime that reads its configuration, prepares its storage,
@@ -277,5 +280,6 @@ contributes to a build and what its notices require.
 - [docs/plan.md](docs/plan.md) — the M1–M8 milestone ladder with exit criteria
 - [docs/m0-record.md](docs/m0-record.md) — what M0's planning, spikes and reference runs did, with evidence links
 - [docs/m1-record.md](docs/m1-record.md) — what M1's bootstrap items built and where each was verified
+- [docs/m2-record.md](docs/m2-record.md) — what M2's resource core and backend proof built, with evidence, caveats and the gate
 - [docs/workflow.md](docs/workflow.md) — how agents and the human collaborate
 - [docs/rough-edges.md](docs/rough-edges.md) — findings log

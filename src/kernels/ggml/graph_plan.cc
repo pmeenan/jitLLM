@@ -38,6 +38,16 @@ std::string Where(GraphNodes graph, std::size_t i) {
 // A computed tensor with memory of its own.
 bool Computed(const ggml_tensor* t) { return t->op != GGML_OP_NONE && t->view_src == nullptr; }
 
+// The tensor whose memory `t` is: itself, or the end of its view chain
+// (GGML points a view of a view at the first source, but that is
+// upstream's choice, not a contract).
+const ggml_tensor* Storage(const ggml_tensor* t) {
+  while (t->view_src != nullptr) {
+    t = t->view_src;
+  }
+  return t;
+}
+
 std::string_view MulMatName(MulMatPath path) {
   switch (path) {
     case MulMatPath::kVector:
@@ -230,16 +240,16 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
         if (src == nullptr) {
           continue;
         }
-        const ggml_tensor* root = src->view_src != nullptr ? src->view_src : src;
-        if (const auto found = index.find(root); found != index.end()) {
+        if (const auto found = index.find(Storage(src)); found != index.end()) {
           Life& life = lives[found->second];
           life.last = std::max(life.last, static_cast<std::int64_t>(s));
         }
       }
     }
   }
+  // The graph's output lives to the end, in whatever tensor it views.
   if (!graph.empty()) {
-    if (const auto found = index.find(graph.back()); found != index.end()) {
+    if (const auto found = index.find(Storage(graph.back())); found != index.end()) {
       lives[found->second].last = static_cast<std::int64_t>(plan.steps.size());
     }
   }

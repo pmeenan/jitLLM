@@ -1759,9 +1759,11 @@ beside the candidate)
 - **BP-F2:** EXL3 kernel parity on the 176 declared cases (the D-052 M2
   gate).
 - **BP-F3:** Resident full-model timings for all three fixtures, reported
-  for M3's gates.
+  for M3's gates. *Moved to M3 by the owner (2026-09-27):* part of M3's
+  end-to-end comparison of each engine with its reference (D-085).
 - **BP-F4:** Dispatch overhead: host submission per launch and per token,
-  against upstream's captured decode.
+  against upstream's captured decode. *The per-token half moved to M3
+  with BP-F3 by the owner (2026-09-27);* the per-launch half is reported.
 
 **Coexistence and swapping**
 
