@@ -55,6 +55,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "engine/paged_node.h"
+#include "execution/sampling.h"
 #include "runtime/commands.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
@@ -179,11 +180,12 @@ class Served {
   std::string name_;
 };
 
-// A greedy generation's result.
+// A generation's result.
 struct Generation {
   std::vector<std::int32_t> tokens;        // generated, the first from the prefill
   std::vector<std::vector<float>> logits;  // each token's row, when asked for
   bool stopped = false;                    // ended at a stop token
+  bool cancelled = false;                  // ended by GenerateOptions::on_tokens
   std::uint64_t drafted = 0;
   std::uint64_t accepted = 0;
   std::uint64_t steps = 0;       // decode steps (verifies, when speculating)
@@ -195,6 +197,16 @@ struct GenerateOptions {
   std::uint32_t max_tokens = 256;
   bool stop = true;          // end at the model's stop tokens
   bool keep_logits = false;  // every token's logits in Generation::logits
+  // Seeded sampling (execution/sampling.h), keyed by the seed and each
+  // token's position in the conversation; absent, or temperature 0, is
+  // greedy. Speculation then verifies drafts by speculative sampling
+  // (VerifyDraft), so the tokens are distributed as plain sampling's.
+  std::optional<execution::SamplingParams> sampling;
+  std::uint64_t seed = 0;
+  // Called with each step's new tokens (the first call with the token from
+  // the prefill's logits), a stop token left out; returning false ends
+  // the generation after that step, the state holding what it accepted.
+  std::function<bool(std::span<const std::int32_t>)> on_tokens;
 };
 
 // A model with a conversation: DeepSeek V4 Flash, Qwen3.8 Flash Next.
@@ -203,7 +215,14 @@ class Llm : public Served {
   bool llm() const override { return true; }
   std::uint32_t max_rows() const { return max_rows_; }
   std::uint32_t context() const { return context_; }
+  // What a conversation may use of the context: its speculative steps may
+  // need rows past the last token (Qwen3.8's MTP drafts).
+  virtual std::uint32_t usable_context() const { return context_; }
   bool speculative() const { return speculate_; }
+  // The template's reasoning markers as tokens (Qwen3.8's and DeepSeek's
+  // "<think>" and "</think>"), where the vocabulary has them.
+  std::optional<std::int32_t> think_start() const { return think_start_; }
+  std::optional<std::int32_t> think_end() const { return think_end_; }
   const tokenizer::Tokenizer& tokenizer() const { return *tokenizer_; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
@@ -265,6 +284,18 @@ class Llm : public Served {
   virtual std::uint32_t cursor() const { return 0; }
   virtual void set_cursor(std::uint32_t /*value*/) {}
 
+  // During Generate: whether it samples, the token for a row's logits at
+  // a position in the conversation (greedy: the argmax), and whether the
+  // target keeps a draft there (greedy: the argmax equals it); if not,
+  // `next` is the token in its place.
+  bool sampling() const { return sampling_.has_value(); }
+  std::expected<std::int32_t, std::string> Choose(std::span<const float> row,
+                                                  std::uint64_t position);
+  std::expected<bool, std::string> Keep(std::span<const float> row, std::int32_t draft,
+                                        std::uint64_t position, std::int32_t& next);
+  // Finds the reasoning markers in the vocabulary (after the tokenizer).
+  void FindThinkTokens();
+
   engine::PagedNode* node_ = nullptr;
   std::uint32_t max_rows_ = 512;
   std::uint32_t context_ = config::kDefaultContext;
@@ -279,6 +310,12 @@ class Llm : public Served {
   bool needs_clear_ = false;
   std::vector<std::int32_t> saved_history_;
   std::uint32_t saved_cursor_ = 0;
+  std::optional<std::int32_t> think_start_;
+  std::optional<std::int32_t> think_end_;
+  // The running generation's sampling, if it samples.
+  std::optional<execution::SamplingParams> sampling_;
+  std::uint64_t seed_ = 0;
+  std::vector<execution::SamplingCandidate> scratch_;
 };
 
 // The image pipeline (Qwen-Image-2.1).
@@ -369,6 +406,12 @@ Status RunChat(Server& server, const ChatOptions& options, const ServingOptions&
                std::FILE* out);
 Status RunSwapTable(Server& server, const SwapTableOptions& options, const ServingOptions& serving,
                     std::FILE* out);
+
+// The service with models configured (serve_api.cc; D-097): registers
+// them, serves the loopback chat route until SIGTERM or SIGINT (which the
+// caller has blocked in every thread), and tears the node down. Returns
+// the process's exit status (runtime.h).
+int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log);
 
 }  // namespace jitllm::runtime
 

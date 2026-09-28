@@ -165,9 +165,14 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
         }
         first = Clock::now();
         prefill = Seconds(first - start);
-        return l.Generate(
-            last, {.max_tokens = o.max_tokens, .stop = !o.ignore_stop, .keep_logits = false},
-            generation);
+        return l.Generate(last,
+                          {.max_tokens = o.max_tokens,
+                           .stop = !o.ignore_stop,
+                           .keep_logits = false,
+                           .sampling = std::nullopt,
+                           .seed = 0,
+                           .on_tokens = {}},
+                          generation);
       });
       if (!ran) {
         return Error(std::format("turn {}: {}", index + 1, ran.error()));
@@ -461,8 +466,12 @@ Status Table::Pair(Served& a, Served& b) {
                                       o_.image_expect));
     }
   }
-  const GenerateOptions continuation{
-      .max_tokens = o_.continue_tokens, .stop = false, .keep_logits = true};
+  const GenerateOptions continuation{.max_tokens = o_.continue_tokens,
+                                     .stop = false,
+                                     .keep_logits = true,
+                                     .sampling = std::nullopt,
+                                     .seed = 0,
+                                     .on_tokens = {}};
   const auto cycle_run = [&](int cycle, bool with_context) -> Status {
     const std::string use = cycle == 0 ? "first use" : "prepared";
     std::string held = "image";
@@ -762,6 +771,9 @@ Status RunSwapTable(Server& server, const SwapTableOptions& options, const Servi
 
 int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& roles,
                const CommandOptions& command, std::FILE* out, std::FILE* log) {
+  if (command.command == Command::kService) {
+    return RunService(config, roles, log);
+  }
   const auto say = [log](std::string_view text) {
     const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
     (void)std::fwrite(line.data(), 1, line.size(), log);

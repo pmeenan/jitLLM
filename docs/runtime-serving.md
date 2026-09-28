@@ -72,8 +72,9 @@ template is rendered only if a native renderer has its hash (D-067).
 
 ## Registration and the swap
 
-The serving commands run the runtime's startup steps (anchor, configuration,
-process lock, storage roles, platform), then register every configured
+The serving commands and the service with models run the runtime's
+startup steps (anchor, configuration, process lock, storage roles,
+platform), then register every configured
 model on one paged node: its artifacts opened, its runner set up on its own
 stream, its tokenizer and renderer found, the shared workspace mapped at the
 largest model's need, and the scheduler started with the budget of
@@ -103,8 +104,15 @@ leased once, the prefill chunks (512 rows) and every decode step jobs under
 it. Decoding is greedy and, where the model has a drafter, speculative by
 default (D-092's batched verify: DeepSeek's DSpark draft and verify as one
 job, Qwen3.8's MTP draft then verify), each step accepting the drafts the
-target agrees with; `--plain` decodes one token a step. Generation stops at
-the template's end-of-turn tokens or the token limit. A job that failed
+target agrees with; `--plain` decodes one token a step. The chat route may
+sample instead (a `temperature` above 0): seeded, each token drawn at its
+position in the conversation (execution/sampling.h), and when speculating
+each draft accepted by speculative sampling (`VerifyDraft`), so the
+tokens are distributed as plain sampling's; a seed repeats a reply.
+Generation stops at the template's end-of-turn tokens, the token limit, or
+when the route ends it (a stop string, the client gone, the deadline, the
+runtime stopping), always between steps. A model whose chat template has
+no renderer is refused at registration, naming its hash. A job that failed
 after it may have run leaves the conversation unknown, so the next turn
 clears the state first.
 
@@ -125,8 +133,8 @@ is still to come).
     SERVING: [--plain] [--image-prompt TEXT] [--image-noise FILE] [--report FILE]
 
 Both run in the runtime's own process, holding its process lock (so never
-beside the service), and open no listener (D-014); the loopback chat route
-is the next M3 item. `chat` sends each turn to its model in order, swapping
+beside the service), and open no listener (D-014); the service serves the
+chat route (below). `chat` sends each turn to its model in order, swapping
 as needed, and prints the reply, the swap's parts, the first token's latency
 from the request, the prefill and decode speeds and speculation's
 acceptance. `swap-table` is M3's swap table (plan.md) in one process: every
@@ -140,16 +148,110 @@ the swap; an image A's regenerated pixels must equal its control's. Both
 write every number to `--report` as JSON. Run by hand, a command stops on
 SIGINT or SIGTERM at once; the kernel frees its memory and spill files.
 
+## The chat route
+
+With models configured, the service (no command) registers them as the
+commands do, then listens on `[client] bind` (a loopback address and port,
+default `127.0.0.1:8114`; D-097) and reports readiness. Without models it
+starts, checks and waits as before; a CPU-only build refuses to start with
+models configured.
+
+    POST /v1/chat/completions   one conversation turn, JSON or SSE
+    GET  /v1/models             the configured models (the image among them)
+    GET  /v1/models/{id}
+
+It is a strict subset of client-api-baseline.md's Chat Completions profile,
+not M5's front door. A request is stateless, as OpenAI's are: the whole
+conversation is rendered by the model's template, and the state's tokens
+are reused when they are a prefix of it (as `chat` does, including its
+limit for thinking models). The model named is made resident first (a full
+swap when another is), and the turn is one request under one lease
+(D-093), greedy or sampled, speculative where the model has a drafter.
+
+**Fields.** Honored: `model` (a configured name; unknown is a 404, the
+image pipeline a 400 `model_not_supported`), `messages` (system;
+developer, read as system; user; assistant, whose `reasoning` or
+`reasoning_content` goes back to the template; content as a string or text
+parts; the last message the user's), `max_tokens` or
+`max_completion_tokens` (default: the rest of the context), `temperature`
+(default 1, OpenAI's; 0 is greedy), `top_p`, `seed` (default: random),
+`stop` (matched in the answer, not in the reasoning), `stream`,
+`stream_options.include_usage`. Accepted only at their "off" value: `n` 1,
+`presence_penalty` and `frequency_penalty` 0, `logprobs` false,
+`top_logprobs` 0, `tools` and `functions` empty, `tool_choice` and
+`function_call` "none" or "auto", `response_format` text, `logit_bias`
+empty, `modalities` ["text"]. Ignored metadata: `user`,
+`safety_identifier`, `prompt_cache_key`, `metadata`, `service_tier`,
+`parallel_tool_calls`, `store` false, a message's `name`, a text part's
+`cache_control`, an assistant's null `refusal` and `annotations`. Anything
+else is a 400 naming it, whatever its value, OpenRouter's `transforms` and
+`plugins` among them (D-046).
+
+**Output.** The reasoning a thinking template opens (its prompt ends
+inside `<think>`) goes out as `reasoning`, up to the `</think>` token; the
+answer, less its leading whitespace, as `content`. `finish_reason` is
+`stop` at the template's stop token or a stop string, else `length`.
+`usage` counts the whole rendered prompt, the generated tokens (a stop
+token included) and, as `prompt_tokens_details.cached_tokens`, the
+prompt's tokens the state already held. Streaming sends the headers and
+the role chunk once the request is admitted (its tokens counted against
+the context, before the swap), a chunk per step's text, the finish chunk,
+the usage chunk if asked for, and `data: [DONE]`; a failure after the
+headers is a `data: {"error":...}` event, and the stream ends without
+`[DONE]`.
+
+**Intake bounds** (client-api-baseline.md#shared-correctness-and-limits),
+checked before any model work (runtime/api.h):
+
+| Bound | Value | Over it | Why this value |
+| --- | --- | --- | --- |
+| Request line and headers | 16 KiB, 64 headers | 413 | Clients send a few hundred bytes; a bounded buffer per connection |
+| Target | 2 KiB | 414 | Routes and a short query |
+| Body | 4 MiB, by Content-Length only | 413 before it is read (chunked: 501; none on a POST: 411) | A 262,144-token context at ~4 bytes a token with JSON escaping, and a bounded buffer |
+| JSON | depth 16, 262,144 values | 400 | The request's own nesting is 5 deep; the parser's allocation stays under ~4 MiB of nodes |
+| Messages | 1 to 1,024 | 400 | Several times any conversation that fits the default 8,704-token context |
+| A message's text | 1 MiB, from at most 64 parts | 400 | Bounded by the body anyway; stops one field taking it all |
+| `model` | 1 to 64 bytes | 400 | A configured name's limit (D-096) |
+| `max_tokens` | 1 to 262,144 at parse; prompt + it ≤ the model's usable context | 400 `context_length_exceeded` | The context the model's state holds (`context`, less Qwen3.8's MTP draft rows when it speculates) |
+| Prompt | under the usable context | 400 `context_length_exceeded` | As above; counted by the model's own tokenizer and template |
+| `temperature`, `top_p` | [0, 2], (0, 1] (`top_p` not rounding to 0 as a float) | 400 | OpenAI's ranges; sampling.h's, which takes floats |
+| `seed` | a 64-bit signed integer | 400 | OpenAI's type |
+| `stop` | at most 4 strings of 1 to 128 bytes | 400 | OpenAI's count; the held-back text stays short |
+| Head, body arrival | 10 s, 30 s from accept | 408 (none if nothing arrived) | A local client sends at once; a stalled one holds the acceptor at most this long |
+| A stalled write | 30 s (SO_SNDTIMEO) | the generation ends | A reader that stops reading cannot grow a buffer: output goes straight to the socket |
+| Queue | 4 waiting behind the running request, 120 s each | 429, `Retry-After: 10`, `x-should-retry: true` | One user; a subagent's request waits for the main one instead of failing |
+| A request | 600 s from when it starts running | 504 (in-stream error when streaming) | The node's ten-minute rule for a request (D-048's driver) |
+
+**Guards and errors.** No credential (loopback, D-014); an
+`Authorization` header is ignored. The `Host` must name a loopback address
+or `localhost` (a second `Host` is a 400), and a request with an `Origin` or a cross-site
+`Sec-Fetch-Site` is refused (403): D-064's browser guards, without M5's
+loopback-origin CORS. A JSON route needs `Content-Type: application/json`
+(415). Errors are OpenAI's `{"error": {message, type, param, code}}`. A
+client that disconnects, or the runtime stopping (SIGTERM or SIGINT, 503),
+ends the generation after its current step; the state keeps what it
+accepted. A failure of the node itself (a swap or a job that failed) ends
+the request with a 500 or 503 and stops the service with status 1.
+
+**Logging.** One line a request: an opaque ID, the model, the status, the
+token counts and times; one a swap, with its parts. Never a prompt,
+completion, stop string or field value (D-014).
+
+**Threads.** An acceptor thread reads each connection's request (one at a
+time), answers the model list and every refusal itself, and queues valid
+chat requests; the node's driver thread (the main thread) runs them in
+order and watches the runtime's signals (a signalfd) between requests and
+between generation steps. Every response closes its connection.
+
 ## Limits
 
 - One process, one model resident at a time: M3's full swap. Partial
   eviction, admission and the switching policy come with M5 and M6.
-- No endpoint yet: the commands are the runtime's only way in until the
-  loopback `/v1/chat/completions` (the next M3 item) and the front door (M5).
-- The image serves one prompt a process, from a latents file (above).
+- The chat route is M3's minimal one: no tools, no reasoning controls,
+  no keepalives, no credentials or remote binding, no Responses or
+  Messages routes, one request at a time. The front door is M5's.
+- The image serves one prompt a process, from a latents file (above), and
+  only through the commands.
 - A conversation is reused only when its re-rendered tokens extend what the
-  state holds; a thinking model's re-rendered history usually does not, and
-  the turn prefills again. The output parser that splits reasoning from the
-  answer is the chat route's (M5); `chat` splits at `</think>` only.
-- The service (no command) registers nothing: it logs the configured models
-  and waits, as before.
+  state holds; a thinking model's re-rendered history usually does not
+  (a client rarely sends the reasoning back), and the turn prefills again.

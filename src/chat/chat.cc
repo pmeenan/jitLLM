@@ -6,10 +6,12 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/sha256.h"
 #include "tokenizer/tokenizer.h"
 
 namespace jitllm::chat {
@@ -56,6 +58,16 @@ const Template* FindTemplate(std::string_view sha256) {
     }
   }
   return nullptr;
+}
+
+std::expected<const Template*, std::string> FindTemplateForText(std::string_view template_text) {
+  const std::string sha256 = base::ToHex(base::Sha256().Update(template_text).Finish());
+  if (const Template* t = FindTemplate(sha256)) {
+    return t;
+  }
+  return std::unexpected(std::format(
+      "no native renderer has its chat template (SHA-256 {}), so it has no chat turns (D-067)",
+      sha256));
 }
 
 std::string_view PythonStrip(std::string_view text) {

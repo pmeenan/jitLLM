@@ -41,6 +41,12 @@ target_link_libraries(runtime_test PRIVATE jitllm_runtime jitllm_platform)
 jitllm_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# The loopback chat route (D-097): requests and their bounds, and the server
+# over a real loopback socket with a fake backend.
+add_executable(api_test api_test.cc)
+target_link_libraries(api_test PRIVATE jitllm_runtime jitllm_json)
+jitllm_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The resource core: the catalog and the memory manager's policy, on no
 # vendor SDK (D-026).
 add_executable(catalog_test catalog_test.cc)
@@ -223,7 +229,7 @@ jitllm_gtest(tokenizer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # The chat renderers against their references' text (D-067), and JSON as
 # Python prints it.
 add_executable(chat_test chat_test.cc)
-target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json)
+target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 

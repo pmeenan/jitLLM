@@ -115,8 +115,26 @@ struct ModelEntry {
   std::optional<std::filesystem::path> chat_template;
 };
 
+// The chat route's listener (M3's minimal /v1/chat/completions, D-097):
+// `[client] bind`, "<address>:<port>" with a loopback address, IPv4 in
+// 127.0.0.0/8 or IPv6 "[::1]". A non-loopback address needs the front
+// door's authentication and transport protection (D-014, D-045; M5).
+inline constexpr std::string_view kDefaultClientBind = "127.0.0.1:8114";
+
+struct ClientEndpoint {
+  std::string address;  // "127.0.0.1" or "::1": what inet_pton reads
+  bool ipv6 = false;
+  std::uint16_t port = 0;
+};
+
+// Parses a loopback bind ("127.0.0.1:8114", "[::1]:8114"); the error says
+// what is wrong. The port is 1-65535.
+std::expected<ClientEndpoint, std::string> ParseLoopbackBind(std::string_view text);
+
 struct NodeConfig {
   std::optional<Membership> membership;
+  // Where the service listens for the chat route (the default unless set).
+  ClientEndpoint client{.address = "127.0.0.1", .ipv6 = false, .port = 8114};
   std::string limits_profile{kLimitsProfile};
   Storage storage;
   // Sorted by name.

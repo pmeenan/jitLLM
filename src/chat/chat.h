@@ -121,6 +121,11 @@ struct Template {
 // routes (D-067).
 const Template* FindTemplate(std::string_view sha256);
 
+// The renderer for a template's text, found by its SHA-256; otherwise an
+// error naming the hash. A model whose template has none is refused where
+// it registers, not at its first turn.
+std::expected<const Template*, std::string> FindTemplateForText(std::string_view template_text);
+
 std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& conversation);
 std::expected<Rendered, Error> RenderQwen38(const Conversation& conversation);
 

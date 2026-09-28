@@ -667,19 +667,48 @@ it appears.
       harnesses' greedy, forced-rejection and swap speculation checks pass
       over the moved engine. The runtime's swap table is below (the swap
       path). The package now ships cuBLAS and GGML's and CUTLASS's notices.
+      The package step of `check:full` (the arm64 package, its inventory and
+      its install test), with REUSE, passed on the workstation on 2026-09-28;
+      the header check ran on `spark-b`.
       Open: the image takes one prompt a process from a latents file (its
-      runner fixes both at setup); the package check (`check:full`) is owed.
+      runner fixes both at setup).
 - [x] Start the model support matrix (moved from M5), recording template
       hashes. *Done 2026-09-28* ([model-support.md](model-support.md)):
       each model and drafter jitLLM runs, the M2 fixtures among them, with
       its checkpoint pin, artifact, template hash as `src/chat` keys it,
       tokenizer, decoding modes, context exercised, evidence, known
       divergences, status and level.
-- [ ] Last, once the swap floor is proven: a minimal OpenAI-compatible
+- [x] Last, once the swap floor is proven: a minimal OpenAI-compatible
       `/v1/chat/completions` on loopback (D-014), with numeric intake
       bounds fixed before it accepts input
       ([client-api-baseline.md](client-api-baseline.md#shared-correctness-and-limits)).
       The full front door stays in M5.
+      *Done 2026-09-28* (D-097, [runtime-serving.md](runtime-serving.md#the-chat-route)):
+      with models configured, the service listens on `[client] bind`
+      (loopback only, default `127.0.0.1:8114`) for `POST
+      /v1/chat/completions` (JSON and SSE) and `GET /v1/models`, over its
+      own bounded HTTP/1.1 reader (no new dependency), one request at a
+      time behind a queue of four; every bound (head, target, body, JSON,
+      messages, message bytes, parts, `max_tokens` against the model's
+      usable context, temperature, top_p, seed, stop strings, timeouts,
+      queue) is tabulated there with its status; unknown fields are
+      refused. Unit tests cover parsing, every bound at its edge and the
+      server over a loopback socket (routes, browser guards, HTTP bounds,
+      timeouts, the queue's 429, streaming, errors after the headers,
+      disconnect and stop). On `spark-b` with DeepSeek and Qwen3.8
+      configured, through curl: DeepSeek, a swap to Qwen3.8 streamed and
+      a swap back (10.0, 9.1 and 11.0 s from request to response, the
+      swaps 8.1, 7.8 and 9.5 s); each greedy reply equals `jitllm-runtime
+      chat`'s on the same prompt (text, 52 and 37 tokens, prompt counts,
+      finish), the stream ends in `[DONE]`, a seeded sampled request
+      repeats exactly, a stop string ends the answer, and a request over
+      each bound was refused (413, 400 with `context_length_exceeded`
+      for the prompt and for `max_tokens`, 404, 403, 415, 405). The
+      runtime now samples too (seeded, speculative sampling where there
+      is a drafter); DeepSeek, like Qwen3.8, is refused at registration
+      when its template has no renderer. Open: M5's front door
+      (credentials, loopback-origin CORS, keepalives, tools, reasoning
+      controls, the other routes, client validation).
 
 **Exit criteria:**
 

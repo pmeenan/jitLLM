@@ -41,8 +41,9 @@ schema_version = 2
 
 # The models the node serves (D-096), a table each, by the name a request
 # uses: an installed artifact (or, for a pipeline, a composition) by its ID,
-# the directory's name under `installed`. `jitllm-runtime chat` and
-# `jitllm-runtime swap-table` serve them; the service does not yet.
+# the directory's name under `installed`. The service serves them on the
+# loopback chat route ([client] below; D-097), and `jitllm-runtime chat`
+# and `jitllm-runtime swap-table` by hand.
 # [models.deepseek]
 # artifact = "<64 hex digits>"
 # A speculative drafter's artifact; speculation is then the default decode.
@@ -58,6 +59,13 @@ schema_version = 2
 #
 # [models.image]
 # composition = "<64 hex digits>"
+
+[client]
+# Where the service listens for /v1/chat/completions and /v1/models when
+# models are configured: a loopback address (127.0.0.0/8 or [::1]) and a
+# port. Anything else is refused: remote access needs authentication and
+# transport protection, which arrive with the front door (M5).
+# bind = "127.0.0.1:8114"
 
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build

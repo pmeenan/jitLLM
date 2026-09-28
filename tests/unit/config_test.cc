@@ -109,6 +109,34 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_FALSE(config.membership.has_value());
   EXPECT_EQ(config.storage.installed, "/var/lib/jitllm/models");
   EXPECT_THAT(config.files, ElementsAre("a.toml"));
+  EXPECT_EQ(config.client.address, "127.0.0.1");
+  EXPECT_FALSE(config.client.ipv6);
+  EXPECT_EQ(config.client.port, 8114);
+}
+
+// The chat route's listener (D-097): loopback only, in this build.
+TEST(NodeConfigTest, TheClientBindsLoopbackOnly) {
+  const NodeConfig four = Parsed("schema_version = 2\n[client]\nbind = \"127.0.0.2:9000\"\n");
+  EXPECT_EQ(four.client.address, "127.0.0.2");
+  EXPECT_EQ(four.client.port, 9000);
+  const NodeConfig six = Parsed("schema_version = 2\nclient.bind = \"[::1]:8114\"\n");
+  EXPECT_EQ(six.client.address, "::1");
+  EXPECT_TRUE(six.client.ipv6);
+  for (const std::string_view bad :
+       {"0.0.0.0:8114", "192.168.1.2:8114", "[::]:8114", "[::ffff:127.0.0.1]:8114"}) {
+    EXPECT_THAT(Failures(std::format("schema_version = 2\n[client]\nbind = \"{}\"\n", bad)),
+                ElementsAre(HasSubstr("client.bind must be a loopback address")))
+        << bad;
+  }
+  for (const std::string_view bad :
+       {"127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:08114", "localhost:8114",
+        "::1:8114", "127.0.0.1:+80", "[::1]8114", ""}) {
+    EXPECT_THAT(Failures(std::format("schema_version = 2\n[client]\nbind = \"{}\"\n", bad)),
+                ElementsAre(HasSubstr("client.bind must be \"<loopback address>:<port>\"")))
+        << bad;
+  }
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = 8114\n"),
+              ElementsAre(HasSubstr("client.bind must be a string, not an integer")));
 }
 
 TEST(NodeConfigTest, ReadsTheMemberExample) {
@@ -256,11 +284,9 @@ TEST(NodeConfigTest, ReportsEveryProblemNotJustTheFirst) {
 TEST(NodeConfigTest, UnknownKeysAndTablesAreFatal) {
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nspil = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key storage.spil")));
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\n"),
-              ElementsAre(HasSubstr("unknown table client")));
-  // The front door's keys arrive in M5 (D-069, plan.md).
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = \"127.0.0.1:8114\"\n"),
-              ElementsAre(HasSubstr("a.toml:2:1: unknown table client")));
+  // [client] has bind (D-097); the front door's other keys arrive in M5.
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nport = 8114\n"),
+              ElementsAre(HasSubstr("unknown key client.port")));
   EXPECT_THAT(Failures("schema_version = 2\nstorage = \"x\"\n"),
               ElementsAre(HasSubstr("storage must be a table")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage.spill]\n"),

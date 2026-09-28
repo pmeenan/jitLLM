@@ -264,8 +264,14 @@ int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction se
     (void)::pthread_sigmask(SIG_UNBLOCK, &stop, nullptr);
     return serve(started->config, started->roles, options->command, stdout, log);
   }
-  // 10. Ready. A minimal loopback endpoint arrives in M3 and the front door
-  // in M5; until then there is nothing to serve.
+  if (!started->config.models.empty()) {
+    // The service with models to serve (D-097): they are registered, the
+    // loopback chat route listens, and readiness follows; the stop signals
+    // stay blocked, watched by the serving loop.
+    return serve(started->config, started->roles, options->command, stdout, log);
+  }
+  // 10. Ready. Without models there is nothing to serve (the front door is
+  // M5's).
   if (auto notified =
           platform::NotifyServiceManager("READY=1\nSTATUS=standalone node; nothing to serve yet");
       !notified) {

@@ -17,6 +17,7 @@
 #include <string_view>
 
 #include "base/json.h"
+#include "base/sha256.h"
 #include "chat/pyjson.h"
 #include "expected_error.h"
 #include "tokenizer_fixtures.h"
@@ -88,6 +89,17 @@ TEST(Templates, FoundByHash) {
   // The older DeepSeek GGUF's template (e3aa0d6a) has no renderer.
   EXPECT_EQ(chat::FindTemplate("d05566ebe26667ec54f4ef7a3dbc114ce2e00aefc40e0c62286374eee0e22080"),
             nullptr);
+}
+
+// A template without a renderer is named by its hash, for the refusal at
+// registration.
+TEST(Templates, UnknownTextIsNamedByItsHash) {
+  constexpr std::string_view kText = "{{ messages[0]['content'] }}";
+  const std::string sha256 = jitllm::base::ToHex(jitllm::base::Sha256().Update(kText).Finish());
+  auto found = chat::FindTemplateForText(kText);
+  ASSERT_FALSE(found.has_value());
+  EXPECT_NE(found.error().find(sha256), std::string::npos) << found.error();
+  EXPECT_NE(found.error().find("no native renderer"), std::string::npos) << found.error();
 }
 
 // Renders every case of a fixture and compares with the reference.

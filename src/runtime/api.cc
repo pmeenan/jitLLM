@@ -1,0 +1,580 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "runtime/api.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/json.h"
+
+namespace jitllm::runtime::api {
+namespace {
+
+namespace json = base::json;
+
+std::unexpected<Error> Bad(std::string message, std::string param = {}, std::string code = {}) {
+  return std::unexpected(Error{.status = 400,
+                               .type = "invalid_request_error",
+                               .message = std::move(message),
+                               .param = std::move(param),
+                               .code = std::move(code)});
+}
+
+std::string Quoted(std::string_view text) {
+  std::string out;
+  json::AppendQuoted(text, out);
+  return out;
+}
+
+// A number that must equal `value` (a parameter accepted only at the
+// value that means "off").
+bool NumberIs(const json::Value& v, double value) {
+  if (!v.is_number()) {
+    return false;
+  }
+  const std::optional<double> x = v.float64();
+  return x && *x == value;
+}
+
+// A message's content: a string, or text parts joined.
+std::expected<std::string, Error> Content(const json::Value& content, const std::string& at) {
+  if (content.is_string()) {
+    return std::string(content.string());
+  }
+  if (!content.is_array()) {
+    return Bad(std::format("{}.content must be a string or an array of text parts", at),
+               at + ".content");
+  }
+  if (content.size() > kMaxContentParts) {
+    return Bad(
+        std::format("{}.content has {} parts, more than {}", at, content.size(), kMaxContentParts),
+        at + ".content");
+  }
+  std::string text;
+  for (std::size_t j = 0; j < content.size(); ++j) {
+    const json::Value part = content.at(j);
+    const std::string where = std::format("{}.content[{}]", at, j);
+    if (!part.is_object()) {
+      return Bad(where + " must be an object", where);
+    }
+    auto type = part.find("type");
+    if (!type || !type->is_string()) {
+      return Bad(where + ".type must be a string", where + ".type");
+    }
+    if (type->string() != "text") {
+      return Bad(
+          std::format("{}.type is {}: this route takes text only", where, Quoted(type->string())),
+          where + ".type", "unsupported_content_type");
+    }
+    for (std::size_t k = 0; k < part.size(); ++k) {
+      const std::string_view key = part.key(k);
+      if (key == "type" || key == "text") {
+        continue;
+      }
+      if (key == "cache_control") {
+        continue;  // an advisory retention hint (D-045), ignored
+      }
+      return Bad(std::format("Unrecognized request argument supplied: {}.{}", where, key),
+                 std::format("{}.{}", where, key));
+    }
+    auto piece = part.find("text");
+    if (!piece || !piece->is_string()) {
+      return Bad(where + ".text must be a string", where + ".text");
+    }
+    if (text.size() + piece->string().size() > kMaxMessageBytes) {
+      return Bad(std::format("{} is longer than {} bytes", at, kMaxMessageBytes), at);
+    }
+    text += piece->string();
+  }
+  return text;
+}
+
+std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t index) {
+  const std::string at = std::format("messages[{}]", index);
+  if (!m.is_object()) {
+    return Bad(at + " must be an object", at);
+  }
+  Message out;
+  auto role = m.find("role");
+  if (!role || !role->is_string()) {
+    return Bad(at + ".role must be a string", at + ".role");
+  }
+  const std::string_view r = role->string();
+  if (r == "system" || r == "developer") {
+    out.role = Role::kSystem;
+  } else if (r == "user") {
+    out.role = Role::kUser;
+  } else if (r == "assistant") {
+    out.role = Role::kAssistant;
+  } else if (r == "tool" || r == "function") {
+    return Bad(
+        std::format("{}.role is {}: tools are not supported by this route yet", at, Quoted(r)),
+        at + ".role");
+  } else {
+    return Bad(std::format("{}.role is {}; it must be system, developer, user or assistant", at,
+                           Quoted(r)),
+               at + ".role");
+  }
+  const bool assistant = out.role == Role::kAssistant;
+  bool has_content = false;
+  for (std::size_t k = 0; k < m.size(); ++k) {
+    const std::string_view key = m.key(k);
+    const json::Value v = m.member(k);
+    const std::string where = std::format("{}.{}", at, key);
+    if (key == "role") {
+      continue;
+    }
+    if (key == "content") {
+      if (v.is_null() && assistant) {
+        has_content = true;
+        continue;
+      }
+      auto text = Content(v, at);
+      if (!text) {
+        return std::unexpected(text.error());
+      }
+      out.content = std::move(*text);
+      has_content = true;
+    } else if (key == "name") {
+      if (!v.is_string()) {
+        return Bad(where + " must be a string", where);
+      }
+      // Ignored: neither served template renders a speaker's name.
+    } else if (assistant && (key == "reasoning" || key == "reasoning_content")) {
+      if (v.is_null()) {
+        continue;
+      }
+      if (!v.is_string()) {
+        return Bad(where + " must be a string", where);
+      }
+      if (out.reasoning) {
+        return Bad(at + " has both reasoning and reasoning_content", where);
+      }
+      out.reasoning = std::string(v.string());
+    } else if (assistant && key == "refusal" && v.is_null()) {
+      continue;
+    } else if (assistant && key == "annotations" && v.is_array()) {
+      continue;  // response metadata a client echoes back
+    } else if (assistant && key == "tool_calls" &&
+               (v.is_null() || (v.is_array() && v.size() == 0))) {
+      continue;
+    } else if (assistant && key == "tool_calls") {
+      return Bad(where + ": tool calls are not supported by this route yet", where);
+    } else {
+      return Bad(std::format("Unrecognized request argument supplied: {}", where), where);
+    }
+  }
+  if (!has_content) {
+    return Bad(at + ".content is required", at + ".content");
+  }
+  if (out.content.size() > kMaxMessageBytes ||
+      (out.reasoning && out.reasoning->size() > kMaxMessageBytes)) {
+    return Bad(std::format("{} is longer than {} bytes", at, kMaxMessageBytes), at);
+  }
+  return out;
+}
+
+std::expected<std::vector<std::string>, Error> ParseStop(const json::Value& v) {
+  std::vector<std::string> stops;
+  const auto one = [&](const json::Value& s, const std::string& where) -> std::optional<Error> {
+    if (!s.is_string()) {
+      return Bad(where + " must be a string", where).error();
+    }
+    if (s.string().empty() || s.string().size() > kMaxStopBytes) {
+      return Bad(std::format("{} must be 1 to {} bytes", where, kMaxStopBytes), where).error();
+    }
+    stops.emplace_back(s.string());
+    return std::nullopt;
+  };
+  if (v.is_string()) {
+    if (auto e = one(v, "stop")) {
+      return std::unexpected(*e);
+    }
+    return stops;
+  }
+  if (!v.is_array()) {
+    return Bad("stop must be a string or an array of strings", "stop");
+  }
+  if (v.size() > kMaxStops) {
+    return Bad(std::format("stop has {} strings, more than {}", v.size(), kMaxStops), "stop");
+  }
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    if (auto e = one(v.at(i), std::format("stop[{}]", i))) {
+      return std::unexpected(*e);
+    }
+  }
+  return stops;
+}
+
+std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::string_view name) {
+  const std::optional<std::int64_t> n = v.int64();
+  if (!v.is_integer() || !n || *n < 1 || *n > kMaxTokensCeiling) {
+    return Bad(std::format("{} must be an integer from 1 to {}", name, kMaxTokensCeiling),
+               std::string(name));
+  }
+  return static_cast<std::uint32_t>(*n);
+}
+
+}  // namespace
+
+std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
+  const json::Limits limits{.max_bytes = kMaxBodyBytes,
+                            .max_depth = kMaxJsonDepth,
+                            .max_values = kMaxJsonValues,
+                            .max_string_bytes = kMaxBodyBytes};
+  auto document = json::Parse(body, limits);
+  if (!document) {
+    return Bad(std::format("the body is not valid JSON: {}", document.error().ToString()));
+  }
+  const json::Value root = document->root();
+  if (!root.is_object()) {
+    return Bad("the body must be a JSON object");
+  }
+  ChatRequest request;
+  bool has_model = false;
+  bool has_messages = false;
+  std::optional<std::uint32_t> max_tokens;
+  std::optional<std::uint32_t> max_completion_tokens;
+  for (std::size_t k = 0; k < root.size(); ++k) {
+    const std::string_view key = root.key(k);
+    const json::Value v = root.member(k);
+    const std::string name(key);
+    if (key == "model") {
+      if (!v.is_string() || v.string().empty() || v.string().size() > kMaxModelBytes) {
+        return Bad(std::format("model must be a string of 1 to {} bytes", kMaxModelBytes), "model");
+      }
+      request.model = std::string(v.string());
+      has_model = true;
+    } else if (key == "messages") {
+      if (!v.is_array() || v.size() == 0) {
+        return Bad("messages must be a non-empty array", "messages");
+      }
+      if (v.size() > kMaxMessages) {
+        return Bad(std::format("messages has {} entries, more than {}", v.size(), kMaxMessages),
+                   "messages");
+      }
+      for (std::size_t i = 0; i < v.size(); ++i) {
+        auto m = ParseMessage(v.at(i), i);
+        if (!m) {
+          return std::unexpected(m.error());
+        }
+        request.messages.push_back(std::move(*m));
+      }
+      has_messages = true;
+    } else if (v.is_null()) {
+      // null is the default of every optional field below; an unknown key
+      // is refused whatever its value.
+      static constexpr std::array<std::string_view, 27> kOptional = {"max_tokens",
+                                                                     "max_completion_tokens",
+                                                                     "temperature",
+                                                                     "top_p",
+                                                                     "seed",
+                                                                     "stop",
+                                                                     "stream",
+                                                                     "stream_options",
+                                                                     "n",
+                                                                     "presence_penalty",
+                                                                     "frequency_penalty",
+                                                                     "logprobs",
+                                                                     "top_logprobs",
+                                                                     "tools",
+                                                                     "tool_choice",
+                                                                     "functions",
+                                                                     "function_call",
+                                                                     "response_format",
+                                                                     "logit_bias",
+                                                                     "modalities",
+                                                                     "user",
+                                                                     "safety_identifier",
+                                                                     "prompt_cache_key",
+                                                                     "metadata",
+                                                                     "service_tier",
+                                                                     "parallel_tool_calls",
+                                                                     "store"};
+      if (std::ranges::find(kOptional, key) == kOptional.end()) {
+        return Bad(std::format("Unrecognized request argument supplied: {}", key), name);
+      }
+    } else if (key == "max_tokens") {
+      auto n = ParseMaxTokens(v, key);
+      if (!n) {
+        return std::unexpected(n.error());
+      }
+      max_tokens = *n;
+    } else if (key == "max_completion_tokens") {
+      auto n = ParseMaxTokens(v, key);
+      if (!n) {
+        return std::unexpected(n.error());
+      }
+      max_completion_tokens = *n;
+    } else if (key == "temperature") {
+      const std::optional<double> t = v.is_number() ? v.float64() : std::nullopt;
+      if (!t || !std::isfinite(*t) || *t < 0 || *t > kMaxTemperature) {
+        return Bad(std::format("temperature must be a number from 0 to {}", kMaxTemperature), name);
+      }
+      request.temperature = *t;
+    } else if (key == "top_p") {
+      const std::optional<double> p = v.is_number() ? v.float64() : std::nullopt;
+      // The sampler takes a float: a value that rounds to 0 there would be
+      // refused mid-generation, a node failure, so it is refused here.
+      if (!p || !std::isfinite(*p) || *p <= 0 || *p > 1 || static_cast<float>(*p) <= 0.0F) {
+        return Bad("top_p must be a number greater than 0 and at most 1", name);
+      }
+      request.top_p = *p;
+    } else if (key == "seed") {
+      const std::optional<std::int64_t> s = v.int64();
+      if (!v.is_integer() || !s) {
+        return Bad("seed must be an integer that fits in 64 signed bits", name);
+      }
+      request.seed = static_cast<std::uint64_t>(*s);
+    } else if (key == "stop") {
+      auto stops = ParseStop(v);
+      if (!stops) {
+        return std::unexpected(stops.error());
+      }
+      request.stop = std::move(*stops);
+    } else if (key == "stream") {
+      if (!v.is_bool()) {
+        return Bad("stream must be a boolean", name);
+      }
+      request.stream = v.boolean();
+    } else if (key == "stream_options") {
+      if (!v.is_object()) {
+        return Bad("stream_options must be an object", name);
+      }
+      for (std::size_t j = 0; j < v.size(); ++j) {
+        const std::string where = std::format("stream_options.{}", v.key(j));
+        if (!v.member(j).is_bool()) {
+          return Bad(where + " must be a boolean", where);
+        }
+        if (v.key(j) == "include_usage") {
+          request.include_usage = v.member(j).boolean();
+        } else if (v.key(j) != "include_obfuscation") {  // no obfuscation is sent on loopback
+          return Bad(std::format("Unrecognized request argument supplied: {}", where), where);
+        }
+      }
+    } else if (key == "n") {
+      if (!NumberIs(v, 1)) {
+        return Bad("n must be 1: this route returns one choice", name);
+      }
+    } else if (key == "presence_penalty" || key == "frequency_penalty") {
+      if (!NumberIs(v, 0)) {
+        return Bad(std::format("{} is not supported by this route yet; only 0 is accepted", key),
+                   name);
+      }
+    } else if (key == "logprobs") {
+      if (!v.is_bool() || v.boolean()) {
+        return Bad("logprobs are not supported by this route yet", name);
+      }
+    } else if (key == "top_logprobs") {
+      if (!NumberIs(v, 0)) {
+        return Bad("logprobs are not supported by this route yet", name);
+      }
+    } else if (key == "tools" || key == "functions") {
+      if (!v.is_array() || v.size() != 0) {
+        return Bad("tools are not supported by this route yet", name);
+      }
+    } else if (key == "tool_choice" || key == "function_call") {
+      if (!v.is_string() || (v.string() != "none" && v.string() != "auto")) {
+        return Bad("tools are not supported by this route yet", name);
+      }
+    } else if (key == "response_format") {
+      auto type = v.is_object() && v.size() == 1 ? v.find("type") : std::nullopt;
+      if (!type || !type->is_string() || type->string() != "text") {
+        return Bad(
+            "response_format must be {\"type\": \"text\"}: structured output is not "
+            "supported by this route yet",
+            name);
+      }
+    } else if (key == "logit_bias") {
+      if (!v.is_object() || v.size() != 0) {
+        return Bad("logit_bias is not supported by this route yet", name);
+      }
+    } else if (key == "modalities") {
+      if (!v.is_array() || v.size() != 1 || !v.at(0).is_string() || v.at(0).string() != "text") {
+        return Bad("modalities must be [\"text\"]", name);
+      }
+    } else if (key == "user" || key == "safety_identifier" || key == "prompt_cache_key" ||
+               key == "service_tier") {
+      if (!v.is_string()) {
+        return Bad(std::format("{} must be a string", key), name);
+      }
+    } else if (key == "metadata") {
+      if (!v.is_object()) {
+        return Bad("metadata must be an object", name);
+      }
+    } else if (key == "parallel_tool_calls") {
+      if (!v.is_bool()) {
+        return Bad("parallel_tool_calls must be a boolean", name);
+      }
+    } else if (key == "store") {
+      if (!v.is_bool() || v.boolean()) {
+        return Bad("store must be false: nothing is stored", name);
+      }
+    } else {
+      return Bad(std::format("Unrecognized request argument supplied: {}", key), name);
+    }
+  }
+  if (!has_model) {
+    return Bad("model is required", "model");
+  }
+  if (!has_messages) {
+    return Bad("messages is required", "messages");
+  }
+  if (max_tokens && max_completion_tokens && *max_tokens != *max_completion_tokens) {
+    return Bad("max_tokens and max_completion_tokens differ; give one", "max_completion_tokens");
+  }
+  request.max_tokens = max_completion_tokens ? max_completion_tokens : max_tokens;
+  if (request.messages.back().role != Role::kUser) {
+    return Bad("the last message must be the user's", "messages");
+  }
+  return request;
+}
+
+// ---------------------------------------------------------------- output
+
+std::string ErrorJson(const Error& error) {
+  return std::format(R"({{"error":{{"message":{},"type":{},"param":{},"code":{}}}}})",
+                     Quoted(error.message), Quoted(error.type),
+                     error.param.empty() ? "null" : Quoted(error.param),
+                     error.code.empty() ? "null" : Quoted(error.code));
+}
+
+namespace {
+
+std::string_view FinishName(Finish finish) { return finish == Finish::kStop ? "stop" : "length"; }
+
+std::string UsageJson(const Usage& u) {
+  return std::format(R"({{"prompt_tokens":{},"completion_tokens":{},"total_tokens":{},)"
+                     R"("prompt_tokens_details":{{"cached_tokens":{}}}}})",
+                     u.prompt_tokens, u.completion_tokens,
+                     std::uint64_t{u.prompt_tokens} + std::uint64_t{u.completion_tokens},
+                     u.cached_tokens);
+}
+
+}  // namespace
+
+std::string CompletionJson(std::string_view id, std::int64_t created, std::string_view model,
+                           std::string_view content, const std::optional<std::string>& reasoning,
+                           Finish finish, const Usage& usage) {
+  return std::format(
+      R"({{"id":{},"object":"chat.completion","created":{},"model":{},"choices":[{{"index":0,)"
+      R"("message":{{"role":"assistant","content":{}{}}},"logprobs":null,"finish_reason":"{}"}}],)"
+      R"("usage":{}}})",
+      Quoted(id), created, Quoted(model), Quoted(content),
+      reasoning ? ",\"reasoning\":" + Quoted(*reasoning) : std::string(), FinishName(finish),
+      UsageJson(usage));
+}
+
+std::string ChunkJson(std::string_view id, std::int64_t created, std::string_view model,
+                      Delta delta, std::string_view text, Finish finish) {
+  std::string body;
+  switch (delta) {
+    case Delta::kRole:
+      body = R"({"role":"assistant","content":""})";
+      break;
+    case Delta::kReasoning:
+      body = "{\"reasoning\":" + Quoted(text) + "}";
+      break;
+    case Delta::kContent:
+      body = "{\"content\":" + Quoted(text) + "}";
+      break;
+    case Delta::kFinish:
+      body = "{}";
+      break;
+  }
+  return std::format(
+      R"({{"id":{},"object":"chat.completion.chunk","created":{},"model":{},"choices":[{{)"
+      R"("index":0,"delta":{},"logprobs":null,"finish_reason":{}}}]}})",
+      Quoted(id), created, Quoted(model), body,
+      delta == Delta::kFinish ? Quoted(FinishName(finish)) : std::string("null"));
+}
+
+std::string UsageChunkJson(std::string_view id, std::int64_t created, std::string_view model,
+                           const Usage& usage) {
+  return std::format(
+      R"({{"id":{},"object":"chat.completion.chunk","created":{},"model":{},"choices":[],)"
+      R"("usage":{}}})",
+      Quoted(id), created, Quoted(model), UsageJson(usage));
+}
+
+std::string ModelJson(const ModelInfo& model, std::int64_t created) {
+  return std::format(R"({{"id":{},"object":"model","created":{},"owned_by":"jitllm"}})",
+                     Quoted(model.name), created);
+}
+
+std::string ModelsJson(const std::vector<ModelInfo>& models, std::int64_t created) {
+  std::string data;
+  for (const ModelInfo& m : models) {
+    data += (data.empty() ? "" : ",") + ModelJson(m, created);
+  }
+  return std::format(R"({{"object":"list","data":[{}]}})", data);
+}
+
+// ---------------------------------------------------------------- OutputText
+
+OutputText::Out OutputText::Reasoning(std::string_view text) {
+  if (stopped_) {
+    return {};
+  }
+  had_reasoning_ = true;
+  return {.reasoning = std::string(text), .content = {}};
+}
+
+OutputText::Out OutputText::Content(std::string_view text) {
+  if (stopped_) {
+    return {};
+  }
+  if (!content_started_ && had_reasoning_) {
+    while (!text.empty() && (text.front() == '\n' || text.front() == ' ')) {
+      text.remove_prefix(1);
+    }
+  }
+  if (text.empty()) {
+    return {};
+  }
+  content_started_ = true;
+  held_ += text;
+  // The earliest stop string ends the answer before it.
+  std::size_t first = std::string::npos;
+  for (const std::string& stop : stops_) {
+    first = std::min(first, held_.find(stop));
+  }
+  if (first != std::string::npos) {
+    Out out{.reasoning = {}, .content = held_.substr(0, first)};
+    held_.clear();
+    stopped_ = true;
+    return out;
+  }
+  // Hold back the longest tail that begins some stop string.
+  std::size_t hold = 0;
+  for (const std::string& stop : stops_) {
+    for (std::size_t n = std::min(stop.size() - 1, held_.size()); n > hold; --n) {
+      if (std::string_view(held_).substr(held_.size() - n) == std::string_view(stop).substr(0, n)) {
+        hold = n;
+        break;
+      }
+    }
+  }
+  Out out{.reasoning = {}, .content = held_.substr(0, held_.size() - hold)};
+  held_.erase(0, held_.size() - hold);
+  return out;
+}
+
+OutputText::Out OutputText::Finish() {
+  Out out{.reasoning = {}, .content = std::move(held_)};
+  held_.clear();
+  return out;
+}
+
+}  // namespace jitllm::runtime::api

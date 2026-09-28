@@ -8,10 +8,10 @@ and D-045 (front-door listener, auth and CORS defaults, admission status and
 keepalive contract, standard-client signals, alias echo), with D-047's
 reasoning, storage and non-streaming corrections, following D-022/D-030.
 This is the M5 implementation contract and test plan for the
-inference front door, not a claim that jitLLM serves these clients: no
-application endpoint exists yet. M3 serves only a minimal loopback
-`/v1/chat/completions` once the swap floor is proven; the surface here
-arrives in M5 (D-087). Sources are live official documentation, not
+inference front door, not a claim that jitLLM serves these clients. M3
+serves only a minimal loopback `/v1/chat/completions`
+([runtime-serving.md](runtime-serving.md#the-chat-route), D-097), checked
+with curl, not with these clients; the surface here arrives in M5 (D-087). Sources are live official documentation, not
 pinned client binaries; recheck and record exact client versions and
 configurations when running acceptance.
 
@@ -309,8 +309,10 @@ top-level `jitllm` body object; M5 fixes the individual names.
 
 ## Shared correctness and limits
 
-Before M3's minimal endpoint or M5's front door accepts external input,
-specify numeric bounds on request/header
+M3's minimal endpoint fixed its bounds in
+[runtime-serving.md](runtime-serving.md#the-chat-route) (D-097); M5's
+front door extends them to its routes. Before M5's front door accepts
+external input, specify numeric bounds on request/header
 bytes, history, tools, argument size, output, queued requests and stream
 buffers. Reject oversized or unsupported input before expensive work. Test
 malformed JSON, invalid tool links, unsupported modalities and unavailable

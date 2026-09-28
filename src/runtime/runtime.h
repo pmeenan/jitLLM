@@ -30,6 +30,10 @@
 // startup steps run, then instead of readiness the process registers the
 // configured models on its node, runs the command and exits; it holds the
 // process lock throughout, so it never runs beside the service.
+//
+// The service with models configured (D-097) registers them the same way,
+// serves the loopback chat route (api_server.h) and then reports
+// readiness; without models it waits as above.
 
 #ifndef JITLLM_RUNTIME_RUNTIME_H_
 #define JITLLM_RUNTIME_RUNTIME_H_

@@ -8,4 +8,5 @@
 # (docs/architecture.md#layers-and-dependency-rules), after the tokenizer.
 add_library(jitllm_chat STATIC chat.cc deepseek_v4.cc pyjson.cc qwen.cc)
 target_include_directories(jitllm_chat PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_chat PUBLIC jitllm_json jitllm_tokenizer PRIVATE jitllm_warnings)
+target_link_libraries(jitllm_chat PUBLIC jitllm_json jitllm_tokenizer PRIVATE jitllm_base
+                      jitllm_warnings)

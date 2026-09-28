@@ -54,7 +54,24 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   swapping models as needed, and `jitllm-runtime swap-table` measures M3's
   swap table between the configured models. Replies are greedy, and
   speculative where a model has a drafter (`--plain` turns it off). CUDA
-  builds only. The service itself still serves nothing.
+  builds only.
+- With models configured, the runtime service serves a minimal
+  OpenAI-compatible chat route on loopback (D-097): `POST
+  /v1/chat/completions` (text messages; `max_tokens` or
+  `max_completion_tokens`, `temperature`, `top_p`, `seed`, `stop`, `stream`
+  with `stream_options.include_usage`; reasoning returned as `reasoning`),
+  `GET /v1/models` and `GET /v1/models/{id}`, one request at a time with a
+  short queue, swapping models as requested. No credential; browser
+  requests are refused. Every intake bound, timeout and refusal is listed
+  in docs/runtime-serving.md; unsupported fields are refused, not ignored.
+  The listener is `[client] bind` in the configuration, a loopback address
+  and port (default `127.0.0.1:8114`); the configuration's schema version
+  stays 2. The runtime can sample (seeded, with speculative sampling where
+  a model has a drafter) as well as decode greedily. A CPU-only build
+  refuses to start with models configured.
+- A DeepSeek artifact whose chat template has no native renderer is now
+  refused when it registers, as Qwen3.8's already was, naming the
+  template's SHA-256.
 - The arm64 package ships NVIDIA's cuBLAS (`libcublas.so.13`,
   `libcublasLt.so.13`, unmodified) in `/usr/lib/jitllm` for the runtime, and
   depends on `libgcc-s1`; its third-party notices now include GGML's and

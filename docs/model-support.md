@@ -46,7 +46,9 @@ Nothing is distributed-correct: two-node execution is M4's.
 
 A chat template is rendered only when a native renderer is registered for
 the SHA-256 of its exact UTF-8 bytes (D-067); no template text is ever
-evaluated. The registry is `kTemplates` in
+evaluated. An LLM whose template has no renderer is refused when the
+runtime registers it, with the template's hash in the error
+(`chat::FindTemplateForText`). The registry is `kTemplates` in
 [src/chat/chat.cc](../src/chat/chat.cc); its hashes agree with
 [tokenizer.md](tokenizer.md#chat-templates) and with the unit tests
 (`chat_test`, and `tokenizer_models_test`, which hashes the model files on
@@ -86,7 +88,7 @@ not used. The options each renderer supports and refuses are in
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
   | Greedy, speculative with DSpark | runtime (the default with a drafter) and `jitllm_spec_runner` |
-  | Seeded sampling, plain and speculative | harness only (`jitllm_spec_runner`) |
+  | Seeded sampling, plain and speculative | `jitllm_spec_runner`, whose distribution checks it passed; the runtime's chat route (`temperature` > 0, D-097), the same sampler, checked there only for repeating by seed |
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
@@ -106,6 +108,10 @@ not used. The options each renderer supports and refuses are in
     corpus and the chat fixtures ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
   - Through the runtime: greedy tokens equal the harnesses', speculative
     and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+  - Through the loopback chat route, first and after a swap back: the
+    greedy reply equals `jitllm-runtime chat`'s on the same prompt, and a
+    seeded sampled request repeats exactly (D-097,
+    [runtime-serving.md](runtime-serving.md#the-chat-route)).
   - Speed headline: plain decode 1.07–1.09× llama.cpp's
     ([dsv4-decode](experiments/dsv4-decode/README.md#results)).
 - **Known divergences:**
@@ -120,8 +126,6 @@ not used. The options each renderer supports and refuses are in
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
     2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
     and serves the GGUF's.
-  - With a kept template of another hash the model still registers, and
-    each chat turn is then refused (Qwen3.8 refuses at registration).
 
 ## DSpark
 
@@ -168,7 +172,7 @@ not used. The options each renderer supports and refuses are in
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
   | Greedy, speculative with MTP (depth 2, 65,536 draft rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec` |
-  | Seeded sampling, plain and speculative | harness only (`jitllm_qwen38_spec`) |
+  | Seeded sampling, plain and speculative | `jitllm_qwen38_spec`; the runtime's chat route (`temperature` > 0, D-097), the same sampler, not yet checked there |
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
@@ -186,6 +190,9 @@ not used. The options each renderer supports and refuses are in
     tokenizers ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
   - Through the runtime: greedy tokens equal the harnesses', speculative
     and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+  - Through the loopback chat route, streamed after a swap: the greedy
+    reply equals `jitllm-runtime chat`'s on the same prompt (D-097,
+    [runtime-serving.md](runtime-serving.md#the-chat-route)).
   - Speed headline: prefill 1.38–1.41× Mia's vLLM at 8K; plain decode
     1.01–1.03× with speculation off on both sides.
 - **Known divergences:**

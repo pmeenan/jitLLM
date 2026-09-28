@@ -3,7 +3,9 @@
 
 #include "config/node_config.h"
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -133,6 +135,7 @@ enum class Kind : std::uint8_t {
   kInterfaces,
   kPeerScopes,
   kProfile,
+  kLoopbackBind,  // "<loopback address>:<port>" (D-097)
 };
 
 struct KeySpec {
@@ -152,6 +155,7 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"control", "interfaces"}, .kind = Kind::kInterfaces, .member = true},
       {.path = {"control", "peer_scopes"}, .kind = Kind::kPeerScopes, .member = true},
       {.path = {"limits", "profile"}, .kind = Kind::kProfile, .member = false},
+      {.path = {"client", "bind"}, .kind = Kind::kLoopbackBind, .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
       {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
       {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
@@ -440,6 +444,8 @@ class Validator {
         return "a table of member UUIDs to selectors";
       case Kind::kProfile:
         return "\"initial-v2\"";
+      case Kind::kLoopbackBind:
+        return "a loopback address and port";
     }
     return "";
   }
@@ -543,6 +549,20 @@ class Validator {
                   std::format("{} must be \"{}\", the only limits profile of schema version {}",
                               key, kLimitsProfile, kSchemaVersion));
         }
+        break;
+      }
+      case Kind::kLoopbackBind: {
+        const auto* text = node.as_string();
+        if (text == nullptr) {
+          out_.At(leaf, std::format("{} must be a string, not {}", key, TypeName(node)));
+          break;
+        }
+        auto endpoint = ParseLoopbackBind(text->get());
+        if (!endpoint) {
+          out_.At(leaf, std::format("{} {}", key, endpoint.error()));
+          break;
+        }
+        client_ = *endpoint;
         break;
       }
     }
@@ -800,6 +820,9 @@ class Validator {
     }
     config.storage = Roles();
     config.models = Models();
+    if (client_) {
+      config.client = *client_;
+    }
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -917,6 +940,7 @@ class Validator {
   std::uint16_t port_ = 0;
   std::vector<std::string> interfaces_;
   std::map<std::string, std::string> peer_scopes_;
+  std::optional<ClientEndpoint> client_;
 };
 
 }  // namespace
@@ -933,6 +957,69 @@ std::string FormatDiagnostic(const Diagnostic& diagnostic) {
     return std::format("{}: {}", file, message);
   }
   return std::format("{}:{}:{}: {}", file, diagnostic.line, diagnostic.column, message);
+}
+
+std::expected<ClientEndpoint, std::string> ParseLoopbackBind(std::string_view text) {
+  constexpr std::string_view kForm =
+      R"(must be "<loopback address>:<port>", such as "127.0.0.1:8114" or "[::1]:8114")";
+  ClientEndpoint endpoint;
+  std::string_view address;
+  std::string_view port;
+  if (text.starts_with('[')) {
+    const std::size_t close = text.find("]:");
+    if (close == std::string_view::npos) {
+      return std::unexpected(std::string(kForm));
+    }
+    address = text.substr(1, close - 1);
+    port = text.substr(close + 2);
+    endpoint.ipv6 = true;
+  } else {
+    const std::size_t colon = text.rfind(':');
+    if (colon == std::string_view::npos) {
+      return std::unexpected(std::string(kForm));
+    }
+    address = text.substr(0, colon);
+    port = text.substr(colon + 1);
+  }
+  if (port.empty() || port.size() > 5 || port.front() == '0' ||
+      !std::ranges::all_of(port, [](char c) { return c >= '0' && c <= '9'; })) {
+    return std::unexpected(std::format("{}; the port is 1-65535, in decimal", kForm));
+  }
+  std::uint32_t number = 0;
+  for (const char c : port) {
+    number = (number * 10) + static_cast<std::uint32_t>(c - '0');
+  }
+  if (number > 65535) {
+    return std::unexpected(std::format("{}; the port is 1-65535, in decimal", kForm));
+  }
+  endpoint.port = static_cast<std::uint16_t>(number);
+  const std::string owned(address);
+  std::array<char, INET6_ADDRSTRLEN> canonical{};
+  if (endpoint.ipv6) {
+    in6_addr six{};
+    if (::inet_pton(AF_INET6, owned.c_str(), &six) != 1) {
+      return std::unexpected(std::string(kForm));
+    }
+    if (std::memcmp(&six, &in6addr_loopback, sizeof six) != 0) {
+      return std::unexpected(
+          "must be a loopback address: remote access needs the front door's authentication and "
+          "transport protection (D-014), which this build does not have");
+    }
+    (void)::inet_ntop(AF_INET6, &six, canonical.data(), canonical.size());
+  } else {
+    in_addr four{};
+    if (::inet_pton(AF_INET, owned.c_str(), &four) != 1) {
+      return std::unexpected(std::string(kForm));
+    }
+    if ((ntohl(four.s_addr) >> 24U) != 127U) {
+      return std::unexpected(
+          "must be a loopback address: remote access needs the front door's authentication and "
+          "transport protection (D-014), which this build does not have");
+    }
+    (void)::inet_ntop(AF_INET, &four, canonical.data(), canonical.size());
+  }
+  endpoint.address = canonical.data();
+  return endpoint;
 }
 
 std::expected<NodeConfig, std::vector<Diagnostic>> ParseNodeConfig(

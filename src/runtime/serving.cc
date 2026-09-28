@@ -21,7 +21,6 @@
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
 #include "base/report.h"
-#include "base/sha256.h"
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
 #include "engine/qwen38_runner.h"
@@ -121,10 +120,6 @@ std::expected<ja::Artifact, std::string> OpenTrusted(const fs::path& store, cons
   return std::move(*opened);
 }
 
-std::string Hex(std::string_view bytes) {
-  return base::ToHex(base::Sha256().Update(bytes).Finish());
-}
-
 std::string GraphJson(const GraphCounts& g) {
   return std::format(R"({{"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}})",
                      g.eager, g.captured, g.replayed, g.refused, g.kept);
@@ -205,16 +200,21 @@ class Dsv4 final : public Llm {
       return Error(std::format("{}: {}", kv, created.error().ToString()));
     }
     tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
-    if (read->has_chat_template) {
-      template_ = chat::FindTemplate(Hex(read->chat_template));
+    FindThinkTokens();
+    // A model is refused here, like Qwen3.8, when it could serve no turn.
+    if (!read->has_chat_template) {
+      return Error(std::format("{} keeps no chat template, so it has no chat turns", kv));
     }
-    if (template_ != nullptr) {
-      auto stops = chat::StopTokens(template_->stop, *tokenizer_);
-      if (!stops) {
-        return Error(stops.error().ToString());
-      }
-      stops_.assign(stops->begin(), stops->end());
+    auto found = chat::FindTemplateForText(read->chat_template);
+    if (!found) {
+      return std::unexpected(found.error());
     }
+    template_ = *found;
+    auto stops = chat::StopTokens(template_->stop, *tokenizer_);
+    if (!stops) {
+      return Error(stops.error().ToString());
+    }
+    stops_.assign(stops->begin(), stops->end());
     if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
       stops_.push_back(*tokenizer_->eos());
     }
@@ -282,19 +282,29 @@ class Dsv4 final : public Llm {
     const auto row = [&](std::uint32_t i) {
       return std::span<const float>(verified).subspan(std::size_t{i} * vocab, vocab);
     };
-    // Accept drafts while the target agrees; the first disagreement, or the
-    // row after the last draft, gives the next token.
+    // Accept drafts while the target agrees (greedy: its argmax; sampling:
+    // speculative sampling's verdict); the first disagreement, or the row
+    // after the last draft, gives the next token. Row m predicts the token
+    // at pos + m + 1.
     std::uint32_t m = 0;
     std::int32_t next = -1;
     for (; m < rows - 1; ++m) {
-      const std::int32_t want = engine::Argmax(row(m));
-      if (want != drafts[m]) {
-        next = want;
+      std::int32_t instead = -1;
+      auto keep = Keep(row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
+      if (!keep) {
+        return std::unexpected(keep.error());
+      }
+      if (!*keep) {
+        next = instead;
         break;
       }
     }
     if (next < 0) {
-      next = engine::Argmax(row(m));
+      auto chosen = Choose(row(m), std::uint64_t{pos} + m + 1);
+      if (!chosen) {
+        return std::unexpected(chosen.error());
+      }
+      next = *chosen;
     }
     if (auto r = runner_.Accept(m + 1); !r) {
       return r;
@@ -397,14 +407,16 @@ class Qwen38 final : public Llm {
       return Error("tokenizer: " + created.error().ToString());
     }
     tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
+    FindThinkTokens();
     auto text = source("chat_template.jinja", template_path_, "chat_template");
     if (!text) {
       return std::unexpected(text.error());
     }
-    template_ = chat::FindTemplate(Hex(*text));
-    if (template_ == nullptr) {
-      return Error("no native renderer has this chat template's hash (D-067)");
+    auto found = chat::FindTemplateForText(*text);
+    if (!found) {
+      return std::unexpected(found.error());
     }
+    template_ = *found;
     auto stops = chat::StopTokens(template_->stop, *tokenizer_);
     if (!stops) {
       return Error(stops.error().ToString());
@@ -452,6 +464,10 @@ class Qwen38 final : public Llm {
     // The template's own defaults (thinking on), as the oracle's /tokenize
     // rendered the references' prompts.
   }
+  // A speculative step's drafts must stay inside the context (SpecStep).
+  std::uint32_t usable_context() const override {
+    return speculate_ ? context_ - runner_.draft_rows() : context_;
+  }
 
  protected:
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
@@ -476,19 +492,48 @@ class Qwen38 final : public Llm {
     input.insert(input.end(), drafts.begin(), drafts.end());
     std::vector<std::int32_t> argmax;
     std::vector<float> verified;
-    if (auto r = runner_.Verify(input, pos, argmax, logits != nullptr ? &verified : nullptr); !r) {
+    const bool rows_needed = logits != nullptr || sampling();
+    if (auto r = runner_.Verify(input, pos, argmax, rows_needed ? &verified : nullptr); !r) {
       return r;
     }
+    const std::uint32_t vocab = runner_.vocab();
+    const auto row = [&](std::uint32_t i) {
+      return std::span<const float>(verified).subspan(std::size_t{i} * vocab, vocab);
+    };
     std::uint32_t m = 0;
     std::int32_t next = -1;
-    for (; m < rows - 1; ++m) {
-      if (argmax[m] != drafts[m]) {
-        next = argmax[m];
-        break;
+    if (!sampling()) {
+      // Greedy: the verify's own argmaxes.
+      for (; m < rows - 1; ++m) {
+        if (argmax[m] != drafts[m]) {
+          next = argmax[m];
+          break;
+        }
       }
-    }
-    if (next < 0) {
-      next = argmax[m];
+      if (next < 0) {
+        next = argmax[m];
+      }
+    } else {
+      // Speculative sampling over the verify's rows; row m predicts the
+      // token at pos + m + 1.
+      for (; m < rows - 1; ++m) {
+        std::int32_t instead = -1;
+        auto keep = Keep(row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
+        if (!keep) {
+          return std::unexpected(keep.error());
+        }
+        if (!*keep) {
+          next = instead;
+          break;
+        }
+      }
+      if (next < 0) {
+        auto chosen = Choose(row(m), std::uint64_t{pos} + m + 1);
+        if (!chosen) {
+          return std::unexpected(chosen.error());
+        }
+        next = *chosen;
+      }
     }
     if (auto r = runner_.Accept(m + 1); !r) {
       return r;
@@ -496,10 +541,9 @@ class Qwen38 final : public Llm {
     kept.assign(drafts.begin(), drafts.begin() + m);
     kept.push_back(next);
     if (logits != nullptr) {
-      const std::uint32_t vocab = runner_.vocab();
       for (std::uint32_t i = 0; i <= m; ++i) {
-        const auto row = std::span<const float>(verified).subspan(std::size_t{i} * vocab, vocab);
-        logits->emplace_back(row.begin(), row.end());
+        const std::span<const float> kept_row = row(i);
+        logits->emplace_back(kept_row.begin(), kept_row.end());
       }
     }
     drafted += rows - 1;
@@ -694,6 +738,45 @@ std::string Llm::Detokenize(std::span<const std::int32_t> tokens) const {
   return text;
 }
 
+std::expected<std::int32_t, std::string> Llm::Choose(std::span<const float> row,
+                                                     std::uint64_t position) {
+  if (!sampling_) {
+    return engine::Argmax(row);
+  }
+  auto token = execution::Sample(row, *sampling_,
+                                 {.seed = seed_, .stream = 0, .position = position}, scratch_);
+  if (!token) {
+    return Error(std::format("sampling: {}", execution::SamplingErrorName(token.error())));
+  }
+  return *token;
+}
+
+std::expected<bool, std::string> Llm::Keep(std::span<const float> row, std::int32_t draft,
+                                           std::uint64_t position, std::int32_t& next) {
+  if (!sampling_) {
+    next = engine::Argmax(row);
+    return next == draft;
+  }
+  auto verdict = execution::VerifyDraft(
+      row, draft, *sampling_, {.seed = seed_, .stream = 0, .position = position}, scratch_);
+  if (!verdict) {
+    return Error(std::format("sampling: {}", execution::SamplingErrorName(verdict.error())));
+  }
+  next = verdict->token;
+  return verdict->accepted;
+}
+
+void Llm::FindThinkTokens() {
+  think_start_.reset();
+  think_end_.reset();
+  if (auto id = tokenizer_->Find("<think>")) {
+    think_start_ = *id;
+  }
+  if (auto id = tokenizer_->Find("</think>")) {
+    think_end_ = *id;
+  }
+}
+
 Status Llm::Clear() {
   if (auto r = ClearState(); !r) {
     return r;
@@ -735,11 +818,38 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   const auto is_stop = [&](std::int32_t token) {
     return options.stop && std::ranges::find(stops_, token) != stops_.end();
   };
-  out.tokens = {engine::Argmax(last)};
+  sampling_.reset();
+  if (options.sampling && options.sampling->temperature > 0) {
+    sampling_ = options.sampling;
+    seed_ = options.seed;
+  }
+  // The new tokens since the last call, to on_tokens: false ends the
+  // generation.
+  std::size_t reported = 0;
+  const auto report = [&]() {
+    if (!options.on_tokens) {
+      return true;
+    }
+    std::size_t visible = std::min<std::size_t>(out.tokens.size(), options.max_tokens);
+    if (out.stopped && visible == out.tokens.size() && visible > 0) {
+      --visible;  // the stop token
+    }
+    const std::span<const std::int32_t> fresh =
+        std::span<const std::int32_t>(out.tokens).subspan(reported, visible - reported);
+    reported = visible;
+    return options.on_tokens(fresh);
+  };
+  auto first = Choose(last, history_.size());
+  if (!first) {
+    sampling_.reset();
+    return std::unexpected(first.error());
+  }
+  out.tokens = {*first};
   if (options.keep_logits) {
     out.logits = {last};
   }
   out.stopped = is_stop(out.tokens.back());
+  out.cancelled = !report();
   // Every token so far, the anchor (the last generated, not yet in the
   // state) last; pos: how many the state holds.
   std::vector<std::int32_t> all = history_;
@@ -747,7 +857,7 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   auto pos = static_cast<std::uint32_t>(history_.size());
   const auto start = Clock::now();
   Status ran;
-  while (!out.stopped && out.tokens.size() < options.max_tokens) {
+  while (!out.stopped && !out.cancelled && out.tokens.size() < options.max_tokens) {
     if (pos + 1 >= context_) {
       ran = Error(std::format("{}'s conversation reached its context of {}", name_, context_));
       break;
@@ -764,9 +874,14 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
       std::vector<float> row;
       ran = RunChunk(all, pos, false, row);
       if (ran) {
-        kept = {engine::Argmax(row)};
-        if (options.keep_logits) {
-          out.logits.push_back(std::move(row));
+        auto next = Choose(row, pos + 1);
+        if (!next) {
+          ran = std::unexpected(next.error());
+        } else {
+          kept = {*next};
+          if (options.keep_logits) {
+            out.logits.push_back(std::move(row));
+          }
         }
       }
     }
@@ -788,8 +903,10 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
         break;
       }
     }
+    out.cancelled = !report();
   }
   out.decode_seconds = Seconds(Clock::now() - start);
+  sampling_.reset();
   if (!ran) {
     needs_clear_ = true;
     history_.clear();

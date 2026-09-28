@@ -39,6 +39,70 @@ one Spark and on two.
 
 ---
 
+## D-097: M3's loopback chat route: `[client] bind` (loopback only), a strict OpenAI subset with fixed intake bounds, one request at a time behind a short queue  (2026-09-28, status: proposed by the M3 chat-route slice, for the owner's review; adds a configuration key and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its first key; a subset of D-040's and D-045's M5 contract, which it does not amend)
+
+**Decision.** With models configured (D-096), the runtime service serves
+[runtime-serving.md](runtime-serving.md#the-chat-route)'s chat route:
+- **Listener.** `[client] bind = "<address>:<port>"`, default
+  `127.0.0.1:8114` (D-063's front-door port). Only a loopback address is
+  accepted (127.0.0.0/8 or `[::1]`); anything else is a configuration
+  error, since a remote binding needs D-014's authentication and transport
+  protection, which come with M5's front door. No other `[client]` key
+  exists yet. A service without models listens on nothing, as before.
+- **Surface.** `POST /v1/chat/completions` (non-streaming and SSE),
+  `GET /v1/models`, `GET /v1/models/{id}`, in OpenAI's shapes. Honored:
+  `model`, text `messages` (system, developer as system, user, assistant
+  with its `reasoning` or `reasoning_content` sent back),
+  `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `seed`,
+  `stop` (matched in the answer, not the reasoning), `stream`,
+  `stream_options.include_usage`. A listed set is accepted only at its
+  "off" value (n = 1, zero penalties, no logprobs, no tools, text
+  responses) and a listed set of metadata is ignored; every other field is
+  a 400 naming it (client-api-baseline.md's documented-rule clause).
+  Reasoning goes out as `reasoning` (D-043's spelling), split at the
+  template's `</think>` token. Omitted `temperature` samples at 1, as
+  OpenAI documents; 0 is greedy.
+- **Bounds and statuses** as runtime-serving.md tabulates them: head 16
+  KiB and 64 headers, target 2 KiB, body 4 MiB (Content-Length only), JSON
+  depth 16 and 262,144 values, 1,024 messages of at most 1 MiB, 64
+  content parts, 4 stop strings of 1–128 bytes, `max_tokens` 1 to the
+  model's usable context less the prompt, temperature 0–2, top_p (0, 1];
+  timeouts of 10 s for the head, 30 s for the body, 30 s per stalled
+  write, 120 s in the queue and 600 s a request. 413/414/408/411/501/505
+  for HTTP bounds, 400 for the body's, 404 for an unknown model, 400 for
+  the image pipeline, 403 for a non-loopback Host or any `Origin` or
+  cross-site `Sec-Fetch-Site`, 415 without `application/json`, 429 with
+  `Retry-After: 10` beyond four queued requests or 120 s queued, 504 past
+  the deadline, 503 while stopping.
+- **One request at a time.** Requests run in arrival order on the node's
+  driver thread; up to four wait. Every response closes its connection.
+  No keepalives: after a stream's headers the silence is a swap (~10 s)
+  and the prefill, inside the named clients' 300 s stream-idle bounds at
+  the default 8,704-token context; a much larger configured context is
+  not claimed to stay inside them (M5's keepalives). A queued wait comes
+  before the headers.
+
+**Why.** plan.md's last M3 item: a minimal OpenAI-compatible route with
+numeric intake bounds fixed before it accepts input. Refusing unknown
+fields rather than ignoring them keeps M5 free to give them meaning; a
+loopback-only key keeps D-014 true without an authentication design; one
+request at a time is M3's single user, and a bounded queue with 429s is
+client-api-baseline.md's admission table. Our own HTTP/1.1 reader (about
+400 lines) instead of a library: no new third-party code, and bounds we
+state ourselves.
+
+**Consequences.** The configuration gains `[client] bind` (schema version
+stays 2: a new key). A CPU-only build refuses to start with models
+configured (it could never serve them). The runtime samples as well as
+decodes greedily: seeded by position (execution/sampling.h), with
+speculative sampling (VerifyDraft) where a model has a drafter. Clients
+are not claimed to work: M5 validates named clients; M3's route is
+checked with curl.
+
+**Reopen if.** M5's front door replaces it (credentials, CORS for
+loopback origins, keepalives, tools, reasoning controls, Responses and
+Messages), or a real client needs a field refused here before then.
+
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057)
 
 **Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
@@ -1957,7 +2021,7 @@ apport or the kernel dumps a process that exits from a signal handler; a
 job must survive the runtime's unit restart; or DGX OS moves off cgroup v2
 or loses `DelegateSubgroup=` (systemd 254+).
 
-## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces)
+## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces; `[client] bind` fixed by D-097)
 
 **Decision.** How M1's Node configuration item reads and checks the node's
 configuration (`src/config/`, `src/platform/path_trust.*`,

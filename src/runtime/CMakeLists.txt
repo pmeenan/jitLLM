@@ -2,18 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The node runtime process (/usr/libexec/jitllm/jitllm-runtime once
-# packaged, D-063): startup, readiness and stop (runtime.h), and the serving
-# commands' arguments (commands.h), all vendor-free.
-add_library(jitllm_runtime STATIC runtime.cc commands.cc)
+# packaged, D-063): startup, readiness and stop (runtime.h), the serving
+# commands' arguments (commands.h), and the loopback chat route's HTTP,
+# requests and server (http.h, api.h, api_server.h; D-097), all vendor-free.
+add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_config jitllm_platform
-                      PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_warnings)
+                      PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json
+                              jitllm_warnings)
 
 # The serving commands themselves (serving.h, D-096): the configured models
 # on the engine's paged node, in CUDA builds; elsewhere a refusal.
 if(JITLLM_CUDA)
-  add_library(jitllm_runtime_serving STATIC serving.cc serve_commands.cc)
-  target_link_libraries(jitllm_runtime_serving PUBLIC jitllm_runtime jitllm_engine
+  add_library(jitllm_runtime_serving STATIC serving.cc serve_commands.cc serve_api.cc)
+  target_link_libraries(jitllm_runtime_serving PUBLIC jitllm_runtime jitllm_engine jitllm_sampling
                         PRIVATE jitllm_base jitllm_platform jitllm_warnings)
 else()
   add_library(jitllm_runtime_serving STATIC serving_none.cc)
