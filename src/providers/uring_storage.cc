@@ -42,6 +42,14 @@ std::expected<std::unique_ptr<UringStorage>, std::error_code> UringStorage::Crea
   return std::make_unique<UringStorage>(*std::move(ring), depth, wake_fd);
 }
 
+std::expected<std::unique_ptr<Storage>, std::error_code> OpenStorage(std::size_t depth) {
+  auto created = UringStorage::Create(depth);
+  if (!created) {
+    return std::unexpected(created.error());
+  }
+  return std::unique_ptr<Storage>(std::move(*created));
+}
+
 UringStorage::UringStorage(platform::IoUring ring, std::size_t depth, int wake_fd)
     : ring_(std::move(ring)),
       depth_(depth),

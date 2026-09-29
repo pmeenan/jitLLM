@@ -1,0 +1,190 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The device runtime (providers/device_runtime.h) over CUDA on a GPU: the
+// device opens with its providers and reports its facts and free memory;
+// fills and copies on a job's stream land in pinned host memory; timing
+// marks measure the span between them; recorded work replays what it
+// recorded, with the data its pinned inputs hold at replay; and the error
+// state reads clear. The engine's jobs use nothing else of the device.
+
+#include "providers/device_runtime.h"
+
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <utility>
+
+#include "providers/device_execution.h"
+
+namespace {
+
+namespace pr = jitllm::providers;
+
+constexpr std::size_t kBytes = 4096;
+
+class DeviceRuntimeTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto device = pr::OpenDevice(0, {.fences_ahead = 4, .fences_kept = 16});
+    ASSERT_TRUE(device.has_value()) << device.error().detail;
+    device_ = std::move(*device);
+    auto stream = device_.execution->CreateStream();
+    ASSERT_TRUE(stream.has_value());
+    stream_ = *stream;
+    ASSERT_EQ(cudaMalloc(&on_device_, kBytes), cudaSuccess);
+    auto pinned = pr::AllocatePinned(kBytes);
+    ASSERT_TRUE(pinned.has_value()) << pinned.error().text();
+    host_ = static_cast<std::byte*>(*pinned);
+  }
+
+  void TearDown() override {
+    if (device_.execution != nullptr && stream_.valid()) {
+      Finish();
+      EXPECT_TRUE(device_.execution->DestroyStream(stream_).has_value());
+    }
+    pr::FreePinned(host_);
+    if (on_device_ != nullptr) {
+      (void)cudaFree(on_device_);
+    }
+  }
+
+  pr::NativeStream Native() {
+    auto native = device_.execution->Submission(stream_);
+    EXPECT_TRUE(native.has_value());
+    return native.value_or(pr::NativeStream{});
+  }
+
+  // Waits for everything queued so far.
+  void Finish() {
+    auto fence = device_.execution->Record(stream_);
+    ASSERT_TRUE(fence.has_value());
+    for (;;) {
+      auto state = device_.execution->Query(*fence);
+      ASSERT_TRUE(state.has_value());
+      if (*state == pr::FenceState::kComplete) {
+        break;
+      }
+    }
+    ASSERT_TRUE(device_.execution->Release(*fence).has_value());
+  }
+
+  bool HostHolds(std::uint8_t value) const {
+    for (std::size_t i = 0; i < kBytes; ++i) {
+      if (host_[i] != std::byte{value}) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  pr::Device device_;
+  pr::StreamId stream_;
+  void* on_device_ = nullptr;
+  std::byte* host_ = nullptr;
+};
+
+TEST_F(DeviceRuntimeTest, ReportsTheDevice) {
+  auto facts = pr::QueryDeviceFacts(0);
+  ASSERT_TRUE(facts.has_value()) << facts.error().text();
+  int major = 0;
+  int minor = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0), cudaSuccess);
+  ASSERT_EQ(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0), cudaSuccess);
+  EXPECT_EQ(facts->architecture, static_cast<std::uint32_t>((100 * major) + (10 * minor)));
+  auto memory = pr::QueryDeviceMemory();
+  ASSERT_TRUE(memory.has_value()) << memory.error().text();
+  EXPECT_GT(memory->free, 0U);
+  EXPECT_GE(memory->total, memory->free);
+  EXPECT_TRUE(pr::TakeLastError().ok());
+  EXPECT_TRUE(pr::PeekLastError().ok());
+  EXPECT_NE(pr::DeviceStatus(1).text(), nullptr);
+  EXPECT_FALSE(pr::DeviceStatus(1).ok());
+}
+
+TEST_F(DeviceRuntimeTest, FillsAndCopiesOnAJobsStream) {
+  const pr::NativeStream native = Native();
+  ASSERT_TRUE(pr::FillAsync(native, on_device_, 0xAB, kBytes).ok());
+  ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, kBytes, pr::CopyKind::kDeviceToHost).ok());
+  Finish();
+  EXPECT_TRUE(HostHolds(0xAB));
+  std::memset(host_, 0x3C, kBytes);
+  ASSERT_TRUE(pr::CopyAsync(native, on_device_, host_, kBytes, pr::CopyKind::kHostToDevice).ok());
+  Finish();
+  std::memset(host_, 0, kBytes);
+  ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, kBytes, pr::CopyKind::kDeviceToHost).ok());
+  Finish();
+  EXPECT_TRUE(HostHolds(0x3C));
+}
+
+TEST_F(DeviceRuntimeTest, TimingMarksMeasureTheirSpan) {
+  auto begin = pr::CreateTimingMark();
+  auto end = pr::CreateTimingMark();
+  ASSERT_TRUE(begin.has_value() && end.has_value());
+  const pr::NativeStream native = Native();
+  ASSERT_TRUE(pr::RecordTimingMark(*begin, native).ok());
+  ASSERT_TRUE(pr::FillAsync(native, on_device_, 1, kBytes).ok());
+  ASSERT_TRUE(pr::RecordTimingMark(*end, native).ok());
+  Finish();
+  auto ms = pr::ElapsedMilliseconds(*begin, *end);
+  ASSERT_TRUE(ms.has_value()) << ms.error().text();
+  EXPECT_GE(*ms, 0.0F);
+  pr::DestroyTimingMark(*begin);
+  pr::DestroyTimingMark(*end);
+}
+
+TEST_F(DeviceRuntimeTest, RecordedWorkReplaysWithItsInputsAtReplay) {
+  const pr::NativeStream native = Native();
+  std::memset(host_, 0x11, kBytes / 2);
+  std::memset(host_ + (kBytes / 2), 0, kBytes / 2);
+  // Recorded: the host's first half up to the device, then the device back
+  // down into the second half.
+  ASSERT_TRUE(pr::BeginRecording(native).ok());
+  ASSERT_TRUE(
+      pr::CopyAsync(native, on_device_, host_, kBytes / 2, pr::CopyKind::kHostToDevice).ok());
+  ASSERT_TRUE(pr::CopyAsync(native, host_ + (kBytes / 2), on_device_, kBytes / 2,
+                            pr::CopyKind::kDeviceToHost)
+                  .ok());
+  auto recorded = pr::EndRecording(native);
+  ASSERT_TRUE(recorded.has_value()) << recorded.error().text();
+  ASSERT_TRUE(recorded->valid());
+  Finish();
+  // Recording ran nothing.
+  EXPECT_EQ(host_[kBytes / 2], std::byte{0});
+  for (const std::uint8_t value : {std::uint8_t{0x22}, std::uint8_t{0x33}}) {
+    std::memset(host_, value, kBytes / 2);
+    ASSERT_TRUE(pr::Replay(*recorded, native).ok());
+    Finish();
+    EXPECT_TRUE(HostHolds(value));
+  }
+  pr::RecordedWork moved = std::move(*recorded);
+  EXPECT_TRUE(moved.valid());
+  EXPECT_FALSE(recorded->valid());  // NOLINT(bugprone-use-after-move): moved from, by design
+  moved.Reset();
+  EXPECT_FALSE(moved.valid());
+}
+
+// A recording the backend invalidates (here a synchronization on the
+// recording stream, which a capture refuses) ends with an error and no
+// work, and the stream runs as before afterwards: the failure is not
+// sticky, and the thread's error state clears once read.
+TEST_F(DeviceRuntimeTest, AFailedRecordingLeavesTheStreamUsable) {
+  const pr::NativeStream native = Native();
+  ASSERT_TRUE(pr::BeginRecording(native).ok());
+  ASSERT_TRUE(pr::FillAsync(native, on_device_, 0x5A, kBytes).ok());
+  EXPECT_NE(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  auto recorded = pr::EndRecording(native);
+  ASSERT_FALSE(recorded.has_value());
+  (void)pr::TakeLastError();
+  EXPECT_TRUE(pr::PeekLastError().ok());
+  ASSERT_TRUE(pr::FillAsync(native, on_device_, 0x6B, kBytes).ok());
+  ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, kBytes, pr::CopyKind::kDeviceToHost).ok());
+  Finish();
+  EXPECT_TRUE(HostHolds(0x6B));
+}
+
+}  // namespace

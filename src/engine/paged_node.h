@@ -3,15 +3,18 @@
 
 // The paged node (docs/runtime-serving.md; first built for the backend
 // proof's P2-P5 and BP-S3, docs/backend-proof.md, then M3's swap path):
-// CUDA device 0 with its providers, a stream per model plus the copy
-// stream, io_uring, one catalog domain, the landing zone (D-081), the
-// scheduler and its lanes (the zone's copies on a copy lane of their own by
-// default, RE-029), and the workspace the models share. Model runners
+// device 0 with its providers (opened through the device runtime,
+// providers/device_runtime.h), a stream per model plus the copy stream,
+// a storage ring (io_uring on Linux, providers/storage.h's OpenStorage),
+// one catalog domain, the landing zone (D-081), the scheduler and
+// its lanes (the zone's copies on a copy lane of their own by default,
+// RE-029), and the workspace the models share. Model runners
 // (engine/dsv4_runner.h, qwen38_runner.h, qwen_image_runner.h; the
 // harnesses' benchmarks/fp16_runner.h, exl3_runner.h) register their memory
 // and sources with it and post their work through it, so several models
 // share one catalog, one scheduler and one zone. jitllm-runtime drives one
-// (runtime/serving.h), and so do the paged harnesses. CUDA builds only.
+// (runtime/serving.h), and so do the paged harnesses. CUDA builds only (the
+// build's device backend, docs/portability.md).
 //
 // One thread drives the node (the driver): every call below but the
 // accessors is the driver's, and none may be made concurrently. The node
@@ -81,14 +84,13 @@
 #include "catalog/catalog.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
-#include "providers/uring_storage.h"
+#include "providers/device_runtime.h"
+#include "providers/storage.h"
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
 #include "scheduler/programs.h"
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
-
-struct CUevent_st;  // cudaEvent_t's, kept out of this header
 
 namespace jitllm::engine {
 
@@ -99,8 +101,9 @@ using Status = std::expected<void, std::string>;
 // until the job began on the device lane (dispatch), the job itself (its
 // host time: inputs staged, work queued, waits for room in the stream
 // included), and from its end to the return (after); and the device's
-// span of the job's work, by CUDA events on the stream around it. The
-// round trip a step adds to the device's time is wall - device.
+// span of the job's work, by timing marks on the stream around it
+// (providers/device_runtime.h). The round trip a step adds to the device's
+// time is wall - device.
 struct StepTimes {
   std::uint64_t steps = 0;
   double wall = 0;
@@ -114,6 +117,12 @@ inline constexpr std::uint64_t kPagedExtent = std::uint64_t{2} << 20U;  // D-033
 inline constexpr std::size_t kPagedDepth = 4;                           // D-034's bulk depth
 inline constexpr std::size_t kPagedSlots = 2 * kPagedDepth;             // D-081's zone
 inline constexpr int kShared = -1;  // the owner of the zone and the shared workspace
+
+// Pinned host memory (providers/device_runtime.h) of `bytes` at `pointer`,
+// unless it holds some already. False, leaving it null, if the allocation
+// failed. A runner's own, uncataloged (its state's host copy); the node's
+// staging comes from PagedNode::Pinned.
+bool HavePinned(void*& pointer, std::uint64_t bytes);
 
 // A cataloged range of memory, for the coverage check.
 struct Span {
@@ -377,7 +386,7 @@ class PagedNode {
   NodeSettings settings_;
   std::unique_ptr<providers::VmmProvider> memory_;
   std::unique_ptr<providers::DeviceExecution> execution_;
-  std::unique_ptr<providers::UringStorage> storage_;
+  std::unique_ptr<providers::Storage> storage_;
   std::unique_ptr<CountingStorage> counting_;  // over storage_: what the storage lane calls
   std::vector<providers::StreamId> streams_;   // compute streams, then the copy stream
   std::size_t device_class_ = 0;
@@ -409,8 +418,9 @@ class PagedNode {
   std::optional<std::expected<void, scheduler::Fault>> stopped_;
   std::uint64_t request_ = 0;
   bool torn_down_ = false;
-  std::vector<StepTimes> times_;                             // by compute stream
-  std::vector<std::pair<CUevent_st*, CUevent_st*>> events_;  // by compute stream
+  std::vector<StepTimes> times_;  // by compute stream
+  // By compute stream: the marks before and after its job.
+  std::vector<std::pair<providers::TimingMark, providers::TimingMark>> events_;
 };
 
 }  // namespace jitllm::engine

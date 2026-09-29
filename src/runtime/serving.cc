@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <charconv>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +28,7 @@
 #include "model/qwen38.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
+#include "platform/host_probe.h"
 #include "platform/path_trust.h"
 #include "runtime/prefill.h"
 #include "scheduler/programs.h"
@@ -664,24 +664,7 @@ MemorySampler::~MemorySampler() {
   }
 }
 
-std::uint64_t MemorySampler::Available() {
-  auto text = platform::ReadSmallFile("/proc/meminfo");
-  if (!text) {
-    return 0;
-  }
-  const std::string_view key = "MemAvailable:";
-  const std::size_t at = text->find(key);
-  if (at == std::string::npos) {
-    return 0;
-  }
-  std::string_view rest = std::string_view(*text).substr(at + key.size());
-  while (!rest.empty() && rest.front() == ' ') {
-    rest.remove_prefix(1);
-  }
-  std::uint64_t kib = 0;
-  (void)std::from_chars(rest.data(), rest.data() + rest.size(), kib);
-  return kib * 1024;
-}
+std::uint64_t MemorySampler::Available() { return platform::AvailableMemoryBytes().value_or(0); }
 
 void MemorySampler::Reset() { low_ = Available(); }
 

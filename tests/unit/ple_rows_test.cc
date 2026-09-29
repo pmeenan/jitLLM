@@ -9,8 +9,8 @@
 // outside the table, a landing too small and too many distinct rows are
 // refused; an unknown submission is waited for, and a short or failed read
 // refuses the rows once every read has drained. On a GB10: the reads
-// through io_uring from a real file and the gather kernel put every row in
-// its slot.
+// through io_uring from a real file and the gather kernel
+// (kernels/paging/paging.h) put every row in its slot.
 
 #include "engine/ple_rows.h"
 
@@ -33,19 +33,20 @@
 #include <span>
 #include <vector>
 
+#include "kernels/paging/paging.h"
 #include "providers/fake/fake_storage.h"
 #include "providers/storage.h"
 #include "providers/uring_storage.h"
 
 namespace {
 
-using jitllm::engine::GatherPleRows;
 using jitllm::engine::kPleBlock;
 using jitllm::engine::PlanPleRows;
 using jitllm::engine::PleLandingBound;
 using jitllm::engine::PleRowPlan;
 using jitllm::engine::PleTable;
 using jitllm::engine::ReadPleRows;
+using jitllm::kernels::paging::GatherPleRows;
 
 constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
 

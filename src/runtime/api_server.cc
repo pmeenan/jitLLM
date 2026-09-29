@@ -7,9 +7,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <sys/random.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -29,20 +26,25 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "base/report.h"
 #include "platform/crash_policy.h"
+#include "platform/event_loop.h"
+#include "platform/sockets.h"
 
 namespace jitllm::runtime::api {
 namespace {
 
 constexpr std::string_view kJson = "application/json";
 constexpr std::string_view kContinue = "HTTP/1.1 100 Continue\r\n\r\n";
-// epoll tags beside connection IDs (which count up from 1).
+// Event-loop tags beside connection IDs (which count up from 1).
 constexpr std::uint64_t kListenerTag = std::uint64_t{1} << 56U;
 constexpr std::uint64_t kStopTag = std::uint64_t{2} << 56U;
 constexpr std::uint64_t kWakeTag = std::uint64_t{3} << 56U;
@@ -92,19 +94,9 @@ bool Readable(int fd) {
   return ::poll(&p, 1, 0) > 0 && (p.revents & POLLIN) != 0;
 }
 
-void Signal(int eventfd) {
-  const std::uint64_t one = 1;
-  (void)!::write(eventfd, &one, sizeof one);
-}
-
-void Drain(int eventfd) {
-  std::uint64_t count = 0;
-  (void)!::read(eventfd, &count, sizeof count);
-}
-
 std::string RequestId() {
   std::array<std::uint8_t, 12> bytes{};
-  if (::getrandom(bytes.data(), bytes.size(), 0) != static_cast<ssize_t>(bytes.size())) {
+  if (!platform::FillRandom(std::as_writable_bytes(std::span(bytes)))) {
     // Unique within the process is enough for an opaque ID.
     static std::atomic<std::uint64_t> counter{0};
     const std::uint64_t n = ++counter;
@@ -454,21 +446,21 @@ Server::Server(Backend& backend, ServerOptions options)
       options_(std::move(options)),
       models_(backend.Models()),
       created_(static_cast<std::int64_t>(std::time(nullptr))),
-      epoll_(::epoll_create1(EPOLL_CLOEXEC)),
-      stop_(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)),
-      io_wake_(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)),
-      ready_(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)) {}
+      loop_(platform::EventLoop::Open()),
+      stop_(platform::Waker::Open()),
+      io_wake_(platform::Waker::Open()),
+      ready_(platform::Waker::Open()) {}
 
 Server::~Server() {
   if (io_.joinable()) {
-    Signal(stop_.get());
+    stop_.Signal();
     io_.join();
   }
 }
 
 std::expected<std::vector<std::uint16_t>, std::string> Server::Listen() {
-  if (!epoll_.valid() || !stop_.valid() || !io_wake_.valid() || !ready_.valid()) {
-    return std::unexpected("epoll or eventfd failed");
+  if (!loop_.valid() || !stop_.valid() || !io_wake_.valid() || !ready_.valid()) {
+    return std::unexpected("the event loop or a waker failed");
   }
   if (options_.bind.empty()) {
     return std::unexpected("there is nothing to listen on");
@@ -496,7 +488,7 @@ void Server::Log(std::string_view line) {
   (void)std::fflush(options_.log);
 }
 
-void Server::WakeIo() const { Signal(io_wake_.get()); }
+void Server::WakeIo() const { io_wake_.Signal(); }
 
 // ---------------------------------------------------------------- I/O thread
 
@@ -506,17 +498,16 @@ void Server::Watch(Connection& c) {
   }
   // A closed input side reads as ready forever: it is watched no longer,
   // except while lingering, which reads to the end and then drops.
-  std::uint32_t want = c.input_closed ? 0U : static_cast<std::uint32_t>(EPOLLRDHUP);
+  std::uint32_t want = c.input_closed ? 0U : platform::kPeerClosed;
   if (c.state == Connection::State::kLinger ||
       (!c.input_closed && (c.state != Connection::State::kBusy || !c.close_after))) {
-    want |= EPOLLIN;
+    want |= platform::kReadable;
   }
   if (c.pending_output()) {
-    want |= EPOLLOUT;
+    want |= platform::kWritable;
   }
   if (want != c.interest) {
-    epoll_event event{.events = want, .data = {.u64 = c.id}};
-    (void)::epoll_ctl(epoll_.get(), EPOLL_CTL_MOD, c.fd.get(), &event);
+    std::ignore = loop_.Change(c.fd.get(), c.id, want);
     c.interest = want;
   }
 }
@@ -540,10 +531,7 @@ void Server::AcceptAll(std::size_t index) {
   const int listener = listeners_[index].get();
   for (;;) {
     sockaddr_storage peer{};
-    socklen_t size = sizeof peer;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API
-    const int fd = ::accept4(listener, reinterpret_cast<sockaddr*>(&peer), &size,
-                             SOCK_NONBLOCK | SOCK_CLOEXEC);
+    const int fd = platform::AcceptConnection(listener, peer);
     if (fd < 0) {
       if (errno == EINTR || errno == ECONNABORTED || errno == EPROTO) {
         continue;
@@ -558,7 +546,7 @@ void Server::AcceptAll(std::size_t index) {
         }
         accept_paused_until_ = Clock::now() + kAcceptPause;
         for (const http::Fd& l : listeners_) {
-          (void)::epoll_ctl(epoll_.get(), EPOLL_CTL_DEL, l.get(), nullptr);
+          loop_.Remove(l.get());
         }
       }
       return;
@@ -580,7 +568,7 @@ void Server::AcceptAll(std::size_t index) {
                       .extra = {std::format("Retry-After: {}", kRetryAfterSeconds),
                                 "x-should-retry: true"}}) +
           body;
-      (void)::send(fd, response.data(), response.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+      (void)platform::SendNoSignal(fd, response.data(), response.size(), false);
       continue;
     }
     const int on = 1;
@@ -591,9 +579,8 @@ void Server::AcceptAll(std::size_t index) {
     c->peer_loopback = PeerIsLoopback(peer);
     c->idle_by = Clock::now() + options_.idle_timeout;
     c->last_active = ++activity_;
-    c->interest = EPOLLIN | EPOLLRDHUP;
-    epoll_event event{.events = c->interest, .data = {.u64 = c->id}};
-    if (::epoll_ctl(epoll_.get(), EPOLL_CTL_ADD, fd, &event) != 0) {
+    c->interest = platform::kReadable | platform::kPeerClosed;
+    if (!loop_.Add(fd, c->id, c->interest)) {
       continue;
     }
     connections_.emplace(c->id, std::move(c));
@@ -614,7 +601,7 @@ void Server::Drop(Connection& c) {
   }
   body_in_use_ -= c.reserved;
   c.reserved = 0;
-  (void)::epoll_ctl(epoll_.get(), EPOLL_CTL_DEL, c.fd.get(), nullptr);
+  loop_.Remove(c.fd.get());
   c.fd = http::Fd();
   c.channel.reset();
   c.dead = true;
@@ -693,8 +680,8 @@ void Server::Flush(Connection& c) {
       }
       c.progress_at = Clock::now();
     }
-    const ssize_t n = ::send(c.fd.get(), c.wbuf.data() + c.woff, c.wbuf.size() - c.woff,
-                             MSG_NOSIGNAL | MSG_DONTWAIT);
+    const ssize_t n =
+        platform::SendNoSignal(c.fd.get(), c.wbuf.data() + c.woff, c.wbuf.size() - c.woff, false);
     if (n > 0) {
       c.woff += static_cast<std::size_t>(n);
       c.progress_at = Clock::now();
@@ -705,7 +692,7 @@ void Server::Flush(Connection& c) {
       continue;
     }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      Watch(c);  // EPOLLOUT
+      Watch(c);  // writable
       return;
     }
     Drop(c);  // the peer is gone
@@ -964,7 +951,7 @@ void Server::OnRequest(Connection& c, http::Request request) {
     if (!stopping && queue_.size() < options_.max_queued) {
       channel->queued = true;
       queue_.push_back({.channel = channel, .request = std::move(*parsed)});
-      Signal(ready_.get());
+      ready_.Signal();
       return;
     }
   }
@@ -985,26 +972,26 @@ void Server::OnRequest(Connection& c, http::Request request) {
 }
 
 void Server::OnEvent(Connection& c, std::uint32_t events) {
-  if ((events & EPOLLERR) != 0) {
+  if ((events & platform::kError) != 0) {
     Drop(c);
     return;
   }
-  if ((events & EPOLLIN) != 0) {
+  if ((events & platform::kReadable) != 0) {
     OnReadable(c);
   }
-  if (!c.dead && (events & EPOLLOUT) != 0) {
+  if (!c.dead && (events & platform::kWritable) != 0) {
     Flush(c);
   }
-  if (!c.dead && (events & (EPOLLRDHUP | EPOLLHUP)) != 0) {
+  if (!c.dead && (events & (platform::kPeerClosed | platform::kHangUp)) != 0) {
     // The peer closed its sending side. Reading states find that out from
     // recv (after taking what it sent): a request not yet whole is a
     // disconnect. A whole request's response goes on (InputClosed); a
     // connection closed both ways (a reset) ends it.
-    if ((events & EPOLLHUP) != 0) {
+    if ((events & platform::kHangUp) != 0) {
       Drop(c);
     } else if (c.state == Connection::State::kBusy) {
       InputClosed(c);
-    } else if ((c.interest & EPOLLIN) != 0 && (events & EPOLLIN) == 0) {
+    } else if ((c.interest & platform::kReadable) != 0 && (events & platform::kReadable) == 0) {
       OnReadable(c);
     }
   }
@@ -1023,9 +1010,9 @@ void Server::InputClosed(Connection& c) {
       ch.keep_alive = false;
       // Whether the peer shut only its sending side or closed entirely looks
       // the same until something is sent: a closed socket answers with a
-      // reset (EPOLLERR, a disconnect, which ends the generation). A stream
-      // sends what any client parses: its start (as after `keepalive` in the
-      // queue) or a comment. A non-streaming response has nothing to send
+      // reset (an error event, a disconnect, which ends the generation). A
+      // stream sends what any client parses: its start (as after `keepalive`
+      // in the queue) or a comment. A non-streaming response has nothing to send
       // before its head but an interim response: a 102 on HTTP/1.1 (no 1xx
       // is safe for every client, docs/runtime-serving.md, but a client
       // that half-closes is rare). On HTTP/1.0 it runs to its end.
@@ -1156,15 +1143,14 @@ void Server::Loop() {
   if (auto stack = platform::InstallThreadSignalStack(); !stack) {
     Log("the chat route's I/O thread has no signal stack: " + stack.error());
   }
-  std::array<epoll_event, 256> events{};
+  std::array<platform::ReadyEvent, 256> events{};
   Clock::time_point drain_by{};
   for (;;) {
     const auto now = Clock::now();
     if (accept_paused_until_ != Clock::time_point{} && now >= accept_paused_until_ && !draining_) {
       accept_paused_until_ = {};
       for (std::size_t i = 0; i < listeners_.size(); ++i) {
-        epoll_event event{.events = EPOLLIN, .data = {.u64 = kListenerTag | i}};
-        (void)::epoll_ctl(epoll_.get(), EPOLL_CTL_ADD, listeners_[i].get(), &event);
+        std::ignore = loop_.Add(listeners_[i].get(), kListenerTag | i, platform::kReadable);
       }
     }
     Clock::time_point next = Sweep(now);
@@ -1187,25 +1173,25 @@ void Server::Loop() {
       next = std::min(next, drain_by);
     }
     const auto wait = std::chrono::ceil<std::chrono::milliseconds>(next - Clock::now());
-    const int n = ::epoll_wait(epoll_.get(), events.data(), static_cast<int>(events.size()),
-                               static_cast<int>(std::clamp<std::int64_t>(wait.count(), 0, 1000)));
-    if (n < 0) {
-      if (errno == EINTR) {
+    const auto n = loop_.Wait(
+        events, std::chrono::milliseconds(std::clamp<std::int64_t>(wait.count(), 0, 1000)));
+    if (!n) {
+      if (n.error() == std::errc::interrupted) {
         continue;
       }
-      Log(std::format("the chat route's event loop failed: epoll_wait: {}", errno));
+      Log(std::format("the chat route's event loop failed: {}", n.error().value()));
       return;
     }
-    for (int i = 0; i < n; ++i) {
-      const std::uint64_t tag = events[static_cast<std::size_t>(i)].data.u64;
-      const std::uint32_t flags = events[static_cast<std::size_t>(i)].events;
+    for (std::size_t i = 0; i < *n; ++i) {
+      const std::uint64_t tag = events[i].tag;
+      const std::uint32_t flags = events[i].ready;
       if (tag == kStopTag) {
-        Drain(stop_.get());
+        stop_.Drain();
         if (!draining_) {
           draining_ = true;
           drain_by = Clock::now() + kDrain;
           for (const http::Fd& l : listeners_) {
-            (void)::epoll_ctl(epoll_.get(), EPOLL_CTL_DEL, l.get(), nullptr);
+            loop_.Remove(l.get());
           }
           listeners_.clear();
           for (auto& [id, c] : connections_) {
@@ -1215,7 +1201,7 @@ void Server::Loop() {
           }
         }
       } else if (tag == kWakeTag) {
-        Drain(io_wake_.get());
+        io_wake_.Drain();
         std::vector<std::uint64_t> dirty;
         {
           const std::scoped_lock lock(mutex_);
@@ -1274,16 +1260,14 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
   if (listeners_.empty()) {
     return std::unexpected("the chat route is not listening");
   }
-  const auto add = [&](int fd, std::uint64_t tag) {
-    epoll_event event{.events = EPOLLIN, .data = {.u64 = tag}};
-    return ::epoll_ctl(epoll_.get(), EPOLL_CTL_ADD, fd, &event) == 0;
-  };
-  bool added = add(stop_.get(), kStopTag) && add(io_wake_.get(), kWakeTag);
+  std::expected<void, std::error_code> added =
+      loop_.Add(stop_.descriptor(), kStopTag, platform::kReadable);
+  added = added ? loop_.Add(io_wake_.descriptor(), kWakeTag, platform::kReadable) : added;
   for (std::size_t i = 0; i < listeners_.size(); ++i) {
-    added = added && add(listeners_[i].get(), kListenerTag | i);
+    added = added ? loop_.Add(listeners_[i].get(), kListenerTag | i, platform::kReadable) : added;
   }
   if (!added) {
-    return std::unexpected(std::format("epoll_ctl: {}", errno));
+    return std::unexpected(std::format("the event loop: {}", added.error().value()));
   }
   io_ = std::jthread([this] { Loop(); });
   std::expected<void, std::string> result;
@@ -1295,7 +1279,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
       }
     }
     std::array<pollfd, 2> fds{{{.fd = wake_fd, .events = POLLIN, .revents = 0},
-                               {.fd = ready_.get(), .events = POLLIN, .revents = 0}}};
+                               {.fd = ready_.descriptor(), .events = POLLIN, .revents = 0}}};
     const int n = ::poll(fds.data(), fds.size(), -1);
     if (n < 0) {
       if (errno == EINTR) {
@@ -1310,7 +1294,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
     if ((fds[1].revents & POLLIN) == 0) {
       continue;
     }
-    Drain(ready_.get());
+    ready_.Drain();
     for (;;) {
       std::optional<Pending> next;
       {
@@ -1354,7 +1338,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
     queue_.clear();
   }
   WakeIo();
-  Signal(stop_.get());
+  stop_.Signal();
   io_.join();
   return result;
 }

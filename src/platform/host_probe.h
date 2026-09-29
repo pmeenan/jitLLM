@@ -35,6 +35,12 @@ KernelModule FindKernelModule(const std::filesystem::path& root, std::string_vie
 // A /proc/meminfo value in bytes, such as MemTotal's.
 std::optional<std::uint64_t> MeminfoBytes(std::string_view meminfo, std::string_view key);
 
+// The memory this host could give a new allocation without swapping, in
+// bytes, now (Linux: MemAvailable; macOS would count free, inactive and
+// purgeable pages from host_statistics64; Windows, GlobalMemoryStatusEx's
+// ullAvailPhys). Unknown if the system does not say.
+std::optional<std::uint64_t> AvailableMemoryBytes();
+
 // Adds the `host` and `RDMA` sections, with their warnings, to report.
 void DescribeHost(const std::filesystem::path& root, base::Report& report);
 

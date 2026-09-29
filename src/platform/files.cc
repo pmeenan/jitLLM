@@ -4,13 +4,18 @@
 #include "platform/files.h"
 
 #include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -82,6 +87,23 @@ std::expected<std::vector<std::string>, std::error_code> ListDirectory(
   }
   std::ranges::sort(names);
   return names;
+}
+
+std::optional<std::uint64_t> FileGeneration(int fd) {
+  long generation = 0;
+  static_assert(sizeof generation >= _IOC_SIZE(FS_IOC_GETVERSION));
+  if (::ioctl(fd, FS_IOC_GETVERSION, &generation) != 0) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(generation);
+}
+
+std::expected<int, int> OpenAnonymousMemoryFile(const char* name) {
+  const int fd = ::memfd_create(name, MFD_CLOEXEC);
+  if (fd < 0) {
+    return std::unexpected(errno);
+  }
+  return fd;
 }
 
 }  // namespace jitllm::platform

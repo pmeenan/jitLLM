@@ -118,6 +118,31 @@ std::expected<FilesystemFacts, std::string> DescribeFilesystem(const std::filesy
   return facts;
 }
 
+std::expected<DirectFile, int> OpenForDirectRead(int dir, const char* name,
+                                                 bool buffered_fallback) {
+  constexpr int kFlags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY;
+  const int fd = ::openat(dir, name, kFlags | O_DIRECT);
+  if (fd >= 0) {
+    return DirectFile{.fd = fd, .direct = true};
+  }
+  if (errno != EINVAL || !buffered_fallback) {
+    return std::unexpected(errno);
+  }
+  const int buffered = ::openat(dir, name, kFlags);
+  if (buffered < 0) {
+    return std::unexpected(errno);
+  }
+  return DirectFile{.fd = buffered, .direct = false};
+}
+
+std::expected<int, int> OpenUnnamedDirectFile(const std::filesystem::path& directory) {
+  const int fd = ::open(directory.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    return std::unexpected(errno);
+  }
+  return fd;
+}
+
 std::expected<DirectIoFacts, std::string> ProbeDirectIo(const std::filesystem::path& directory) {
   auto filesystem = DescribeFilesystem(directory);
   if (!filesystem) {

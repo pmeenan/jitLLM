@@ -68,8 +68,9 @@ namespace jitllm::runtime {
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
 
-// The lowest MemAvailable (/proc/meminfo) since the last Reset, sampled
-// every 20 ms on a thread of its own, and the lowest over its life.
+// The lowest available memory (platform::AvailableMemoryBytes, Linux's
+// MemAvailable) since the last Reset, sampled every 20 ms on a thread of its
+// own, and the lowest over its life.
 class MemorySampler {
  public:
   MemorySampler();

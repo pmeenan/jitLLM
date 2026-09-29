@@ -3,8 +3,6 @@
 
 #include "engine/qwen_image_runner.h"
 
-#include <cuda_runtime.h>
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -28,6 +26,7 @@
 #include "kernels/image/implementations.h"
 #include "kernels/image/ops.h"
 #include "kernels/image/pipeline.h"
+#include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/hf.h"
@@ -54,12 +53,15 @@ constexpr std::uint64_t kExtent = kPagedExtent;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
-Status Cuda(cudaError_t result, std::string_view what) {
-  if (result != cudaSuccess) {
-    return Error(std::format("{}: {}", what, cudaGetErrorString(result)));
+Status Checked(providers::DeviceStatus result, std::string_view what) {
+  if (!result.ok()) {
+    return Error(std::format("{}: {}", what, result.text()));
   }
   return {};
 }
+
+constexpr auto kToDevice = providers::CopyKind::kHostToDevice;
+constexpr auto kToHost = providers::CopyKind::kDeviceToHost;
 
 template <typename T>
 T* At(std::uint64_t address) {
@@ -130,9 +132,8 @@ struct QwenImageRunner::State {
   std::byte* out = nullptr;  // pinned: what a job downloads
   std::uint64_t out_bytes = 0;
 
-  // A later step, captured once (QwenImageOptions::graphs).
-  cudaGraph_t graph = nullptr;
-  cudaGraphExec_t graph_exec = nullptr;
+  // A later step, recorded once (QwenImageOptions::graphs).
+  providers::RecordedWork graph;
 
   // The last generation's timings.
   double encode = 0;
@@ -148,16 +149,7 @@ struct QwenImageRunner::State {
   ~State() { DropGraph(); }
   // Only once no queued launch of it remains (Release, after the node's
   // jobs are done).
-  void DropGraph() {
-    if (graph_exec != nullptr) {
-      (void)cudaGraphExecDestroy(graph_exec);
-      graph_exec = nullptr;
-    }
-    if (graph != nullptr) {
-      (void)cudaGraphDestroy(graph);
-      graph = nullptr;
-    }
-  }
+  void DropGraph() { graph.Reset(); }
 };
 
 QwenImageRunner::QwenImageRunner(PagedNode& node, const QwenImageOptions& options, int owner,
@@ -343,10 +335,10 @@ Status QwenImageRunner::Setup() {
   std::uint64_t unused = 0;
   s.own = ki::OwnLayout(s.own_memory.base, profile.denoiser, s.text, s.image, unused);
 
-  cudaDeviceProp prop{};
-  (void)cudaGetDeviceProperties(&prop, 0);
+  const providers::DeviceFacts facts =
+      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
   s.cublas_bytes =
-      kg::CublasHandle::UpstreamWorkspace((prop.major * 100) + (prop.minor * 10)).value();
+      kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
   if (auto r =
           node_.MapResident(s.cublas_workspace, "the image's cuBLAS workspace", s.cublas_bytes,
                             BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned, owner_);
@@ -470,7 +462,6 @@ Status QwenImageRunner::Encode() {
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     void* const st = native.handle;
-    auto* const cs = static_cast<cudaStream_t>(st);
     // The inputs: ids, then the rotary tables.
     std::uint64_t at = 0;
     for (auto [dst, src, bytes] :
@@ -478,18 +469,18 @@ Status QwenImageRunner::Encode() {
           {w.cos, s.rot.cos.data(), rows * 256},
           {w.sin, s.rot.sin.data(), rows * 256}}) {
       std::memcpy(s.in + at, src, static_cast<std::size_t>(bytes));
-      if (auto r = Cuda(cudaMemcpyAsync(At<void>(dst), s.in + at, static_cast<std::size_t>(bytes),
-                                        cudaMemcpyHostToDevice, cs),
-                        "text inputs");
+      if (auto r = Checked(providers::CopyAsync(native, At<void>(dst), s.in + at,
+                                                static_cast<std::size_t>(bytes), kToDevice),
+                           "text inputs");
           !r) {
         ran = r;
         return sc::JobResult::kUnknown;
       }
       at += Round(static_cast<std::uint64_t>(bytes), 256);
     }
-    Status r = Cuda(cudaMemsetAsync(At<void>(w.bad), 0, 4, cs), "a flag");
+    Status r = Checked(providers::FillAsync(native, At<void>(w.bad), 0, 4), "a flag");
     r = r ? s.pipeline->Encode(w, handles, st) : r;
-    r = r ? Cuda(cudaMemcpyAsync(s.out, At<void>(w.bad), 4, cudaMemcpyDeviceToHost, cs), "the flag")
+    r = r ? Checked(providers::CopyAsync(native, s.out, At<void>(w.bad), 4, kToHost), "the flag")
           : r;
     if (!r) {
       ran = r;
@@ -529,12 +520,11 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     void* const st = native.handle;
-    auto* const cs = static_cast<cudaStream_t>(st);
     std::uint64_t at = 0;
     const auto upload = [&](std::uint64_t dst, const void* src, std::uint64_t bytes) -> Status {
       std::memcpy(s.in + at, src, bytes);
-      auto r = Cuda(cudaMemcpyAsync(At<void>(dst), s.in + at, bytes, cudaMemcpyHostToDevice, cs),
-                    "an upload");
+      auto r = Checked(providers::CopyAsync(native, At<void>(dst), s.in + at, bytes, kToDevice),
+                       "an upload");
       at += Round(bytes, 256);
       return r;
     };
@@ -548,30 +538,32 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
     r = r ? upload(s.dw.sin, sinus.data(), sinus.size() * 2) : r;
     r = r ? upload(s.dw.dt, &dt, sizeof dt) : r;
     if (r && o_.graphs && index >= 2) {
-      // Captured on this job's stream (thread-local: nothing else on this
-      // thread uses CUDA meanwhile), after the second step made every
-      // product's descriptors; then replayed.
-      if (s.graph_exec == nullptr) {
-        r = Cuda(cudaStreamBeginCapture(cs, cudaStreamCaptureModeThreadLocal), "capture");
+      // Recorded on this job's stream (thread-local: nothing else on this
+      // thread uses the device meanwhile), after the second step made
+      // every product's descriptors; then replayed.
+      if (!s.graph.valid()) {
+        r = Checked(providers::BeginRecording(native), "capture");
         if (r) {
           const Status queued = s.pipeline->Step(false, s.dw, handles, st);
-          const cudaError_t ended = cudaStreamEndCapture(cs, &s.graph);
-          r = queued ? Cuda(ended, "end capture") : queued;
-          r = r ? Cuda(cudaGraphInstantiate(&s.graph_exec, s.graph, 0), "graph instantiate") : r;
-          if (!r) {
-            s.DropGraph();  // nothing of it was launched
+          auto recorded = providers::EndRecording(native);  // ended even if `queued` failed
+          if (!queued) {
+            r = queued;  // the recording, if any, is dropped: nothing of it was launched
+          } else if (!recorded) {
+            r = Checked(recorded.error(), "end capture and instantiate");
+          } else {
+            s.graph = std::move(*recorded);
           }
         }
       }
-      r = r ? Cuda(cudaGraphLaunch(s.graph_exec, cs), "graph launch") : r;
+      r = r ? Checked(providers::Replay(s.graph, native), "graph launch") : r;
     } else {
       r = r ? s.pipeline->Step(first, s.dw, handles, st) : r;
     }
     if (r && hash) {
-      r = Cuda(cudaMemcpyAsync(s.out, At<void>(s.dw.noise),
-                               static_cast<std::size_t>(s.image * p.out_channels * 2),
-                               cudaMemcpyDeviceToHost, cs),
-               "the noise prediction");
+      r = Checked(
+          providers::CopyAsync(native, s.out, At<void>(s.dw.noise),
+                               static_cast<std::size_t>(s.image * p.out_channels * 2), kToHost),
+          "the noise prediction");
     }
     if (!r) {
       ran = r;
@@ -610,7 +602,6 @@ Status QwenImageRunner::Decode(std::string& sha) {
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     void* const st = native.handle;
-    auto* const cs = static_cast<cudaStream_t>(st);
     Status r = s.pipeline->ConvertVae(w, st);
     std::vector<Bf16> stats(std::size_t{2} * 64);
     for (std::size_t ch = 0; ch < 64; ++ch) {
@@ -618,14 +609,14 @@ Status QwenImageRunner::Decode(std::string& sha) {
       stats[64 + ch] = md::ToBf16(p.latents_mean.at(ch));
     }
     std::memcpy(s.in, stats.data(), stats.size() * 2);
-    r = r ? Cuda(cudaMemcpyAsync(At<void>(w.stats), s.in, stats.size() * 2, cudaMemcpyHostToDevice,
-                                 cs),
-                 "latent statistics")
+    r = r ? Checked(
+                providers::CopyAsync(native, At<void>(w.stats), s.in, stats.size() * 2, kToDevice),
+                "latent statistics")
           : r;
     r = r ? s.pipeline->Decode(w, handles, st) : r;
-    r = r ? Cuda(cudaMemcpyAsync(s.out, At<void>(w.buf.at(md::kVaeX)), count * 2,
-                                 cudaMemcpyDeviceToHost, cs),
-                 "the decoded image")
+    r = r ? Checked(providers::CopyAsync(native, s.out, At<void>(w.buf.at(md::kVaeX)), count * 2,
+                                         kToHost),
+                    "the decoded image")
           : r;
     if (!r) {
       ran = r;

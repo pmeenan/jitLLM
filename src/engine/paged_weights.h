@@ -102,11 +102,6 @@ class PagedWeights {
   std::uint64_t slab_padding_ = 0;
 };
 
-// Fills each of `count` device ranges (`ranges` holds address and length
-// pairs, in pinned host memory the device reads) with `value`, on `stream`
-// (CUDA builds, paged_weights.cu). False if the launch failed.
-bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t value, void* stream);
-
 // The artifact's identity as the catalog's content key takes it.
 std::array<std::uint8_t, 32> ArtifactKey(const artifact::Artifact& artifact);
 

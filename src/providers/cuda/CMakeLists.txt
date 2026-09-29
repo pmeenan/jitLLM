@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# The CUDA provider (D-006, D-026), so far its device probe. Only this
-# module includes CUDA's headers. It uses the driver API from ordinary C++
-# units and links the NVIDIA driver's libcuda.so.1, which every host running
-# a CUDA build must have (D-072).
+# The CUDA provider (D-006, D-026): the device probe, the device-memory and
+# device-execution providers and the device runtime. Outside the kernel
+# modules, only this module includes CUDA's headers (docs/portability.md,
+# checked by tools/jitllm_boundaries.py). It uses the driver API from
+# ordinary C++ units (the runtime API in the device runtime only) and links
+# the NVIDIA driver's libcuda.so.1, which every host running a CUDA build
+# must have (D-072).
 
 # The driver, linked through NVIDIA's stub in the SDK: binaries record
 # libcuda.so.1 as needed and the driver supplies it at run time.
@@ -41,4 +44,15 @@ add_library(jitllm_cuda_device_memory STATIC cuda_device_memory.cc cuda_device_e
 target_include_directories(jitllm_cuda_device_memory SYSTEM PRIVATE
                            "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
 target_link_libraries(jitllm_cuda_device_memory PUBLIC jitllm_device_memory jitllm_cuda_driver
+                      PRIVATE jitllm_warnings)
+
+# The device runtime (device_runtime.h) over the CUDA runtime API: opening
+# the device, and the engine's copies, fills, timing marks, recorded work
+# (CUDA graphs), pinned host memory and device facts. The runtime's static
+# library comes with the CUDA link of every program that uses it (the
+# engine and its kernels, CMAKE_CUDA_RUNTIME_LIBRARY).
+add_library(jitllm_cuda_device_runtime STATIC cuda_device_runtime.cc)
+target_include_directories(jitllm_cuda_device_runtime SYSTEM PRIVATE
+                           "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+target_link_libraries(jitllm_cuda_device_runtime PUBLIC jitllm_cuda_device_memory
                       PRIVATE jitllm_warnings)

@@ -99,7 +99,8 @@
 #include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "model/qwen38.h"
-#include "providers/uring_storage.h"
+#include "providers/device_execution.h"
+#include "providers/storage.h"
 
 namespace jitllm::engine {
 
@@ -310,7 +311,7 @@ class Qwen38Runner final : public PagedModel {
   Queued QueueRuns(Runs& runs, const Copies& copies,
                    const std::function<bool(void* stream)>& between,
                    kernels::ggml::BoundGraph& bound, const Copies& outputs, bool capture,
-                   Dsv4GraphStats& stats, void* native);
+                   Dsv4GraphStats& stats, providers::NativeStream native);
   // Makes room for one more graph (the oldest destroyed past kMaxGraphs).
   void RoomForGraph();
   // The chunk's n-gram rows planned, read and their slots' sources set.
@@ -356,7 +357,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t landing_bytes_ = 0;
   std::uint32_t* sources_ = nullptr;
   std::uint32_t* ple_count_ = nullptr;  // pinned: the rows the next gather takes
-  std::unique_ptr<providers::UringStorage> ring_;
+  std::unique_ptr<providers::Storage> ring_;
   bool rows_stalled_ = false;  // reads left in flight: no chunk runs again
   PleStats ple_;
 

@@ -200,6 +200,17 @@ if(JITLLM_CUDA)
   target_link_libraries(cuda_device_memory_test PRIVATE jitllm_cuda_device_memory jitllm_storage)
   jitllm_gpu_gtest(cuda_device_memory_test DISCRETE ALL
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+  # The device runtime (providers/device_runtime.h), the engine's only way
+  # to the device besides the providers and its kernels: opening the
+  # device, its facts, copies and fills, timing marks and recorded work. It
+  # links the paging kernels, whose CUDA units bring the CUDA runtime's
+  # static library to the link, as the engine's kernels do.
+  add_executable(device_runtime_test device_runtime_test.cc)
+  target_include_directories(device_runtime_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(device_runtime_test PRIVATE jitllm_device_runtime jitllm_paging_kernels)
+  jitllm_gpu_gtest(device_runtime_test DISCRETE ALL)
 endif()
 
 # The executed-plan recording's JSON lines (tests/support/plan_record.h),

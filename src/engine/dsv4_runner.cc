@@ -3,8 +3,6 @@
 
 #include "engine/dsv4_runner.h"
 
-#include <cuda_runtime.h>
-#include <fcntl.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -28,6 +26,8 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/ops_ext.h"
+#include "platform/direct_io.h"
+#include "providers/device_runtime.h"
 #include "providers/direct_reader.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
@@ -279,11 +279,9 @@ Status Dsv4Runner::Setup() {
 
   // cuBLAS, with upstream's workspace for the device, as the resident
   // harness has it: the router's BF16 products run there at prefill widths.
-  int major = 0;
-  int minor = 0;
-  (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-  (void)cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0);
-  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace((100 * major) + (10 * minor)).value();
+  const providers::DeviceFacts facts =
+      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
+  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
   if (auto r =
           node_.MapResident(cublas_workspace_, "the DeepSeek cuBLAS workspace", cublas_bytes_,
                             BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned, owner_);
@@ -750,11 +748,12 @@ std::size_t Dsv4Runner::graphs() const {
 // through the zone, its backing managed.
 Status Dsv4Runner::RegisterState() {
   std::filesystem::create_directories(o_.out);
-  spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
-  if (spill_fd_ < 0) {
+  const auto opened = platform::OpenUnnamedDirectFile(o_.out);
+  if (!opened) {
     return Error(std::format("the spill file in {}: {}", o_.out.string(),
-                             std::generic_category().message(errno)));
+                             std::generic_category().message(opened.error())));
   }
+  spill_fd_ = *opened;
   std::uint64_t slot = 0;
   const auto spill = [&](Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
     sources.clear();
@@ -867,8 +866,7 @@ Status Dsv4Runner::Clear() {
       fence_,
       [regions](providers::NativeStream stream) {
         for (const auto& [base, bytes] : regions) {
-          if (cudaMemsetAsync(Pointer(base), 0, bytes, static_cast<cudaStream_t>(stream.handle)) !=
-              cudaSuccess) {
+          if (!providers::FillAsync(stream, Pointer(base), 0, bytes).ok()) {
             return sc::JobResult::kUnknown;
           }
         }
@@ -896,9 +894,9 @@ Status Dsv4Runner::CheckHashRouting() {
           [&tables, host](providers::NativeStream stream) {
             std::uint64_t at = 0;
             for (const auto& [address, bytes] : tables) {
-              if (cudaMemcpyAsync(static_cast<std::byte*>(host) + at, Pointer(address), bytes,
-                                  cudaMemcpyDeviceToHost,
-                                  static_cast<cudaStream_t>(stream.handle)) != cudaSuccess) {
+              if (!providers::CopyAsync(stream, static_cast<std::byte*>(host) + at,
+                                        Pointer(address), bytes, providers::CopyKind::kDeviceToHost)
+                       .ok()) {
                 return sc::JobResult::kUnknown;
               }
               at += bytes;
@@ -1285,7 +1283,7 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
     const Queued queued = QueueRuns(entry, *copies, *p->bound, logits_,
                                     static_cast<const std::byte*>(g.logits->data) +
                                         (std::uint64_t{rows - out_rows} * row_bytes),
-                                    out_rows * row_bytes, capture, graph_stats_, native.handle);
+                                    out_rows * row_bytes, capture, graph_stats_, native);
     path = queued.path;
     wrote = queued.result.has_value() || queued.before;  // the chunk's own writes
     last_submit_seconds_ =
@@ -1396,7 +1394,7 @@ Status Dsv4Runner::Draft(std::uint32_t pos0, std::int32_t anchor,
       return sc::JobResult::kFailed;
     }
     const Queued queued = QueueRuns(entry, *copies, *p->bound, drafts_, g.drafts->data, draft_bytes,
-                                    capture, draft_stats_, native.handle);
+                                    capture, draft_stats_, native);
     path = queued.path;
     last_submit_seconds_ =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
@@ -1453,8 +1451,8 @@ std::expected<Dsv4Runner::Copies, std::string> Dsv4Runner::Stage(const Dsv4HostI
 
 Dsv4Runner::Queued Dsv4Runner::QueueRuns(Runs& runs, const Copies& copies, kg::BoundGraph& bound,
                                          void* out, const void* from, std::uint64_t out_bytes,
-                                         bool capture, Dsv4GraphStats& stats, void* native) {
-  auto* const stream = static_cast<cudaStream_t>(native);
+                                         bool capture, Dsv4GraphStats& stats,
+                                         providers::NativeStream native) {
   // The input copies, the plan and the output's copy, as one run queues
   // them and a capture records them.
   const auto queue = [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
@@ -1463,20 +1461,20 @@ Dsv4Runner::Queued Dsv4Runner::QueueRuns(Runs& runs, const Copies& copies, kg::B
           kg::KernelFailure{.error = kg::KernelError::kUnknown, .detail = std::move(what)});
     };
     for (const auto& [to, bytes, at] : copies) {
-      if (const cudaError_t copied =
-              cudaMemcpyAsync(Pointer(to), static_cast<const std::byte*>(inputs_) + at, bytes,
-                              cudaMemcpyHostToDevice, stream);
-          copied != cudaSuccess) {
-        return unknown(std::format("an input copy: {}", cudaGetErrorString(copied)));
+      if (const providers::DeviceStatus copied =
+              providers::CopyAsync(native, Pointer(to), static_cast<const std::byte*>(inputs_) + at,
+                                   bytes, providers::CopyKind::kHostToDevice);
+          !copied.ok()) {
+        return unknown(std::format("an input copy: {}", copied.text()));
       }
     }
     if (auto r = bound.Run(launch); !r) {
       return r;
     }
-    if (const cudaError_t copied =
-            cudaMemcpyAsync(out, from, out_bytes, cudaMemcpyDeviceToHost, stream);
-        copied != cudaSuccess) {
-      return unknown(std::format("the output's copy: {}", cudaGetErrorString(copied)));
+    if (const providers::DeviceStatus copied =
+            providers::CopyAsync(native, out, from, out_bytes, providers::CopyKind::kDeviceToHost);
+        !copied.ok()) {
+      return unknown(std::format("the output's copy: {}", copied.text()));
     }
     return {};
   };
@@ -1494,13 +1492,12 @@ Dsv4Runner::Queued Dsv4Runner::QueueRuns(Runs& runs, const Copies& copies, kg::B
     return q;
   }
   if (capture) {
-    std::size_t free_before = 0;
-    std::size_t free_after = 0;
-    std::size_t total = 0;
-    (void)cudaMemGetInfo(&free_before, &total);
+    const std::size_t free_before =
+        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     auto captured = launch_->Capture(queue);
-    (void)cudaMemGetInfo(&free_after, &total);
-    (void)cudaGetLastError();
+    const std::size_t free_after =
+        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+    (void)providers::TakeLastError();
     if (captured) {
       stats.capture_seconds += captured->capture_seconds();
       stats.instantiate_seconds += captured->instantiate_seconds();
@@ -1650,7 +1647,6 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
   bool saved = false;
   bool unknown_effect = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    auto* const stream = static_cast<cudaStream_t>(native.handle);
     const auto started = std::chrono::steady_clock::now();
     const auto failed = [&](std::string what, bool unknown) {
       ran = Error(std::format("draft and verify at {}: {}", pos, what));
@@ -1687,7 +1683,7 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
       return failed(vcopies ? "the verify's staging" : vcopies.error(), false);
     }
     dq = QueueRuns(dentry, *dcopies, *dentry.planned->bound, drafts_, dg.drafts->data, draft_bytes,
-                   dcapture, draft_stats_, native.handle);
+                   dcapture, draft_stats_, native);
     if (!dq.result) {
       return failed(dq.result.error().detail, dq.result.error().error == kg::KernelError::kUnknown);
     }
@@ -1695,9 +1691,11 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
       // The drafts into the staged tokens after the anchor, and their
       // embedding rows into the staged rows after the anchor's.
       const std::uint64_t tokens_at = (*vcopies)[1][2];
-      if (cudaMemcpyAsync(static_cast<std::byte*>(inputs_) + tokens_at + sizeof(std::int32_t),
-                          dg.drafts->data, std::uint64_t{rows - 1} * sizeof(std::int32_t),
-                          cudaMemcpyDeviceToHost, stream) != cudaSuccess) {
+      if (!providers::CopyAsync(native,
+                                static_cast<std::byte*>(inputs_) + tokens_at + sizeof(std::int32_t),
+                                dg.drafts->data, std::uint64_t{rows - 1} * sizeof(std::int32_t),
+                                providers::CopyKind::kDeviceToHost)
+               .ok()) {
         return failed("the drafts' copy into the verify's tokens", true);
       }
       if (auto r = kg::GetRowsExt(*launch_, lookup); !r) {
@@ -1709,7 +1707,7 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
     }
     saved = true;
     vq = QueueRuns(ventry, *vcopies, *ventry.planned->bound, logits_, vg.logits->data,
-                   rows * row_bytes, vcapture, graph_stats_, native.handle);
+                   rows * row_bytes, vcapture, graph_stats_, native);
     last_submit_seconds_ =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     if (!vq.result) {
@@ -1766,9 +1764,7 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
     return Error("the lookups' batch does not fit the activations or the staging");
   }
   const std::uint64_t ring = speculative() ? dlayout_.bytes : 0;
-  if (state_host_ == nullptr &&
-      cudaMallocHost(&state_host_, std::max(layout_.bytes + ring, out_bytes)) != cudaSuccess) {
-    state_host_ = nullptr;
+  if (!HavePinned(state_host_, std::max(layout_.bytes + ring, out_bytes))) {
     return Error("pinned host memory for the lookups' rows");
   }
   if (layout_.bytes + ring < out_bytes) {
@@ -1802,17 +1798,18 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
     auto posted = node_.Job(
         everything_,
         [&](providers::NativeStream native) {
-          auto* stream = static_cast<cudaStream_t>(native.handle);
-          if (cudaMemcpyAsync(ids->data, inputs_, kBatch * sizeof(std::int32_t),
-                              cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+          if (!providers::CopyAsync(native, ids->data, inputs_, kBatch * sizeof(std::int32_t),
+                                    providers::CopyKind::kHostToDevice)
+                   .ok()) {
             return sc::JobResult::kUnknown;
           }
           if (auto r = kg::GetRowsExt(*launch_, rows); !r) {
             failed = r.error().detail;
             return sc::JobResult::kFailed;
           }
-          return cudaMemcpyAsync(host, rows->data, out_bytes, cudaMemcpyDeviceToHost, stream) ==
-                         cudaSuccess
+          return providers::CopyAsync(native, host, rows->data, out_bytes,
+                                      providers::CopyKind::kDeviceToHost)
+                         .ok()
                      ? sc::JobResult::kQueued
                      : sc::JobResult::kUnknown;
         },
@@ -1843,8 +1840,7 @@ Status Dsv4Runner::ReadState(std::vector<std::byte>& target, std::vector<std::by
     return Error("reading the state with a verify's rollback pending");
   }
   const std::uint64_t ring = speculative() ? dlayout_.bytes : 0;
-  if (state_host_ == nullptr && cudaMallocHost(&state_host_, layout_.bytes + ring) != cudaSuccess) {
-    state_host_ = nullptr;
+  if (!HavePinned(state_host_, layout_.bytes + ring)) {
     return Error("pinned host memory for the state's copy");
   }
   const std::uint64_t target_base = state_.base;
@@ -1854,14 +1850,15 @@ Status Dsv4Runner::ReadState(std::vector<std::byte>& target, std::vector<std::by
   auto posted = node_.Job(
       fence_,
       [=](providers::NativeStream stream) {
-        auto* s = static_cast<cudaStream_t>(stream.handle);
-        if (cudaMemcpyAsync(host, Pointer(target_base), target_bytes, cudaMemcpyDeviceToHost, s) !=
-            cudaSuccess) {
+        if (!providers::CopyAsync(stream, host, Pointer(target_base), target_bytes,
+                                  providers::CopyKind::kDeviceToHost)
+                 .ok()) {
           return sc::JobResult::kUnknown;
         }
         if (ring != 0 &&
-            cudaMemcpyAsync(static_cast<std::byte*>(host) + target_bytes, Pointer(ring_base), ring,
-                            cudaMemcpyDeviceToHost, s) != cudaSuccess) {
+            !providers::CopyAsync(stream, static_cast<std::byte*>(host) + target_bytes,
+                                  Pointer(ring_base), ring, providers::CopyKind::kDeviceToHost)
+                 .ok()) {
           return sc::JobResult::kUnknown;
         }
         return sc::JobResult::kQueued;
@@ -1899,17 +1896,18 @@ Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
     reads.push_back({.from = t->data, .at = total, .bytes = ggml_nbytes(t)});
     total += Round(ggml_nbytes(t), 256);
   }
-  void* host = nullptr;
-  if (cudaMallocHost(&host, std::max<std::uint64_t>(total, 256)) != cudaSuccess) {
+  auto pinned = providers::AllocatePinned(std::max<std::uint64_t>(total, 256));
+  if (!pinned) {
     return Error("pinned host memory for a dump");
   }
+  void* const host = *pinned;
   auto posted = node_.Job(
       everything_,
       [&](providers::NativeStream stream) {
-        auto* s = static_cast<cudaStream_t>(stream.handle);
         for (const Read& r : reads) {
-          if (cudaMemcpyAsync(static_cast<std::byte*>(host) + r.at, r.from, r.bytes,
-                              cudaMemcpyDeviceToHost, s) != cudaSuccess) {
+          if (!providers::CopyAsync(stream, static_cast<std::byte*>(host) + r.at, r.from, r.bytes,
+                                    providers::CopyKind::kDeviceToHost)
+                   .ok()) {
             return sc::JobResult::kUnknown;
           }
         }
@@ -1922,7 +1920,7 @@ Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
       out[i].bytes.assign(bytes, bytes + reads[i].bytes);
     }
   }
-  cudaFreeHost(host);
+  providers::FreePinned(host);
   return posted;
 }
 
@@ -2020,11 +2018,12 @@ Status Dsv4Runner::Release() {
     }
   }
   if (state_host_ != nullptr) {
-    (void)cudaFreeHost(state_host_);
+    providers::FreePinned(state_host_);
     state_host_ = nullptr;
   }
   if (spill_fd_ >= 0) {
     (void)::close(spill_fd_);  // unnamed: nothing outlives the process
+    spill_fd_ = -1;
   }
   if (problems.empty()) {
     return {};

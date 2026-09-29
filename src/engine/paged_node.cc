@@ -3,8 +3,6 @@
 
 #include "engine/paged_node.h"
 
-#include <cuda_runtime.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -17,8 +15,7 @@
 
 #include "base/bounded_queue.h"
 #include "platform/crash_policy.h"
-#include "providers/cuda/cuda_device_execution.h"
-#include "providers/cuda/cuda_device_memory.h"
+#include "providers/device_runtime.h"
 #include "providers/direct_reader.h"
 
 namespace jitllm::engine {
@@ -126,21 +123,26 @@ PagedNode::~PagedNode() {
   threads_.clear();
 }
 
+bool HavePinned(void*& pointer, std::uint64_t bytes) {
+  if (pointer != nullptr) {
+    return true;
+  }
+  auto allocated = providers::AllocatePinned(bytes);
+  if (!allocated) {
+    return false;
+  }
+  pointer = *allocated;
+  return true;
+}
+
 Status PagedNode::Open() {
-  if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
-    return Error("CUDA device 0 has no context");
+  auto device = providers::OpenDevice(
+      0, {.fences_ahead = kEventsAhead, .fences_kept = std::max<std::size_t>(kEventsAhead, 4096)});
+  if (!device) {
+    return Error(device.error().detail);
   }
-  auto memory = providers::cuda::OpenDeviceMemory(0);
-  if (!memory) {
-    return Error(std::format("OpenDeviceMemory: {}", memory.error().detail));
-  }
-  memory_ = std::move(*memory);
-  auto execution = providers::cuda::OpenDeviceExecution(
-      0, {.events_ahead = kEventsAhead, .events_kept = std::max<std::size_t>(kEventsAhead, 4096)});
-  if (!execution) {
-    return Error("OpenDeviceExecution failed");
-  }
-  execution_ = std::move(*execution);
+  memory_ = std::move(device->memory);
+  execution_ = std::move(device->execution);
   for (std::size_t i = 0; i <= settings_.compute_streams; ++i) {
     auto created = execution_->CreateStream();
     if (!created) {
@@ -148,16 +150,18 @@ Status PagedNode::Open() {
     }
     streams_.push_back(*created);
   }
-  // Two timing events per compute stream (StepTimes), made now: made while
+  // Two timing marks per compute stream (StepTimes), made now: made while
   // another thread launches into a full stream, one would block (RE-029).
   times_.assign(settings_.compute_streams, StepTimes{});
   for (std::size_t i = 0; i < settings_.compute_streams; ++i) {
-    cudaEvent_t begin = nullptr;
-    cudaEvent_t end = nullptr;
-    if (cudaEventCreate(&begin) != cudaSuccess || cudaEventCreate(&end) != cudaSuccess) {
+    auto begin = providers::CreateTimingMark();
+    auto end = providers::CreateTimingMark();
+    if (!begin || !end) {
+      providers::DestroyTimingMark(begin.value_or(providers::TimingMark{}));
+      providers::DestroyTimingMark(end.value_or(providers::TimingMark{}));
       return Error("the timing events");
     }
-    events_.emplace_back(begin, end);
+    events_.emplace_back(*begin, *end);
   }
   bool host_found = false;
   for (std::size_t i = 0; i < memory_->Classes().size(); ++i) {
@@ -174,9 +178,9 @@ Status PagedNode::Open() {
   if (settings_.slot_bytes < kPagedExtent || settings_.slot_bytes % 4096 != 0) {
     return Error("a landing slot is at least 2 MiB, in 4 KiB units");
   }
-  auto storage = providers::UringStorage::Create(kPagedDepth);
+  auto storage = providers::OpenStorage(kPagedDepth);
   if (!storage) {
-    return Error(std::format("io_uring: {}", storage.error().message()));
+    return Error(std::format("the storage ring: {}", storage.error().message()));
   }
   storage_ = std::move(*storage);
   counting_ = std::make_unique<CountingStorage>(*storage_);
@@ -248,10 +252,11 @@ Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t by
 
 std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int owner,
                                                     std::vector<ExtentId>& staging) {
-  void* pointer = nullptr;
-  if (cudaMallocHost(&pointer, std::max<std::uint64_t>(bytes, 256)) != cudaSuccess) {
+  auto allocated = providers::AllocatePinned(std::max<std::uint64_t>(bytes, 256));
+  if (!allocated) {
     return Error("pinned memory");
   }
+  void* const pointer = *allocated;
   pinned_.push_back(pointer);
   auto extent = catalog_.AddExtent({.domain = domain_,
                                     .memory_class = MemoryClass::kStaging,
@@ -587,16 +592,16 @@ sc::DeviceJob PagedNode::Timed(sc::DeviceJob job, std::uint32_t stream, Timing& 
   if (stream >= events_.size()) {
     return job;  // not a compute stream: untimed
   }
-  cudaEvent_t begin = events_[stream].first;
-  cudaEvent_t end = events_[stream].second;
+  const providers::TimingMark begin = events_[stream].first;
+  const providers::TimingMark end = events_[stream].second;
   return [inner = std::move(job), &timing, begin,
           end](providers::NativeStream native) mutable -> sc::JobResult {
-    auto* const s = static_cast<cudaStream_t>(native.handle);
     timing.started = std::chrono::steady_clock::now();
-    (void)cudaEventRecord(begin, s);  // for timing only: a failure leaves the span unread
+    // For timing only: a failure leaves the span unread.
+    (void)providers::RecordTimingMark(begin, native);
     const sc::JobResult result = inner(native);
-    (void)cudaEventRecord(end, s);
-    (void)cudaGetLastError();
+    (void)providers::RecordTimingMark(end, native);
+    (void)providers::TakeLastError();
     timing.queued = std::chrono::steady_clock::now();
     timing.ran = true;
     return result;
@@ -619,12 +624,13 @@ void PagedNode::Note(std::uint32_t stream, std::chrono::steady_clock::time_point
     t.dispatch += seconds(timing.started - called);
     t.job += seconds(timing.queued - timing.started);
     t.after += seconds(now - timing.queued);
-    float ms = 0;
-    // The job's fence has completed, so both events have.
-    if (cudaEventElapsedTime(&ms, events_[stream].first, events_[stream].second) == cudaSuccess) {
-      t.device += static_cast<double>(ms) / 1e3;
+    // The job's fence has completed, so both marks have.
+    if (const auto ms =
+            providers::ElapsedMilliseconds(events_[stream].first, events_[stream].second);
+        ms) {
+      t.device += static_cast<double>(*ms) / 1e3;
     }
-    (void)cudaGetLastError();
+    (void)providers::TakeLastError();
   }
 }
 
@@ -827,12 +833,13 @@ Status PagedNode::Copy(std::uint32_t stream, const catalog::Closure& closure, st
   return Job(
       closure,
       [device, host, bytes, to_host](providers::NativeStream native) {
-        auto* const s = static_cast<cudaStream_t>(native.handle);
         auto* on_device = reinterpret_cast<void*>(device);  // NOLINT(performance-no-int-to-ptr)
-        const cudaError_t r =
-            to_host ? cudaMemcpyAsync(host, on_device, bytes, cudaMemcpyDeviceToHost, s)
-                    : cudaMemcpyAsync(on_device, host, bytes, cudaMemcpyHostToDevice, s);
-        return r == cudaSuccess ? sc::JobResult::kQueued : sc::JobResult::kUnknown;
+        const providers::DeviceStatus r =
+            to_host ? providers::CopyAsync(native, host, on_device, bytes,
+                                           providers::CopyKind::kDeviceToHost)
+                    : providers::CopyAsync(native, on_device, host, bytes,
+                                           providers::CopyKind::kHostToDevice);
+        return r.ok() ? sc::JobResult::kQueued : sc::JobResult::kUnknown;
       },
       what, stream);
 }
@@ -932,8 +939,8 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     }
   }
   for (const auto& [begin, end] : events_) {
-    (void)cudaEventDestroy(begin);
-    (void)cudaEventDestroy(end);
+    providers::DestroyTimingMark(begin);
+    providers::DestroyTimingMark(end);
   }
   events_.clear();
   if (memory_ != nullptr) {
@@ -958,7 +965,7 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     }
   }
   for (void* pointer : pinned_) {
-    (void)cudaFreeHost(pointer);
+    providers::FreePinned(pointer);
   }
   pinned_.clear();
   return Joined(problems);

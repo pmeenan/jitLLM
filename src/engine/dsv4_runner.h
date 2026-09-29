@@ -120,6 +120,7 @@
 #include "kernels/ggml/launch.h"
 #include "model/dspark.h"
 #include "model/dsv4.h"
+#include "providers/device_execution.h"
 
 namespace jitllm::engine {
 
@@ -452,7 +453,7 @@ class Dsv4Runner final : public PagedModel {
   // launch by launch.
   Queued QueueRuns(Runs& runs, const Copies& copies, kernels::ggml::BoundGraph& bound, void* out,
                    const void* from, std::uint64_t out_bytes, bool capture, Dsv4GraphStats& stats,
-                   void* native);
+                   providers::NativeStream native);
   // The verify's embedding rows of `n` drafts, looked up on the device
   // from the host table into the verify's staging (DraftVerify).
   std::expected<ggml_tensor*, std::string> DraftRowsNode(std::uint32_t n, const void* drafts);

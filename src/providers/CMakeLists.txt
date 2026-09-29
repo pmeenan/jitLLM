@@ -8,6 +8,10 @@
 if(JITLLM_CUDA)
   add_subdirectory(cuda)
   add_library(jitllm_device_probe ALIAS jitllm_cuda_probe)
+  # The device runtime (device_runtime.h): the build's one device backend
+  # defines it. The CPU-only profile has none, and builds nothing that
+  # needs one (the engine).
+  add_library(jitllm_device_runtime ALIAS jitllm_cuda_device_runtime)
 else()
   add_library(jitllm_device_probe STATIC cpu_only_device_probe.cc)
   target_include_directories(jitllm_device_probe PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -30,4 +34,5 @@ target_link_libraries(jitllm_storage PUBLIC jitllm_base jitllm_platform PRIVATE 
 add_library(jitllm_fake_providers STATIC fake/fake_device_memory.cc fake/fake_device_execution.cc
                                            fake/fake_storage.cc)
 target_include_directories(jitllm_fake_providers PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_fake_providers PUBLIC jitllm_device_memory jitllm_storage PRIVATE jitllm_warnings)
+target_link_libraries(jitllm_fake_providers PUBLIC jitllm_device_memory jitllm_storage
+                      PRIVATE jitllm_platform jitllm_warnings)

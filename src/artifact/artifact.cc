@@ -10,8 +10,6 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <linux/fs.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -43,6 +41,8 @@
 #include "base/bytes.h"
 #include "base/check.h"
 #include "base/sha256.h"
+#include "platform/direct_io.h"
+#include "platform/files.h"
 #include "platform/path_trust.h"
 
 namespace jitllm::artifact {
@@ -115,21 +115,10 @@ std::expected<FileDescriptor, Error> OpenRegular(int dir, const char* name, stru
   return fd;
 }
 
-// The file's inode generation, where its file system reports one (ext4,
-// btrfs and xfs write an int; overlayfs, tmpfs and NFS have none: ENOTTY).
-// The buffer holds the request's declared size, a long: FUSE passes that
-// size to its server and copies back as many bytes as the server replies
-// with. The whole buffer is the identity, compared for equality only. Any
-// failure is "none"; availability that differs between open and reopen
-// fails the comparison, so it never skips it.
-std::optional<std::uint64_t> Generation(int fd) {
-  long generation = 0;
-  static_assert(sizeof generation >= _IOC_SIZE(FS_IOC_GETVERSION));
-  if (::ioctl(fd, FS_IOC_GETVERSION, &generation) != 0) {
-    return std::nullopt;
-  }
-  return static_cast<std::uint64_t>(generation);
-}
+// The file's inode generation (platform::FileGeneration). Any failure is
+// "none"; availability that differs between open and reopen fails the
+// comparison, so it never skips it.
+std::optional<std::uint64_t> Generation(int fd) { return platform::FileGeneration(fd); }
 
 // Reads length bytes at offset; fewer only at the end of the file.
 std::expected<std::size_t, Error> ReadAt(int fd, std::uint64_t offset, std::span<char> out,
@@ -1672,12 +1661,13 @@ std::expected<FileDescriptor, Error> Artifact::OpenShardForDirectRead(std::uint3
   }
   // Non-blocking until it is known to be the regular file validated at
   // open; then blocking, since io_uring would honour O_NONBLOCK.
-  FileDescriptor fd(::openat(data.get(), layout_.shards[shard].path.c_str() + 5,
-                             O_RDONLY | O_DIRECT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
-  if (!fd.valid()) {
-    return Fail(errno == EINVAL ? Rule::kIo : Rule::kFileType,
+  const auto opened =
+      platform::OpenForDirectRead(data.get(), layout_.shards[shard].path.c_str() + 5);
+  if (!opened) {
+    return Fail(opened.error() == EINVAL ? Rule::kIo : Rule::kFileType,
                 "cannot open the shard for direct reads", shard);
   }
+  FileDescriptor fd(opened->fd);
   struct stat status{};
   if (::fstat(fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", shard);

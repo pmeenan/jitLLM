@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+#include "platform/sockets.h"
+
 namespace jitllm::runtime::http {
 namespace {
 
@@ -306,7 +308,7 @@ std::string Chunk(std::string_view data) {
 
 bool WriteAll(int fd, std::string_view data) {
   while (!data.empty()) {
-    const ssize_t n = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
+    const ssize_t n = platform::SendNoSignal(fd, data.data(), data.size(), true);
     if (n < 0 && errno == EINTR) {
       continue;
     }
@@ -320,7 +322,7 @@ bool WriteAll(int fd, std::string_view data) {
 
 std::expected<Listener, std::string> Listen(const config::ClientEndpoint& endpoint) {
   const int family = endpoint.ipv6 ? AF_INET6 : AF_INET;
-  Fd fd(::socket(family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
+  Fd fd(platform::OpenStreamSocket(family));
   if (!fd.valid()) {
     return std::unexpected("socket: " + Errno(errno));
   }

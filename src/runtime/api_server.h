@@ -8,10 +8,11 @@
 // endpoint (binding.h), over a Backend that runs the requests.
 // Vendor-free, so the CPU tests drive it with a fake backend.
 //
-// Threads. An I/O thread runs an epoll loop over the listeners and every
-// connection, all non-blocking: it reads requests under http.h's bounds,
-// answers the model list and every refusal itself, and queues valid chat
-// requests, never waiting on the model. Connections persist (HTTP/1.1
+// Threads. An I/O thread runs an event loop (platform/event_loop.h, epoll
+// on Linux) over the listeners and every connection, all non-blocking: it
+// reads requests under http.h's bounds, answers the model list and every
+// refusal itself, and queues valid chat requests, never waiting on the
+// model. Connections persist (HTTP/1.1
 // keep-alive, closed after kIdleTimeoutMs idle), up to max_connections
 // open (idle ones closed oldest first to admit a new one); a request that
 // arrives on a connection before the previous response has ended
@@ -72,6 +73,7 @@
 #include <vector>
 
 #include "config/node_config.h"
+#include "platform/event_loop.h"
 #include "runtime/api.h"
 #include "runtime/binding.h"
 #include "runtime/http.h"
@@ -223,10 +225,10 @@ class Server {
   std::vector<ModelInfo> models_;
   std::int64_t created_ = 0;
   std::vector<http::Fd> listeners_;
-  http::Fd epoll_;
-  http::Fd stop_;     // eventfd: the I/O thread ends
-  http::Fd io_wake_;  // eventfd: a channel has output
-  http::Fd ready_;    // eventfd: something was queued
+  platform::EventLoop loop_;
+  platform::Waker stop_;     // the I/O thread ends
+  platform::Waker io_wake_;  // a channel has output
+  platform::Waker ready_;    // something was queued
   std::jthread io_;
   IgnoredFields ignored_;
 

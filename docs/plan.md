@@ -1538,7 +1538,10 @@ bounds, declared before native evaluation.
       with bounded preprocessing.
 - [ ] **Packaging** (D-027): the signed arm64 apt repository and its signing
       keys, optional copyleft modules in the default install with a
-      build-time opt-out (D-080), and drain-before-restart upgrades.
+      build-time opt-out (D-080), and drain-before-restart upgrades; and,
+      secondary (D-098), an OCI image built from the release `.deb` with
+      its published io_uring seccomp profile and documented run flags,
+      checked by serving a request on a Spark.
 - [ ] **Release readiness** (D-061, D-062): the release checklist, the
       published support matrix, notices and source obligations for every
       shipped profile, and user documentation.

@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// FillRanges (paged_weights.h, whose other declarations NVCC is not given):
-// one block per range, its threads striding over the range's bytes.
+// FillRanges (paging.h): one block per range, its threads striding over the
+// range's bytes.
 
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
-namespace jitllm::engine {
+#include "kernels/paging/paging.h"
 
-bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t value, void* stream);
+namespace jitllm::kernels::paging {
 
 namespace {
 
@@ -34,4 +34,4 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
   return cudaPeekAtLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::engine
+}  // namespace jitllm::kernels::paging

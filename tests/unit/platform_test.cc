@@ -2,19 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The platform module: small file reads and the host probe, on fake /proc,
-// /sys and /dev trees.
+// /sys and /dev trees; the direct-I/O opens, the event loop, signal watch,
+// random bytes and available memory.
 
+#include <fcntl.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <array>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,10 +32,12 @@
 
 #include "base/report.h"
 #include "platform/direct_io.h"
+#include "platform/event_loop.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
 #include "platform/interfaces.h"
 #include "platform/path_trust.h"
+#include "platform/sockets.h"
 
 namespace {
 
@@ -449,6 +460,134 @@ TEST(InterfacesTest, AReverseLookupKeepsToItsLimit) {
     (void)jitllm::platform::ReverseName(address, limit);
     EXPECT_LT(std::chrono::steady_clock::now() - start, limit + std::chrono::seconds(1));
   }
+}
+
+// The event loop and its wakers (platform/event_loop.h): a waker is
+// reported readable with its tag until drained; a connection's peer
+// closing is reported; a removed descriptor is no longer.
+TEST(EventLoopTest, ReportsWakersAndPeers) {
+  using jitllm::platform::ReadyEvent;
+  auto loop = jitllm::platform::EventLoop::Open();
+  auto waker = jitllm::platform::Waker::Open();
+  ASSERT_TRUE(loop.valid());
+  ASSERT_TRUE(waker.valid());
+  std::array<ReadyEvent, 8> events{};
+  const auto wait = [&] { return loop.Wait(events, std::chrono::milliseconds(0)); };
+  ASSERT_TRUE(loop.Add(waker.descriptor(), 7, jitllm::platform::kReadable));
+  EXPECT_EQ(wait().value_or(9), 0U);
+  waker.Signal();
+  waker.Signal();
+  ASSERT_EQ(wait().value_or(9), 1U);
+  EXPECT_EQ(events[0].tag, 7U);
+  EXPECT_EQ(events[0].ready, jitllm::platform::kReadable);
+  waker.Drain();
+  EXPECT_EQ(wait().value_or(9), 0U);
+
+  std::array<int, 2> pair{-1, -1};
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair.data()), 0);
+  const jitllm::platform::OwnedDescriptor ours(pair[0]);
+  jitllm::platform::OwnedDescriptor theirs(pair[1]);
+  ASSERT_TRUE(loop.Add(
+      ours.get(), 8,
+      jitllm::platform::kReadable | jitllm::platform::kWritable | jitllm::platform::kPeerClosed));
+  ASSERT_EQ(wait().value_or(9), 1U);
+  EXPECT_EQ(events[0].tag, 8U);
+  EXPECT_EQ(events[0].ready, jitllm::platform::kWritable);
+  ASSERT_TRUE(loop.Change(ours.get(), 9, jitllm::platform::kPeerClosed));
+  EXPECT_EQ(wait().value_or(9), 0U);
+  theirs = jitllm::platform::OwnedDescriptor();  // the peer closes
+  ASSERT_EQ(wait().value_or(9), 1U);
+  EXPECT_EQ(events[0].tag, 9U);
+  EXPECT_NE(events[0].ready & (jitllm::platform::kPeerClosed | jitllm::platform::kHangUp), 0U);
+  loop.Remove(ours.get());
+  EXPECT_EQ(wait().value_or(9), 0U);
+  // Nothing to wait for but the limit, which is kept.
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(loop.Wait(events, std::chrono::milliseconds(20)).value_or(9), 0U);
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(19));
+}
+
+// A blocked signal is reported through the watch, once, and never
+// delivered the usual way.
+TEST(EventLoopTest, WatchesBlockedSignals) {
+  sigset_t block{};
+  (void)::sigemptyset(&block);
+  (void)::sigaddset(&block, SIGUSR1);
+  sigset_t previous{};
+  ASSERT_EQ(::pthread_sigmask(SIG_BLOCK, &block, &previous), 0);
+  {
+    constexpr std::array kWatched = {SIGUSR1};
+    const auto watch = jitllm::platform::SignalWatch::Open(kWatched);
+    ASSERT_TRUE(watch.valid());
+    EXPECT_EQ(watch.Take(), 0);
+    ASSERT_EQ(::raise(SIGUSR1), 0);
+    pollfd p{.fd = watch.descriptor(), .events = POLLIN, .revents = 0};
+    ASSERT_EQ(::poll(&p, 1, 1000), 1);
+    EXPECT_EQ(watch.Take(), SIGUSR1);
+    EXPECT_EQ(watch.Take(), 0);
+  }
+  ASSERT_EQ(::pthread_sigmask(SIG_SETMASK, &previous, nullptr), 0);
+}
+
+TEST(SocketsTest, RandomBytesDiffer) {
+  std::array<std::byte, 32> a{};
+  std::array<std::byte, 32> b{};
+  ASSERT_TRUE(jitllm::platform::FillRandom(a));
+  ASSERT_TRUE(jitllm::platform::FillRandom(b));
+  EXPECT_NE(a, b);
+}
+
+TEST(Files, AvailableMemoryAndAnonymousFiles) {
+  const auto available = jitllm::platform::AvailableMemoryBytes();
+  ASSERT_TRUE(available.has_value());
+  EXPECT_GT(available.value_or(0), 0U);
+  const auto memory = jitllm::platform::OpenAnonymousMemoryFile("jitllm-test");
+  ASSERT_TRUE(memory.has_value());
+  const jitllm::platform::OwnedDescriptor owned(*memory);
+  EXPECT_EQ(::ftruncate(owned.get(), 4096), 0);
+}
+
+// The direct-I/O opens: a shard opened for direct reads (and, on a
+// filesystem that refuses direct I/O, refused or, when asked, opened
+// through the cache), and an unnamed spill file that leaves nothing behind.
+TEST(DirectIo, OpensFilesForDirectIo) {
+  const Scratch scratch;
+  auto filesystem = jitllm::platform::DescribeFilesystem(scratch.path());
+  ASSERT_TRUE(filesystem.has_value()) << filesystem.error();
+  if (!filesystem->accepted) {
+    GTEST_SKIP() << "the build tree is on " << filesystem->type
+                 << ", which the storage roles refuse";
+  }
+  {
+    std::ofstream(scratch.path() / "shard") << std::string(8192, 'x');
+  }
+  const jitllm::platform::OwnedDescriptor dir(
+      ::open(scratch.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+  ASSERT_TRUE(dir.valid());
+  auto shard = jitllm::platform::OpenForDirectRead(dir.get(), "shard");
+  ASSERT_TRUE(shard.has_value()) << shard.error();
+  const jitllm::platform::OwnedDescriptor shard_fd(shard->fd);
+  EXPECT_TRUE(shard->direct);
+  EXPECT_EQ(jitllm::platform::FileGeneration(shard_fd.get()),
+            jitllm::platform::FileGeneration(shard_fd.get()));
+  EXPECT_EQ(jitllm::platform::OpenForDirectRead(dir.get(), "missing").error_or(0), ENOENT);
+
+  auto spill = jitllm::platform::OpenUnnamedDirectFile(scratch.path());
+  ASSERT_TRUE(spill.has_value()) << spill.error();
+  const jitllm::platform::OwnedDescriptor spill_fd(*spill);
+  EXPECT_EQ(::ftruncate(spill_fd.get(), 2 << 20), 0);
+  std::error_code error;
+  EXPECT_EQ(std::distance(fs::directory_iterator(scratch.path(), error), fs::directory_iterator()),
+            1);  // the shard alone
+
+  // procfs refuses direct I/O.
+  const jitllm::platform::OwnedDescriptor proc(::open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+  ASSERT_TRUE(proc.valid());
+  EXPECT_EQ(jitllm::platform::OpenForDirectRead(proc.get(), "meminfo").error_or(0), EINVAL);
+  auto buffered = jitllm::platform::OpenForDirectRead(proc.get(), "meminfo", true);
+  ASSERT_TRUE(buffered.has_value()) << buffered.error();
+  const jitllm::platform::OwnedDescriptor buffered_fd(buffered->fd);
+  EXPECT_FALSE(buffered->direct);
 }
 
 }  // namespace

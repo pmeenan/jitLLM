@@ -30,7 +30,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <memory>
 #include <span>
+#include <system_error>
 
 namespace jitllm::providers {
 
@@ -103,6 +106,14 @@ class Storage {
   // coalesce into one.
   virtual void Wake() = 0;
 };
+
+// The system's storage provider, a ring for `depth` requests in flight: on
+// Linux io_uring's (uring_storage.h), which the storage library builds
+// there. Another system's library defines it over its own asynchronous
+// reads (docs/portability.md: a thread pool of pread/pwrite or dispatch_io
+// on macOS, overlapped I/O on an I/O completion port on Windows).
+// std::errc::function_not_supported where the system has none.
+std::expected<std::unique_ptr<Storage>, std::error_code> OpenStorage(std::size_t depth);
 
 }  // namespace jitllm::providers
 

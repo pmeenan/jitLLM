@@ -126,7 +126,7 @@ std::expected<void, std::string> PlaceAndPlan(Planned& out, std::span<ggml_tenso
   }
   out.placement = std::move(*placement);
   for (ggml_tensor* input : inputs) {
-    out.inputs_bytes += ggml_nbytes(input);
+    out.inputs_bytes += Round(ggml_nbytes(input), 256);  // as Stage places them
   }
   if (activations == 0) {
     out.plan = std::move(*first);

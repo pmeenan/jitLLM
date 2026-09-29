@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The n-gram rows' gather (ple_rows.h): one block per row slot, each thread
+// The n-gram rows' gather (paging.h): one block per row slot, each thread
 // a byte of the row, from the pinned landing into device memory. The grid
 // is the chunk shape's bound on slots, and the slots gathered are the count
 // the device reads, so a captured decode graph (D-090) replays it with the
@@ -12,9 +12,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "engine/ple_rows.h"
+#include "kernels/paging/paging.h"
 
-namespace jitllm::engine {
+namespace jitllm::kernels::paging {
 
 namespace {
 
@@ -46,4 +46,4 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
   return cudaPeekAtLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::engine
+}  // namespace jitllm::kernels::paging

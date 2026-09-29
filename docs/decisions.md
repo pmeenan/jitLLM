@@ -39,6 +39,77 @@ one Spark and on two.
 
 ---
 
+## D-098: Distribution: the `.deb` is primary; an OCI image built from the same `.deb` is secondary, with documented run flags; Homebrew or `.pkg` and winget or MSI follow their ports  (2026-09-29, status: accepted at the owner's request of 2026-09-29 (the portability slice), for review with it; decision only, nothing built; specializes D-027's native package managers and its container-only reopen condition; D-074's package unchanged)
+
+**Decision.**
+- **Primary: the `.deb`** of D-074, from the signed apt repository M10
+  publishes (D-027). It is the configuration jitLLM is built and measured
+  for: the systemd unit with its sandbox, `LimitMEMLOCK=infinity` and
+  `Delegate=` for confined jobs in delegated cgroups (D-074); direct
+  io_uring submission and `O_DIRECT` reads on the storage roles (D-034),
+  which the unit does not filter; the host's NVIDIA driver.
+- **Secondary: an OCI container image, built from the same `.deb`.** The
+  image installs the release's `.deb` into an Ubuntu base matching the
+  package's `libc6` floor, so the binaries, notices and SBOM are the
+  package's, byte for byte; the image adds nothing to what runs. It
+  serves (the runtime process); the host keeps the driver. It is offered
+  because DGX OS ships Docker and NVIDIA's container toolkit, so a Spark
+  can run it with nothing installed. The documented run flags:
+  - **seccomp: a profile that allows the `io_uring_setup`,
+    `io_uring_enter` and `io_uring_register` calls.** Docker's default
+    profile blocks them since 25.0 ([moby#46762](https://github.com/moby/moby/pull/46762),
+    merged 2023-11-02; [moby#47532](https://github.com/moby/moby/issues/47532),
+    closed as not planned, 2024), and without io_uring the storage
+    provider refuses to start. jitLLM publishes that profile (Docker's
+    default plus these three calls) beside the image; `seccomp=unconfined`
+    is not the documented flag.
+  - **memlock:** `--ulimit memlock=-1:-1`, as the unit's
+    `LimitMEMLOCK=infinity`.
+  - **GPU:** `--gpus all` (or the toolkit's CDI device,
+    `--device nvidia.com/gpu=all`), through NVIDIA's container toolkit;
+    the driver stays the host's (D-072's probe judges it).
+  - **Storage:** the data roles bind-mounted from the host's own
+    filesystem (`-v /var/lib/jitllm:/var/lib/jitllm`, and every other
+    role path the configuration names), since direct I/O and the role
+    checks refuse overlayfs (D-073, D-074); the configuration mounted
+    read-only at `/etc/jitllm`.
+  - **Network:** `[client] bind` names the container's addresses
+    (`"loopback"` is the container's own loopback), or the container uses
+    the host's network (`--network host`), which keeps the default
+    loopback and tailnet binding (D-097) meaning what it does on the host.
+  In the container there is no systemd and no delegated cgroup unless the
+  operator provides one, so jobs (import, install) do not run there: the
+  runtime already warns and carries on without them (D-074), and imports
+  run through the `.deb` or another host. The container is a
+  convenience, not a second supported configuration: support claims,
+  measurements and the release checks name the `.deb`.
+- **Later, with their ports** (docs/portability.md; D-026, D-082):
+  Homebrew or a signed `.pkg` on macOS, winget or an MSI on Windows. None
+  is built or designed until its port is undertaken.
+
+**Why.** D-027 chose native package managers, and the `.deb` is where
+jitLLM controls what the performance depends on: io_uring and direct I/O,
+unlimited locked memory, the unit's sandbox and job containment. A
+container image is the other common way to run inference servers, and on
+DGX OS it costs a user nothing to try; building it from the `.deb` keeps
+one set of binaries, notices and dependencies instead of a second build.
+The seccomp gap is real and silent (io_uring fails with EPERM inside a
+default container), so it is written into the run flags rather than left
+to a support thread.
+
+**Consequences.** M10's packaging item gains the image, its seccomp
+profile and its documented run command beside the apt repository
+(plan.md); features.md records both. An image check (the image built from
+the release `.deb`, started on a Spark with the documented flags, a model
+paged in and one request served) joins the release checks when the image
+is built. Nothing changes now: no image, profile or command exists yet.
+
+**Reopen if.** Users need the container to be a supported configuration
+(then it needs its own measurements and checks, and jobs a place to run);
+Docker's default profile admits io_uring again, or DGX OS stops shipping
+Docker or the container toolkit; a port starts and its package manager is
+chosen; or the primary platform stops being Debian-based (D-027).
+
 ## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract)
 
 **Decision.** With models configured (D-096), the runtime service serves
@@ -196,7 +267,7 @@ serving on. The conversation's state then holds exactly the chunks that
 ran, so a retry continues from them
 ([runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation)).
 
-## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057)
+## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below)
 
 **Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
 ([runtime-serving.md](runtime-serving.md)):
@@ -282,6 +353,18 @@ so every context from the minimum, 512, starts (before, the fixed
 512-row chunk refused DeepSeek at 512 and wrapped Qwen3.8's MTP planning
 position). The policy and its measurements are in
 [runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation).
+
+**Noted 2026-09-29** (the portability slice; its reopen condition "the
+engine's CUDA use moves behind a provider interface" met, the decision
+unchanged). The engine no longer calls the CUDA runtime: its copies,
+fills, timing, graph capture and replay, pinned memory and device facts go
+through the device runtime (`providers/device_runtime.h`, defined by
+`providers/cuda/`), its two small kernels moved to `kernels/paging/`, and
+it is built without CUDA's headers. It stays a CUDA-builds-only layer
+above the kernels because it links them ([portability.md](portability.md)).
+Plain decode through `jitllm-runtime chat --plain` was unchanged within
+noise (DeepSeek 22.10–22.16 against 22.13–22.21 tok/s, Qwen3.8
+27.64–27.72 against 27.60–27.67; `spark`, two alternating rounds).
 
 ## D-095: No CPU latency hold: a PM QoS request cut the wake's round trip but not decode's time, so the runtime does not keep one  (2026-09-28, status: not adopted, by the owner, 2026-09-28; D-094's wake and its margins stay as they are)
 
@@ -4255,7 +4338,7 @@ direct import from the store; the single importing node becomes a
 bottleneck in larger clusters; or users need automatic space management,
 which requires its own decision.
 
-## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052)
+## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052; primitive-fallback rule noted 2026-09-29)
 
 **Decision.** jitLLM's runtime owns operation dispatch on every device. That
 covers:
@@ -4390,6 +4473,19 @@ ExLlamaV3's wrappers are PyTorch-bound, so the EXL3 plan already rewrote them.
 - Adapting a kernel source costs more than it returns.
 - A requirement emerges to load kernels without rebuilding. That would also
   reopen D-028.
+
+**Note 2026-09-29 (portability; owner's request).** Every fused or fast
+operation has a fallback composed of primitive operations in the
+registry, so a new backend (another GPU platform, D-026, D-082) can run a
+model with primitives alone and fused kernels are optional speedups on
+top. "Primitive" means an operation a backend would implement anyway
+(matrix products per weight format, elementwise, norms, RoPE, attention,
+row gathers and scatters, routing's top-k); a fusion or a fast plan is a
+plan choice that must name, or be replaceable by, the unfused sequence it
+computes, with its numerical relation to that sequence recorded as the
+fast plans' already are (D-085, D-092's exact mode). This constrains new
+operations from now on; where it does not yet hold is audited, with each
+model's minimum primitive set, in [portability.md](portability.md#the-registry-rule).
 
 ## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051; its M3 and M4 gates are M5's and M6's under D-087, and flagship EXL3 serving comes first in M4)
 
@@ -5754,7 +5850,7 @@ without a fork; the flagship recipes need kernels GGML cannot host; or an
 out-of-tree, differently licensed backend must load without rebuilding the
 core.
 
-## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087; core-only default install amended by D-080)
+## D-027: Users install through native package managers; a signed apt repository for Spark first  (2026-09-20, status: accepted; installed layout in D-063; the M7 packaging scope moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087; core-only default install amended by D-080; an OCI image built from the `.deb` added as a secondary distribution by D-098)
 
 **Decision.** The user-facing installation path is the platform's package
 manager. For DGX Spark that is apt with a project-hosted, signed repository

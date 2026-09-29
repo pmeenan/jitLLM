@@ -102,16 +102,8 @@ constexpr std::uint64_t PleLandingBound(std::uint64_t lookups) { return lookups 
 std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd,
                                              const PleRowPlan& plan, std::byte* landing);
 
-// The job's gather (CUDA builds, ple_rows.cu): row slot i's `row_bytes`
-// bytes from landing + sources[i], for i < *count, on `stream`, over a grid
-// of `max_count` slots (at least *count). `count`, `sources` and `landing`
-// are pinned host memory the device reads in place, so a captured graph
-// replays the gather with whatever the host wrote there for the next chunk
-// (D-090: data, not launch parameters); `slots` is device memory. Returns
-// false if the launch failed.
-bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
-                   const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
-                   std::byte* slots, void* stream);
+// The job's gather is a kernel of its own (kernels/paging/paging.h,
+// GatherPleRows).
 
 }  // namespace jitllm::engine
 

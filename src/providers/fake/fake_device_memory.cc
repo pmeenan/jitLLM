@@ -17,6 +17,7 @@
 
 #include "base/bytes.h"
 #include "base/check.h"
+#include "platform/files.h"
 #include "providers/device_memory.h"
 
 namespace jitllm::providers::fake {
@@ -153,10 +154,12 @@ std::expected<FakeDeviceMemory::Handle, Failure> FakeDeviceMemory::DoCreate(
     }
     return handle;
   }
-  const int fd = ::memfd_create("jitllm-fake-backing", MFD_CLOEXEC);
-  if (fd < 0) {
+  const auto opened = platform::OpenAnonymousMemoryFile("jitllm-fake-backing");
+  if (!opened) {
+    errno = opened.error();
     return SystemFailure("memfd_create");
   }
+  const int fd = *opened;
   if (::ftruncate(fd, static_cast<off_t>(size.value())) != 0 || !Poison(fd, size)) {
     auto failure = SystemFailure("ftruncate");
     (void)::close(fd);

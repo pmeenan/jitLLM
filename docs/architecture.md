@@ -25,6 +25,7 @@
 | Prepared artifacts and page-in | [artifact-format.md](artifact-format.md) | D-009, D-018, D-035, D-056 |
 | Kernel dispatch and the M2 backend proof | [backend-proof.md](backend-proof.md), [exl3-bringup.md](exl3-bringup.md), [first-slice.md](first-slice.md) | D-051–D-053 |
 | Serving in the runtime: the engine, the configured models, the full swap and the serving commands (M3) | [runtime-serving.md](runtime-serving.md), [swap.md](experiments/fast-swap/swap.md) | D-086, D-090, D-093, D-096 |
+| Other GPU platforms and operating systems: boundaries, the registry's primitive fallbacks, the runners' shared skeleton, distribution | [portability.md](portability.md) | D-026, D-053, D-082, D-098 |
 | Cluster membership, transport and placement | [cluster-design.md](cluster-design.md) and [the conductor section](#conductor-ownership-and-admission) | D-037–D-039 |
 | Inference API contract | [client-api-baseline.md](client-api-baseline.md) and the assessments it links | D-040–D-047 |
 | Source dependencies and licensing | [source-dependencies.md](source-dependencies.md), [licensing.md](licensing.md) | D-017, D-057 |
@@ -286,12 +287,12 @@ substitute a fake at any provider boundary.
 | Layer | Modules | Holds |
 | --- | --- | --- |
 | Base | `base` | Typed IDs and generations, typed byte counts, `Error` and `std::expected` helpers (D-066), checked arithmetic, bounded containers and queues, monotonic clocks |
-| Platform | `platform` | Linux services: files opened beneath a directory without following links, io_uring, sockets, processes, memory counters |
+| Platform | `platform` | Linux services: files opened beneath a directory without following links, direct-I/O opens, io_uring, the event loop, wakers and signal watch, socket calls, processes, memory counters. With the Linux providers, the only place Linux-specific code appears ([portability.md](portability.md)) |
 | Providers | `providers`, `providers/fake`, `providers/cuda` | The [provider interfaces](#providers) and their implementations; with kernel units, the only place vendor headers appear (D-026) |
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `tokenizer`, `chat`, `artifact`, `model`, `execution` | The tokenizer; the chat renderers and, later, output parsers; the artifact reader and verifier; architecture and state adapters; the operation contract, planner and dispatcher, and sampling |
-| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053) |
-| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU, and each model's runner on it: its weights' places and sources, its state, its chunk plans and decode graphs, its device jobs (D-096, [runtime-serving.md](runtime-serving.md)). CUDA builds only; like the kernel units it may use the CUDA runtime |
+| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053); jitLLM's own `image` kernels, and `paging`, the engine's fill and row-gather kernels |
+| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU, and each model's runner on it: its weights' places and sources, its state, its chunk plans and decode graphs, its device jobs (D-096, [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers; CUDA builds only, because it links the kernel modules |
 | Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration, storage roles and served models (D-073, D-096); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
 
@@ -301,6 +302,12 @@ substitute a fake at any provider boundary.
   `check` tier); its runtime refuses the serving commands.
 - CUDA translation units stay narrow. They include kernel sources and
   provider code, never scheduler or catalog headers (AGENTS.md rule 6).
+- Vendor and OS code keeps to its modules: CUDA only in `providers/cuda`
+  and the kernel modules, Linux-specific headers and calls only in
+  `platform` and the Linux providers (`providers/uring_storage.*`). The
+  light check tier's boundary check (`tools/jitllm_boundaries.py`) fails
+  on anything else, and allows a named exception only with its reason
+  ([portability.md](portability.md)).
 - A build-generated table registers the compiled implementations, and the
   `runtime` program links it. The execution layer never includes a kernel
   module, and nothing is loaded at run time (D-028).
@@ -1345,7 +1352,8 @@ identity is part of the numerical plan and of cached-state identity.
 
 The core reaches devices and the OS only through narrow provider interfaces
 (D-026). Each interface has a CUDA or Linux implementation and a
-deterministic fake. A call that can block runs on its provider's lane, never
+deterministic fake (the device runtime, which only the CUDA-only engine
+uses, has none yet). A call that can block runs on its provider's lane, never
 on the scheduler thread. This is the minimal set the pager needs; exact
 signatures follow the M2 proof.
 
@@ -1353,7 +1361,8 @@ signatures follow the M2 proof.
 | --- | --- | --- |
 | Device memory | Report domains, granularity and allocation classes; reserve and free address ranges; create and release backing in a class; map, set access, unmap | CUDA VMM through the driver API (D-006, D-033); device-located backing, with a host-located landing zone for direct I/O on Spark (D-081) |
 | Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (landing zone to device VMM and back, D-081; relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
-| Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034); every request ends not started, accepted or unknown |
+| Device runtime | Open the device with its two providers; within a device job, copies and fills on the job's stream, timing marks, recorded work (captured and replayed graphs), the thread's error state; pinned host memory; the device's architecture and free memory | Plain functions the build's one device backend defines (`providers/device_runtime.h`; CUDA's in `providers/cuda`), one direct call around the backend's own: what the engine uses of the device besides the kernels ([portability.md](portability.md)) |
+| Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034), opened through `OpenStorage`; every request ends not started, accepted or unknown. Other systems' implementations: [portability.md](portability.md#storage-and-direct-io) |
 | Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M4, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
 | Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `jitllm doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
 

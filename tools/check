@@ -9,8 +9,9 @@
     tools/check TIER --list          the tier's steps, without running them
 
 `mise run check`, `mise run check:full` and `mise run check:spark -- --host
-HOST` run these. `check` checks formatting, REUSE compliance and embedded
-license headers, runs the tooling tests, builds and tests the native,
+HOST` run these. `check` checks formatting, REUSE compliance, embedded
+license headers and the portability boundaries (tools/jitllm_boundaries.py),
+runs the tooling tests, builds and tests the native,
 CPU-only and cross presets (cross under qemu-user), then runs clang-tidy. `full` adds the sanitizer builds, the offline,
 copyleft-disabled build in the reference container, the arm64 package with
 its inventory and install test, and the confined-job proof. `spark` deploys the
@@ -46,6 +47,7 @@ import time
 from collections.abc import Callable
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import jitllm_boundaries as boundaries  # noqa: E402
 import jitllm_headers as headers  # noqa: E402
 import jitllm_package as packagelib  # noqa: E402
 import jitllm_sdk as sdklib  # noqa: E402
@@ -218,6 +220,14 @@ def check_tidy(sdk: sdklib.Sdk) -> bool:
     return not problems
 
 
+def check_boundaries() -> bool:
+    checked, problems = boundaries.check(REPO, worktree_files())
+    for problem in problems:
+        log(problem)
+    log(f"boundary check: {checked} files, {len(problems)} problem(s)")
+    return not problems
+
+
 def tools_tests() -> bool:
     return run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tools/tests"]) == 0
 
@@ -376,6 +386,8 @@ def plan(tier: str, sdk: sdklib.Sdk | None, host: str | None = None) -> list[Ste
              lambda: check_reuse(sdk)),
         Step("headers", "embedded license headers wherever a file can hold a comment, as REUSE reads them (D-029)",
              lambda: check_headers(sdk)),
+        Step("boundaries", "Linux-specific code only in src/platform/ and the Linux providers, CUDA only in "
+             "src/providers/cuda/ and src/kernels/ (docs/portability.md)", check_boundaries),
         Step("tools", "the tooling regression tests (tools/tests)", tools_tests),
         Step("native", "x86-64 build and tests, GPU tests skipped", lambda: build_and_test("native")),
         Step("cpu", "CPU-only build and tests, no CUDA toolkit (D-026)", lambda: build_and_test("cpu")),

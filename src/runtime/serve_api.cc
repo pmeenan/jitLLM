@@ -4,14 +4,11 @@
 // The service with models configured (D-097; docs/runtime-serving.md#the-chat-route):
 // the configured models registered on the node (serving.h), the chat
 // route (api_server.h) over them, where [client] bind says (binding.h), and
-// the runtime's signals watched through a signalfd on the node's driver
-// thread, which runs every request.
-
-#include <sys/random.h>
-#include <sys/signalfd.h>
-#include <unistd.h>
+// the runtime's signals watched as readiness (platform/event_loop.h) on the
+// node's driver thread, which runs every request.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -28,9 +25,11 @@
 
 #include "base/report.h"
 #include "chat/chat.h"
+#include "platform/event_loop.h"
 #include "platform/interfaces.h"
 #include "platform/job.h"
 #include "platform/sd_notify.h"
+#include "platform/sockets.h"
 #include "runtime/api.h"
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
@@ -58,7 +57,7 @@ api::Error Failure(int status, std::string message, std::string code = {}, std::
 
 std::uint64_t RandomSeed() {
   std::uint64_t seed = 0;
-  if (::getrandom(&seed, sizeof seed, 0) != static_cast<ssize_t>(sizeof seed)) {
+  if (!platform::FillRandom(std::as_writable_bytes(std::span(&seed, 1)))) {
     seed = static_cast<std::uint64_t>(Clock::now().time_since_epoch().count());
   }
   return seed;
@@ -405,14 +404,10 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       Say(log, "refusing to serve: " + started.error());
       status = kExitFailure;
     } else {
-      sigset_t signals;
-      (void)::sigemptyset(&signals);
-      for (const int s : {SIGTERM, SIGINT, SIGHUP, SIGCHLD}) {
-        (void)::sigaddset(&signals, s);
-      }
-      const int wake = ::signalfd(-1, &signals, SFD_CLOEXEC | SFD_NONBLOCK);
-      if (wake < 0) {
-        Say(log, "cannot watch signals (signalfd)");
+      constexpr std::array kWatched = {SIGTERM, SIGINT, SIGHUP, SIGCHLD};
+      const platform::SignalWatch signals = platform::SignalWatch::Open(kWatched);
+      if (!signals.valid()) {
+        Say(log, "cannot watch signals");
         status = kExitFailure;
       } else {
         if (auto notified = platform::NotifyServiceManager(std::format(
@@ -423,11 +418,10 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
         Say(log, "ready");
         const auto on_wake = [&]() {
           bool stop = false;
-          signalfd_siginfo info{};
-          while (::read(wake, &info, sizeof info) == static_cast<ssize_t>(sizeof info)) {
-            if (info.ssi_signo == SIGCHLD) {
+          for (int signo = signals.Take(); signo != 0; signo = signals.Take()) {
+            if (signo == SIGCHLD) {
               (void)platform::ReapExited();
-            } else if (info.ssi_signo == SIGHUP) {
+            } else if (signo == SIGHUP) {
               Say(log,
                   "the configuration is read only at startup; restart the runtime to apply a "
                   "change");
@@ -437,8 +431,7 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
           }
           return stop;
         };
-        auto ran = http->Run(wake, on_wake);
-        (void)::close(wake);
+        auto ran = http->Run(signals.descriptor(), on_wake);
         (void)platform::NotifyServiceManager("STOPPING=1");
         if (!ran) {
           Say(log, "stopping after a failure: " + ran.error());

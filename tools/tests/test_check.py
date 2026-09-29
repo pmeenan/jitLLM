@@ -39,7 +39,8 @@ class Tiers(unittest.TestCase):
 
     def test_check_formats_builds_every_workstation_profile_and_lints(self):
         self.assertEqual(self.names("check"),
-                         ["format", "reuse", "headers", "tools", "native", "cpu", "cross", "tidy"])
+                         ["format", "reuse", "headers", "boundaries", "tools", "native", "cpu", "cross",
+                          "tidy"])
 
     def test_full_adds_the_sanitizers_the_reference_build_the_package_and_jobs(self):
         self.assertEqual(self.names("full"),
@@ -90,6 +91,18 @@ class Licensing(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["python3", "reuse", "--root", str(check.REPO), "lint", "--json"])
         headers.assert_called_once_with(check.REPO, ["a.py"], report)
         self.assertIn(mock.call("a.py: no tag"), log.call_args_list)
+
+    def test_boundaries_checks_the_working_tree(self):
+        with (mock.patch.object(check, "worktree_files", return_value=["src/a.cc"]),
+              mock.patch.object(check.boundaries, "check", return_value=(1, ["src/a.cc:1: uses epoll_wait"])) as run,
+              mock.patch.object(check, "log") as log):
+            self.assertFalse(check.check_boundaries())
+        run.assert_called_once_with(check.REPO, ["src/a.cc"])
+        self.assertIn(mock.call("src/a.cc:1: uses epoll_wait"), log.call_args_list)
+        with (mock.patch.object(check, "worktree_files", return_value=[]),
+              mock.patch.object(check.boundaries, "check", return_value=(0, [])),
+              mock.patch.object(check, "log")):
+            self.assertTrue(check.check_boundaries())
 
     def test_headers_fails_without_a_report(self):
         sdk = mock.Mock()

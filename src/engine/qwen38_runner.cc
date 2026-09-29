@@ -3,8 +3,6 @@
 
 #include "engine/qwen38_runner.h"
 
-#include <cuda_runtime.h>
-#include <fcntl.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -27,6 +25,9 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/paging/paging.h"
+#include "platform/direct_io.h"
+#include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
@@ -263,11 +264,9 @@ Status Qwen38Runner::Setup() {
     return r;
   }
 
-  int major = 0;
-  int minor = 0;
-  (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-  (void)cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0);
-  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace((100 * major) + (10 * minor)).value();
+  const providers::DeviceFacts facts =
+      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
+  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
   if (auto r =
           node_.MapResident(cublas_workspace_, "the Qwen3.8 cuBLAS workspace", cublas_bytes_,
                             BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned, owner_);
@@ -450,7 +449,7 @@ Status Qwen38Runner::Setup() {
     carry_ = static_cast<kg::RangeCopy*>(*carry);
     drafts_ = *drafts;
   }
-  auto ring = providers::UringStorage::Create(kRingDepth);
+  auto ring = providers::OpenStorage(kRingDepth);
   if (!ring) {
     return Error(std::format("the n-gram rows' ring: {}", ring.error().message()));
   }
@@ -528,11 +527,12 @@ Status Qwen38Runner::Register() {
 // the zone, its backing managed.
 Status Qwen38Runner::RegisterState() {
   std::filesystem::create_directories(o_.out);
-  spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
-  if (spill_fd_ < 0) {
+  const auto opened = platform::OpenUnnamedDirectFile(o_.out);
+  if (!opened) {
     return Error(std::format("the spill file in {}: {}", o_.out.string(),
-                             std::generic_category().message(errno)));
+                             std::generic_category().message(opened.error())));
   }
+  spill_fd_ = *opened;
   std::uint64_t slot = 0;
   const auto spill = [&](Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
     sources.clear();
@@ -651,9 +651,9 @@ Status Qwen38Runner::ReadPleHash() {
           [&copies, host](providers::NativeStream stream) {
             std::uint64_t at = 0;
             for (const auto& [address, bytes] : copies) {
-              if (cudaMemcpyAsync(static_cast<std::byte*>(host) + at, Pointer(address), bytes,
-                                  cudaMemcpyDeviceToHost,
-                                  static_cast<cudaStream_t>(stream.handle)) != cudaSuccess) {
+              if (!providers::CopyAsync(stream, static_cast<std::byte*>(host) + at,
+                                        Pointer(address), bytes, providers::CopyKind::kDeviceToHost)
+                       .ok()) {
                 return sc::JobResult::kUnknown;
               }
               at += bytes;
@@ -691,8 +691,9 @@ Status Qwen38Runner::Scrub(std::uint8_t value, bool slabs, bool dense) {
   return node_.Job(
       everything_,
       [ranges, count, value](providers::NativeStream stream) {
-        return FillRanges(ranges, count, value, stream.handle) ? sc::JobResult::kQueued
-                                                               : sc::JobResult::kUnknown;
+        return kernels::paging::FillRanges(ranges, count, value, stream.handle)
+                   ? sc::JobResult::kQueued
+                   : sc::JobResult::kUnknown;
       },
       "filling the weights' unwritten bytes", stream_);
 }
@@ -714,8 +715,7 @@ Status Qwen38Runner::Clear() {
       fence_,
       [regions](providers::NativeStream stream) {
         for (const auto& [base, bytes] : regions) {
-          if (cudaMemsetAsync(Pointer(base), 0, bytes, static_cast<cudaStream_t>(stream.handle)) !=
-              cudaSuccess) {
+          if (!providers::FillAsync(stream, Pointer(base), 0, bytes).ok()) {
             return sc::JobResult::kUnknown;
           }
         }
@@ -962,32 +962,30 @@ std::expected<Qwen38Runner::Copies, std::string> Qwen38Runner::Stage(
 Qwen38Runner::Queued Qwen38Runner::QueueRuns(Runs& runs, const Copies& copies,
                                              const std::function<bool(void* stream)>& between,
                                              kg::BoundGraph& bound, const Copies& outputs,
-                                             bool capture, Dsv4GraphStats& stats, void* native) {
-  auto* const stream = static_cast<cudaStream_t>(native);
+                                             bool capture, Dsv4GraphStats& stats,
+                                             providers::NativeStream native) {
   // The input copies, the gather, the plan and the outputs' copies, as one
   // run queues them and a capture records them.
   const auto queue = [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
     for (const auto& [to, bytes, at] : copies) {
-      if (const cudaError_t copied =
-              cudaMemcpyAsync(Pointer(to), static_cast<const std::byte*>(inputs_) + at, bytes,
-                              cudaMemcpyHostToDevice, stream);
-          copied != cudaSuccess) {
-        return std::unexpected(
-            Unknown(std::format("an input copy: {}", cudaGetErrorString(copied))));
+      if (const providers::DeviceStatus copied =
+              providers::CopyAsync(native, Pointer(to), static_cast<const std::byte*>(inputs_) + at,
+                                   bytes, providers::CopyKind::kHostToDevice);
+          !copied.ok()) {
+        return std::unexpected(Unknown(std::format("an input copy: {}", copied.text())));
       }
     }
-    if (between && !between(stream)) {
+    if (between && !between(native.handle)) {
       return std::unexpected(Unknown("the n-gram rows' gather"));
     }
     if (auto r = bound.Run(launch); !r) {
       return r;
     }
     for (const auto& [to, from, bytes] : outputs) {
-      if (const cudaError_t copied =
-              cudaMemcpyAsync(Pointer(to), Pointer(from), bytes, cudaMemcpyDeviceToHost, stream);
-          copied != cudaSuccess) {
-        return std::unexpected(
-            Unknown(std::format("an output's copy: {}", cudaGetErrorString(copied))));
+      if (const providers::DeviceStatus copied = providers::CopyAsync(
+              native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
+          !copied.ok()) {
+        return std::unexpected(Unknown(std::format("an output's copy: {}", copied.text())));
       }
     }
     return {};
@@ -1006,13 +1004,12 @@ Qwen38Runner::Queued Qwen38Runner::QueueRuns(Runs& runs, const Copies& copies,
     return q;
   }
   if (capture) {
-    std::size_t free_before = 0;
-    std::size_t free_after = 0;
-    std::size_t total = 0;
-    (void)cudaMemGetInfo(&free_before, &total);
+    const std::size_t free_before =
+        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     auto captured = launch_->Capture(queue);
-    (void)cudaMemGetInfo(&free_after, &total);
-    (void)cudaGetLastError();
+    const std::size_t free_after =
+        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+    (void)providers::TakeLastError();
     if (captured) {
       stats.capture_seconds += captured->capture_seconds();
       stats.instantiate_seconds += captured->instantiate_seconds();
@@ -1255,9 +1252,9 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   // The gather's grid: the shape's lookups, a slot each at most.
   const auto max_count = static_cast<std::uint32_t>(std::uint64_t{rows} * profile_.ple_heads());
   const auto gather = [this, max_count](void* stream) {
-    return GatherPleRows(landing_, sources_, ple_count_, max_count,
-                         static_cast<std::uint32_t>(table_.row_bytes),
-                         static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
+    return kernels::paging::GatherPleRows(
+        landing_, sources_, ple_count_, max_count, static_cast<std::uint32_t>(table_.row_bytes),
+        static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
   };
   // Decode graphs (D-090): replay a shape's graph; capture a one-row shape
   // that has run once launch by launch; otherwise launch by launch.
@@ -1283,7 +1280,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       return sc::JobResult::kUnknown;
     }
     const Queued queued =
-        QueueRuns(entry, *copies, gather, *p->bound, outputs, capture, graph_stats_, native.handle);
+        QueueRuns(entry, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
     path = queued.path;
     wrote = queued.result.has_value() || queued.before;
     if (!queued.result) {
@@ -1295,8 +1292,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       return committing || queued.before ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
     }
     if (mentry != nullptr) {
-      const Queued m = QueueRuns(*mentry, mcopies, {}, *mentry->planned->bound, {}, false,
-                                 draft_stats_, native.handle);
+      const Queued m =
+          QueueRuns(*mentry, mcopies, {}, *mentry->planned->bound, {}, false, draft_stats_, native);
       if (!m.result) {
         ran = Error(std::format("the drafter's pass at {}: {}", n_past, m.result.error().detail));
         unknown = m.result.error().error == kg::KernelError::kUnknown;
@@ -1396,7 +1393,7 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
       return sc::JobResult::kUnknown;
     }
     const Queued queued = QueueRuns(entry, *copies, {}, *entry.planned->bound, outputs, capture,
-                                    draft_stats_, native.handle);
+                                    draft_stats_, native);
     path = queued.path;
     if (!queued.result) {
       ran = Error(std::format("draft at {}: {}", n, queued.result.error().detail));
@@ -1492,9 +1489,9 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   }
   const auto max_count = static_cast<std::uint32_t>(std::uint64_t{rows} * profile_.ple_heads());
   const auto gather = [this, max_count](void* stream) {
-    return GatherPleRows(landing_, sources_, ple_count_, max_count,
-                         static_cast<std::uint32_t>(table_.row_bytes),
-                         static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
+    return kernels::paging::GatherPleRows(
+        landing_, sources_, ple_count_, max_count, static_cast<std::uint32_t>(table_.row_bytes),
+        static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
   };
   // The argmaxes always; the logits (its own runs, `entry`'s) when asked.
   Runs& runs = logits != nullptr ? static_cast<Runs&>(entry) : entry.lean;
@@ -1526,7 +1523,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
     }
     saved = true;
     const Queued queued =
-        QueueRuns(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native.handle);
+        QueueRuns(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
     path = queued.path;
     if (!queued.result) {
       ran = Error(std::format("verify at {}: {}", n_past, queued.result.error().detail));
@@ -1610,8 +1607,7 @@ Status Qwen38Runner::ReadState(std::vector<std::byte>& target, std::vector<std::
     return Error("reading the state with a verify awaiting its Accept");
   }
   const std::uint64_t mtp = speculative() ? mtp_layout_.bytes : 0;
-  if (state_host_ == nullptr && cudaMallocHost(&state_host_, layout_.bytes + mtp) != cudaSuccess) {
-    state_host_ = nullptr;
+  if (!HavePinned(state_host_, layout_.bytes + mtp)) {
     return Error("pinned host memory for the state's copy");
   }
   const std::uint64_t target_base = state_.base;
@@ -1621,14 +1617,15 @@ Status Qwen38Runner::ReadState(std::vector<std::byte>& target, std::vector<std::
   auto posted = node_.Job(
       fence_,
       [=](providers::NativeStream stream) {
-        auto* s = static_cast<cudaStream_t>(stream.handle);
-        if (cudaMemcpyAsync(host, Pointer(target_base), target_bytes, cudaMemcpyDeviceToHost, s) !=
-            cudaSuccess) {
+        if (!providers::CopyAsync(stream, host, Pointer(target_base), target_bytes,
+                                  providers::CopyKind::kDeviceToHost)
+                 .ok()) {
           return sc::JobResult::kUnknown;
         }
         if (mtp != 0 &&
-            cudaMemcpyAsync(static_cast<std::byte*>(host) + target_bytes, Pointer(mtp_base), mtp,
-                            cudaMemcpyDeviceToHost, s) != cudaSuccess) {
+            !providers::CopyAsync(stream, static_cast<std::byte*>(host) + target_bytes,
+                                  Pointer(mtp_base), mtp, providers::CopyKind::kDeviceToHost)
+                 .ok()) {
           return sc::JobResult::kUnknown;
         }
         return sc::JobResult::kQueued;
@@ -1678,7 +1675,7 @@ Status Qwen38Runner::Release() {
     }
   }
   if (state_host_ != nullptr) {
-    (void)cudaFreeHost(state_host_);
+    providers::FreePinned(state_host_);
     state_host_ = nullptr;
   }
   if (spill_fd_ >= 0) {

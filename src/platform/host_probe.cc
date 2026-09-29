@@ -210,6 +210,14 @@ std::optional<std::uint64_t> MeminfoBytes(std::string_view meminfo, std::string_
   return std::nullopt;
 }
 
+std::optional<std::uint64_t> AvailableMemoryBytes() {
+  const auto meminfo = ReadSmallFile("/proc/meminfo");
+  if (!meminfo) {
+    return std::nullopt;
+  }
+  return MeminfoBytes(*meminfo, "MemAvailable");
+}
+
 void DescribeHost(const std::filesystem::path& root, base::Report& report) {
   DescribeSystem(root, report);
   DescribeRdma(root, report);
