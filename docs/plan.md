@@ -823,6 +823,25 @@ it appears.
       closing either way (a generation held until the shutdown is seen
       still must say close); 24 copies ×
       500 repeats passed 12,000 of 12,000 where main's test failed 136.
+- [ ] **ds4 study** (the owner, 2026-09-29), after long context's scaling
+      slices. [ds4](https://github.com/Entrpi/ds4) is antirez's
+      MIT-licensed C/CUDA engine for DeepSeek V4 Flash, in Entrpi's fork
+      tuned for the Spark. It reports prefill of 960 tok/s at 2K and 933
+      at 64K on one GB10 with a community IQ2_XXS GGUF, about 2× ours.
+      Its single-stream decode (28 tok/s at 12K with DSpark) is level
+      with ours, and its 59 tok/s is aggregate over 12 batched requests.
+      All creator-reported
+      ([forum](https://forums.developer.nvidia.com/t/1x-spark-deepseek-v4-flash-0731-1-000-tok-s-prefill-59-tok-s-multi-agent-serving/378855)).
+      The study:
+      - pin ds4 and its GGUF and measure it on a Spark;
+      - import the same GGUF into jitLLM (adding IQ2_XXS products if
+        needed) so the comparison is same-format;
+      - profile a prefill chunk in both engines;
+      - adopt and generalize the techniques that transfer, across
+        models, not only DeepSeek.
+
+      If it holds up, ds4 becomes a DeepSeek baseline beside llama.cpp,
+      a same-format comparator on its GGUF.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
