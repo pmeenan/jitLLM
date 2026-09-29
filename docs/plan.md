@@ -645,6 +645,27 @@ it appears.
       disagreement) is flagged. Open: that token's diagnosis; "decisive"
       (about 1.1×) is not reached on any target; the products run at
       about 200–210 GB/s in the model against 230–245 alone, unexplained.
+- [x] **TensorFold's techniques, Qwen3.8's decode gap first** (the owner,
+      2026-09-28; [tensorfold-techniques](experiments/tensorfold-techniques/README.md)):
+      the gap to TensorFold is format, not engine: a Qwen3.8 decode token
+      reads 7.3–7.6 GB in Mia's NVFP4, MXFP8 and BF16 against 4.5 GB in
+      MLX 4-bit, and jitLLM already reads a byte faster (about 202 GB/s
+      against 165–178). Adopted within the format: the Gated DeltaNet state
+      updated in place (`jitllm.gdn.step`; TensorFold double-buffers it),
+      the hyper-connection prep across a cluster of blocks, a BF16 vector
+      kernel for the mixes' one-row products, the one-row convolution
+      fused, and PDL with L2 prefetch for the vector products. Plain decode
+      +5.4–8.1% against main in the same session (25.83 → 27.36–27.39
+      tok/s, 37.4 → 35.2 ms on the device); a speculative step 2.4%
+      shorter, its rate moving with acceptance; the adaptive speculation
+      window (the drafter's probability, TensorFold's 0.3 cut) is measured
+      and left off; DeepSeek unchanged (its path already had these).
+      Greedy agreement (bound recorded first), perplexity, forced
+      rejections and the swap check pass; loads, evictions and decode
+      migrated no pages unless another process pressed memory. Open: the
+      remaining gap is the MXFP8 layers and BF16 head (the
+      quality/performance-modes item); TensorFold's kernel-level profile
+      (its container's CUPTI recorded nothing).
 - [x] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.

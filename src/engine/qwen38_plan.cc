@@ -324,9 +324,10 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
   }
   out->graph = std::move(*graph);
   BindQwen38MtpWeights(m, out->graph);
-  // Every pass's draft stays live to the end: the host copies them all out
-  // after the last pass.
-  const std::vector<ggml_tensor*> kept = out->graph.drafts;
+  // Every pass's draft and its probability stay live to the end: the host
+  // copies them all out after the last pass.
+  std::vector<ggml_tensor*> kept = out->graph.drafts;
+  kept.insert(kept.end(), out->graph.probabilities.begin(), out->graph.probabilities.end());
   if (auto r = PlanPlaced(*out, out->graph.nodes, out->graph.inputs(), choices, activations,
                           activation_bytes, kept);
       !r) {

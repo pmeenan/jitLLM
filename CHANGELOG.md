@@ -81,3 +81,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   NVFP4 with its MTP drafter, Qwen-Image-2.1, and the M2 fixtures), each
   with its checkpoint, artifact, chat template hash, decoding modes,
   evidence and known divergences.
+
+### Changed
+
+- Qwen3.8 Flash Next's plain decode is 5–8% faster (its recurrent state
+  updated in place, and fused and clustered one-row kernels); its greedy
+  tokens may differ from the previous build's at near-ties.

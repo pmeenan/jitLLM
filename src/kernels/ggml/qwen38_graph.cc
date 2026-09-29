@@ -67,8 +67,9 @@ class Builder {
   // draft over the head's first `head_rows` rows (0: all); without, only
   // its caches' writes (a prefill pass), both null.
   struct MtpOut {
-    ggml_tensor* streams = nullptr;  // F32 [width, hc, rows]
-    ggml_tensor* draft = nullptr;    // I32 [1]
+    ggml_tensor* streams = nullptr;      // F32 [width, hc, rows]
+    ggml_tensor* draft = nullptr;        // I32 [1]
+    ggml_tensor* probability = nullptr;  // I32 [1]: the draft's softmax probability's F32 bits
   };
   MtpOut MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden, bool head,
                  std::int64_t head_rows);
@@ -659,8 +660,10 @@ Builder::Input Builder::HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor*
     res = ggml_reshape_3d(c_, streams, n_embd, hc, nt);
   }
   ggml_tensor* xn = TypedView(blob, GGML_TYPE_BF16, hc_dim, nt, layout.normed());
-  ggml_tensor* lo = HcLo(c_, GemmBf16(c_, w_down, xn), hc);
-  ggml_tensor* gate = GemmBf16(c_, w_up, lo, GGML_TYPE_BF16);
+  // At one row (a decode step) the products run jitLLM's BF16 vector kernel
+  // (GemvBf16, kGemvBf16FastColumns), wider cuBLAS.
+  ggml_tensor* lo = HcLo(c_, GemvBf16(c_, w_down, xn), hc);
+  ggml_tensor* gate = GemvBf16(c_, w_up, lo, GGML_TYPE_BF16);
   if (inject != nullptr) {
     *inject = TypedView(blob, GGML_TYPE_F32, hc, nt, layout.logits());
   }
@@ -843,7 +846,9 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   // in place and normalizes the query and key heads itself; it takes whole
   // histories' worth of rows, so that the new history is the last rows (a
   // verify, which stores no history, takes it at every width).
-  const bool fused_conv = fused_ && d == 128 && p_.conv == 4 && (nt >= history || verify_);
+  // The fast graph takes it at every width too: its history kernel reads the
+  // old history where the rows are fewer (decode).
+  const bool fused_conv = fused_ && d == 128 && p_.conv == 4 && (nt >= history || verify_ || fast_);
   ggml_tensor* conv = nullptr;
   if (fused_conv) {
     const auto n = static_cast<float>(d);
@@ -858,7 +863,8 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
       Save(l.commit_conv, conv, channels);
       Save(l.commit_qkv, rows, channels);
     } else if (fast_) {
-      Expand(StoreState(l.conv_state, GdnHistory(c_, rows, history)));
+      Expand(StoreState(l.conv_state,
+                        GdnHistory(c_, rows, history, nt < history ? l.conv_state : nullptr)));
     } else {
       ggml_tensor* tail = ggml_view_2d(c_, qkv, channels, history, qkv->nb[1],
                                        static_cast<std::size_t>(nt - history) * qkv->nb[1]);
@@ -897,18 +903,31 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
     q = L2Norm(q);
     k = L2Norm(k);
   }
-  ggml_tensor* result = ggml_gated_delta_net(c_, q, k, v, gate, beta, state, 1);
-  ggml_tensor* output = ggml_view_4d(c_, result, d, hv, nt, 1, ggml_row_size(result->type, d),
-                                     ggml_row_size(result->type, d * hv),
-                                     ggml_row_size(result->type, d * hv * nt), 0);
-  ggml_tensor* new_state = ggml_view_4d(
-      c_, result, d, d, hv, 1, ggml_row_size(result->type, d), ggml_row_size(result->type, d * d),
-      ggml_row_size(result->type, d * d * hv), ggml_row_size(result->type, d * hv * nt));
-  if (verify_) {
-    Save(l.commit_gate, gate, hv);
-    Save(l.commit_beta, beta, hv);
+  ggml_tensor* output = nullptr;
+  if (fast_ && d == 128 && nt <= kGatedDeltaNetLanesTokens) {
+    // Decode's recurrence writes the new state over the old in place
+    // (jitllm.gdn.step): no state rows in the output, no set_rows copy. A
+    // verify's reads it and writes none (the commit replays the kept rows).
+    output = GdnStep(c_, q, k, v, gate, beta, state, !verify_);
+    Expand(output);
+    if (verify_) {
+      Save(l.commit_gate, gate, hv);
+      Save(l.commit_beta, beta, hv);
+    }
   } else {
-    Expand(StoreState(l.recurrent, new_state));
+    ggml_tensor* result = ggml_gated_delta_net(c_, q, k, v, gate, beta, state, 1);
+    output = ggml_view_4d(c_, result, d, hv, nt, 1, ggml_row_size(result->type, d),
+                          ggml_row_size(result->type, d * hv),
+                          ggml_row_size(result->type, d * hv * nt), 0);
+    ggml_tensor* new_state = ggml_view_4d(
+        c_, result, d, d, hv, 1, ggml_row_size(result->type, d), ggml_row_size(result->type, d * d),
+        ggml_row_size(result->type, d * d * hv), ggml_row_size(result->type, d * hv * nt));
+    if (verify_) {
+      Save(l.commit_gate, gate, hv);
+      Save(l.commit_beta, beta, hv);
+    } else {
+      Expand(StoreState(l.recurrent, new_state));
+    }
   }
   ggml_tensor* out = nullptr;
   if (fast_ && d == 128) {
@@ -1304,11 +1323,18 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
                            .x;
   ggml_tensor* w =
       head_rows > 0 ? ggml_view_2d(c_, m.output, width, head_rows, m.output->nb[1], 0) : m.output;
-  ggml_tensor* draft = Argmax(c_, ggml_mul_mat(c_, w, mixed));
-  Name(draft, "mtp_draft", 0);
+  // The argmax and its probability (the drafter's confidence, which an
+  // adaptive window reads): the draft is the first I32, the probability's
+  // bits the second.
+  ggml_tensor* both = Argmax(c_, ggml_mul_mat(c_, w, mixed), true);
   Expand(res);
+  Expand(both);
+  ggml_tensor* draft = ggml_view_1d(c_, both, 1, 0);
+  ggml_tensor* probability = ggml_view_1d(c_, both, 1, sizeof(std::int32_t));
+  Name(draft, "mtp_draft", 0);
   Expand(draft);
-  return {.streams = last, .draft = draft};
+  Expand(probability);
+  return {.streams = last, .draft = draft, .probability = probability};
 }
 
 }  // namespace
@@ -1421,6 +1447,7 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     expanded.insert(expanded.end(), b.expanded().begin(), b.expanded().end());
     if (s.head) {
       m.drafts.push_back(out.draft);
+      m.probabilities.push_back(out.probability);
       hidden = ggml_reshape_2d(c, out.streams, profile.hc_width(), 1);
       tokens = out.draft;
     }

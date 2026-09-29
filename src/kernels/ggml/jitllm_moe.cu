@@ -462,6 +462,10 @@ constexpr int kGemvOutputs = kGlu ? kGemvRows / 2 : kGemvRows;
 // scales; then the warp sums. The SwiGLU form takes gate rows n0.. and up
 // rows n + n0.. and writes silu(gate · s_gate[e]) · (up · s_up[e]), as
 // jitllm.moe.glu does.
+// Launched as a programmatic dependent (PDL): the expert ids are the
+// routing's output, so it waits before anything, but its blocks are placed
+// while the kernel before drains; it lets the next launch once its weights
+// are read.
 template <bool kGlu>
 __global__ void __launch_bounds__(256) Gemv(GemvArgs a) {
   constexpr int kOutputs = kGemvOutputs<kGlu>;
@@ -472,6 +476,7 @@ __global__ void __launch_bounds__(256) Gemv(GemvArgs a) {
   if (n0 >= a.n) {
     return;
   }
+  ggml_cuda_pdl_sync();
   const int t = slot / a.used;
   const int j = slot % a.used;
   const int e = a.ids[(static_cast<std::int64_t>(t) * a.ids_stride) + j];
@@ -542,6 +547,7 @@ __global__ void __launch_bounds__(256) Gemv(GemvArgs a) {
       sum[r] = fmaf(static_cast<float>(dot), ggml_cuda_ue4m3_to_fp32(ss[r]) * d, sum[r]);
     }
   }
+  ggml_cuda_pdl_lc();
 #pragma unroll
   for (int r = 0; r < kGemvRows; ++r) {
 #pragma unroll
@@ -885,10 +891,11 @@ std::expected<void, KernelFailure> RunMoeGemv(LaunchContext& launch, ggml_tensor
     const std::int64_t per_block = 8LL * outputs;
     const dim3 grid(static_cast<unsigned>((node->ne[0] + per_block - 1) / per_block),
                     static_cast<unsigned>(ids->ne[0] * ids->ne[1]));
+    const ggml_cuda_kernel_launch_params params(grid, dim3(256), 0, context.stream());
     if (glu) {
-      Gemv<true><<<grid, 256, 0, context.stream()>>>(a);
+      ggml_cuda_kernel_launch(Gemv<true>, params, a);
     } else {
-      Gemv<false><<<grid, 256, 0, context.stream()>>>(a);
+      ggml_cuda_kernel_launch(Gemv<false>, params, a);
     }
   });
 }

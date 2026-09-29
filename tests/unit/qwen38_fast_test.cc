@@ -444,7 +444,10 @@ TEST_F(Qwen38FastTest, Mxfp8QuantizationReadsBf16AndStridedRows) {
 
 // The hyper-connections' prep: [combine,] norm into BF16 and inject logits.
 TEST_F(Qwen38FastTest, HcPrepCombinesNormalizesAndInjects) {
+  // Up to 8 tokens the cluster form (HcPrepClusterKernel), past them a
+  // block a token.
   for (const auto& [t, combine, inject] : {std::tuple<std::int64_t, bool, bool>{1, true, true},
+                                           {8, true, false},
                                            {37, true, true},
                                            {9, false, true},
                                            {5, false, false}}) {
@@ -726,6 +729,167 @@ TEST_F(Qwen38FastTest, GatedDeltaNetTakesBf16RowsAndQuantizesItsGate) {
   }
   ExpectNear(Download(gated), want, 1e-11, "gated norm, BF16 gate");
   ExpectQuantized(Download<std::uint8_t>(gated8), want, d * heads, t, "gated norm into MXFP8");
+}
+
+// Decode's history (fewer rows than taps): the old history's last taps then
+// the rows, from F32 and BF16 rows.
+TEST_F(Qwen38FastTest, GdnHistoryShiftsTheOldHistoryForShortChunks) {
+  constexpr std::int64_t channels = 10240;
+  constexpr std::int64_t taps = 3;
+  const auto history_h = Normal(51, static_cast<std::size_t>(taps * channels));
+  ggml_tensor* history = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, taps * channels), history_h);
+  for (const std::int64_t t : {std::int64_t{1}, std::int64_t{2}}) {
+    auto rows_f =
+        Normal(52 + static_cast<std::uint64_t>(t), static_cast<std::size_t>(channels * t));
+    const auto rows_b = ToBf16(rows_f);
+    std::ranges::transform(rows_b, rows_f.begin(), FromBf16);
+    ggml_tensor* rows32 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, channels, t), rows_f);
+    ggml_tensor* rows16 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, channels, t), rows_b);
+    ggml_tensor* kept32 = kg::GdnHistory(c(), rows32, taps, history);
+    ggml_tensor* kept16 = kg::GdnHistory(c(), rows16, taps, history);
+    Run({kept32, kept16});
+    EXPECT_EQ(PlannedFor(kept32), kg::kGdnHistoryName);
+    for (ggml_tensor* kept : {kept32, kept16}) {
+      const auto got = Download(kept);
+      std::size_t wrong = 0;
+      for (std::int64_t ch = 0; ch < channels; ++ch) {
+        for (std::int64_t j = 0; j < taps; ++j) {
+          const std::int64_t i = t + j;
+          const float want = i < taps
+                                 ? history_h[static_cast<std::size_t>((ch * taps) + i)]
+                                 : rows_f[static_cast<std::size_t>(((i - taps) * channels) + ch)];
+          wrong += got[static_cast<std::size_t>((ch * taps) + j)] != want;
+        }
+      }
+      EXPECT_EQ(wrong, 0U) << "t " << t;
+    }
+  }
+  // Without the old history, fewer rows than taps are refused.
+  ggml_tensor* one = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, channels, 1),
+                          std::vector<float>(static_cast<std::size_t>(channels), 1.0f));
+  ggml_tensor* bare = kg::GdnHistory(c(), one, taps);
+  TensorArena::Bind(bare, Allocate(ggml_nbytes(bare)));
+  EXPECT_FALSE(kg::CheckGdnHistory(bare).has_value());
+}
+
+// jitllm.gdn.step is the columns kernel over the state in place: its
+// attention output and the state it leaves equal gated_delta_net's (planned
+// as jitllm.gated_delta_net.columns) output rows and state rows bit for bit.
+TEST_F(Qwen38FastTest, GdnStepIsTheColumnsRecurrenceInPlace) {
+  constexpr std::int64_t d = 128;
+  constexpr std::int64_t qk_heads = 16;
+  constexpr std::int64_t heads = 48;
+  for (const std::int64_t t : {std::int64_t{1}, std::int64_t{4}, std::int64_t{16}}) {
+    const std::string what = "t " + std::to_string(t);
+    const auto seed = static_cast<std::uint64_t>(t) * 10;
+    // Unit query and key heads, as the convolution's L2 norm leaves them.
+    auto unit = [&](std::uint64_t s, std::int64_t n) {
+      auto x = Normal(s, static_cast<std::size_t>(d * n * t));
+      for (std::int64_t h = 0; h < n * t; ++h) {
+        double sum = 0.0;
+        for (std::int64_t i = 0; i < d; ++i) {
+          sum += static_cast<double>(x[static_cast<std::size_t>((h * d) + i)]) *
+                 x[static_cast<std::size_t>((h * d) + i)];
+        }
+        for (std::int64_t i = 0; i < d; ++i) {
+          x[static_cast<std::size_t>((h * d) + i)] /= static_cast<float>(std::sqrt(sum));
+        }
+      }
+      return x;
+    };
+    const auto q_h = unit(seed + 1, qk_heads);
+    const auto k_h = unit(seed + 2, qk_heads);
+    const auto v_h = Normal(seed + 3, static_cast<std::size_t>(d * heads * t));
+    auto g_h = Normal(seed + 4, static_cast<std::size_t>(heads * t), 0.3f);
+    for (float& g : g_h) {
+      g = -std::abs(g);  // log of a decay in (0, 1]
+    }
+    auto beta_h = Normal(seed + 5, static_cast<std::size_t>(heads * t));
+    for (float& b : beta_h) {
+      b = static_cast<float>(Sigmoid(b));
+    }
+    const auto state_h = Normal(seed + 6, static_cast<std::size_t>(d * d * heads), 0.1f);
+    auto leaf = [&](const std::vector<float>& data, std::int64_t n0, std::int64_t n1,
+                    std::int64_t n2) {
+      return Leaf(ggml_new_tensor_4d(c(), GGML_TYPE_F32, n0, n1, n2, 1), data);
+    };
+    ggml_tensor* q = leaf(q_h, d, qk_heads, t);
+    ggml_tensor* k = leaf(k_h, d, qk_heads, t);
+    ggml_tensor* v = leaf(v_h, d, heads, t);
+    ggml_tensor* g = leaf(g_h, 1, heads, t);
+    ggml_tensor* beta = leaf(beta_h, 1, heads, t);
+    ggml_tensor* state_ref = leaf(state_h, d, d, heads);
+    ggml_tensor* state = leaf(state_h, d, d, heads);
+    ggml_tensor* state_read = leaf(state_h, d, d, heads);
+    ggml_tensor* ref = ggml_gated_delta_net(c(), q, k, v, g, beta, state_ref, 1);
+    ggml_tensor* step = kg::GdnStep(c(), q, k, v, g, beta, state);
+    // A verify's: the same output, the state read and left as it was.
+    ggml_tensor* read = kg::GdnStep(c(), q, k, v, g, beta, state_read, false);
+    Run({ref, step, read});
+    EXPECT_EQ(Download(read), Download(step)) << what;
+    EXPECT_EQ(Download(state_read), state_h) << what;
+    EXPECT_EQ(PlannedFor(ref), kg::kGatedDeltaNetColumnsName) << what;
+    EXPECT_EQ(PlannedFor(step), kg::kGdnStepName) << what;
+    const auto ref_h = Download(ref);
+    const auto attn = Download(step);
+    const auto state_after = Download(state);
+    const auto rows = static_cast<std::size_t>(d * heads * t);
+    ASSERT_EQ(ref_h.size(), rows + state_after.size()) << what;
+    EXPECT_TRUE(std::equal(attn.begin(), attn.end(), ref_h.begin())) << what;
+    EXPECT_TRUE(std::equal(state_after.begin(), state_after.end(),
+                           ref_h.begin() + static_cast<std::ptrdiff_t>(rows)))
+        << what;
+    // The reference's state is untouched.
+    EXPECT_EQ(Download(state_ref), state_h) << what;
+  }
+}
+
+// jitllm.gemm.bf16's vector form (GemvBf16) at the hyper-connections' and
+// the router's shapes, F32 and BF16 out, against FP64; past one column
+// (kGemvBf16FastColumns) the same node runs cuBLAS. The one-column shapes
+// reach each of the vector kernel's four forms (k 320, 2,560, 10,240 and
+// 16,384).
+TEST_F(Qwen38FastTest, GemvBf16IsTheProductAtDecodeWidths) {
+  struct Shape {
+    std::int64_t k, n, t;
+    ggml_type out;
+  };
+  for (const Shape& s : {Shape{10240, 320, 1, GGML_TYPE_F32}, Shape{2560, 512, 1, GGML_TYPE_F32},
+                         Shape{16384, 65, 1, GGML_TYPE_BF16}, Shape{10240, 324, 3, GGML_TYPE_F32},
+                         Shape{320, 10240, 1, GGML_TYPE_BF16}, Shape{320, 10240, 8, GGML_TYPE_BF16},
+                         Shape{2560, 512, 5, GGML_TYPE_F32}, Shape{16384, 64, 2, GGML_TYPE_F32},
+                         Shape{320, 10240, 9, GGML_TYPE_BF16}}) {
+    const std::string what = "k " + std::to_string(s.k) + " n " + std::to_string(s.n) + " t " +
+                             std::to_string(s.t) + (s.out == GGML_TYPE_BF16 ? " BF16" : " F32");
+    const auto w_b = ToBf16(
+        Normal(static_cast<std::uint64_t>(s.k + s.n), static_cast<std::size_t>(s.k * s.n), 0.05f));
+    const auto x_b =
+        ToBf16(Normal(static_cast<std::uint64_t>(s.t + 7), static_cast<std::size_t>(s.k * s.t)));
+    ggml_tensor* w = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, s.k, s.n), w_b);
+    ggml_tensor* x = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, s.k, s.t), x_b);
+    ggml_tensor* y = kg::GemvBf16(c(), w, x, s.out);
+    ASSERT_TRUE(kg::IsGemvBf16(y));
+    Run({y});
+    std::vector<double> want(static_cast<std::size_t>(s.n * s.t));
+    for (std::int64_t col = 0; col < s.t; ++col) {
+      for (std::int64_t row = 0; row < s.n; ++row) {
+        double sum = 0.0;
+        for (std::int64_t i = 0; i < s.k; ++i) {
+          sum += static_cast<double>(FromBf16(w_b[static_cast<std::size_t>((row * s.k) + i)])) *
+                 FromBf16(x_b[static_cast<std::size_t>((col * s.k) + i)]);
+        }
+        want[static_cast<std::size_t>((col * s.n) + row)] = sum;
+      }
+    }
+    if (s.out == GGML_TYPE_BF16) {
+      const auto got_b = Download<std::uint16_t>(y);
+      std::vector<float> got(got_b.size());
+      std::ranges::transform(got_b, got.begin(), FromBf16);
+      ExpectNear(got, want, 2e-5, what);
+    } else {
+      ExpectNear(Download(y), want, 1e-10, what);
+    }
+  }
 }
 
 TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {

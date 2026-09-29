@@ -166,6 +166,7 @@ inline constexpr std::string_view kHcLoName = "jitllm.hc.lo";
 inline constexpr std::string_view kHcMixBf16Name = "jitllm.hc.mix_bf16";
 inline constexpr std::string_view kMoeRouterName = "jitllm.moe.router";
 inline constexpr std::string_view kGdnHistoryName = "jitllm.gdn.history";
+inline constexpr std::string_view kGdnStepName = "jitllm.gdn.step";
 inline constexpr std::string_view kQsaPrepName = "jitllm.qsa.prep";
 inline constexpr std::string_view kQsaGateQuantizeName = "jitllm.qsa.gate_quantize";
 inline constexpr std::string_view kQsaSelectName = "jitllm.qsa.select";

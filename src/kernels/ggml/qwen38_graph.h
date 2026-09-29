@@ -328,6 +328,9 @@ struct Qwen38MtpGraph {
   ggml_tensor* output = nullptr;
   ggml_tensor* streams = nullptr;    // F32 [hc_width, hidden_rows]: the drafter's state
   std::vector<ggml_tensor*> drafts;  // I32 [1] a pass (with its head)
+  // I32 [1] a pass: its draft's softmax probability over the draft head's
+  // rows, as F32 bits (an adaptive window's confidence).
+  std::vector<ggml_tensor*> probabilities;
   std::vector<ggml_tensor*> nodes;
 
   // The host-built inputs, in the order they are copied.

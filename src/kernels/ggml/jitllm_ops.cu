@@ -61,10 +61,17 @@ constexpr int kWarps = 8;  // warps per block
 // loads its vectors of x once for the warp's rows, so several columns cost
 // less L1 traffic (a speculative verify's rows); the outputs do not depend
 // on kRows.
+//
+// Launched as a programmatic dependent (PDL, as DeepSeek's jitllm.vecq): the
+// weights depend on no earlier kernel, so each lane's first two vectors of
+// its rows are fetched into L2 while the kernel before drains; it then waits
+// for that kernel before reading x, and lets the next launch once its
+// weights are read. (x and y are not __restrict__: PDL and restrict are
+// mutually exclusive, GGML's GGML_CUDA_RESTRICT.)
 template <int kColumns, int kRows>
 __global__ void __launch_bounds__(kWarps * 32)
     Mxfp8Gemv(const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
-              const float* __restrict__ x, float* __restrict__ y, int n, int k, int x_stride) {
+              const float* x, float* y, int n, int k, int x_stride) {
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row0 =
       ((static_cast<int>(blockIdx.x) * kWarps) + (static_cast<int>(threadIdx.x) / 32)) * kRows;
@@ -72,6 +79,14 @@ __global__ void __launch_bounds__(kWarps * 32)
     return;
   }
   const int rows = min(kRows, n - row0);
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+    const std::uint8_t* w = codes + (static_cast<std::int64_t>(row0 + min(r, rows - 1)) * k);
+    for (int v = lane; v < min(k / 16, 64); v += 32) {
+      asm volatile("prefetch.global.L2 [%0];" ::"l"(w + (static_cast<std::int64_t>(v) * 16)));
+    }
+  }
+  ggml_cuda_pdl_sync();
   float sum[kRows][kColumns];
 #pragma unroll
   for (int r = 0; r < kRows; ++r) {
@@ -116,6 +131,9 @@ __global__ void __launch_bounds__(kWarps * 32)
       }
     }
   }
+  // The weights are read: the next kernel may launch (it waits for this
+  // one's writes at its own ggml_cuda_pdl_sync).
+  ggml_cuda_pdl_lc();
 #pragma unroll
   for (int r = 0; r < kRows; ++r) {
 #pragma unroll
@@ -201,7 +219,11 @@ constexpr int kArgmaxThreads = 256;
 
 // One block a row. Each thread scans a strided part of the row, then the
 // block reduces; Better is commutative and associative over non-NaN
-// candidates, so the order of either step never changes the answer.
+// candidates, so the order of either step never changes the answer. With
+// kProbability, a second pass sums exp(v - max) over the row (each thread
+// its part in order, then the block in a fixed tree) and the row's
+// probability of its highest value, 1 / sum, follows the indices.
+template <bool kProbability>
 __global__ void __launch_bounds__(kArgmaxThreads)
     ArgmaxKernel(const float* __restrict__ x, std::int32_t* __restrict__ out, int n) {
   const float* row = x + static_cast<std::int64_t>(blockIdx.x) * n;
@@ -230,6 +252,32 @@ __global__ void __launch_bounds__(kArgmaxThreads)
     // A row of NaN gives 0, never -1: the index feeds unchecked row
     // lookups (the Markov head's, the verify's embedding rows).
     out[blockIdx.x] = indices[0] < 0 ? 0 : indices[0];
+  }
+  if constexpr (kProbability) {
+    const bool none = indices[0] < 0;
+    const float top = values[0];
+    __syncthreads();
+    float sum = 0.0f;
+    if (!none) {
+      for (int i = static_cast<int>(threadIdx.x); i < n; i += kArgmaxThreads) {
+        const float v = row[i];
+        if (!isnan(v)) {
+          sum += expf(v - top);
+        }
+      }
+    }
+    values[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = kArgmaxThreads / 2; stride > 0; stride /= 2) {
+      if (static_cast<int>(threadIdx.x) < stride) {
+        values[threadIdx.x] += values[threadIdx.x + stride];
+      }
+      __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+      const float p = none || !(values[0] > 0.0f) ? 0.0f : 1.0f / values[0];
+      out[gridDim.x + blockIdx.x] = __float_as_int(p);
+    }
   }
 }
 
@@ -338,10 +386,12 @@ void LaunchGemv(const ggml_tensor* node, cudaStream_t stream) {
   constexpr int kRows = kColumns == 1 ? 1 : (kColumns <= 4 ? 4 : 2);
   const int per_block = kWarps * kRows;
   const dim3 grid(static_cast<unsigned>((n + per_block - 1) / per_block));
-  Mxfp8Gemv<kColumns, kRows><<<grid, kWarps * 32, 0, stream>>>(
-      static_cast<const std::uint8_t*>(codes->data),
-      static_cast<const std::uint8_t*>(node->src[1]->data), static_cast<const float*>(x->data),
-      static_cast<float*>(node->data), n, k, static_cast<int>(x->nb[1] / sizeof(float)));
+  ggml_cuda_kernel_launch(Mxfp8Gemv<kColumns, kRows>,
+                          ggml_cuda_kernel_launch_params(grid, dim3(kWarps * 32), 0, stream),
+                          static_cast<const std::uint8_t*>(codes->data),
+                          static_cast<const std::uint8_t*>(node->src[1]->data),
+                          static_cast<const float*>(x->data), static_cast<float*>(node->data), n, k,
+                          static_cast<int>(x->nb[1] / sizeof(float)));
 }
 
 }  // namespace
@@ -401,9 +451,15 @@ std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor*
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* x = node->src[0];
-    ArgmaxKernel<<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
-        static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
-        static_cast<int>(x->ne[0]));
+    if (JitllmOpInt(node, 0) == 1) {
+      ArgmaxKernel<true><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
+          static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
+          static_cast<int>(x->ne[0]));
+    } else {
+      ArgmaxKernel<false><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
+          static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
+          static_cast<int>(x->ne[0]));
+    }
   });
 }
 

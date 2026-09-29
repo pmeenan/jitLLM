@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 87> kKernels = {{
+constexpr std::array<Kernel::Entry, 88> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -420,7 +420,7 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
     {.name = "jitllm.mxfp8.mul_mat_vec",
      .operation = execution::Operation::kMatMul,
      .variant = "Mxfp8Gemv<columns 1-8, rows 1/4/2 a warp>: each row's sums as one warp a row's, "
-                "16-code vectors, F32 block sums",
+                "16-code vectors, F32 block sums; PDL, the first weights prefetched into L2",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8MulMatVec(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8MulMatVec(launch, n[0]); }},
@@ -479,7 +479,8 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
     {.name = "jitllm.gemm.bf16",
      .operation = execution::Operation::kMatMul,
      .variant =
-         "cublasGemmEx BF16 x BF16 into F32, CUBLAS_COMPUTE_32F, default tensor-op algorithm",
+         "cublasGemmEx BF16 x BF16 into F32, CUBLAS_COMPUTE_32F, default tensor-op algorithm; "
+         "GemvBf16 nodes of one column GemvBf16Rows or GemvBf16Split (PDL, F32 sums)",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGemmBf16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGemmBf16(launch, n[0]); }},
@@ -546,7 +547,8 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeCombineSorted(launch, n[0]); }},
     {.name = "jitllm.moe.gemv",
      .operation = execution::Operation::kMulMatId,
-     .variant = "Gemv: a warp an output row of a slot, 16-value blocks a lane, F32 activations",
+     .variant = "Gemv: a warp an output row of a slot, 16-value blocks a lane, F32 activations; "
+                "PDL",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeGemv(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemv(launch, n[0]); }},
@@ -576,7 +578,9 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecFRows(launch, n[0]); }},
     {.name = "jitllm.argmax",
      .operation = execution::Operation::kTopK,
-     .variant = "ArgmaxKernel: a block a row, the highest value, the lowest index among equals",
+     .variant = "ArgmaxKernel<probability>: a block a row, the highest value, the lowest index "
+                "among equals; optionally its softmax probability, a second pass in a fixed "
+                "order",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckArgmax(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunArgmax(launch, n[0]); }},
@@ -605,7 +609,9 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
     {.name = "jitllm.hc.prep",
      .operation = execution::Operation::kHcNorm,
      .variant = "HcPrepKernel<combine, inject>: a token a block, a float4 column of every stream "
-                "a thread; the combine, the streams' RMS norms into BF16, the inject logits",
+                "a thread; the combine, the streams' RMS norms into BF16, the inject logits. Up to "
+                "8 tokens, on compute capability 9.0 and later, HcPrepClusterKernel: a token a "
+                "cluster of 8 blocks, the sums through distributed shared memory in block order",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcPrep(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcPrep(launch, n[0]); }},
@@ -630,10 +636,18 @@ constexpr std::array<Kernel::Entry, 87> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeRouter(launch, n[0]); }},
     {.name = "jitllm.gdn.history",
      .operation = execution::Operation::kCont,
-     .variant = "GdnHistoryKernel<F32 or BF16>: a channel a thread, the last rows transposed",
+     .variant = "GdnHistoryKernel<F32 or BF16>: a channel a thread, the last rows transposed, "
+                "after the old history's last taps where the rows are fewer",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnHistory(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnHistory(launch, n[0]); }},
+    {.name = "jitllm.gdn.step",
+     .operation = execution::Operation::kGatedDeltaNet,
+     .variant = "GdnColumnsKernel<4> over the state in place: the columns kernel's arithmetic, "
+                "the new state written over the old, the attention output alone",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGdnStep(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGdnStep(launch, n[0]); }},
     {.name = "jitllm.qsa.prep",
      .operation = execution::Operation::kRope,
      .variant = "QsaPrepKernel: a head of a token a warp; rms_norm times the weight, then "

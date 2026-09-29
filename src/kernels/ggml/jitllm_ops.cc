@@ -94,6 +94,7 @@ constinit std::array kTagDsv4Combine = std::to_array("jitllm.dsv4.combine");
 constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
+constinit std::array kTagGdnStep = std::to_array("jitllm.gdn.step");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
 constexpr std::size_t kEpsOffset = 32;
@@ -180,7 +181,8 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 33> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 34> fused = {{
+      {kTagGdnStep.data(), JitllmOp::kGdnStep},
       {kTagQsaSelect.data(), JitllmOp::kQsaSelect},
       {kTagQsaPrep.data(), JitllmOp::kQsaPrep},
       {kTagQsaGateQuantize.data(), JitllmOp::kQsaGateQuantize},
@@ -253,8 +255,13 @@ std::int32_t JitllmOpInt(const ggml_tensor* node, int index) {
   return value;
 }
 
-ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x) {
-  return Custom(context, GGML_TYPE_I32, {x->ne[1], 1, 1, 1}, {x}, kTagArgmax.data());
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability) {
+  ggml_tensor* node = Custom(context, GGML_TYPE_I32, {(probability ? 2 : 1) * x->ne[1], 1, 1, 1},
+                             {x}, kTagArgmax.data());
+  // JitllmOpInt(node, 0): whether the probabilities follow.
+  const std::int32_t flag = probability ? 1 : 0;
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &flag, sizeof(flag));
+  return node;
 }
 
 std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
@@ -262,9 +269,10 @@ std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
     return checked;
   }
   const ggml_tensor* x = node->src[0];
+  const std::int64_t per_row = JitllmOpInt(node, 0) == 1 ? 2 : 1;
   if (!IsF32(x) || node->type != GGML_TYPE_I32 || AnyEmpty({x, node}) || !AllSane({x, node}) ||
-      !Matrix2d(x) || node->ne[0] != x->ne[1] || ggml_nrows(node) != 1) {
-    return Rejected("F32 rows into one I32 index a row");
+      !Matrix2d(x) || node->ne[0] != per_row * x->ne[1] || ggml_nrows(node) != 1) {
+    return Rejected("F32 rows into one I32 index a row (and its probability)");
   }
   if (!Packed(x) || !Packed(node) || !Aligned(x, 4) || !Aligned(node, 4) ||
       std::cmp_greater(x->ne[0], kInt32Max) || x->ne[1] > 65535) {
@@ -358,6 +366,14 @@ ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* 
   return Custom(context, type, {weights->ne[1], x->ne[1], 1, 1}, {weights, x}, kTagGemmBf16.data());
 }
 
+ggml_tensor* GemvBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x, ggml_type type) {
+  return WithInts(GemmBf16(context, weights, x, type), {1});
+}
+
+bool IsGemvBf16(const ggml_tensor* node) {
+  return JitllmOpOf(node) == JitllmOp::kGemmBf16 && JitllmOpInt(node, 0) == 1;
+}
+
 ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history,
                      ggml_tensor* weight, std::int64_t qk_channels, std::int64_t head, float eps,
                      float scale) {
@@ -384,10 +400,23 @@ ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* wei
   return WithEps(Custom(context, type, ne, {o, weight, z}, kTagGdnNormGate.data()), eps);
 }
 
-ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps) {
+ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps,
+                        ggml_tensor* history) {
+  if (history != nullptr) {
+    return WithInts(Custom(context, GGML_TYPE_F32, {taps * x->ne[0], 1, 1, 1}, {x, history},
+                           kTagGdnHistory.data()),
+                    {taps});
+  }
   return WithInts(
       Custom(context, GGML_TYPE_F32, {taps * x->ne[0], 1, 1, 1}, {x}, kTagGdnHistory.data()),
       {taps});
+}
+
+ggml_tensor* GdnStep(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,
+                     ggml_tensor* g, ggml_tensor* beta, ggml_tensor* state, bool write_state) {
+  return WithInts(Custom(context, GGML_TYPE_F32, {v->ne[0], v->ne[1], v->ne[2], 1},
+                         {q, k, v, g, beta, state}, kTagGdnStep.data()),
+                  {write_state ? 0 : 1});
 }
 
 namespace {
@@ -980,17 +1009,28 @@ std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node) {
 }
 
 std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node) {
-  if (auto checked = CheckCustom(node, JitllmOp::kGdnHistory, 1); !checked) {
+  const bool with_history = node != nullptr && node->src[1] != nullptr;
+  if (auto checked = CheckCustom(node, JitllmOp::kGdnHistory, with_history ? 2 : 1); !checked) {
     return checked;
   }
   const ggml_tensor* x = node->src[0];
   const std::int64_t taps = JitllmOpInt(node, 0);
   const std::int64_t channels = x->ne[0];
   if ((!IsF32(x) && x->type != GGML_TYPE_BF16) || !Shaped(x, channels, x->ne[1], 1) || taps <= 0 ||
-      taps > 8 || x->ne[1] < taps || !IsF32(node) || !Shaped(node, taps * channels, 1, 1) ||
-      std::cmp_greater(ggml_nelements(node), kInt32Max) || !Aligned(x, ggml_type_size(x->type)) ||
-      !Aligned(node, sizeof(float))) {
-    return Rejected("F32 or BF16 rows [channels, t] into the history of their last rows");
+      taps > 8 || (x->ne[1] < taps && !with_history) || !IsF32(node) ||
+      !Shaped(node, taps * channels, 1, 1) || std::cmp_greater(ggml_nelements(node), kInt32Max) ||
+      !Aligned(x, ggml_type_size(x->type)) || !Aligned(node, sizeof(float))) {
+    return Rejected(
+        "F32 or BF16 rows [channels, t] into the history of their last rows (fewer rows than "
+        "taps with the old history)");
+  }
+  if (with_history) {
+    const ggml_tensor* history = node->src[1];
+    if (!IsF32(history) || ggml_nelements(history) != taps * channels ||
+        !Aligned(history, sizeof(float))) {
+      return Rejected("the old history is F32 [taps · channels]");
+    }
+    return CheckDense(node, {x, history});
   }
   return CheckDense(node, {x});
 }
@@ -1027,6 +1067,58 @@ std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node) {
     return Rejected("an aligned output");
   }
   return CheckDense(node, {o, weight, z});
+}
+
+std::expected<void, KernelFailure> CheckGdnStep(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kGdnStep, 6); !checked) {
+    return checked;
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const ggml_tensor* v = node->src[2];
+  const ggml_tensor* g = node->src[3];
+  const ggml_tensor* beta = node->src[4];
+  const ggml_tensor* state = node->src[5];
+  for (const ggml_tensor* tensor : {q, k, v, g, beta, state}) {
+    if (!IsF32(tensor)) {
+      return Rejected("jitllm.gdn.step takes F32 operands");
+    }
+  }
+  if (!IsF32(node) || AnyEmpty({node, q, k, v, g, beta, state}) ||
+      !AllSane({node, q, k, v, g, beta, state}) || !AllCurrent({q, k, v})) {
+    return Rejected("jitllm.gdn.step on an empty, unmeasurable or stale tensor");
+  }
+  constexpr std::int64_t kS = 128;
+  const std::int64_t heads = v->ne[1];
+  const std::int64_t tokens = v->ne[2];
+  if (v->ne[0] != kS || v->ne[3] != 1 || !ggml_are_same_shape(q, k) || q->ne[0] != kS ||
+      q->ne[2] != tokens || q->ne[3] != 1 || q->ne[1] <= 0 || heads % q->ne[1] != 0 ||
+      !Shaped(g, 1, heads, tokens) || !Shaped(beta, 1, heads, tokens) ||
+      !Shaped(state, kS, kS, heads) || !Shaped(node, kS, heads, tokens) || tokens < 1 ||
+      tokens > kGatedDeltaNetLanesTokens || heads > 65535) {
+    return Rejected(
+        "jitllm.gdn.step takes one sequence of 128-wide heads, a scalar gate and at most 16 "
+        "tokens");
+  }
+  if (!ggml_is_contiguous_rows(q) || !ggml_is_contiguous_rows(v) || !ggml_are_same_stride(q, k) ||
+      !detail::ElementStrides(q) || !detail::ElementStrides(v) ||
+      std::cmp_greater(q->nb[2] / sizeof(float), kInt32Max) ||
+      std::cmp_greater(v->nb[2] / sizeof(float), kInt32Max)) {
+    return Rejected("jitllm.gdn.step needs contiguous rows of q, k and v");
+  }
+  for (const ggml_tensor* tensor : {q, k, v, g, beta, state, node}) {
+    if (!Aligned(tensor, sizeof(float))) {
+      return Rejected("jitllm.gdn.step operands at misaligned addresses");
+    }
+  }
+  // The state is written in place: nothing else it reads may share its
+  // bytes, nor the output.
+  for (const ggml_tensor* tensor : {q, k, v, g, beta}) {
+    if (!Disjoint(state, tensor, /*in_place=*/false) || !Disjoint(node, tensor, false)) {
+      return Rejected("jitllm.gdn.step's state and output overlap an operand");
+    }
+  }
+  return CheckDense(node, {g, beta, state});
 }
 
 bool GatedDeltaNetColumnsFits(const ggml_tensor* node) {

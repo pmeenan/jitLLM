@@ -194,7 +194,9 @@ not used. The options each renderer supports and refuses are in
     reply equals `jitllm-runtime chat`'s on the same prompt (D-097,
     [runtime-serving.md](runtime-serving.md#the-chat-route)).
   - Speed headline: prefill 1.38–1.41× Mia's vLLM at 8K; plain decode
-    1.01–1.03× with speculation off on both sides.
+    1.01–1.03× with speculation off on both sides, then 5.4–8.1% faster
+    with TensorFold's techniques (against jitLLM's previous build, same
+    session; [tensorfold-techniques](experiments/tensorfold-techniques/README.md#adopted)).
 - **Known divergences:**
   - `french` step 3: one greedy step of 192 outside the near-tie bound
     (oracle margin 2.0, bound 1.0) on the default fast form; accepted by
@@ -225,11 +227,15 @@ not used. The options each renderer supports and refuses are in
   (0 violations); forced rejections at depths 2 and 3 equal to their
   control state for state; rollback across a swap; sampled speculation
   within its bound ([qwen38-mtp](experiments/qwen38-mtp/README.md#correctness)).
-  Speed headline: 1.12× / 1.03× Mia's MTP-3 decode on `prose` / `code`.
+  Speed headline: 1.12× / 1.03× Mia's MTP-3 decode on `prose` / `code`;
+  with TensorFold's techniques the rate moved with acceptance (`prose`
+  −2.5%, `code` +6%, [tensorfold-techniques](experiments/tensorfold-techniques/README.md#speculation-the-adaptive-window)).
 - **Known divergences:** the verify is batched, not row-invariant, so
   speculation has no bit-exact mode; its own noise (p99 up to 2.37 on the
-  forced run) was measured after the comparison, and the rows it moves by
-  more than 2 are not diagnosed.
+  forced run, 4.28 after TensorFold's techniques, whose plain decode and
+  verify take their hyper-connection products from different kernels) was
+  measured after the comparison, and the rows it moves by more than 2 are
+  not diagnosed.
 
 ## Qwen-Image-2.1
 

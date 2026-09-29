@@ -181,8 +181,11 @@ class Qwen38Runner final : public PagedModel {
   std::uint32_t draft_rows() const { return o_.draft_rows; }
   // The drafter's catch-up and its passes: `history` every token through
   // the anchor (at position history.size() - 1, not yet in the target's
-  // cache); the drafts of the next positions, draft_rows of them.
-  Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts);
+  // cache); the drafts of the next positions, draft_rows of them, and with
+  // `probabilities` each draft's softmax probability over the draft head's
+  // rows (the drafter's confidence; an adaptive window's input).
+  Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
+               std::vector<float>* probabilities = nullptr);
   // A verify: history[n_past, end) the anchor and the drafts (history as
   // Chunk's), at most draft_rows + 1 rows; every row's argmax (the lowest
   // index among equals, on the device) and, with `logits`, every row's

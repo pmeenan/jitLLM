@@ -292,7 +292,9 @@ its own: a batched verify with the kept rows' recurrent state committed,
 greedy within near-ties, forced rejections exact against a control and
 across a swap, and 1.12× / 1.03× Mia's MTP-3 decode; Qwen3.8's decode
 graphs (which survive a swap) make its plain decode 1.01–1.03× Mia's
-without speculation; and the swap path in `jitllm-runtime` (D-096: an
+without speculation, and TensorFold's techniques (an in-place recurrent
+state, clustered and fused one-row kernels, PDL) 5–8% faster still; and
+the swap path in `jitllm-runtime` (D-096: an
 engine module, `[models]` in the configuration, `chat` and `swap-table`),
 its greedy tokens the harnesses', all 32 swaps of M3's table in one
 process under ~10 s with speculation on (worst LLM↔LLM 9.72 s); and the

@@ -128,6 +128,7 @@ enum class JitllmOp : std::uint8_t {
   kDsv4HcMix,
   kDsv4HcPre,
   kDsv4Compress,
+  kGdnStep,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
@@ -151,8 +152,11 @@ ggml_tensor* Mxfp8Dequant(ggml_context* context, ggml_tensor* codes, ggml_tensor
 // [1]: F32 [values, n].
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
                        ggml_tensor* scale, std::int64_t values);
-// `x` F32 [n, rows]: I32 [rows].
-ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x);
+// `x` F32 [n, rows]: I32 [rows]; with `probability`, I32 [2 · rows]: the
+// indices, then each row's softmax probability of its highest value (F32
+// bits; 0 for a row of NaN), the drafter's confidence that TensorFold's
+// adaptive window reads (docs/experiments/tensorfold-techniques/).
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability = false);
 
 // The fusions. `res` F32 [width, hc, t], `out` F32 [width, t], `inject` F32
 // [hc, t]: F32 [width, hc, t].
@@ -183,6 +187,21 @@ ggml_tensor* ToBf16(ggml_context* context, ggml_tensor* x);
 // path's hyper-connection gate) [n, t].
 ggml_tensor* GemmBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x,
                       ggml_type type = GGML_TYPE_F32);
+// The same product, which up to kGemvBf16FastColumns columns (and k at most
+// kGemvBf16MaxK) runs jitLLM's BF16 vector kernel instead of cuBLAS (the
+// fast graph's hyper-connection products; other sums' order than cuBLAS's).
+// The kernel itself takes up to kGemvBf16Columns.
+inline constexpr std::int64_t kGemvBf16Columns = 8;
+// The columns up to which GemvBf16 nodes take the vector kernel: one (a
+// decode step). At a 3-row verify its down product read x 3 times a block
+// and took 4.63 ms a verify against cuBLAS's 3.1 (nsys, spark-b,
+// 2026-09-28), so wider nodes run cuBLAS.
+inline constexpr std::int64_t kGemvBf16FastColumns = 1;
+inline constexpr std::int64_t kGemvBf16MaxK = 20480;
+ggml_tensor* GemvBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* x,
+                      ggml_type type = GGML_TYPE_F32);
+// Whether a jitllm.gemm.bf16 node was built by GemvBf16.
+bool IsGemvBf16(const ggml_tensor* node);
 
 // The host checks: operands bound, typed and shaped as above, packed where
 // the kernels read them with vector loads (codes and x rows 16-byte
@@ -266,11 +285,34 @@ ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history
 ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* weight, ggml_tensor* z,
                          float eps, ggml_type type);
 // `x` F32 or BF16 [channels, t], t at least k - 1: F32 [(k - 1) · channels,
-// 1].
-ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps);
+// 1]; or, given the old `history` (the conv state, F32 [(k - 1) ·
+// channels]), any t: the last k - 1 of its taps followed by the rows (the
+// fast graph's decode, whose chunks are shorter than the history).
+ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps,
+                        ggml_tensor* history = nullptr);
 std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node);
+//   jitllm.gdn.step      the fast graph's decode form of the gated delta rule
+//                        (up to kGatedDeltaNetLanesTokens tokens): the
+//                        jitllm.gated_delta_net.columns recurrence, the same
+//                        arithmetic, but the new state written over `state`
+//                        in place, so decode neither writes the state into
+//                        the node's output nor copies it back with set_rows
+//                        (TensorFold's double-buffered state, taken as an
+//                        in-place update: half the state traffic); without
+//                        `write_state` (a speculative verify's, whose kept
+//                        rows' state the commit writes) the state is read
+//                        and not written at all.
+// `q`, `k` F32 [128, qk heads, t] and `v` F32 [128, heads, t] (views with
+// contiguous rows), `g` and `beta` F32 [1, heads, t], `state` F32 [128, 128,
+// heads] (packed, written): F32 [128, heads, t], the attention output.
+ggml_tensor* GdnStep(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,
+                     ggml_tensor* g, ggml_tensor* beta, ggml_tensor* state,
+                     bool write_state = true);
+std::expected<void, KernelFailure> CheckGdnStep(const ggml_tensor* node);
+class LaunchContext;
+std::expected<void, KernelFailure> RunGdnStep(LaunchContext& launch, ggml_tensor* node);
 
 // The routed experts over the CUTLASS layout (moe_layout.h), for
 // Qwen3.8's prefill and decode (jitllm_moe.cu; the grouped GEMM is

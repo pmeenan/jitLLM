@@ -51,6 +51,8 @@ constexpr std::uint64_t kSlabAlignment = 16;
 constexpr std::uint32_t kRangeCapacity = 512;
 // Where a verify's argmaxes land in the drafts' pinned buffer (I32s).
 constexpr std::size_t kArgmaxAt = 64;
+// And a draft's probabilities (F32 bits), after its drafts (at most 8).
+constexpr std::size_t kProbabilityAt = 32;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -426,7 +428,8 @@ Status Qwen38Runner::Setup() {
     auto save = node_.Pinned(kRangeCapacity * sizeof(kg::RangeCopy), owner_, staging_);
     auto restore = node_.Pinned(kRangeCapacity * sizeof(kg::RangeCopy), owner_, staging_);
     auto carry = node_.Pinned(4 * sizeof(kg::RangeCopy), owner_, staging_);
-    // A draft's drafts, then (from kArgmaxAt) a verify's argmaxes.
+    // A draft's drafts, their probabilities (from kProbabilityAt), then
+    // (from kArgmaxAt) a verify's argmaxes.
     auto drafts = node_.Pinned(512, owner_, staging_);
     if (!save || !restore || !carry || !drafts) {
       return Error("pinned staging for Qwen3.8's speculation");
@@ -1317,8 +1320,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   return {};
 }
 
-Status Qwen38Runner::Draft(std::span<const std::int32_t> history,
-                           std::vector<std::int32_t>& drafts) {
+Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
+                           std::vector<float>* probabilities) {
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -1363,6 +1366,10 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history,
     outputs.push_back({Address(static_cast<std::int32_t*>(drafts_) + j), Address(g.drafts[j]->data),
                        sizeof(std::int32_t)});
   }
+  for (std::size_t j = 0; j < g.probabilities.size(); ++j) {
+    outputs.push_back({Address(static_cast<std::int32_t*>(drafts_) + kProbabilityAt + j),
+                       Address(g.probabilities[j]->data), sizeof(std::int32_t)});
+  }
   const bool capture =
       graphs_ && !entry.graph.has_value() && !entry.uncapturable && entry.eager_runs > 0;
   if (capture) {
@@ -1400,6 +1407,11 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history,
   Count(draft_stats_, path);
   const auto* values = static_cast<const std::int32_t*>(drafts_);
   drafts.assign(values, values + g.drafts.size());
+  if (probabilities != nullptr) {
+    probabilities->resize(g.probabilities.size());
+    std::memcpy(probabilities->data(), values + kProbabilityAt,
+                g.probabilities.size() * sizeof(float));
+  }
   return {};
 }
 

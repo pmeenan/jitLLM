@@ -624,14 +624,21 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(used.contains(kg::kMoeCombineName), fused && (!cutlass || vector)) << rows;
     // The linear-attention layers: GGML's convolution unless fused over
     // whole histories of rows; the recurrence as the plan picks by rows.
-    EXPECT_EQ(used.contains(kg::kGdnConvName), fused && rows >= 3) << rows;
-    EXPECT_EQ(used.contains(kg::kSsmConvName), !fused || rows < 3) << rows;
+    // (The fast form's at every width: its history reads the old one below 3
+    // rows.)
+    EXPECT_EQ(used.contains(kg::kGdnConvName), fused && (rows >= 3 || fast)) << rows;
+    EXPECT_EQ(used.contains(kg::kSsmConvName), !fused || (rows < 3 && !fast)) << rows;
     EXPECT_EQ(used.contains(kg::kGdnNormGateName), fused) << rows;
-    EXPECT_EQ(used.contains(kg::kGdnHistoryName), fast && rows >= 3) << rows;
-    EXPECT_TRUE(used.contains(static_cast<std::int64_t>(rows) > kg::kGatedDeltaNetLanesTokens
-                                  ? kg::kGatedDeltaNetLanesName
-                                  : kg::kGatedDeltaNetColumnsName))
-        << rows;
+    EXPECT_EQ(used.contains(kg::kGdnHistoryName), fast) << rows;
+    // (The fast form, up to 16 rows, writes the state in place: jitllm.gdn.step.)
+    const bool step = fast && static_cast<std::int64_t>(rows) <= kg::kGatedDeltaNetLanesTokens;
+    EXPECT_EQ(used.contains(kg::kGdnStepName), step) << rows;
+    if (!step) {
+      EXPECT_TRUE(used.contains(static_cast<std::int64_t>(rows) > kg::kGatedDeltaNetLanesTokens
+                                    ? kg::kGatedDeltaNetLanesName
+                                    : kg::kGatedDeltaNetColumnsName))
+          << rows;
+    }
     // (The fast form's mixes give their BF16 themselves, and its
     // hyper-connection products are BF16 at every width.)
     const bool bf16 = fused && static_cast<std::int64_t>(rows) > kg::kQwen38Bf16Rows;

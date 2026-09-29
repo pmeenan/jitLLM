@@ -12,6 +12,7 @@
 // writes a product that GGML computes in a node of its own and then adds
 // with __fmul_rn, which is never contracted into a multiply-add.
 
+#include <cooperative_groups.h>
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_pipeline.h>
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "base/bytes.h"
@@ -237,15 +239,21 @@ __global__ void MoeCombineKernel(const float4* __restrict__ down,
 // chain and sum, times the scale. Upstream gives each warp one column, so
 // 6,144 warps stream the whole sequence in several waves; here a warp keeps
 // kColumns columns in registers and reads each token's k and q once for
-// them, so one wave covers the heads.
+// them, so one wave covers the heads. The state pointers are not
+// __restrict__: jitllm.gdn.step passes the same state for both (each warp
+// reads its columns into registers before any is written, and writes only
+// its own).
 template <int kColumns>
 __global__ void __launch_bounds__(128)
     GdnColumnsKernel(const float* __restrict__ q, const float* __restrict__ k,
                      const float* __restrict__ v, const float* __restrict__ g,
-                     const float* __restrict__ beta, const float* __restrict__ state_in,
-                     float* __restrict__ dst, float* __restrict__ state_out, int heads,
-                     int qk_heads, int tokens, std::int64_t sq1, std::int64_t sq2, std::int64_t sv1,
-                     std::int64_t sv2, std::int64_t sb1, std::int64_t sb2, float scale) {
+                     const float* __restrict__ beta, const float* state_in, float* __restrict__ dst,
+                     float* state_out, int heads, int qk_heads, int tokens, std::int64_t sq1,
+                     std::int64_t sq2, std::int64_t sv1, std::int64_t sv2, std::int64_t sb1,
+                     std::int64_t sb2, float scale) {
+  // A programmatic dependent after it (the next product) may launch now and
+  // fetch its weights; it waits for this kernel before reading its output.
+  ggml_cuda_pdl_lc();
   constexpr int kS = 128;
   constexpr int kRows = kS / 32;
   const int lane = static_cast<int>(threadIdx.x);
@@ -352,6 +360,9 @@ __global__ void __launch_bounds__(128)
       }
     }
     attn += static_cast<std::int64_t>(kS) * heads;
+  }
+  if (state_out == nullptr) {
+    return;  // a verify's step: its state is the commit's to write
   }
   float* s1 = state_out + (static_cast<std::int64_t>(h) * kS * kS);
 #pragma unroll
@@ -668,6 +679,7 @@ template <typename T, typename Z>
 __global__ void __launch_bounds__(256)
     GdnNormGateKernel(const float* __restrict__ o, const float* __restrict__ weight,
                       const Z* __restrict__ z, T* __restrict__ out, int rows, float eps) {
+  ggml_cuda_pdl_lc();  // the output product after it fetches its weights meanwhile
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
   if (row >= rows) {
@@ -706,6 +718,7 @@ __global__ void __launch_bounds__(256)
     GdnNormGateMxfp8Kernel(const float* __restrict__ o, const float* __restrict__ weight,
                            const Z* __restrict__ z, std::uint8_t* __restrict__ codes,
                            std::uint8_t* __restrict__ scales, int rows, int heads, float eps) {
+  ggml_cuda_pdl_lc();
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
   if (row >= rows) {
@@ -963,17 +976,20 @@ __global__ void __launch_bounds__(kSelectThreads)
 }
 
 // The last `taps` rows of x transposed into the conv state (tap j of channel
-// c at c · taps + j), a channel a thread.
+// c at c · taps + j), a channel a thread; with `history` (the old state, for
+// fewer rows than taps) the last `taps` of the old taps followed by the rows.
 template <typename T>
-__global__ void GdnHistoryKernel(const T* __restrict__ x, float* __restrict__ out, int channels,
-                                 int t, int taps) {
+__global__ void GdnHistoryKernel(const T* __restrict__ x, const float* __restrict__ history,
+                                 float* __restrict__ out, int channels, int t, int taps) {
   const int c = static_cast<int>((blockIdx.x * blockDim.x) + threadIdx.x);
   if (c >= channels) {
     return;
   }
   for (int j = 0; j < taps; ++j) {
+    const int i = t + j;  // in the old taps then the rows
     out[(static_cast<std::int64_t>(c) * taps) + j] =
-        Load(x + (static_cast<std::int64_t>(t - taps + j) * channels) + c);
+        i < taps ? history[(static_cast<std::int64_t>(c) * taps) + i]
+                 : Load(x + (static_cast<std::int64_t>(i - taps) * channels) + c);
   }
 }
 
@@ -1105,9 +1121,319 @@ __global__ void __launch_bounds__(1024)
   }
 }
 
+// The decode form of HcPrepKernel (up to kHcPrepClusterTokens tokens): one
+// block a token leaves all but one multiprocessor idle for 13-18 us a mix
+// (nsys, spark-b, 2026-09-28), so a token takes a cluster of
+// kHcPrepCluster blocks, each a slice of the float4 columns. Each block's
+// partial sums (the streams' squares, then the inject dot products) go to
+// its shared memory, and every block adds all the blocks' partials in block
+// order through distributed shared memory, so each holds the same totals and
+// the result repeats run to run. The arithmetic is HcPrepKernel's apart from
+// that order of the sums.
+constexpr int kHcPrepCluster = 8;
+constexpr std::int64_t kHcPrepClusterTokens = 8;
+template <bool kCombine, bool kInject>
+__global__ void __launch_bounds__(256)
+    HcPrepClusterKernel(const float4* __restrict__ x, const float4* __restrict__ norm,
+                        const uint2* __restrict__ inject_w, const float4* __restrict__ out,
+                        const float* __restrict__ logits_in, float4* __restrict__ streams,
+                        uint2* __restrict__ normed, float* __restrict__ logits, int width, int hc,
+                        float eps, float inv_hc) {
+  // Thread-block clusters are sm_90 and later: the discrete sm_86 build
+  // (D-082) compiles an empty body, which RunHcPrep never launches there.
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
+  namespace cg = cooperative_groups;
+  cg::cluster_group cluster = cg::this_cluster();
+  __shared__ float shared[32 * kMaxStreams];
+  __shared__ float gains[kMaxStreams];
+  __shared__ float squares[kMaxStreams];  // this block's partial sums
+  __shared__ float products[kMaxStreams];
+  ggml_cuda_pdl_lc();  // the down product after it fetches its weights meanwhile
+  const int rank = static_cast<int>(cluster.block_rank());
+  const std::int64_t t = blockIdx.y;
+  const int w4 = width / 4;
+  const int per = (w4 + kHcPrepCluster - 1) / kHcPrepCluster;
+  const int c4 = (rank * per) + static_cast<int>(threadIdx.x);
+  const bool live = static_cast<int>(threadIdx.x) < per && c4 < w4;
+  const std::int64_t row = t * hc * w4;
+  // The norm and inject weights the second half reads depend on nothing
+  // this kernel computes: into L2 before the first exchange.
+  if (live) {
+    for (int k = 0; k < hc; ++k) {
+      asm volatile(
+          "prefetch.global.L2 [%0];" ::"l"(norm + (static_cast<std::int64_t>(k) * w4) + c4));
+      if constexpr (kInject) {
+        for (int m = 0; m < hc; ++m) {
+          asm volatile("prefetch.global.L2 [%0];" ::"l"(inject_w +
+                                                        (static_cast<std::int64_t>(m) * hc * w4) +
+                                                        (static_cast<std::int64_t>(k) * w4) + c4));
+        }
+      }
+    }
+  }
+  if constexpr (kCombine) {
+    if (threadIdx.x < static_cast<unsigned>(hc)) {
+      gains[threadIdx.x] = 2.0f * Sigmoid(logits_in[(t * hc) + threadIdx.x] * inv_hc);
+    }
+    __syncthreads();
+  }
+  float4 v[kMaxStreams];
+  float sums[kMaxStreams];
+  float4 o = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+  if (kCombine && live) {
+    o = out[(t * w4) + c4];
+  }
+#pragma unroll
+  for (int k = 0; k < kMaxStreams; ++k) {
+    sums[k] = 0.0f;
+    v[k] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (k < hc && live) {
+      float4 r = x[row + (static_cast<std::int64_t>(k) * w4) + c4];
+      if constexpr (kCombine) {
+        const float g = gains[k];
+        r = make_float4(fmaf(o.x, g, r.x), fmaf(o.y, g, r.y), fmaf(o.z, g, r.z), fmaf(o.w, g, r.w));
+        streams[row + (static_cast<std::int64_t>(k) * w4) + c4] = r;
+      }
+      v[k] = r;
+      sums[k] = Dot4(r, r);
+    }
+  }
+  BlockSums(sums, hc, shared);
+  if (threadIdx.x == 0) {
+#pragma unroll
+    for (int k = 0; k < kMaxStreams; ++k) {
+      squares[k] = sums[k];
+    }
+  }
+  cluster.sync();
+#pragma unroll
+  for (int k = 0; k < kMaxStreams; ++k) {
+    sums[k] = 0.0f;
+  }
+  for (int b = 0; b < kHcPrepCluster; ++b) {
+    const float* theirs = cluster.map_shared_rank(squares, b);
+#pragma unroll
+    for (int k = 0; k < kMaxStreams; ++k) {
+      if (k < hc) {
+        sums[k] += theirs[k];
+      }
+    }
+  }
+  float dots[kMaxStreams];
+#pragma unroll
+  for (int m = 0; m < kMaxStreams; ++m) {
+    dots[m] = 0.0f;
+  }
+  const float inverse = 1.0f / static_cast<float>(width);
+#pragma unroll
+  for (int k = 0; k < kMaxStreams; ++k) {
+    if (k < hc && live) {
+      const float s = rsqrtf(fmaf(sums[k], inverse, eps));
+      const float4 w = norm[(static_cast<std::int64_t>(k) * w4) + c4];
+      const float4 xn =
+          make_float4(s * v[k].x * w.x, s * v[k].y * w.y, s * v[k].z * w.z, s * v[k].w * w.w);
+      normed[row + (static_cast<std::int64_t>(k) * w4) + c4] = ToBf16x4(xn);
+      if constexpr (kInject) {
+#pragma unroll
+        for (int m = 0; m < kMaxStreams; ++m) {
+          if (m < hc) {
+            const std::int64_t at =
+                (static_cast<std::int64_t>(m) * hc * w4) + (static_cast<std::int64_t>(k) * w4) + c4;
+            dots[m] += Dot4(xn, Bf16x4(inject_w[at]));
+          }
+        }
+      }
+    }
+  }
+  if constexpr (kInject) {
+    BlockSums(dots, hc, shared);
+    if (threadIdx.x == 0) {
+#pragma unroll
+      for (int m = 0; m < kMaxStreams; ++m) {
+        products[m] = dots[m];
+      }
+    }
+    cluster.sync();
+    if (rank == 0 && threadIdx.x < static_cast<unsigned>(hc)) {
+      float total = 0.0f;
+      for (int b = 0; b < kHcPrepCluster; ++b) {
+        total += cluster.map_shared_rank(products, b)[threadIdx.x];
+      }
+      logits[(t * hc) + threadIdx.x] = total;
+    }
+  }
+  // No block leaves while another may still read its shared memory.
+  cluster.sync();
+#endif
+}
+
+// jitllm.gemm.bf16's vector form (GemvBf16, up to kGemvBf16Columns
+// columns): y[n, t] = W[k, n] · x[k, t], BF16 weights and activations, F32
+// sums, F32 or BF16 out. Every 16-byte vector of a thread's share of its
+// row is loaded before any arithmetic, so each thread keeps VPL loads in
+// flight (TensorFold's lesson for these shapes: enough bytes in flight, not
+// tensor cores). Two shapes (scratch microbenchmark, spark-b, 2026-09-28,
+// cold weights; cuBLAS's gemv 36.0 and 31.6 us):
+//   GemvBf16Rows   a warp a row, for short rows (the up product, k 320):
+//                  29.2 us;
+//   GemvBf16Split  a block of 256 two rows, 128 threads a row and a fixed
+//                  reduction order, for long rows (the down product, k
+//                  10,240): 31.3 us.
+__device__ __forceinline__ float DotBf16x8(const uint4 a, const uint4 b, float sum) {
+  const auto* pa = reinterpret_cast<const __nv_bfloat162*>(&a);
+  const auto* pb = reinterpret_cast<const __nv_bfloat162*>(&b);
+#pragma unroll
+  for (int j = 0; j < 4; ++j) {
+    const float2 fa = __bfloat1622float2(pa[j]);
+    const float2 fb = __bfloat1622float2(pb[j]);
+    sum = fmaf(fa.x, fb.x, sum);
+    sum = fmaf(fa.y, fb.y, sum);
+  }
+  return sum;
+}
+
+template <typename Out>
+__device__ __forceinline__ void StoreOut(Out* y, std::int64_t at, float v) {
+  if constexpr (std::is_same_v<Out, float>) {
+    y[at] = v;
+  } else {
+    y[at] = __float2bfloat16(v);
+  }
+}
+
+// Both are programmatic dependents (PDL): the weights' loads are issued
+// before the wait for the kernel before, which then only gates x.
+template <int kVpl, typename Out>
+__global__ void __launch_bounds__(256)
+    GemvBf16Rows(const uint4* __restrict__ w, const uint4* x, Out* y, int n, int k, int t) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
+  if (row >= n) {
+    return;
+  }
+  const int vectors = k / 8;
+  const uint4* wr = w + (static_cast<std::int64_t>(row) * vectors);
+  uint4 q[kVpl];
+#pragma unroll
+  for (int i = 0; i < kVpl; ++i) {
+    const int v = lane + (i * 32);
+    if (v < vectors) {
+      q[i] = __ldg(wr + v);
+    }
+  }
+  ggml_cuda_pdl_sync();
+  ggml_cuda_pdl_lc();
+  float sum[kGemvBf16Columns];
+#pragma unroll
+  for (int c = 0; c < kGemvBf16Columns; ++c) {
+    sum[c] = 0.0f;
+    if (c < t) {
+#pragma unroll
+      for (int i = 0; i < kVpl; ++i) {
+        const int v = lane + (i * 32);
+        if (v < vectors) {
+          sum[c] = DotBf16x8(q[i], __ldg(x + (static_cast<std::int64_t>(c) * vectors) + v), sum[c]);
+        }
+      }
+      sum[c] = WarpSum(sum[c]);
+      if (lane == 0) {
+        StoreOut(y, (static_cast<std::int64_t>(c) * n) + row, sum[c]);
+      }
+    }
+  }
+}
+
+constexpr int kGemvSplitRows = 2;
+template <int kVpl, typename Out>
+__global__ void __launch_bounds__(256)
+    GemvBf16Split(const uint4* __restrict__ w, const uint4* x, Out* y, int n, int k, int t) {
+  constexpr int kPer = 256 / kGemvSplitRows;  // threads a row
+  constexpr int kWarpsPer = kPer / 32;
+  __shared__ float part[kGemvBf16Columns][256 / 32];
+  const int sub = static_cast<int>(threadIdx.x) % kPer;
+  const int local = static_cast<int>(threadIdx.x) / kPer;
+  const int row = (static_cast<int>(blockIdx.x) * kGemvSplitRows) + local;
+  const bool live = row < n;
+  const int vectors = k / 8;
+  const uint4* wr = w + (static_cast<std::int64_t>(live ? row : n - 1) * vectors);
+  uint4 q[kVpl];
+#pragma unroll
+  for (int i = 0; i < kVpl; ++i) {
+    const int v = sub + (i * kPer);
+    if (v < vectors) {
+      q[i] = __ldg(wr + v);
+    }
+  }
+  ggml_cuda_pdl_sync();
+  ggml_cuda_pdl_lc();
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+#pragma unroll
+  for (int c = 0; c < kGemvBf16Columns; ++c) {
+    if (c < t) {
+      float sum = 0.0f;
+#pragma unroll
+      for (int i = 0; i < kVpl; ++i) {
+        const int v = sub + (i * kPer);
+        if (v < vectors) {
+          sum = DotBf16x8(q[i], __ldg(x + (static_cast<std::int64_t>(c) * vectors) + v), sum);
+        }
+      }
+      sum = WarpSum(sum);
+      if (threadIdx.x % 32 == 0) {
+        part[c][warp] = sum;
+      }
+    }
+  }
+  __syncthreads();
+  if (live && sub < t) {
+    float total = 0.0f;
+    for (int i = 0; i < kWarpsPer; ++i) {
+      total += part[sub][(local * kWarpsPer) + i];
+    }
+    StoreOut(y, (static_cast<std::int64_t>(sub) * n) + row, total);
+  }
+}
+
+template <typename Out>
+void LaunchGemvBf16As(const ggml_tensor* node, cudaStream_t s) {
+  const auto* w = static_cast<const uint4*>(node->src[0]->data);
+  const auto* x = static_cast<const uint4*>(node->src[1]->data);
+  auto* y = static_cast<Out*>(node->data);
+  const int k = static_cast<int>(node->src[0]->ne[0]);
+  const int n = static_cast<int>(node->src[0]->ne[1]);
+  const int t = static_cast<int>(node->src[1]->ne[1]);
+  const int vectors = k / 8;
+  const auto rows_grid = static_cast<unsigned>((n + 7) / 8);
+  const auto split_grid = static_cast<unsigned>((n + kGemvSplitRows - 1) / kGemvSplitRows);
+  const auto go = [&](auto kernel, unsigned grid) {
+    ggml_cuda_kernel_launch(kernel, ggml_cuda_kernel_launch_params(dim3(grid), dim3(256), 0, s), w,
+                            x, y, n, k, t);
+  };
+  if (vectors <= 32 * 2) {
+    go(GemvBf16Rows<2, Out>, rows_grid);
+  } else if (vectors <= 32 * 12) {
+    go(GemvBf16Rows<12, Out>, rows_grid);
+  } else if (vectors <= 128 * 10) {
+    go(GemvBf16Split<10, Out>, split_grid);
+  } else {
+    go(GemvBf16Split<20, Out>, split_grid);
+  }
+}
+
+void LaunchGemvBf16(const ggml_tensor* node, cudaStream_t s) {
+  if (node->type == GGML_TYPE_BF16) {
+    LaunchGemvBf16As<__nv_bfloat16>(node, s);
+  } else {
+    LaunchGemvBf16As<float>(node, s);
+  }
+}
+
 // silu(lo / hc) in BF16.
 __global__ void HcLoKernel(const float* __restrict__ lo, nv_bfloat16* __restrict__ dst,
                            std::int64_t n, float inv_hc) {
+  // The up product after it (a programmatic dependent) may launch and fetch
+  // its weights now; it waits for this kernel before reading its output.
+  ggml_cuda_pdl_lc();
   const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (i < n) {
     dst[i] = __float2bfloat16(Silu(lo[i] * inv_hc));
@@ -1122,6 +1448,7 @@ __global__ void HcMixBf16Kernel(const uint4* __restrict__ normed, const uint4* _
                                 float4* __restrict__ dst, std::uint8_t* __restrict__ codes,
                                 std::uint8_t* __restrict__ scales, uint4* __restrict__ rounded,
                                 int width8, int hc, std::int64_t items, float inv_hc) {
+  ggml_cuda_pdl_lc();  // the products after it fetch their weights meanwhile
   const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (i >= items) {
     return;
@@ -1184,6 +1511,7 @@ __global__ void __launch_bounds__(kRouterWarps * 32)
                     const uint2* __restrict__ gate_row, std::int32_t* __restrict__ ids,
                     float* __restrict__ weights, float* __restrict__ gate, int tokens, int slots,
                     int used, int width4) {
+  ggml_cuda_pdl_lc();  // the routed products after it may launch meanwhile
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const std::int64_t t =
       (static_cast<std::int64_t>(blockIdx.x) * kRouterWarps) + (threadIdx.x / 32);
@@ -1397,6 +1725,34 @@ std::expected<void, KernelFailure> RunGatedDeltaNetColumns(LaunchContext& launch
   });
 }
 
+std::expected<void, KernelFailure> RunGdnStep(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGdnStep(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* q = node->src[0];
+    const ggml_tensor* v = node->src[2];
+    const ggml_tensor* beta = node->src[4];
+    constexpr int kS = 128;
+    const int heads = static_cast<int>(v->ne[1]);
+    const int tokens = static_cast<int>(v->ne[2]);
+    const auto f = [](std::size_t bytes) {
+      return static_cast<std::int64_t>(bytes / sizeof(float));
+    };
+    auto* state = static_cast<float*>(node->src[5]->data);
+    // A verify's step (JitllmOpInt 0 == 1) reads the state and writes none.
+    float* state_out = JitllmOpInt(node, 0) == 1 ? nullptr : state;
+    const dim3 block(32, 4);
+    const dim3 grid(static_cast<unsigned>(heads), kS / (4 * kGdnColumns));
+    GdnColumnsKernel<kGdnColumns><<<grid, block, 0, context.stream()>>>(
+        static_cast<const float*>(q->data), static_cast<const float*>(node->src[1]->data),
+        static_cast<const float*>(v->data), static_cast<const float*>(node->src[3]->data),
+        static_cast<const float*>(beta->data), state, static_cast<float*>(node->data), state_out,
+        heads, static_cast<int>(q->ne[1]), tokens, f(q->nb[1]), f(q->nb[2]), f(v->nb[1]),
+        f(v->nb[2]), f(beta->nb[1]), f(beta->nb[2]), 1.0f / sqrtf(static_cast<float>(kS)));
+  });
+}
+
 std::expected<void, KernelFailure> RunGatedDeltaNetLanes(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckGatedDeltaNetLanes(node); !checked) {
     return checked;
@@ -1508,12 +1864,14 @@ std::expected<void, KernelFailure> RunGdnHistory(LaunchContext& launch, ggml_ten
     const int t = static_cast<int>(x->ne[1]);
     const int taps = JitllmOpInt(node, 0);
     auto* out = static_cast<float*>(node->data);
+    const auto* history =
+        node->src[1] != nullptr ? static_cast<const float*>(node->src[1]->data) : nullptr;
     if (x->type == GGML_TYPE_BF16) {
       GdnHistoryKernel<<<Blocks(channels, kThreads), kThreads, 0, context.stream()>>>(
-          static_cast<const nv_bfloat16*>(x->data), out, channels, t, taps);
+          static_cast<const nv_bfloat16*>(x->data), history, out, channels, t, taps);
     } else {
       GdnHistoryKernel<<<Blocks(channels, kThreads), kThreads, 0, context.stream()>>>(
-          static_cast<const float*>(x->data), out, channels, t, taps);
+          static_cast<const float*>(x->data), history, out, channels, t, taps);
     }
   });
 }
@@ -1571,7 +1929,11 @@ std::expected<void, KernelFailure> RunHcPrep(LaunchContext& launch, ggml_tensor*
   if (auto checked = CheckHcPrep(node); !checked) {
     return checked;
   }
-  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+  // The cluster form needs thread-block clusters (compute capability 9.0 and
+  // later): not the discrete sm_86 (D-082), which keeps a block a token.
+  const int cc = ggml_cuda_info().devices[launch.device()].cc;
+  const bool clusters = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_HOPPER;
+  return launch.Run(base::Bytes(0), [node, clusters](ggml_backend_cuda_context& context) {
     const HcPrepLayout l{.width = JitllmOpInt(node, 0),
                          .hc = JitllmOpInt(node, 1),
                          .t = JitllmOpInt(node, 2),
@@ -1594,9 +1956,37 @@ std::expected<void, KernelFailure> RunHcPrep(LaunchContext& launch, ggml_tensor*
     const int hc = static_cast<int>(l.hc);
     const float eps = JitllmOpFloat(node, 5);
     const float inv_hc = 1.0f / static_cast<float>(hc);
+    cudaStream_t s = context.stream();
+    if (l.t <= kHcPrepClusterTokens && clusters) {
+      const int per = ((width / 4) + kHcPrepCluster - 1) / kHcPrepCluster;
+      cudaLaunchConfig_t config{};
+      config.gridDim = dim3(kHcPrepCluster, static_cast<unsigned>(l.t));
+      config.blockDim = dim3(static_cast<unsigned>((per + 31) / 32 * 32));
+      config.stream = s;
+      cudaLaunchAttribute attribute{};
+      attribute.id = cudaLaunchAttributeClusterDimension;
+      attribute.val.clusterDim.x = kHcPrepCluster;
+      attribute.val.clusterDim.y = 1;
+      attribute.val.clusterDim.z = 1;
+      config.attrs = &attribute;
+      config.numAttrs = 1;
+      const auto go = [&](auto kernel) {
+        CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, x, norm, inject, out, logits_in, streams,
+                                      normed, logits, width, hc, eps, inv_hc));
+      };
+      if (l.combine && l.inject) {
+        go(HcPrepClusterKernel<true, true>);
+      } else if (l.combine) {
+        go(HcPrepClusterKernel<true, false>);
+      } else if (l.inject) {
+        go(HcPrepClusterKernel<false, true>);
+      } else {
+        go(HcPrepClusterKernel<false, false>);
+      }
+      return;
+    }
     const auto threads = static_cast<unsigned>(((width / 4) + 31) / 32 * 32);
     const auto grid = static_cast<unsigned>(l.t);
-    cudaStream_t s = context.stream();
     if (l.combine && l.inject) {
       HcPrepKernel<true, true><<<grid, threads, 0, s>>>(x, norm, inject, out, logits_in, streams,
                                                         normed, logits, width, hc, eps, inv_hc);
@@ -1690,6 +2080,12 @@ std::expected<void, KernelFailure> RunMoeRouter(LaunchContext& launch, ggml_tens
 std::expected<void, KernelFailure> RunGemmBf16(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckGemmBf16(node); !checked) {
     return checked;
+  }
+  if (IsGemvBf16(node) && node->src[1]->ne[1] <= kGemvBf16FastColumns &&
+      node->src[0]->ne[0] % 8 == 0 && node->src[0]->ne[0] <= kGemvBf16MaxK) {
+    return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+      LaunchGemvBf16(node, context.stream());
+    });
   }
   if (launch.cublas() == nullptr) {
     return Refused("the launch context lends no cuBLAS handle");

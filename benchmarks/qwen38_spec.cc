@@ -14,8 +14,13 @@
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
 //                      [--repeats N] [--margin B] [--seeds N] [--sampled FILE]
-//                      [--only ID] [--poll-us N]
+//                      [--only ID] [--poll-us N] [--window P]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
+//
+// --window P (0 to 1; default 0, off): TensorFold's adaptive window, the
+// first draft always verified and each later one only while the drafter's
+// probability for it is at least P (the checks' control runs keep every
+// draft).
 //
 // Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
 // rendered by the native Qwen3.8 renderer with the template's defaults
@@ -38,8 +43,9 @@
 //   prefill's logits bit for bit. Decode speed, acceptance (accepted ÷
 //   drafted) and tokens a verify, per prompt, the speculative run
 //   --repeats times. Each generation is a request (D-093).
-// - forced: rejections forced at chosen draft positions (all rejected, one
-//   and two accepted, and some as drafted). After every step's commit the
+// - forced (the first chat prompt, or --only's): rejections forced at chosen
+//   draft positions (all rejected, one and two accepted, and some as
+//   drafted). After every step's commit the
 //   whole state (every target state tensor, the drafter's caches and the
 //   streams rows the next draft reads) is hashed; a control that ran the
 //   same steps with different tokens after the accepted ones (the same
@@ -216,6 +222,10 @@ struct Options {
   // qwen38-native's bound 1).
   double margin = 1.0;
   std::uint32_t seeds = 256;
+  // TensorFold's adaptive window (0: off, every draft verified): the first
+  // draft always, each later one only while the drafter's probability for
+  // it is at least this (its own default 0.3).
+  double window = 0.0;
   std::filesystem::path sampled;
   std::string only;
   std::optional<std::uint32_t> poll_us;
@@ -232,6 +242,7 @@ struct Step {
   std::uint32_t rows = 0;    // the verify's rows
   std::uint32_t kept = 0;    // rows kept: the anchor and the accepted drafts
   std::int32_t forced = -1;  // the draft position forced wrong, or -1
+  std::int32_t next = -1;    // the token after the kept rows (the verify's own)
   std::vector<std::int32_t> drafts;
   std::vector<std::uint64_t> state;  // fingerprints after the commit (forced checks)
 };
@@ -670,6 +681,7 @@ Status Harness::Judge(Step& step, const std::vector<std::int32_t>& argmax,
       next = *t;
     }
   }
+  step.next = next;
   step.kept = m + 1;
   if (auto r = qwen_.Accept(step.kept); !r) {
     return r;
@@ -720,20 +732,44 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     const std::size_t index = out.steps.size();
     const auto left = static_cast<std::uint32_t>(count - out.tokens.size());
     const auto drafting = Clock::now();
-    if (auto r = qwen_.Draft(history, step.drafts); !r) {
+    std::vector<float> probabilities;
+    if (auto r = qwen_.Draft(history, step.drafts, o_.window > 0.0 ? &probabilities : nullptr);
+        !r) {
       return r;
     }
     out.draft_seconds += Seconds(Clock::now() - drafting);
+    if (o_.window > 0.0 && forcing.control == nullptr) {
+      // The adaptive window: a later draft is verified only while the
+      // drafter is confident of it (a verify row costs ~5 ms, a plain step
+      // ~37).
+      std::size_t keep = 1;
+      while (keep < step.drafts.size() && keep < probabilities.size() &&
+             probabilities[keep] >= o_.window) {
+        ++keep;
+      }
+      step.drafts.resize(std::min(keep, step.drafts.size()));
+    }
     if (forcing.control != nullptr) {
       if (index >= forcing.control->size()) {
-        return Error("the control ran past the run it follows");
+        // Kept fewer rows somewhere than the run it follows: the checks
+        // report the first step that differs.
+        break;
       }
       const Step& other = (*forcing.control)[index];
       step.drafts = other.drafts;
-      if (other.forced >= 0) {
-        // Wrong differently: the same rows, other tokens after the kept.
+      if (other.forced >= 0 && std::cmp_less_equal(other.kept, other.forced + 1)) {
+        // Wrong differently: the same rows, other tokens after the kept. A
+        // forced draft the verify kept (it was right after all) stays, and
+        // the other wrong token is never the verify's own at that row (the
+        // token after the run's kept rows), which it would keep.
         auto& d = step.drafts[static_cast<std::size_t>(other.forced)];
-        d = static_cast<std::int32_t>((static_cast<std::uint32_t>(d) + 1) % vocab);
+        const auto after = [&](std::int32_t id) {
+          return static_cast<std::int32_t>((static_cast<std::uint32_t>(id) + 1) % vocab);
+        };
+        d = after(d);
+        if (d == other.next) {
+          d = after(d);
+        }
       }
     }
     // The verify: the anchor and its drafts, within the tokens left.
@@ -921,7 +957,22 @@ Status Harness::Greedy() {
 // drafted; against a control that ran the same steps with other tokens
 // after the kept ones.
 Status Harness::Forced() {
-  const Prompt& prompt = chat_.front();
+  // The first chat prompt, or --only's (a chat or decode prompt).
+  const Prompt* chosen = &chat_.front();
+  if (!o_.only.empty()) {
+    chosen = nullptr;
+    for (const std::vector<Prompt>* set : {&chat_, &decode_}) {
+      for (const Prompt& p : *set) {
+        if (chosen == nullptr && p.id == o_.only) {
+          chosen = &p;
+        }
+      }
+    }
+    if (chosen == nullptr) {
+      return Error(std::format("--only {}: no such prompt", o_.only));
+    }
+  }
+  const Prompt& prompt = *chosen;
   const std::uint32_t count = o_.tokens;
   std::map<std::string, std::uint64_t> covered;
   const auto wrong = [&](std::size_t step, std::uint32_t, std::uint32_t rows) -> std::int32_t {
@@ -991,8 +1042,17 @@ Status Harness::Forced() {
     rejected += a.kept < a.rows ? 1 : 0;
     if (a.state != b.state || a.pos != b.pos || a.kept != b.kept) {
       if (differing++ == 0) {
-        first_difference = std::format("step {} (pos {}, kept {} of {}, control kept {})", s, a.pos,
-                                       a.kept, a.rows, b.kept);
+        const auto ids = [](const std::vector<std::int32_t>& v) {
+          std::string text;
+          for (const std::int32_t id : v) {
+            text += std::format("{}{}", text.empty() ? "" : " ", id);
+          }
+          return text;
+        };
+        first_difference = std::format(
+            "step {} (pos {}, kept {} of {}, control kept {}; forced {}, drafts [{}] and the "
+            "control's [{}])",
+            s, a.pos, a.kept, a.rows, b.kept, a.forced, ids(a.drafts), ids(b.drafts));
         for (std::size_t t = 0; t < a.state.size() && t < b.state.size(); ++t) {
           if (a.state[t] != b.state[t]) {
             const auto& tensors = qwen_.state_layout().tensors;
@@ -1540,6 +1600,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.repeats) && o.repeats >= 1;
     } else if (a == "--margin") {
       ok = number(o.margin) && o.margin >= 0;
+    } else if (a == "--window") {
+      ok = number(o.window) && o.window >= 0 && o.window <= 1;
     } else if (a == "--seeds") {
       ok = number(o.seeds) && o.seeds >= 1;
     } else if (a == "--poll-us") {
@@ -1571,7 +1633,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--prompts FILE --out DIR --check greedy|forced|swap|sampled-plain|sampled-spec "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--repeats N] [--margin B] [--seeds N] [--sampled FILE] [--only ID] "
-        "[--poll-us N] [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]");
+        "[--poll-us N] [--window P] [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect "
+        "SHA256]");
   }
   std::filesystem::create_directories(o.out);
   o.qwen.out = o.out / "qwen38";

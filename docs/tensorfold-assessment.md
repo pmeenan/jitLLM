@@ -12,7 +12,9 @@ This is a source review of commit
 `/proc` observations in item 6 are ours. TensorFold has since been pinned
 and measured on our Sparks as an M3 baseline
 ([baselines](experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)),
-and its later commits are surveyed [at the end](#upstream-to-0362-2026-09-28).
+its techniques measured against jitLLM's
+([below](#measured-and-adopted-m3-2026-09-28)), and its later commits
+surveyed [at the end](#upstream-to-0362-2026-09-28).
 
 ## What it is
 
@@ -177,6 +179,51 @@ Mapped to where they would land in jitLLM:
 
    This matches our frozen protocol's spirit, and the hash check is a good
    addition wherever we compare decoding with drafts.
+
+## Measured and adopted (M3, 2026-09-28)
+
+The techniques study ([tensorfold-techniques](experiments/tensorfold-techniques/README.md))
+profiled both engines on Qwen3.8 Flash Next and took what transfers within
+Mia's format:
+
+- **The decode gap is format, not engine.** A decode token reads 7.3–7.6 GB
+  in Mia's NVFP4, MXFP8 and BF16 against 4.5 GB in TensorFold's MLX 4-bit
+  (its dense layers, hyper-connection products and head are 4-bit where
+  Mia's are 8- and 16-bit; its experts read slightly more). jitLLM reads
+  about 202 GB/s against TensorFold's 165–178, so its engine is already the
+  faster reader; the 1.3–1.45× is bytes.
+- **Item 2 (layouts for the kernel):** jitLLM's MXFP8 vector product
+  already streams 221–229 GB/s alone at Qwen3.8's shapes in the artifact's
+  row-major layout, and the experts' layout is fixed by the prefill's
+  grouped GEMM; no new import layout was warranted. What cost bandwidth in
+  the model was other traffic: the recurrent state copied back after each
+  Gated DeltaNet step. Adopted: the state updated in place (TensorFold
+  double-buffers it), half the state bytes.
+- **Items 2 and 3 (bytes in flight, host time):** decode already runs as
+  CUDA graphs with a 0.04 ms round trip, so host time is not the lever.
+  Adopted: the hyper-connection products of a decode step on jitLLM's own
+  BF16 vector kernel instead of cuBLAS's gemv, the hyper-connection prep
+  across a cluster of blocks instead of one, the one-row convolution
+  fused, and programmatic
+  dependent launch with L2 prefetch of the next product's weights (as
+  DeepSeek's `jitllm.vecq`).
+- **Item 5 (adaptive window, partial vocabulary):** the MTP drafter now
+  reports each draft's probability and the harness can cut a round's
+  drafts below a threshold (TensorFold's 0.3); at depths 2–4 it gained
+  nothing measurable (every draft pass still runs), so it stays off.
+  Qwen3.8's draft head already reads 65,536 rows; DSpark's whole head
+  costs about 0.7% of a step.
+- **Result:** Qwen3.8's plain decode +5.4–8.1% (35.2 ms a step against
+  37.4 in the same session), 0.73× TensorFold's instead of 0.69×; the rest
+  is the format.
+- **Item 1 (row-invariant exact speculation):** not adopted; the owner's
+  rule is speed before bit exactness (D-085's note), and DeepSeek keeps
+  D-092's row-invariant verify as its exact mode.
+- **Item 6 (page migration):** measured on `spark-b`: loads, evictions,
+  swaps and steady decode migrated no pages and triggered no compaction
+  when nothing else held memory; bursts (up to 113,000 pages in 5 s) came
+  only when another process's allocations overlapped a load, which then
+  read at 1.1 GB/s instead of 13.
 
 ## Proposed use
 
