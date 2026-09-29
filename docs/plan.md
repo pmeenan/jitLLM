@@ -48,11 +48,12 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M1 Bootstrap | Pinned SDK, builds, local check gate, package skeleton, confined-job proof | M0 (done) |
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
-| M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle | M3 |
+| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it | M3 |
+| M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle | M3.5 |
 | M5 One resident model | Importer, verifier, the three client protocols, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
 | M6a Configured placement | Conductor, enrolled nodes, whole-model placement and routing | M6 |
-| M7 Demand-paged MoE | Exact expert paging; Gemma 4 and Ornith as daily drivers with reasoning and constrained output | M6 |
+| M7 Demand-paged MoE | Exact expert paging; Gemma 4 and Ornith as daily drivers with reasoning and constrained output (their resident bring-up is M3.5's) | M6 |
 | M8 Sharding under pressure | Sharded execution correct under asymmetric pressure, cancellation and failure, with coordinated admission | M6a, M7 |
 | M9 Performance | D-036's benefit target on a library larger than memory; the remaining speculative and diffusion decoding | M7; M8 before exit |
 | M10 Product and release | Dashboard, remaining API scope, signed apt repository, first tagged 0.x release | M9, for the release |
@@ -950,13 +951,78 @@ it appears.
   its target. DSpark's binding is settled: its own artifact, binding the
   target artifact's token table and head at load (D-089's note).
 
+## M3.5 — Model families  `pending`
+
+Goal (the owner, 2026-09-29): build out the core engine across the major
+open model families, MoE and dense, before the system is built around it
+(M4 onward). Each family runs natively on one Spark from a prepared
+artifact on M3's engine skeleton. Each is correct against its same-format
+oracle, at least as fast as its same-format reference, and flat with
+context wherever its architecture allows. A family that needs a new engine
+mechanism exposes the gap now, while the engine is still cheap to change.
+
+**Entry:** M3 exit, including its engine skeleton and its "adding a model
+family" guide, and its long-context scaling work.
+
+**Scope:**
+
+- [ ] **Family selection** (first; for the owner's approval). Survey the
+      current top-tier open families as of M3.5's start and pick one MoE
+      and one dense checkpoint per family that fit one Spark, with a
+      same-format reference engine each. Record each pick's architecture
+      class:
+      - attention: dense, sliding window with dense global layers,
+        compressed and sparse, or linear and recurrent;
+      - MoE or dense;
+      - positional scheme, normalisation and activations;
+      - tokenizer and chat template;
+      - MTP or companion drafters;
+      - maximum context.
+
+      Named by the owner: Gemma (Gemma 4 26B-A4B, M7's daily driver, and a
+      dense Gemma 4), Llama, and MiMo. Already in the repo's plans:
+      Ornith 1.5 35B-A3B (M7), Qwen3.8-27B (dense) and Nemotron. GLM-5.3
+      Flash stays in M4 (two Sparks). Agents propose; the owner approves
+      the list (AGENTS.md: agents never invent supported model
+      combinations). Weight licenses are informational (D-087).
+- [ ] **Per family**, on the engine skeleton, using the "adding a model
+      family" guide, which M3.5 tests and corrects:
+      - import to a v0 artifact;
+      - its runner: plan, state layout and model-specific steps;
+      - the native tokenizer and chat renderer, with the template hash
+        recorded in the support matrix;
+      - swaps in and out beside the M3 models;
+      - speculation where the family ships MTP layers or drafters;
+      - the D-053 rule: a primitive fallback for every fused operation.
+- [ ] **Kernels:** operations new to a family come from GGML first, with
+      our own kernels on measured need (D-053). Upstream findings go to
+      docs/upstream/.
+- [ ] **Resident only.** Demand-paged experts stay M7's; M7 keeps its
+      daily-driver usability work and builds on the families brought up
+      here.
+
+**Exit criteria**, per approved family and form (MoE, dense):
+
+- **Correctness:** greedy tokens match the same-format oracle except
+  near-ties, under the recorded-first noise bound; perplexity within a few
+  percent; speculation, where present, meets M3's speculation criteria.
+- **Speed and memory** (D-085): prefill and decode at least as fast as the
+  same-format reference, at 8K and at depth; peak memory at most about
+  1.1× the reference's.
+- **Long context:** M3's scaling criterion applies to the family's
+  maximum context on one Spark, with any architectural floor measured and
+  named. Dense global attention's per-token KV read is such a floor.
+- **Swap:** each family swaps A→B→A with an M3 model within M3's swap
+  goals, exact on return.
+- The support matrix lists every approved family with its evidence.
+
 ## M4 — Two-Spark fast full swap  `pending`
 
 Goal: the same cycle for models too big for one Spark, sharded across both.
 Each node holds its shard on disk, and the conductor loads both shards at
 once.
 
-**Entry:** M3 exit. By entry, model-parallel artifact partitioning is
+**Entry:** M3.5 exit (M3 exit before 2026-09-29). By entry, model-parallel artifact partitioning is
 decided ([artifact-format.md](artifact-format.md#deliberately-open); moved
 from M8's entry), and each model's checkpoint, recipe and baselines are
 pinned and audited as in M3.

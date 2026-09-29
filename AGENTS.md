@@ -309,6 +309,7 @@ the chat route (D-097: a strict OpenAI subset, intake bounds
 fixed first, greedy replies equal to `chat`'s).
 D-087 moved the
 later milestones back two places (the old M3 is M5). Long context (32K to each model's one-Spark maximum, owner 2026-09-29)
-is now part of M3: measured against the comparators and optimized
+is now part of M3, and M3.5 (model families: Gemma, Llama, MiMo and
+other top-tier families, MoE and dense) follows it before M4: measured against the comparators and optimized
 before the gate. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).
