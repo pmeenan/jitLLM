@@ -775,6 +775,21 @@ it appears.
       1.48× and 1.78× the 512-row prefill at 8K tokens), configurable
       (`prefill_chunk`) and capped by the model at its context, so the
       minimum context, 512, starts for both.
+- [ ] **Engine cleanup before the gate** (the owner, 2026-09-29: leave M3
+      with the code as clean as possible and set up for later work):
+      - the per-model runners' shared mechanics become one engine
+        skeleton: graph capture and replay, state spill and restore, plan
+        caches, speculation mechanics, setup and teardown, weight paging.
+        That's the shared helpers [portability.md](portability.md)
+        recommends, so a new model family adds only its own plan and
+        state layout;
+      - behaviour is unchanged, bit for bit where the engine was: the
+        same tokens, logits, pixels and swap results as before, and decode
+        and prefill within noise;
+      - main is clang-tidy clean, and the chat route's flaky half-close
+        test is fixed.
+      It lands before long context's optimization slices, so they change
+      one skeleton rather than each runner.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
