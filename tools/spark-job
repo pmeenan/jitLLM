@@ -255,10 +255,15 @@ def cmd_start(args: argparse.Namespace) -> int:
             shutil.rmtree(job_dir)  # a finished or lost job of that name is replaced
         job_dir.mkdir()
         log = job_dir / "log"
+        # Steps run with the caller's umask, never looser than 022: files a step creates must
+        # pass jitLLM's path-trust checks (no group- or world-writable directories).
+        caller_umask = os.umask(0o022)
+        os.umask(caller_umask)
         job = {"name": args.name, "host": socket.gethostname(), "cwd": cwd, "log": str(log),
                "command": command or None, "steps_file": os.path.abspath(args.steps) if steps else None,
                "gpu": args.gpu, "timeout": args.timeout, "step_timeout": args.step_timeout,
-               "grace": args.grace, "stop_on_fail": args.stop_on_fail, "start": now()}
+               "grace": args.grace, "stop_on_fail": args.stop_on_fail, "start": now(),
+               "umask": caller_umask | 0o022}
         if steps:
             write_json(job_dir / "steps.json", {"steps": [{"cmd": s, "state": "pending"} for s in steps]})
         write_json(job_dir / "job.json", job)
@@ -303,7 +308,8 @@ class Supervisor:
         started = time.monotonic()
         try:
             proc = subprocess.Popen(argv, cwd=self.job["cwd"], stdin=subprocess.DEVNULL, stdout=self.log,
-                                    stderr=self.log, start_new_session=True)
+                                    stderr=self.log, start_new_session=True,
+                                    umask=self.job.get("umask", 0o022))
         except OSError as e:
             self.note(f"cannot start {shlex.join(argv)}: {e}")
             return {"state": "failed", "rc": 127, "reason": f"cannot start: {e}"}

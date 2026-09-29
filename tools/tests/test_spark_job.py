@@ -68,6 +68,19 @@ class SparkJobTest(unittest.TestCase):
         self.assertIn("hello", self.run_tool("tail", "ok").stdout)
         self.assertIn("done (rc 0)", self.run_tool("status").stdout)
 
+    def test_steps_run_with_umask_at_least_022(self):
+        # A caller's group-writable umask (ssh sessions on the Sparks use 0002) must not reach the
+        # steps: jitllm-runtime refuses a process lock under a group- or world-writable directory.
+        previous = os.umask(0o002)
+        try:
+            self.start("mask", "--", "bash", "-c", "umask; mkdir made")
+        finally:
+            os.umask(previous)
+        result, _ = self.wait("mask")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("0022", pathlib.Path(self.state("mask")["log"]).read_text())
+        self.assertEqual((self.tmp / "made").stat().st_mode & 0o777, 0o755)
+
     def test_nonzero_exit(self):
         self.start("bad", "--", "bash", "-c", "echo Traceback: HTTP 400; exit 3")
         result, _ = self.wait("bad")
