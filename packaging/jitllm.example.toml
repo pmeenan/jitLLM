@@ -51,6 +51,12 @@ schema_version = 2
 # speculation = true
 # Tokens of conversation state, 512 to 262144.
 # context = 8704
+# Rows of a prefill chunk, 1 to 262144; by default the runtime's choice for
+# the model (DeepSeek V4 2048, Qwen3.8 4096), capped at what the model
+# allows at its context (below it) and, from 8 rows, rounded down to a
+# multiple of 8; the runtime logs the chunk it uses. A chunk is how soon a
+# prefill notices a cancellation.
+# prefill_chunk = 2048
 # For an artifact whose metadata keeps no tokenizer or chat template: the
 # checkpoint's, owned by root or the runtime's user and writable by nobody
 # else.

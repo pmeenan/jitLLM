@@ -577,6 +577,16 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
   return s;
 }
 
+std::uint32_t Qwen38MostRows(std::uint32_t context) {
+  if (context == 0 ||
+      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
+    return 0;
+  }
+  const std::uint64_t masks =
+      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / Pad(context, 256);
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>({context, kQwen38MaxRows, masks}));
+}
+
 // ---------------------------------------------------------------- chunk inputs
 
 std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& p, const Qwen38PleHash& h,

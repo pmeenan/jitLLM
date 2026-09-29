@@ -29,7 +29,9 @@
 //   state is cleared first. Generation is greedy, speculative by default
 //   where the model has a drafter (DSpark for DeepSeek, MTP for Qwen3.8),
 //   and each turn is one request: the model's closure leased once, every
-//   chunk a step under it (D-093).
+//   chunk a step under it (D-093). The prefill's chunk is the model's
+//   (runtime/prefill.h), and a caller's `go_on` may stop a prefill between
+//   chunks, the history then the chunks that ran.
 // - The image pipeline generates the prompt and latents it registered with
 //   (this slice's runner fixes them at setup).
 
@@ -57,6 +59,7 @@
 #include "engine/paged_node.h"
 #include "execution/sampling.h"
 #include "runtime/commands.h"
+#include "runtime/prefill.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
 
@@ -213,7 +216,10 @@ struct GenerateOptions {
 class Llm : public Served {
  public:
   bool llm() const override { return true; }
+  // The prefill chunk's rows, and the configuration's prefill_chunk if set
+  // (max_rows is at most it, capped by the model at its context).
   std::uint32_t max_rows() const { return max_rows_; }
+  std::optional<std::uint32_t> configured_rows() const { return configured_rows_; }
   std::uint32_t context() const { return context_; }
   // What a conversation may use of the context: its speculative steps may
   // need rows past the last token (Qwen3.8's MTP drafts).
@@ -248,10 +254,16 @@ class Llm : public Served {
     needs_clear_ = true;
   }
   // Runs `tokens` after the history in chunks of max_rows (with the
-  // drafter's injection when speculating): the last row's logits.
-  Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last);
-  // Greedy generation from `last` (the prefill's logits): the first token
-  // is its argmax, the rest from decode steps.
+  // drafter's injection when speculating): the last row's logits. With
+  // `go_on`, asked before each chunk (runtime/prefill.h): false stops the
+  // prefill there, not an error: the history then holds the chunks that
+  // ran (a prefix of `tokens` after it, which the state processed and a
+  // later prefill continues from), `last` is empty, and `run` (if given)
+  // says so.
+  Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                 const std::function<bool()>& go_on = {}, PrefillRun* run = nullptr);
+  // Greedy generation from `last` (a whole prefill's logits): the first
+  // token is its argmax, the rest from decode steps.
   Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);
   // The whole conversation state (the target's and the drafter's, and the
   // host's speculation cursor) saved to or put back from pinned host
@@ -297,7 +309,8 @@ class Llm : public Served {
   void FindThinkTokens();
 
   engine::PagedNode* node_ = nullptr;
-  std::uint32_t max_rows_ = 512;
+  std::uint32_t max_rows_ = 0;  // the prefill chunk (runtime/prefill.h), set at construction
+  std::optional<std::uint32_t> configured_rows_;  // the configuration's prefill_chunk
   std::uint32_t context_ = config::kDefaultContext;
   bool speculate_ = false;
   bool bos_ = false;  // EncodeText puts BOS first
@@ -374,6 +387,7 @@ class Server {
   void set_handoff(bool on) { handoff_ = on; }
   std::uint64_t budget() const { return budget_; }
   std::uint64_t fixed_bytes() const { return fixed_; }
+  std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
 
  private:
   Status Make(const config::ModelEntry& entry, int index);
@@ -393,6 +407,7 @@ class Server {
   bool torn_down_ = false;
   std::uint64_t budget_ = 0;
   std::uint64_t fixed_ = 0;
+  std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
   scheduler::SchedulerStats swap_before_;  // the counters at the last Activate
   // Models whose conversation state was spilled by a swap out (and is

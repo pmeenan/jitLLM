@@ -188,17 +188,19 @@ enum class ModelKey : std::uint8_t {
   kDrafter,
   kSpeculation,
   kContext,
+  kPrefillChunk,
   kTokenizer,
   kChatTemplate,
 };
 
 std::optional<ModelKey> FindModelKey(std::string_view key) {
-  static constexpr std::array<std::pair<std::string_view, ModelKey>, 7> kKeys = {{
+  static constexpr std::array<std::pair<std::string_view, ModelKey>, 8> kKeys = {{
       {"artifact", ModelKey::kArtifact},
       {"composition", ModelKey::kComposition},
       {"drafter", ModelKey::kDrafter},
       {"speculation", ModelKey::kSpeculation},
       {"context", ModelKey::kContext},
+      {"prefill_chunk", ModelKey::kPrefillChunk},
       {"tokenizer", ModelKey::kTokenizer},
       {"chat_template", ModelKey::kChatTemplate},
   }};
@@ -770,6 +772,19 @@ class Validator {
         }
         break;
       }
+      case ModelKey::kPrefillChunk: {
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (std::cmp_less(value->get(), 1) ||
+                   std::cmp_greater(value->get(), kMaxPrefillChunk)) {
+          out_.At(leaf, std::format("{} must be from 1 to {} rows, not {}", key, kMaxPrefillChunk,
+                                    value->get()));
+        } else {
+          model.entry.prefill_chunk = static_cast<std::uint32_t>(value->get());
+        }
+        break;
+      }
       case ModelKey::kTokenizer:
       case ModelKey::kChatTemplate: {
         const auto* text = node.as_string();
@@ -809,10 +824,10 @@ class Validator {
         problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
       }
       if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
-                            model.speculation_set)) {
+                            model.speculation_set || m.prefill_chunk)) {
         problem(
-            "drafter, speculation, context, tokenizer and chat_template are a model artifact's "
-            "keys, not a composition's");
+            "drafter, speculation, context, prefill_chunk, tokenizer and chat_template are a "
+            "model artifact's keys, not a composition's");
       }
       if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
         problem("an artifact cannot be its own drafter");

@@ -26,9 +26,11 @@
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 #include "model/dsv4.h"
+#include "model/qwen38.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/path_trust.h"
+#include "runtime/prefill.h"
 #include "scheduler/programs.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
@@ -47,6 +49,14 @@ constexpr std::size_t kMaxTokenizerBytes = std::size_t{64} << 20U;
 constexpr std::uint64_t kUncountedMargin = std::uint64_t{4} << 30U;
 // Extents the page-in observer tracks (the M3 models use about 100,000).
 constexpr std::size_t kObservedExtents = std::size_t{1} << 18U;
+// Each model's prefill chunk when its prefill_chunk is not configured
+// (docs/runtime-serving.md#prefill-chunks-and-cancellation), measured
+// through the runtime: doubled from 512 rows while that gained 10% or more
+// prefill speed at 8K tokens and the longest chunk stayed within 5 s (a
+// chunk is how soon a prefill notices a cancellation); then capped by the
+// model at its context (prefill.h).
+constexpr std::uint32_t kDsv4PrefillRows = 2048;
+constexpr std::uint32_t kQwen38PrefillRows = 4096;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -152,6 +162,9 @@ class Dsv4 final : public Llm {
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
     options_.context = entry.context;
+    configured_rows_ = entry.prefill_chunk;
+    max_rows_ = PrefillChunkRows(entry.context, entry.prefill_chunk, kDsv4PrefillRows,
+                                 model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (speculate_) {
@@ -353,6 +366,9 @@ class Qwen38 final : public Llm {
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
     options_.context = entry.context;
+    configured_rows_ = entry.prefill_chunk;
+    max_rows_ = PrefillChunkRows(entry.context, entry.prefill_chunk, kQwen38PrefillRows,
+                                 model::Qwen38MostRows(entry.context));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (speculate_) {
@@ -786,7 +802,8 @@ Status Llm::Clear() {
   return {};
 }
 
-Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last) {
+Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                    const std::function<bool()>& go_on, PrefillRun* run) {
   if (needs_clear_) {
     if (auto r = Clear(); !r) {
       return r;
@@ -801,15 +818,32 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
     return Error(
         std::format("{} tokens do not fit {}'s context of {}", all.size(), name_, context_));
   }
-  for (auto at = static_cast<std::uint32_t>(history_.size()); at < all.size(); at += max_rows_) {
-    const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(max_rows_, all.size() - at));
-    if (auto r = RunChunk(std::span(all).first(at + n), at, speculate_, last); !r) {
-      needs_clear_ = true;
-      history_.clear();
-      return Error(std::format("{}'s prefill at {}: {}", name_, at, r.error()));
-    }
+  last.clear();
+  auto ran = RunPrefillChunks(
+      static_cast<std::uint32_t>(history_.size()), static_cast<std::uint32_t>(all.size()),
+      max_rows_,
+      [&](std::uint32_t at, std::uint32_t n) {
+        return RunChunk(std::span(all).first(at + n), at, speculate_, last);
+      },
+      go_on);
+  if (!ran) {
+    needs_clear_ = true;
+    history_.clear();
+    last.clear();
+    return Error(std::format("{}'s prefill: {}", name_, ran.error()));
   }
+  if (run != nullptr) {
+    *run = *ran;
+  }
+  // The state holds exactly the chunks that ran: stopped between chunks,
+  // the history is their prefix (which the next prefill continues from,
+  // through the same chunk boundaries), and there are no logits to
+  // generate from.
+  all.resize(ran->end);
   history_ = std::move(all);
+  if (ran->stopped) {
+    last.clear();
+  }
   return {};
 }
 
@@ -818,6 +852,9 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   const auto is_stop = [&](std::int32_t token) {
     return options.stop && std::ranges::find(stops_, token) != stops_.end();
   };
+  if (last.empty()) {
+    return Error(std::format("{} has no prefill's logits to generate from", name_));
+  }
   sampling_.reset();
   if (options.sampling && options.sampling->temperature > 0) {
     sampling_ = options.sampling;
@@ -1068,16 +1105,26 @@ Status Server::Start(bool snapshot) {
     activations = std::max(activations, m->activations_needed());
     pool = std::max(pool, m->pool_needed());
     largest = std::max<std::uint64_t>(largest, m->weights().size() * kExtent);
+    std::string chunks;
     if (m->llm()) {
-      state = std::max(state, static_cast<Llm&>(*m).state_snapshot_bytes());
+      const auto& l = static_cast<Llm&>(*m);
+      state = std::max(state, l.state_snapshot_bytes());
+      chunks = std::format("; prefill chunks of {} rows", l.max_rows());
+      if (l.configured_rows() && *l.configured_rows() != l.max_rows()) {
+        chunks += std::format(
+            " (prefill_chunk {}: capped at what the model allows below its context of {}, in "
+            "whole 8-row tiles)",
+            *l.configured_rows(), l.context());
+      }
     }
-    Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load)",
+    Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}",
                     m->name(), Seconds(Clock::now() - started), m->weights().size(),
-                    static_cast<double>(m->weight_read_bytes()) / 1e9));
+                    static_cast<double>(m->weight_read_bytes()) / 1e9, chunks));
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {
     return r;
   }
+  workspace_ = activations + pool;
   if (snapshot && state != 0) {
     std::vector<catalog::ExtentId> staging;
     auto pinned = node_.Pinned(state, engine::kShared, staging);
@@ -1115,10 +1162,12 @@ Status Server::Start(bool snapshot) {
     }
   }
   node_.Run();
-  Log(std::format("serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed); {:.2f} GiB available",
-                  models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
-                  static_cast<double>(fixed_) / (1ULL << 30U),
-                  static_cast<double>(available) / (1ULL << 30U)));
+  Log(std::format(
+      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}); "
+      "{:.2f} GiB available",
+      models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
+      static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
+      static_cast<double>(available) / (1ULL << 30U)));
   return {};
 }
 

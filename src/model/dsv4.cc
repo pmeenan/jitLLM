@@ -459,6 +459,17 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& p, std:
   return s;
 }
 
+std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
+  if (!ProfileIsSane(p) || context == 0 ||
+      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
+    return 0;
+  }
+  const std::uint64_t cells = Pad(context, 256);
+  return cells <= p.window
+             ? 0
+             : static_cast<std::uint32_t>(std::min<std::uint64_t>(context, cells - p.window));
+}
+
 // ---------------------------------------------------------------- chunk inputs
 
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,

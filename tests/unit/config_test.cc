@@ -538,6 +538,51 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("unknown table models.deep.er")));
 }
 
+// A model's context from its minimum, and its prefill chunk: configured,
+// or absent for the runtime's default (docs/runtime-serving.md).
+TEST(NodeConfigTest, ReadsContextAndPrefillChunk) {
+  const NodeConfig config = Parsed(std::format(R"(schema_version = 2
+[models.a]
+artifact = "{0}"
+context = 512
+prefill_chunk = 4096
+[models.b]
+artifact = "{1}"
+)",
+                                               std::string(64, 'a'), std::string(64, 'b')));
+  ASSERT_THAT(config.models, SizeIs(2));
+  EXPECT_EQ(config.models[0].context, jitllm::config::kMinContext);
+  EXPECT_EQ(config.models[0].prefill_chunk, 4096U);
+  EXPECT_FALSE(config.models[1].prefill_chunk.has_value());
+
+  const auto failures =
+      Failures(std::format(R"(schema_version = 2
+[models.below]
+artifact = "{0}"
+context = 511
+[models.none]
+artifact = "{1}"
+prefill_chunk = 0
+[models.over]
+artifact = "{2}"
+prefill_chunk = 262145
+[models.text]
+artifact = "{3}"
+prefill_chunk = "4096"
+[models.pipeline]
+composition = "{4}"
+prefill_chunk = 512
+)",
+                           std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'),
+                           std::string(64, 'd'), std::string(64, 'e')));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.none.prefill_chunk must be from 1 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.over.prefill_chunk must be from 1 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.text.prefill_chunk must be an integer")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context, "
+                                           "prefill_chunk")));
+}
+
 TEST(NodeConfigTest, ModelsAreBoundedAndOwnedOnce) {
   std::string many = "schema_version = 2\n";
   for (int i = 0; i < 17; ++i) {

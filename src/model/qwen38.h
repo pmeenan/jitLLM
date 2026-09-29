@@ -258,6 +258,11 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
                                                           std::uint32_t context,
                                                           std::uint32_t max_rows);
 
+// The widest chunk Qwen38State admits at `context`: the context,
+// kQwen38MaxRows and the masks' I32 bound (0 when none, or when the context
+// is refused whatever the chunk).
+std::uint32_t Qwen38MostRows(std::uint32_t context);
+
 // ---------------------------------------------------------------- chunk inputs
 
 // QSA's block tables for a chunk (llama_memory_hybrid_idx::set_input_qsa,

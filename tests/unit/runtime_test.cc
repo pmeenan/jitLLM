@@ -3,7 +3,7 @@
 
 // The runtime module's startup steps on scratch trees, and the platform
 // module's process services it relies on: the crash policy, lock files and
-// readiness notification.
+// readiness notification; and a prefill's chunks (prefill.h).
 
 #include "runtime/runtime.h"
 
@@ -18,21 +18,26 @@
 
 #include <array>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
+#include "runtime/prefill.h"
 
 namespace {
 
@@ -378,6 +383,117 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   auto unset = jitllm::platform::NotifyServiceManager("READY=1");
   ASSERT_TRUE(unset.has_value());
   EXPECT_FALSE(*unset);
+}
+
+// A prefill's chunk (runtime/prefill.h): the configured or default rows,
+// capped by the model and below the context.
+TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
+  using jitllm::runtime::PrefillChunkRows;
+  EXPECT_EQ(PrefillChunkRows(8704, std::nullopt, 2048, 8192), 2048U);
+  EXPECT_EQ(PrefillChunkRows(8704, 4096U, 2048, 8192), 4096U);
+  EXPECT_EQ(PrefillChunkRows(8704, 65536U, 2048, 8192), 8192U);  // the model's most
+  // The minimum context: a chunk below it, whatever the default.
+  EXPECT_EQ(PrefillChunkRows(512, std::nullopt, 2048, 512), 504U);  // whole tiles
+  EXPECT_EQ(PrefillChunkRows(512, std::nullopt, 2048, 384), 384U);
+  EXPECT_EQ(PrefillChunkRows(512, 512U, 512, 512), 504U);
+  EXPECT_EQ(PrefillChunkRows(8704, 1500U, 512, 8192), 1496U);
+  EXPECT_EQ(PrefillChunkRows(8704, 5U, 512, 8192), 5U);
+  EXPECT_EQ(PrefillChunkRows(2, std::nullopt, 512, 2), 1U);
+  EXPECT_EQ(PrefillChunkRows(1, std::nullopt, 512, 1), 0U);
+  EXPECT_EQ(PrefillChunkRows(0, std::nullopt, 512, 0), 0U);
+  EXPECT_EQ(PrefillChunkRows(8704, std::nullopt, 512, 0), 0U);  // the model allows none
+}
+
+// The chunks run in order, in rows of at most the chunk, and `go_on` asked
+// before each stops the loop between chunks, never inside one.
+TEST(PrefillChunk, RunsChunksUntilToldToStop) {
+  using jitllm::runtime::RunPrefillChunks;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> ran;
+  const auto chunk = [&](std::uint32_t at, std::uint32_t rows) -> std::expected<void, std::string> {
+    ran.emplace_back(at, rows);
+    return {};
+  };
+  auto whole = RunPrefillChunks(100, 1300, 512, chunk, {});
+  ASSERT_TRUE(whole.has_value()) << whole.error();
+  EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{
+                     {100, 512}, {612, 512}, {1124, 176}}));
+  EXPECT_EQ(whole->end, 1300U);
+  EXPECT_EQ(whole->chunks, 3U);
+  EXPECT_FALSE(whole->stopped);
+  EXPECT_GE(whole->longest, 0.0);
+
+  // Told to stop before the third chunk: the first two ran, and the end is
+  // where they reached (what the state then holds).
+  ran.clear();
+  int asked = 0;
+  auto stopped = RunPrefillChunks(0, 1300, 512, chunk, [&] { return ++asked < 3; });
+  ASSERT_TRUE(stopped.has_value());
+  EXPECT_EQ(asked, 3);
+  EXPECT_EQ(ran.size(), 2U);
+  EXPECT_EQ(stopped->end, 1024U);
+  EXPECT_EQ(stopped->chunks, 2U);
+  EXPECT_TRUE(stopped->stopped);
+
+  // Told before the first: nothing runs.
+  ran.clear();
+  auto none = RunPrefillChunks(40, 1300, 512, chunk, [] { return false; });
+  ASSERT_TRUE(none.has_value());
+  EXPECT_TRUE(ran.empty());
+  EXPECT_EQ(none->end, 40U);
+  EXPECT_TRUE(none->stopped);
+
+  // Resumed from where it stopped, the chunks fall where an unstopped
+  // prefill's would.
+  ran.clear();
+  auto resumed = RunPrefillChunks(stopped->end, 1300, 512, chunk, [] { return true; });
+  ASSERT_TRUE(resumed.has_value());
+  EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{1024, 276}}));
+  EXPECT_FALSE(resumed->stopped);
+
+  // Nothing to run is not a chunk.
+  EXPECT_EQ(RunPrefillChunks(7, 7, 512, chunk, {})->chunks, 0U);
+}
+
+// A chunk of 1,024 rows or more runs in whole 8-row tiles (the attention's
+// mask pre-pass reads them; RE-036), its remainder a chunk of its own.
+TEST(PrefillChunk, WideChunksRunInWholeTiles) {
+  using jitllm::runtime::RunPrefillChunks;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> ran;
+  const auto chunk = [&](std::uint32_t at, std::uint32_t rows) -> std::expected<void, std::string> {
+    ran.emplace_back(at, rows);
+    return {};
+  };
+  ASSERT_TRUE(RunPrefillChunks(0, 1500, 2048, chunk, {}).has_value());
+  EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{0, 1496}, {1496, 4}}));
+  ran.clear();
+  ASSERT_TRUE(RunPrefillChunks(3, 4100, 2048, chunk, {}).has_value());
+  EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{
+                     {3, 2048}, {2051, 2048}, {4099, 1}}));
+  // Under 1,024 rows a chunk is whatever is left.
+  ran.clear();
+  ASSERT_TRUE(RunPrefillChunks(0, 1023, 2048, chunk, {}).has_value());
+  EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{0, 1023}}));
+}
+
+TEST(PrefillChunk, AFailedChunkIsTheError) {
+  using jitllm::runtime::RunPrefillChunks;
+  int calls = 0;
+  auto failed =
+      RunPrefillChunks(0, 2048, 512,
+                       [&](std::uint32_t at, std::uint32_t) -> std::expected<void, std::string> {
+                         ++calls;
+                         if (at == 1024) {
+                           return std::unexpected("the device faulted");
+                         }
+                         return {};
+                       },
+                       {});
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(calls, 3);
+  EXPECT_THAT(failed.error(), HasSubstr("the chunk at 1024: the device faulted"));
+  EXPECT_FALSE(RunPrefillChunks(
+                   0, 10, 0, [](auto, auto) -> std::expected<void, std::string> { return {}; }, {})
+                   .has_value());
 }
 
 }  // namespace

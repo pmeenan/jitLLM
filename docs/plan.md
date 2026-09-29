@@ -766,6 +766,15 @@ it appears.
       keepalive comments and all finished (the last in 52.8 s); greedy
       replies still equal `jitllm-runtime chat`'s (DeepSeek 52 tokens,
       Qwen3.8 37, streamed).
+      *Fixed after an outside review, 2026-09-29* (D-096 and D-097
+      amended, [runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation)):
+      a client leaving, the deadline or SIGTERM now stop a prefill
+      between chunks (0.65–1.57 s on `spark`), the state keeping the
+      chunks that ran, and the service serves on; each model's prefill
+      chunk is its own (DeepSeek 2,048 rows, Qwen3.8 4,096, measured:
+      1.48× and 1.78× the 512-row prefill at 8K tokens), configurable
+      (`prefill_chunk`) and capped by the model at its context, so the
+      minimum context, 512, starts for both.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

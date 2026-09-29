@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "expected_error.h"
@@ -245,6 +246,24 @@ TEST(Dsv4Test, TheStateIsBoundedAndSizedAsLlamaCppSizesIt) {
   // Past I32 positions, where the padded cell counts would also wrap.
   EXPECT_FALSE(md::Dsv4State(p, 0xFFFFFF01U, 512).has_value());
   EXPECT_FALSE(md::Dsv4State(p, 0x7FFFFF01U, 512).has_value());
+}
+
+// The widest chunk the state admits, which the runtime's prefill chunk
+// stays within: at the configuration's minimum context (512) the window
+// leaves 384 rows, not 512; just below it (511) as much; and each is the
+// edge (one more row is refused).
+TEST(Dsv4Test, TheWidestChunkFitsTheWindow) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  for (const auto& [context, most] :
+       {std::pair{512U, 384U}, std::pair{511U, 384U}, std::pair{513U, 513U},
+        std::pair{8704U, 8576U}, std::pair{262144U, 262016U}, std::pair{200U, 128U}}) {
+    SCOPED_TRACE(context);
+    EXPECT_EQ(md::Dsv4MostRows(p, context), most);
+    EXPECT_TRUE(md::Dsv4State(p, context, most).has_value());
+    EXPECT_FALSE(md::Dsv4State(p, context, most + 1).has_value());
+  }
+  EXPECT_EQ(md::Dsv4MostRows(p, 0), 0U);
+  EXPECT_EQ(md::Dsv4MostRows(p, 0x7FFFFF01U), 0U);
 }
 
 TEST(Dsv4Test, HashRoutesMustNameAnExpert) {

@@ -248,6 +248,11 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& profile
                                                       std::uint32_t context,
                                                       std::uint32_t max_rows);
 
+// The widest chunk Dsv4State admits at `context`: the context, and the
+// window cache's cells less the window (0 when none, or when the context
+// is refused whatever the chunk).
+std::uint32_t Dsv4MostRows(const Dsv4Profile& profile, std::uint32_t context);
+
 // ---------------------------------------------------------------- chunk inputs
 
 // One compressor's recipe for a chunk (llama_kv_cache_dsv4_context::comp_plan

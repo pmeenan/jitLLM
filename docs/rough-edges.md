@@ -28,6 +28,37 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-036: GGML's flash-attention mask pre-pass reads whole 8-row tiles from 1,024 query rows on, so a chunk of 1,024+ rows that is not a multiple of 8 is refused  (2026-09-29, status: worked-around)
+
+- **Environment:** `spark`, GB10, the `spark-native` build at `c7c1ead`
+  plus the prefill-chunk slice; the pinned llama.cpp `b29c606e2`'s
+  `fattn-common.cuh` pre-pass as `kernels/ggml/fattn_mma.cu` dispatches it.
+- **Observed:** `jitllm-runtime chat` with `prefill_chunk = 4096` (both
+  DeepSeek V4 and Qwen3.8) failed its first chunk, a whole 2,164- or
+  2,362-token prompt, with "the mask pre-pass reads whole column tiles
+  past the mask's rows"; 512-, 1,024- and 2,048-row chunks of the same
+  prompts ran (their chunks were under 1,024 rows or multiples of 8).
+  For 1,024 query rows or more (and a KV length a multiple of 256) the
+  kernel's pre-pass (`flash_attn_mask_to_KV_max`) reads the mask in whole
+  tiles of up to 8 rows with no bound on the rows, and the models' graphs
+  build masks of exactly the chunk's rows, as llama.cpp's own graph does
+  (`llama-graph.cpp`, at the pin and at master `8019dc563`, b11254).
+  llama.cpp escapes it only because its default micro-batch of 512 rows
+  stays under the threshold, and a larger one over-reads into its compute
+  buffer unnoticed; upstream CUDA still has the over-read (Metal fixed the
+  same bug in llama.cpp PR 29220, merged 2026-09-21, a precedent for a
+  CUDA fix). jitLLM's launcher check refuses rather than read past the
+  mask, and in the runtime a refused chunk is a node failure.
+- **Worked around:** the runtime's prefill (`runtime/prefill.h`) runs a
+  chunk of 1,024 rows or more in whole 8-row tiles and its remainder as a
+  chunk of its own, and its chunk sizes are multiples of 8. The harnesses'
+  `--max-rows` runs are not covered: a chunk of 1,024+ rows not a multiple
+  of 8 still fails there.
+- **Impact:** anything that drives GGML attention with 1,024+ query rows
+  must keep them a multiple of 8, or pad the mask's rows (in the models'
+  chunk inputs and graphs), or bound the pre-pass's row reads (the
+  upstream fix, as Metal's).
+
 ## RE-035: NVCC contracts `a*b + c*d` and `a*b - c*d` into different FMAs, so one expression copied into another kernel need not give its bits  (2026-09-28, status: worked-around)
 
 - **Environment:** `spark-b`, the SDK's CUDA 13.4 NVCC, sm_121a, default
@@ -119,7 +150,7 @@ their outputs (the others are the same bit for bit); the fused test builds
 its unfused reference the same way, with no slack. Fix upstream: bound the
 load by the window's columns.
 
-## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells  (2026-09-28, status: worked-around in the fast graph; open for the reference and unfused graphs)
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in Qwen3.8's fast graph; open for its reference and unfused graphs and for DeepSeek V4)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
 `top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
@@ -141,7 +172,8 @@ first 8 chunks (n_kv ≤ 4,096) matched in a repeat, and short prompts
 repeats were identical. Mia's vLLM is not repeatable by default either,
 and its deterministic mode, the oracle's, sets `VLLM_QSA_DET_TOPK=1`
 (baselines.md). DeepSeek V4's top-k
-(the lightning indexer's) has shown no such difference in any run.
+(the lightning indexer's) showed no such difference until the
+prefill-chunk slice (below).
 Impact: jitLLM's Qwen3.8 is not repeatable past 2,051 cells; any
 bit-identity check there must compare against the same state, not a rerun
 (the swap runner snapshots the state and runs the unswapped continuation
@@ -154,6 +186,24 @@ repeated exactly three times
 ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass));
 the reference (`--exact`) and unfused graphs keep GGML's top-k, and so
 does the fast graph past 32,768 cells (the kernel's shared memory).
+
+**DeepSeek V4 too** (`spark`, 2026-09-29, the `spark-native` build of
+the prefill-chunk slice): its lightning indexer keeps the top 512 of its
+compressed cells with GGML's top-k, the radix path once there are more
+than 1,024 of them (past 4,096 positions). `jitllm-runtime chat` prefilling
+the same 8,088-token prompt from a cleared state in 4,096-row chunks gave
+one of two last rows (top logit 22.639 or 22.914) across 7 runs; with the
+radix gather replaced by an index-ordered one (an experiment on the
+prepared source, not kept) 6 of 6 runs repeated exactly, so the ties are
+the whole cause, not the chunking. 512-row chunks also gave two outcomes
+(22.389 three times, 22.579 once) and 2,048-row chunks repeated 7 of 7,
+but ties depend on the data, so no chunk size is immune. With the
+index-ordered gather the prompt's result was also the same whether it
+ran first or after another turn (512 and 4,096 rows), so no earlier
+turn's state leaks into a cleared one.
+Impact and fix as above: DeepSeek's prefill past 4,096 positions is not
+repeatable either; a top-k that breaks ties by index would fix both
+models.
 
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 

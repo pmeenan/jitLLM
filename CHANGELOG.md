@@ -47,8 +47,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 - The configuration names the models a node serves, `[models.<name>]`
   (still `schema_version = 2`: the keys are new): an installed artifact or
   composition by ID, a speculative drafter, whether to speculate, the
-  conversation's context, and a tokenizer and chat template where the
-  artifact keeps none (D-096).
+  conversation's context, its prefill chunk, and a tokenizer and chat
+  template where the artifact keeps none (D-096).
 - `jitllm-runtime` serves models by hand, in its own process (D-096):
   `jitllm-runtime chat --turn MODEL TEXT...` sends each turn to its model,
   swapping models as needed, and `jitllm-runtime swap-table` measures M3's
@@ -106,6 +106,19 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   before the request was cancelled; a client that closes
   its connection still cancels. A connection kept alive between requests
   no longer keeps its last request's body or response allocated.
+- The runtime prefills in wider chunks by default, chosen per model
+  (DeepSeek V4 2,048 rows, Qwen3.8 4,096): an 8K-token prompt prefills
+  1.48× (DeepSeek) and 1.78× (Qwen3.8) as fast as in the 512-row chunks
+  before, for about 1.4 GiB more workspace. `[models.<name>]
+  prefill_chunk` sets a model's chunk; it is capped at what the model
+  allows at its context, so every context the configuration accepts
+  starts (at 512, DeepSeek was refused and Qwen3.8 with its MTP drafter
+  failed at startup).
+- The chat route now ends a request whose client left, whose deadline
+  passed or whose runtime is stopping between prefill chunks (and after a
+  swap), not only once generation starts; the service keeps serving, and
+  the conversation keeps the chunks that ran, so a retried request
+  continues from them.
 - Qwen3.8 Flash Next's plain decode is 5–8% faster (its recurrent state
   updated in place, and fused and clustered one-row kernels); its greedy
   tokens may differ from the previous build's at near-ties.

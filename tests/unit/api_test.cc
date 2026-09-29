@@ -1508,6 +1508,22 @@ TEST_F(ServerTest, QueuedRequestsTellAHalfCloseFromALeave) {
   }
 }
 
+// The deadline ends a running request at the backend's next check (the
+// runtime's backend checks between prefill chunks and decode steps) with a
+// 504, and the server goes on serving.
+TEST_F(ServerTest, TheDeadlineEndsARunningRequest) {
+  Stop();
+  backend_.release.store(false);
+  api::ServerOptions options;
+  options.deadline = std::chrono::milliseconds(300);
+  Start(options);
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_THAT(Exchange(Post(Chat("block"))), StartsWith("HTTP/1.1 504 "));
+  EXPECT_TRUE(backend_.cancelled.load());
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(10));
+  EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
+}
+
 TEST_F(ServerTest, StoppingEndsARunningRequest) {
   backend_.release.store(false);
   const int fd = Connect(Post(Chat("block")));

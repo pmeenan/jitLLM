@@ -64,6 +64,29 @@ std::string Tokens(std::span<const std::int32_t> tokens) {
   return out;
 }
 
+// A row's highest logits, highest first, as JSON pairs [token, logit]: the
+// report's view of a prefill's last row, to compare prefills (chunk sizes).
+std::string TopLogits(std::span<const float> row) {
+  constexpr std::size_t kTop = 8;
+  std::vector<std::int32_t> ids(row.size());
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    ids[i] = static_cast<std::int32_t>(i);
+  }
+  const std::size_t n = std::min(kTop, ids.size());
+  std::partial_sort(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(n), ids.end(),
+                    [&](std::int32_t a, std::int32_t b) {
+                      const float x = row[static_cast<std::size_t>(a)];
+                      const float y = row[static_cast<std::size_t>(b)];
+                      return x > y || (x == y && a < b);
+                    });
+  std::string out;
+  for (std::size_t i = 0; i < n; ++i) {
+    out += std::format("{}[{},{:.6g}]", i == 0 ? "" : ",", ids[i],
+                       row[static_cast<std::size_t>(ids[i])]);
+  }
+  return out;
+}
+
 std::string PartsJson(const SwapParts& p) {
   return std::format(
       R"({{"from":{},"to":{},"with_state":{},"evict":{:.6f},"restore":{:.6f},"page_in":{:.6f},)"
@@ -145,6 +168,8 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
       Generation generation;
       std::size_t reused = 0;
       double prefill = 0;
+      PrefillRun chunks;
+      std::string top;  // the prefill's last row: its highest logits
       Clock::time_point first;
       auto ran = server.InRequest(*m, [&]() -> Status {
         const std::vector<std::int32_t>& history = l.history();
@@ -160,11 +185,12 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
         }
         std::vector<float> last;
         const auto start = Clock::now();
-        if (auto r = l.Prefill(std::span(*tokens).subspan(reused), last); !r) {
+        if (auto r = l.Prefill(std::span(*tokens).subspan(reused), last, {}, &chunks); !r) {
           return r;
         }
         first = Clock::now();
         prefill = Seconds(first - start);
+        top = TopLogits(last);
         return l.Generate(last,
                           {.max_tokens = o.max_tokens,
                            .stop = !o.ignore_stop,
@@ -206,27 +232,32 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
       const double acceptance = generation.drafted > 0 ? static_cast<double>(generation.accepted) /
                                                              static_cast<double>(generation.drafted)
                                                        : 0.0;
-      Print(out, std::format(
-                     "[{}] {} prompt tokens ({} reused), prefill {:.3f} s ({:.1f} tok/s); first "
-                     "token {:.3f} s after the request; {} tokens{} in {:.3f} s after it ({:.2f} "
-                     "tok/s{}); peak {:.1f} GiB",
-                     m->name(), tokens->size(), reused, prefill,
-                     prefill > 0 ? static_cast<double>(prefilled) / prefill : 0.0,
-                     Seconds(first - requested), generation.tokens.size(),
-                     generation.stopped ? " (stopped)" : "", generation.decode_seconds, rate,
-                     l.speculative() ? std::format(", acceptance {:.3f}", acceptance) : "",
-                     GiB(server.memory().peak())));
+      Print(
+          out,
+          std::format(
+              "[{}] {} prompt tokens ({} reused), prefill {:.3f} s ({:.1f} tok/s; {} chunks of {} "
+              "rows, the longest {:.3f} s); first "
+              "token {:.3f} s after the request; {} tokens{} in {:.3f} s after it ({:.2f} "
+              "tok/s{}); peak {:.1f} GiB",
+              m->name(), tokens->size(), reused, prefill,
+              prefill > 0 ? static_cast<double>(prefilled) / prefill : 0.0, chunks.chunks,
+              l.max_rows(), chunks.longest, Seconds(first - requested), generation.tokens.size(),
+              generation.stopped ? " (stopped)" : "", generation.decode_seconds, rate,
+              l.speculative() ? std::format(", acceptance {:.3f}", acceptance) : "",
+              GiB(server.memory().peak())));
       Print(out, text);
       json = std::format(
           R"({{"model":{},"kind":"llm","prompt_tokens":{},"reused":{},"prefill_seconds":{:.6f},)"
+          R"("prefill_chunk":{},"prefill_chunks":{},"longest_chunk_seconds":{:.6f},)"
           R"("first_token_seconds":{:.6f},"generated":{},"stopped":{},"decode_seconds":{:.6f},)"
           R"("tokens_per_second":{:.3f},"speculative":{},"drafted":{},"accepted":{},"steps":{},)"
-          R"("peak_bytes":{},"prompt_ids":[{}],"tokens":[{}],"text":{})",
-          Quoted(m->name()), tokens->size(), reused, prefill, Seconds(first - requested),
-          generation.tokens.size(), generation.stopped ? "true" : "false",
-          generation.decode_seconds, rate, l.speculative() ? "true" : "false", generation.drafted,
-          generation.accepted, generation.steps, server.memory().peak(), Tokens(*tokens),
-          Tokens(generation.tokens), Quoted(text));
+          R"("peak_bytes":{},"prefill_top":[{}],"prompt_ids":[{}],"tokens":[{}],"text":{})",
+          Quoted(m->name()), tokens->size(), reused, prefill, l.max_rows(), chunks.chunks,
+          chunks.longest, Seconds(first - requested), generation.tokens.size(),
+          generation.stopped ? "true" : "false", generation.decode_seconds, rate,
+          l.speculative() ? "true" : "false", generation.drafted, generation.accepted,
+          generation.steps, server.memory().peak(), top, Tokens(*tokens), Tokens(generation.tokens),
+          Quoted(text));
     } else {
       auto& image = static_cast<Image&>(*m);
       std::string step;
@@ -270,10 +301,11 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
   for (const auto& m : server.models()) {
     models += std::format("{}{}:{}", models.empty() ? "" : ",\n  ", Quoted(m->name()), m->extra());
   }
-  return WriteReport(serving.report,
-                     std::format("{{\"command\":\"chat\",\"budget\":{},\"fixed\":{},\n"
-                                 " \"models\":{{\n  {}}},\n \"turns\":[\n  {}]}}\n",
-                                 server.budget(), server.fixed_bytes(), models, turns));
+  return WriteReport(
+      serving.report,
+      std::format("{{\"command\":\"chat\",\"budget\":{},\"fixed\":{},\"workspace\":{},\n"
+                  " \"models\":{{\n  {}}},\n \"turns\":[\n  {}]}}\n",
+                  server.budget(), server.fixed_bytes(), server.workspace_bytes(), models, turns));
 }
 
 // ---------------------------------------------------------------- swap-table

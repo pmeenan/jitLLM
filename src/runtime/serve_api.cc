@@ -155,6 +155,12 @@ class NodeBackend final : public api::Backend {
       swapped_ = false;
       return std::unexpected(Failure(503, "the model could not be made resident"));
     }
+    // A swap is one program (at most ~10 s); whatever ended the request
+    // meanwhile (the client gone, the deadline, the runtime stopping) ends
+    // it here, before any of its model work. The exchange answers for it.
+    if (!exchange.Continue()) {
+      return api::Completion{};
+    }
 
     GenerateOptions options{.max_tokens = max_tokens,
                             .stop = true,
@@ -208,6 +214,8 @@ class NodeBackend final : public api::Backend {
 
     Generation generation;
     std::uint32_t reused = 0;
+    PrefillRun prefill;
+    const std::function<bool()> go_on = [&exchange] { return exchange.Continue(); };
     auto ran = server_.InRequest(*m, [&]() -> Status {
       const std::vector<std::int32_t>& history = l.history();
       // The state holds a prefix of this request's tokens: only the rest
@@ -220,15 +228,28 @@ class NodeBackend final : public api::Backend {
       } else {
         reused = static_cast<std::uint32_t>(history.size());
       }
+      // Between chunks, whatever ends the request (the client gone, the
+      // deadline, the runtime stopping) stops the prefill: an ordinary end,
+      // the state holding the chunks that ran (serving.h Llm::Prefill).
       std::vector<float> last;
-      if (auto r = l.Prefill(std::span(tokens).subspan(reused), last); !r) {
+      if (auto r = l.Prefill(std::span(tokens).subspan(reused), last, go_on, &prefill); !r) {
         return r;
+      }
+      if (prefill.stopped) {
+        return {};
       }
       return l.Generate(last, options, generation);
     });
     if (!ran) {
       Fail(std::format("{}'s request: {}", m->name(), ran.error()));
       return std::unexpected(Failure(500, "the generation failed; the runtime is stopping"));
+    }
+    if (prefill.stopped) {
+      // Token counts and times only (D-014); the exchange answers for why.
+      Say(log_, std::format("{}'s prefill stopped after {} chunks: the state holds {} of the "
+                            "prompt's {} tokens",
+                            m->name(), prefill.chunks, l.history().size(), tokens.size()));
+      return api::Completion{.completion_tokens = 0, .cached_tokens = reused, .stopped = false};
     }
     std::string rest;
     decoder.Finish(rest);

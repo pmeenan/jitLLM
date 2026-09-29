@@ -93,7 +93,11 @@ not used. The options each renderer supports and refuses are in
 
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
   runtime's default (8,192 tokens of conversation in the swap table). The
-  configuration accepts 512 to 262,144; above 8,704 is not verified.
+  configuration accepts 512 to 262,144; above 8,704 is not verified. The
+  minimum, 512, starts and serves (checked on `spark`, speculative), its
+  prefill chunk capped at 384 rows by the 128-position window; the
+  default chunk is 2,048 rows
+  ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).
 - **Verified** (on `spark-b`):
   - Exact mode, resident: bit-identical to llama.cpp `b29c606e` unfused
     on the same GGUF, logits and perplexity
@@ -176,7 +180,11 @@ not used. The options each renderer supports and refuses are in
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
-  table's 8K conversation). Above 8,704 is not verified.
+  table's 8K conversation). The configuration accepts 512 to 262,144;
+  above 8,704 is not verified. The minimum, 512, starts and serves
+  (checked on `spark`, with MTP: 510 tokens usable), its prefill chunk
+  504 rows; the default chunk is 4,096 rows
+  ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).
 - **Verified:**
   - Against Mia's vLLM (the same checkpoint, deterministic mode, MTP
     off): greedy equal except near-ties on 191 of 192 steps, perplexity

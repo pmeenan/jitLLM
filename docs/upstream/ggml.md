@@ -27,8 +27,10 @@ sinks bound (RE-030).
 ## Flash attention's mask pre-pass reads past the mask's last row (RE-036)
 
 - **Status:** open.
-- **Found:** M3, pin `b29c606e2`, `spark-b` (GB10); the RE entry has the
-  date and the observation.
+- **Found:** 2026-09-29, pin `b29c606e2`, `spark` (GB10):
+  `jitllm-runtime chat` with 4,096-row prefill chunks on 2,164- and
+  2,362-token prompts (one chunk of that many rows each); the RE entry has
+  the observation.
 - **Problem:** from 1,024 query rows, `launch_fattn` runs
   `flash_attn_mask_to_KV_max<ncols1>` (`ggml/src/ggml-cuda/fattn-common.cuh`,
   about lines 666–706 at the pin). Each block reads whole tiles of `ncols1`
@@ -41,8 +43,13 @@ sinks bound (RE-030).
   1,025 rows, run under `compute-sanitizer --tool memcheck`, or with the mask
   ending at an unmapped page.
 - **jitLLM's workaround:** the kernel checks refuse such shapes
-  (`src/kernels/ggml/validate.cc`, "the mask row the pre-pass reads"), and the
-  runtime splits a prompt's leftover rows into their own chunk. Cost: small.
+  (`src/kernels/ggml/fattn_mma.cu`, "the mask pre-pass reads whole column
+  tiles past the mask's rows"; `src/kernels/ggml/validate.cc`, "the mask row
+  the pre-pass reads"), and the runtime (`src/runtime/prefill.h`) runs a
+  chunk of 1,024 rows or more in whole 8-row tiles and its few leftover rows
+  as a chunk of their own. The harnesses' `--max-rows` runs are not split
+  and are refused instead. Cost: at most one extra chunk of under 8 rows
+  per prompt.
 - **Upstream master:** unchanged on CUDA at `8019dc563` (2026-09-29).
 - **Upstream refs:** Metal fixed the same bug in
   [#29220](https://github.com/ggml-org/llama.cpp/pull/29220) (merged
@@ -123,8 +130,10 @@ sinks bound (RE-030).
 
 ## Radix top-k breaks ties nondeterministically (RE-031)
 
-- **Status:** carry (jitLLM uses its own selection).
-- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`.
+- **Status:** carry for Qwen3.8 (jitLLM uses its own selection); open for
+  DeepSeek V4, whose indexer still uses GGML's top-k.
+- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`; DeepSeek V4 on
+  2026-09-29, `spark`.
 - **Problem:** for rows over 1,024 columns, the radix select in
   `ggml/src/ggml-cuda/top-k.cu` (lines 170–173 at the pin; jitLLM builds it
   without CUB, as HIP does) compacts elements equal to the threshold with
@@ -133,7 +142,15 @@ sinks bound (RE-030).
   appears four times, and many are zero after ReLU. The selection, and so
   the attention, changes run to run past 2,051 cells: in 7 of 12 reruns of
   one 8,192-token prefill, logits differed from position 5,120 on.
-- **jitLLM's workaround:** the default fast graph selects with jitLLM's
+  DeepSeek V4's lightning indexer (`ggml_top_k` of 512 over its compressed
+  cells, the radix path past 1,024 of them, so past 4,096 positions) hits
+  it too: one 8,088-token prefill gave one of two last rows (top logit
+  22.639 or 22.914) across 7 runs, and with the radix gather replaced by an
+  index-ordered one (one thread a row, scanning the columns in order) 6 of
+  6 runs repeated exactly.
+- **jitLLM's workaround:** none for DeepSeek V4: its prefill and decode past
+  4,096 positions are not repeatable. For Qwen3.8, the default fast graph
+  selects with jitLLM's
   `jitllm.qsa.select` (`src/kernels/ggml/jitllm_ops.h`), which keeps the lower
   cell among equals. It holds the block scores in 32 KiB of shared memory,
   so past `kQsaSelectMaxBlocks` = 8,192 blocks (32,768 cells) the graph
@@ -153,7 +170,9 @@ sinks bound (RE-030).
   selection past 32K cells, selecting over the block scores with ties
   broken by index. TensorFold's tiled select is a model
   ([tensorfold.md](tensorfold.md#upstream-techniques-to-adopt), PR #93).
-  Upstream, optionally a short comment on #28497 by the owner.
+  DeepSeek V4's indexer needs the same: a top-k that breaks ties by index
+  (a jitLLM selection, or a patched radix gather). Upstream, optionally a
+  short comment on #28497 by the owner.
 - **Links:** RE-031 in [rough-edges.md](../rough-edges.md);
   [qwen38-native](../experiments/qwen38-native/README.md#results-second-pass).
 

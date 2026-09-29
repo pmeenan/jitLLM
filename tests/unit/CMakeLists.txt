@@ -35,7 +35,8 @@ target_link_libraries(config_test PRIVATE jitllm_config jitllm_platform)
 jitllm_gtest(config_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The runtime's startup steps and the process services it relies on.
+# The runtime's startup steps and the process services it relies on, and a
+# prefill's chunks.
 add_executable(runtime_test runtime_test.cc)
 target_link_libraries(runtime_test PRIVATE jitllm_runtime jitllm_platform)
 jitllm_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit

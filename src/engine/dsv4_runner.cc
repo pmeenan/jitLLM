@@ -228,6 +228,13 @@ Status Dsv4Runner::Setup() {
     return std::unexpected(layout.error());
   }
   layout_ = std::move(*layout);
+  // The largest shapes are planned at the context's end and a decode step
+  // after a whole chunk (below): checked here, so those positions cannot
+  // wrap.
+  if (o_.max_rows >= o_.context || (!o_.drafter.empty() && o_.max_verify > o_.context)) {
+    return Error(std::format("a context of {} leaves no room for chunks of {} rows", o_.context,
+                             o_.max_rows));
+  }
   if (!o_.drafter.empty()) {
     if (o_.draft_rows == 0 || o_.draft_rows > dprofile_.block_size || o_.max_verify == 0 ||
         o_.max_verify > o_.draft_rows + 1 || std::cmp_greater(o_.max_verify, kg::kRowsMaxColumns)) {

@@ -90,6 +90,8 @@ inline constexpr std::size_t kMaxModelName = 64;
 inline constexpr std::uint32_t kDefaultContext = 8704;
 inline constexpr std::uint32_t kMinContext = 512;
 inline constexpr std::uint32_t kMaxContext = 262144;
+// A prefill chunk's rows, when a model's are configured.
+inline constexpr std::uint32_t kMaxPrefillChunk = kMaxContext;
 
 // One model: the name the CLI (and later the API) asks for, and what the
 // installed store holds for it. Nothing here has touched the store.
@@ -107,6 +109,10 @@ struct ModelEntry {
   bool speculation = true;
   // With an artifact: the tokens of conversation state its runner holds.
   std::uint32_t context = kDefaultContext;
+  // With an artifact: the rows of a prefill chunk (1 to kMaxPrefillChunk);
+  // absent, the runtime's default for the model. Either way at most what
+  // the model allows at its context (docs/runtime-serving.md#prefill-chunks).
+  std::optional<std::uint32_t> prefill_chunk;
   // With an artifact whose kept metadata has no tokenizer or chat template
   // (M3's Qwen3.8 import kept config.json only): the checkpoint's
   // tokenizer.json and chat template, absolute paths the runtime reads

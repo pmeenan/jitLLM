@@ -148,6 +148,16 @@ Status Qwen38Runner::Setup() {
     return std::unexpected(layout.error());
   }
   layout_ = std::move(*layout);
+  // The largest shapes are planned at the context's end (below): a whole
+  // chunk after at least one position (a drafter's prefill pass starts a
+  // row before its chunk), and beside a drafter a verify after its drafts.
+  // Checked here, so those positions cannot wrap.
+  if (o_.max_rows >= o_.context ||
+      (!o_.drafter.empty() && std::uint64_t{o_.draft_rows} * 2 + 1 > o_.context)) {
+    return Error(std::format(
+        "a context of {} leaves no room for chunks of {} rows{}", o_.context, o_.max_rows,
+        o_.drafter.empty() ? std::string() : std::format(" and drafts of {}", o_.draft_rows)));
+  }
   for (std::uint32_t s = 0; s < artifact_->shards().size(); ++s) {
     auto fd = artifact_->OpenShardForDirectRead(s);
     if (!fd) {

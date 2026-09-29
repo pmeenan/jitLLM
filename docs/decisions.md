@@ -187,6 +187,15 @@ curl.
 for loopback origins, tools, reasoning controls, Responses and Messages),
 or a real client needs a known field refused here.
 
+**Amended 2026-09-29** (fixes to an outside review of M3). A client that
+leaves, the deadline and the runtime stopping end a request before each
+prefill chunk as well as each generation step, and after the swap that
+made its model resident, not only once generation starts: an ordinary
+end (499 logged, 504, 503), never the node-failure path, the service
+serving on. The conversation's state then holds exactly the chunks that
+ran, so a retry continues from them
+([runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation)).
+
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057)
 
 **Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
@@ -261,6 +270,18 @@ changes are owed the workstation's package check (`check:full`).
 **Reopen if.** The runtime gains its endpoint (the commands may then become
 management API clients), models need several resident at once (M5, M6),
 or the engine's CUDA use moves behind a provider interface.
+
+**Amended 2026-09-29** (fixes to an outside review of M3; a new key,
+compatible, so `schema_version` stays 2). `[models.<name>]
+prefill_chunk` (1 to 262,144 rows) sets a model's prefill chunk; without
+it the runtime's default for the model applies (DeepSeek V4 2,048,
+Qwen3.8 4,096, measured through the runtime), and either is capped at
+what the model admits at its context (DeepSeek's window, Qwen3.8's
+8,192 rows and mask bound), below the context and in whole 8-row tiles,
+so every context from the minimum, 512, starts (before, the fixed
+512-row chunk refused DeepSeek at 512 and wrapped Qwen3.8's MTP planning
+position). The policy and its measurements are in
+[runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation).
 
 ## D-095: No CPU latency hold: a PM QoS request cut the wake's round trip but not decode's time, so the runtime does not keep one  (2026-09-28, status: not adopted, by the owner, 2026-09-28; D-094's wake and its margins stay as they are)
 

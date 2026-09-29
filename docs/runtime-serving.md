@@ -49,6 +49,7 @@ artifact = "8a355bfb…"   # an installed artifact's ID, under storage.installed
 drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
 # context = 8704         # tokens of conversation state, 512 to 262,144
+# prefill_chunk = 2048   # rows of a prefill chunk; default by model (below)
 
 [models."qwen3.8"]
 artifact = "c4fb47a9…"
@@ -61,10 +62,11 @@ composition = "eca21baa…"  # a pipeline (D-089)
 ```
 
 A model names exactly one artifact or composition; the artifact-only keys
-(drafter, speculation, context, tokenizer, chat template) are refused on a
-composition, an artifact serves one model, and a node names at most 16. The
-runner follows the artifact's architecture (`deepseek4`, `qwen4exp`) or the
-composition's (Qwen-Image); another is refused at registration. Every
+(drafter, speculation, context, prefill chunk, tokenizer, chat template)
+are refused on a composition, an artifact serves one model, and a node
+names at most 16. The runner follows the artifact's architecture
+(`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
+refused at registration. Every
 artifact is opened under the store's trust rules (only root and the
 runtime's user may change it), and the tokenizer and template files the
 configuration names are read under the configuration's (D-073). A chat
@@ -100,27 +102,133 @@ An LLM holds one conversation: the tokens its state has seen. A turn's
 tokens (the conversation rendered by the model's chat template) extend it
 when they start with it, and only the rest is prefilled; otherwise the
 state is cleared first. A turn is one request (D-093): the model's closure
-leased once, the prefill chunks (512 rows) and every decode step jobs under
-it. Decoding is greedy and, where the model has a drafter, speculative by
-default (D-092's batched verify: DeepSeek's DSpark draft and verify as one
-job, Qwen3.8's MTP draft then verify), each step accepting the drafts the
-target agrees with; `--plain` decodes one token a step. The chat route may
+leased once, the prefill chunks ([below](#prefill-chunks-and-cancellation))
+and every decode step jobs under it. Decoding is greedy and, where the
+model has a drafter, speculative by default (D-092's batched verify:
+DeepSeek's DSpark draft and verify as one job, Qwen3.8's MTP draft then
+verify), each step accepting the drafts the target agrees with; `--plain` decodes one token a step. The chat route may
 sample instead (a `temperature` above 0): seeded, each token drawn at its
 position in the conversation (execution/sampling.h), and when speculating
 each draft accepted by speculative sampling (`VerifyDraft`), so the
 tokens are distributed as plain sampling's; a seed repeats a reply.
 Generation stops at the template's end-of-turn tokens, the token limit, or
 when the route ends it (a stop string, the client gone, the deadline, the
-runtime stopping), always between steps. A model whose chat template has
-no renderer is refused at registration, naming its hash. A job that failed
-after it may have run leaves the conversation unknown, so the next turn
-clears the state first.
+runtime stopping), always between steps; the same ends a prefill between
+its chunks (below). A model whose chat template has no renderer is
+refused at registration, naming its hash. A job that failed after it may
+have run leaves the conversation unknown, so the next turn clears the
+state first.
 
 The image pipeline generates the prompt and initial latents it registered
 with: this slice's image runner (being reworked by the image-speed slice)
 takes them at setup, so a process serves one image prompt, and the latents
 come from a file (the reference's for its seed; a native seeded generator
 is still to come).
+
+## Prefill chunks and cancellation
+
+A turn's prefill runs in chunks (`runtime/prefill.h`). The chunk is the
+model's `prefill_chunk` if configured (1 to 262,144 rows), else the
+runtime's default for the model, and in either case at most what the
+model's state layout admits at its context (DeepSeek: the window cache's
+cells less its 128-position window; Qwen3.8: 8,192 rows, and its masks'
+32-bit bound) and below the context, in whole 8-row tiles. So every
+context the configuration accepts has a chunk: at the minimum, 512,
+DeepSeek's chunk is 384 rows and Qwen3.8's 504. A chunk of 1,024 rows or
+more runs in whole tiles and its few remaining rows as a chunk of their
+own, since GGML's attention reads the mask in whole 8-row tiles from
+1,024 rows on (RE-036). Registration logs each model's chunk.
+
+**The defaults** come from the runtime's own prefill (`jitllm-runtime
+chat`, speculative, so each chunk also feeds the drafter; one model
+configured, context 8,704; `spark`, GB10, 2026-09-29; the best of two
+turns each, from a cleared state):
+
+| Model, chunk rows | 8K-token prompt | ~2K-token prompt | Longest chunk (8K) | Fixed memory (workspace) | Peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DeepSeek, 256 | 220 tok/s | 224 | 1.29 s | 0.76 GiB (0.24) | 105.6 GiB |
+| DeepSeek, 512 | 312 | 318 | 1.77 s | 1.01 (0.47) | 105.4 |
+| DeepSeek, 1,024 | 391 | 392 | 2.78 s | 1.52 (0.94) | 106.2 |
+| **DeepSeek, 2,048** | **463** | **458** | **4.66 s** | **2.54 (1.87)** | **107.3** |
+| DeepSeek, 4,096 | 459–481 | 505 | 8.98 s | 4.58 (3.74) | 109.2 |
+| DeepSeek, 8,192 | 461 | 503 | 17.5 s | 8.65 (7.47) | 113.6 |
+| Qwen3.8, 512 | 1,301 | 1,285 | 0.41 s | 0.72 (0.18) | 75.6 |
+| Qwen3.8, 1,024 | 1,711 | 1,635 | 0.61 s | 0.98 (0.35) | 75.9 |
+| Qwen3.8, 2,048 | 2,065 | 1,923 | 0.99 s | 1.50 (0.70) | 76.3 |
+| **Qwen3.8, 4,096** | **2,320** | **2,199** | **1.72 s** | **2.56 (1.39)** | **77.5** |
+| Qwen3.8, 8,192 | 2,426 | 2,214 | 3.18 s | 4.68 (2.77) | 79.7 |
+
+(8,088 and 2,164 prompt tokens for DeepSeek, 8,553 and 2,362 for
+Qwen3.8; peak is the host's `MemAvailable` drop with the weights
+resident.) The policy: from 512 rows, double the chunk while that gains
+10% or more at 8K tokens and its longest chunk stays within 5 s, since a
+chunk is how soon a prefill notices a cancellation. That gives DeepSeek
+2,048 rows (4,096 gains 0–4% for twice the wait and memory) and Qwen3.8
+4,096 (8,192 gains 5%). Against the fixed 512 rows before, an 8K-token
+prompt prefills 1.48× faster on DeepSeek and 1.78× on Qwen3.8, for
+1.4 GiB more shared workspace (sized for the larger model's need,
+DeepSeek's). Per-chunk time grows with the position, so at contexts past
+8,704 (not verified) a chunk takes longer; `prefill_chunk` sets another.
+
+The prefill's result depends a little on the chunk (the fast plans are
+not bit-exact across chunk shapes: DeepSeek's top logit after the 8K
+prompt was 21.5–22.9 across the sizes). Its top token agreed in every
+run, and greedy tokens agreed except at near-ties. The one seen early,
+DeepSeek's third token after the 8K prompt, is a near-tie at every size
+and in the oracle: llama.cpp (the pinned image, fusion off, 512-row
+micro-batches) prefers token 3287 to 304 by 0.31; jitLLM's margins run
+from 3287 by 0.38 to 304 by 1.16 across 512, 2,048 and 4,096 rows,
+speculative or plain. The largest move from the oracle's margin is 1.47,
+inside the fast plan's near-tie bound of about 2.5
+([dsv4-decode](experiments/dsv4-decode/README.md#the-bound-going-forward)).
+DeepSeek's prefill past 4,096 positions also does not repeat bit for bit
+from run to run at some chunk sizes (on this prompt, 4,096 and 512 rows,
+not 2,048 in 7 runs). The cause is RE-031's tie-breaking in GGML's top-k,
+which its indexer uses, not the chunking.
+
+**Cancellation.** Whatever ends a chat request (the client gone, its
+600 s deadline, the runtime stopping on SIGTERM or SIGINT) is noticed
+before each prefill chunk and each generation step, and after the swap
+that made its model resident (a swap is one program, at most about 10 s,
+and is not interrupted). A stopped prefill is an ordinary end, not a
+node failure, and the service goes on serving: the conversation's state
+holds exactly the chunks that ran, a prefix of the turn's tokens, so a
+retry of the request continues from it (its chunks at the same places an
+uninterrupted prefill's would be) and any other request clears it as
+usual; a swap spills and restores it like any conversation. The log says
+how many of the prompt's tokens the state holds (counts only, D-014). A
+cancellation waits at most for the chunk under way.
+
+**Measured** (`spark`, driver
+580.178.04, the service with both models on loopback at their default
+chunks and context, greedy streamed requests of an ~8K-token prompt; two
+runs, the same to 0.03 s, and a review's third of the disconnects):
+
+| Case | Stopped after | From the event to the prefill's stop | Then |
+| --- | --- | ---: | --- |
+| DeepSeek, the client closes 3.0 s into the prefill | 1 chunk (2,048 of 8,107 tokens) | 1.04–1.57 s | 499 logged; the service serves on |
+| Qwen3.8, the client closes 1.0 s in | 1 chunk (4,096 of 8,574) | 0.66 s | likewise |
+| Qwen3.8, SIGTERM 1.0 s in | 1 chunk (4,096 of 8,370) | 0.65 s | in-stream 503 at 0.65 s; exit 0 after 3.7 s |
+| DeepSeek, SIGTERM 3.0 s in | 1 chunk (2,048 of 7,991) | 1.07–1.08 s | in-stream 503 at 1.08 s; exit 0 after 5.0 s |
+| Qwen3.8, SIGTERM during its swap in (first run) | before any chunk | — | the swap ran out: 503 after 6.7 s, exit 0 after 10.2 s |
+
+Each disconnected request, sent again, continued from the state's
+chunks (2,048 and 4,096 tokens cached; DeepSeek's partial state spilled
+by a swap to Qwen3.8 and restored by the swap back), and its greedy reply
+equalled the same request's from an empty state. In the review's run both
+partial states went through swaps (each spilled by the swap to the other
+model and restored by the swap back) and were continued by a different
+request that shares their prefix (the prompt with a question after it):
+its reply equalled that request's from an empty state for both models.
+Shutdown, teardown
+included, stays far inside `jitllm.service`'s 90 s stop allowance (the
+longest chunk, 4.7 s, plus a swap of about 10 s and the teardown). With
+these chunks, the swap table's DeepSeek ↔ Qwen3.8 pair (`swap-table
+--pairs deepseek:qwen3.8`, both models configured: 4.23 GiB fixed, the
+workspace 1.87) was exact in all six swaps, every one under ~10 s (7.87–8.92
+s; peak 109.3 GiB, against 108.0–108.4 with 512-row chunks in
+[swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096), on
+`spark-b`).
 
 ## The commands
 
@@ -290,9 +398,11 @@ are not accepted). An `Origin` must name the same, on a listening port,
 and a cross-site or same-site `Sec-Fetch-Site` is refused (403): D-064's
 browser guards, without M5's CORS. A JSON route needs `Content-Type: application/json`
 (415). Errors are OpenAI's `{"error": {message, type, param, code}}`. A
-client that disconnects, or the runtime stopping (SIGTERM or SIGINT, 503),
-ends the generation after its current step; the state keeps what it
-accepted. A client that shuts only its sending side after a whole
+client that disconnects, the deadline (504) or the runtime stopping
+(SIGTERM or SIGINT, 503) ends the request at its next prefill chunk or
+generation step, and after a swap before any model work; the state keeps
+what it processed ([cancellation](#prefill-chunks-and-cancellation)), and
+the service goes on. A client that shuts only its sending side after a whole
 request (a half-close) has not disconnected: its response is finished and
 the connection then closes. The two look alike until something is sent,
 which a closed socket answers with a reset, ending the generation as a

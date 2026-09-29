@@ -402,6 +402,25 @@ TEST(Qwen38Test, TheStateIsBoundedAndSized) {
           .has_value());
 }
 
+// The widest chunk the state admits, which the runtime's prefill chunk
+// stays within (and below the context: the runtime's chunk at the minimum
+// context of 512 is 504 rows, which leaves the drafter's prefill pass its
+// row before the chunk). Each is the edge: one more row is refused.
+TEST(Qwen38Test, TheWidestChunkIsBounded) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  for (const auto& [context, most] :
+       {std::pair{512U, 512U}, std::pair{511U, 511U}, std::pair{8704U, md::kQwen38MaxRows},
+        std::pair{262144U, 8191U}, std::pair{262400U, 8184U}}) {
+    SCOPED_TRACE(context);
+    EXPECT_EQ(md::Qwen38MostRows(context), most);
+    EXPECT_TRUE(md::Qwen38State(p, context, most).has_value());
+    EXPECT_FALSE(md::Qwen38State(p, context, most + 1).has_value());
+    EXPECT_TRUE(md::Qwen38State(p, context, most - 1).has_value());
+  }
+  EXPECT_EQ(md::Qwen38MostRows(0), 0U);
+  EXPECT_EQ(md::Qwen38MostRows(0x7FFFFF01U), 0U);
+}
+
 TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   auto s = md::Qwen38State(p, 4096, 512);
