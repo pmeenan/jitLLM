@@ -61,6 +61,7 @@ if(JITLLM_CUDA)
                                          fattn.cu ops_ext.cu mul_mat_q.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
+                                         qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
@@ -139,7 +140,7 @@ if(JITLLM_CUDA)
                    jitllm_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
-                   mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu
+                   mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)

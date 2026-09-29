@@ -436,8 +436,14 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kQsaGateQuantize:
             add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaSelect:
-            add(Operation::kTopK, kQsaSelectName, i, {node}, 1);
+          case JitllmOp::kQsaPool:
+            add(Operation::kRope, kQsaPoolName, i, {node}, 1);
+            break;
+          case JitllmOp::kQsaTopK:
+            add(Operation::kTopK, kQsaTopKName, i, {node}, 1);
+            break;
+          case JitllmOp::kQsaAttn:
+            add(Operation::kFlashAttn, kQsaAttnName, i, {node}, 1);
             break;
           case JitllmOp::kQuantizeQ8:
             add(Operation::kQuantize, kQuantizeQ8Name, i, {node}, 1);

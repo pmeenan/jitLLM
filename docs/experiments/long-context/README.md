@@ -14,6 +14,12 @@ fixed gap 1. Coarse by design (D-085): one run per depth. Every number here is
 marked **computed**. jitLLM was measured at `6c182c3` plus this change's
 working tree (the fixes below).
 
+**Phase 2's Qwen3.8 slice** ([Qwen3.8 Flash Next flat with
+depth](#phase-2-qwen38-flash-next-flat-with-depth)) fixed gap 2 and
+supersedes the Qwen3.8 rows below: its per-token cost is now flat to
+within the indexer, at least Mia's vLLM's speed plain at every depth,
+repeatable, and speculative to 262,144.
+
 ## Phase 2: DeepSeek flat with depth (2026-09-29)
 
 Phase 2's first slice fixes gap 1 (below) on DeepSeek V4 Flash's default
@@ -267,6 +273,8 @@ margin, `kUncountedMargin`; one model registered):
 - [Fixed to measure](#fixed-to-measure): the blockers this phase fixed.
 - [Gap list for phase 2](#gap-list-for-phase-2), ranked, with levers and
   effort.
+- [Phase 2: Qwen3.8 Flash Next flat with
+  depth](#phase-2-qwen38-flash-next-flat-with-depth) (gap 2 done).
 - [Not run, and why](#not-run-and-why); [Reproduce](#reproduce).
 
 ## The maximum contexts
@@ -764,7 +772,8 @@ a rough estimate of agent days, including tests.
       at 1M, computed above).
 2. **Qwen3.8's per-token cost grows with the whole context, and MTP stops
    at 32K** (prefill 2,053 → 487 tok/s and decode 21.8 → 6.8 from 32K to
-   256K, against Mia's 1,729–1,947 and 23.6–24.6). Fix plan:
+   256K, against Mia's 1,729–1,947 and 23.6–24.6). **Done in phase 2**
+   ([below](#phase-2-qwen38-flash-next-flat-with-depth)). Fix plan:
    1. *Selection on the device at any depth:* a tiled, deterministic
       select over blocks past 8,192 (TensorFold #93's technique, ties by
       index) that emits the selected cells: removes the GGML fallback
@@ -815,12 +824,12 @@ a rough estimate of agent days, including tests.
    rendered user message (before the assistant's reasoning). **2–3 days.**
 7. **The guard's margin** (*done in phase 2*): 6 GiB and the host-side inputs counted
    ([above](#memory-and-the-guards-margin)). **Hours.**
-8. **Repeatability (RE-031):** DeepSeek at 32K (*closed in phase 2*) and
-   Qwen3.8 past 32K (2.1).
+8. **Repeatability (RE-031):** DeepSeek at 32K and Qwen3.8 past 32K
+   (both *closed in phase 2*).
 9. **The prefill chunk at depth:** [n_kv, rows] tensors force narrower
    chunks at depth (Qwen3.8 2,040 rows at 262,144, RE-037); with
    gathered attention and device selection they go away and the chunk can
-   stay wide.
+   stay wide (Qwen3.8's is 4,096 rows at every context since phase 2).
 
 **Future quality and performance modes** (never the default; each off,
 behind a per-alias flag, and each needing a quality check against the
@@ -829,6 +838,198 @@ exact top-k within the chosen ones); reusing a step's selection for the
 next few decode steps with a periodic full rescoring; approximate
 nearest-neighbour search over the index keys; and, for dense-attention
 models, KV compression.
+
+## Phase 2: Qwen3.8 Flash Next flat with depth
+
+Gap 2's fix plan, on the default (fast) graph, 2026-09-29, `spark-b`
+(GB10, driver 580.178.04), the phase-2 working tree on `09f9015`. The
+reference (`--exact`) and unfused graphs are unchanged.
+
+### What changed
+
+- **Block keys cached** (`jitllm.qsa.pool`): when a chunk completes a
+  block of 4 cells, its raw indexer keys are pooled, normalized, rotated
+  (the reference form's arithmetic) and kept in the state as BF16, 256
+  bytes a block (`Qwen38StateTensor::kIndexerBlocks`, +768 B a token over
+  12 layers; the drafter's likewise). Nothing re-pools every block each
+  step, and no host table names the blocks. A verify saves the block keys
+  it completes with its cells, so a rejected row's are restored.
+- **Selection on the device at any depth** (`jitllm.qsa.topk`,
+  TensorFold #93's technique): each complete block's score is its four
+  heads' relu scores (the query rounded to BF16 times the block key, F32
+  sums; BF16 tensor-core products past 16 rows) plus build_qsa_top_k's
+  rule (the token's own incomplete block always kept, later cells never
+  visible); then per token a byte-wise radix select for the 2,051st
+  cell's order-preserving key in tiles of 8,192 blocks, ties to the lower
+  cell, and once more over the tiles' candidates. Out: each token's kept
+  cells, ascending. It replaces the GGML top-k fallback past 8,192 blocks
+  and its host masks, closes RE-031 for this graph, and lets the MTP
+  drafter select at any depth.
+- **Attention over the kept cells alone** (`jitllm.qsa.attn`, #28770's
+  gather): a warp a token's KV head, its 12 query heads one m16n8k16 tile,
+  16 cells gathered at a time (K and V double-buffered), online softmax;
+  decode and verify rows split their cells into shares combined in order.
+  F16 products, F32 sums, the query scaled before rounding, as GGML's MMA
+  kernel.
+- **The MTP drafter** runs the same builder, so its QSA layer gets all
+  three; it is no longer refused past 32,768.
+- **No tensor of every cell by every row** in the fast graph, so RE-037's
+  chunk bound applies only to the reference and unfused graphs (the graph
+  builder refuses theirs past it): the runtime's chunk is 4,096 rows at
+  every context. The fast graph's largest host input is now the causal
+  mask of the widest chunk that does not select ([2,048 cells, rows]),
+  which the runner's staging is sized for (the deep speculation check
+  found it missing: a chunk ending at 2,048 cells was refused).
+
+### Through the runtime, before and after
+
+The chat route, as phase 1 ran it (`longctx.py`, 512 greedy tokens, the
+same prompts), `context = 262144`, plain and with MTP depth 2, one run a
+depth, the final build (13:12–13:25). 256K ran once, on an intermediate
+build whose selection was slower (the same bits; of its 2,404 ms prefill
+chunk at 256K the selection took 710 ms, where the final build's takes 53
+ms at 64K and 78 ms at 128K); the owner asked to wrap up before a rerun,
+so 256K's prefill is understated. Mia's numbers are phase 1's (8K: the M3
+baselines').
+
+| Depth | Prefill tok/s, before → after (× Mia) | Plain decode tok/s, before → after (× Mia) | MTP decode tok/s, before → after (× Mia's MTP 3) |
+| --- | --- | --- | --- |
+| 8K (7,586 tokens) | 2,320 → 2,314 (1.10×) | 27.4 → 26.8 (1.07×) | 40.1–42.5 → 42.3 (1.12×) |
+| 32K | 2,053 → 2,375 (1.37×) | 21.8 → 26.5 (1.08×) | 35.4 → 39.7 (1.07×) |
+| 64K | 1,367 → 2,359 (1.21×) | 17.1 → 26.0 (1.08×) | refused → 42.6 (1.05×) |
+| 128K | 859 → 2,306 (1.21×) | 11.9 → 25.5 (1.07×) | refused → 44.4 (0.91×) |
+| 256K (258,702 tokens; an intermediate build, below) | 487 → 2,178 (1.23×) | 6.8 → 24.4 (1.03×) | refused → 36.3 (0.96×) |
+
+**The slope** (computed from these rates): before, a plain decode step
+cost 0.39 ms more per 1K tokens of context (36.5 ms at 8K, 58.5 ms at
+64K); after, 0.021 ms from 8K to 64K (37.3 → 38.5 ms) and 0.016 ms to 128K
+(39.3 ms), about 1/20 as much, and 0.014 ms to 256K. The prompt's mean
+cost per token rose 70% from 8K to 64K before; after it is −2% at 64K,
++0.4% at 128K and +6% at 256K. Every plain rate is at least Mia's at the
+same depth. MTP's rate follows its acceptance, which the route does not
+report: it is below Mia's MTP 3 at 128K (0.91×) and 256K (0.96×).
+
+**MTP at depth, diagnosed** (the review, `spark-b`, the final build,
+`jitllm_qwen38_spec --check greedy` on the 8K and 128K chat prompts; each
+answer's first 32 tokens, so acceptance is coarse): a speculative step
+costs the same at depth. At MTP depth 2 a step is 60.4 ms at 8K and 60.7
+ms at 128K (the drafter's passes 7.8 → 8.3 ms, the verify 52.0 → 51.8
+ms); acceptance 0.55 at 8K and 0.69 at 128K (by position 0.77 / 0.62),
+2.07 and 2.38 tokens a step. So the 128K gap is the depth, not a cost
+that grows with the context: that answer accepts well (Mia's MTP 3
+accepted 0.69 of its drafts, 3.07 tokens a step at about 63 ms, from its
+phase 1 rate), and depth 2 takes at most 3 tokens a step. MTP depth 3
+at 128K: 3.10 tokens a step, 72.1 ms (drafter 11.8, verify 59.7), 43.0
+tok/s against depth 2's 39.3 (+9%) through the harness. What is left is
+the verify's cost per row (about 6 ms a row at 3 rows, 8 ms for the
+fourth, the routed experts each row adds; Mia's MTP 3 step costs about
+1.5× its plain step, jitLLM's depth-3 step 1.8×). At 256K Mia accepted
+only 0.44, so there the gap is not acceptance: 256K ran on the
+intermediate build, whose plain step was 5% slower (44.7 against 42.6
+ms), and was not re-run. Levers: the draft depth chosen by acceptance
+(depth 3 when it runs high), and a cheaper verify row.
+
+### Where the time goes now
+
+`nsys` over the resident harness (the runtime's kernels, launch by
+launch), the prompt's last 4,096-row chunk and the last decode step, the
+final build; before: phase 1's table (the 64K chunk's rows were at 57,344
+tokens, as here).
+
+| ms | Prefill chunk 8K | 64K | 128K | Decode step 8K | 64K | 128K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Attention over the kept cells (`QsaAttnKernel`, combine) | 172.4 | 176.4 | 202.4 | 0.35 | 0.39 | 0.49 |
+| Indexer scoring (queries to BF16, block scores) | 2.8 | 22.8 | 46.5 | 0.15 | 0.39 | 0.95 |
+| Selection (tile radix select, merge) | 12.1 | 53.1 | 77.7 | 0.32 | 0.60 | 0.68 |
+| Block keys (`QsaPoolKernel`) | 0.1 | 0.1 | 0.1 | 0.02 | 0.02 | 0.02 |
+| QSA query and key prep | 11.7 | 11.5 | 11.6 | 0.10 | 0.10 | 0.12 |
+| Gated DeltaNet | 166.5 | 167.1 | 167.6 | 1.26 | 1.28 | 1.35 |
+| Everything else (weights, MoE, hyper-connections) | 1,170.8 | 1,188.7 | 1,185.8 | 38.12 | 38.06 | 39.03 |
+| **Total** | **1,536** | **1,620** | **1,692** | **40.3** | **40.8** | **42.6** |
+| *Phase 1's total* | *1,540* | *3,820* | — | *41.1* | *57.6* | — |
+
+From 8K to 128K a decode step grows 2.3 ms, of which the QSA work is 1.3
+(the indexer's scoring 0.8, the selection 0.36, attention 0.14) and the
+rest run-to-run spread in the weights' products (38.1 at 64K); a prefill chunk
+grows 156 ms (+10%): selection 66, scoring 44, attention 30. The
+scoring's growth is what the architecture requires (every block, every
+row); in prefill it is not yet at its floor (the keys, 4 bytes a block a
+row, are written and read back through memory: 1 GB a layer at 256K), the
+selection's is its constant, and attention's is the gathered rows falling
+out of L2 as the cache outgrows it. An intermediate build with a slower
+selection measured the same shape at 256K: prefill chunk 2,404 ms, of
+which the scoring 95 and attention 225; decode 44.7 ms.
+
+Levers, not taken here (the owner asked to wrap up): scoring fused with a
+streaming first-tile select so the keys never leave the chip; the tile
+select at 16-bit keys with an exact re-check; attention over the union of
+a few neighbouring rows' cells (their selections overlap), which would
+cut its gathers and its 8K cost too.
+
+### Correctness
+
+The resident harness (`jitllm_qwen38_exec`, the runtime's kernels) on
+`spark-b`, [judge.py](judge.py), the phase-1 corpus and Mia's recorded
+deterministic outputs. The final build's logits equal the first measured
+build's bit for bit (32K forced run), so these hold for it.
+
+| Check | Result |
+| --- | --- |
+| Near-tie bound, recorded first (p99 of the top-two margin's move, fast vs `--exact`, 512 forced steps at 32K) | **1.765** (p50 0.21, max 6.06; 494/512 argmax equal); phase 1: 1.47 |
+| Greedy vs Mia's vLLM at 32K | 477/512 equal, 35 near-ties (oracle margin ≤ 1.125), 0 outside: **pass** (phase 1: 474 + 38) |
+| Greedy vs Mia's vLLM at 128K | 486/512 equal, 26 near-ties (≤ 1.00), 0 outside: **pass** (phase 1: 482 + 30) |
+| Perplexity at 32K (16,383 scored) | 1.4473 against 1.4656 (−1.2%): **pass** (phase 1: −2.1%) |
+| Perplexity at 128K (65,535 scored) | 3.9476 against 4.0042 (−1.4%): **pass** (phase 1: −1.4%) |
+| Retrieval through the runtime (`-r` prompts) | all three codenames at 32K, 64K, 128K and 256K (258,633 tokens): **pass** |
+| The same run twice, bit for bit | **yes** at 64K and 128K (512 steps each, max difference 0): RE-031 closed for this graph |
+| MTP: forced rejections against a control (`jitllm_qwen38_spec --check forced`, `capital`, 160 tokens, context 8,704) | 85 steps, 57 with rejected rows: **0 states differ** from the control; 1 near-tie, 0 violations |
+| MTP: rollback across a swap (`--check swap`, the same, the FP16 fixture as B) | 97 steps compared, **0 states and 0 of 160 tokens' logits differ**; B's logits `bb8ae5e7…` as recorded; graphs captured before the swap replayed after it |
+| The same two checks past 32K (the 64K coding prompt, 64,110 tokens, context 65,536) | forced: 78 steps, 47 with rejected rows, **0 states differ** (the block keys included), 2 near-ties, 0 violations; swap: 93 steps, **0 states and 0 logits differ**, graphs replayed across the swap |
+| Swap with 61,440 tokens saved (`jitllm-runtime swap-table`, both LLMs at 65,536, plain, first use) | Qwen3.8 as A: A→B 9.06 s, B→A 7.52 s (restore 0.18 s), **exact**; DeepSeek as A: 8.04 s / 8.85 s, **exact** (phase 1: 8.68 / 7.54 and 8.16 / 8.57) |
+
+The bound's p99 is above phase 1's (1.47): the BF16 scores move near-tied
+blocks in and out of the selection, which moves some steps' margins
+further. Every oracle margin at a divergence stays within phase 1's bound
+too (1.125 at most).
+
+### Memory and the maxima
+
+At `context = 262144`, plain, one model: the runtime reserves 11.09 GiB
+(its workspace 2.73) where phase 1 reserved 24.74 (9.84) at 2,040-row
+chunks, and the run's peak is 84.7 GiB (phase 1: 101.2). With MTP: 11.90
+GiB, peak 87.2. **The MTP maximum is the target's configured 262,144**
+(registered, and run with the 128K and 256K prompts); it was 32,768.
+
+### Reproduce
+
+On `spark-b`, beside phase 1's setup (`W` its directory; `W2` this
+phase's, with `harness.sh` and `judge.sh` pointed at this tree's build):
+
+```sh
+# Correctness: forced runs (fast; --exact for the bound), the judge.
+harness.sh qwen $W2/raw/hq-32k-fast 33280 4096 --prompts q32k.prompt.tsv --force q32k.force.tsv --generate 512
+harness.sh qwen $W2/raw/hq-32k-exact 33280 4096 --exact --prompts ... --force ... --generate 512
+harness.sh qwen $W2/raw/hq-128k-fast 131072 4096 --prompts q128k.prompt.tsv --force q128k.force.tsv --generate 512
+judge.sh noise $W2/raw/hq-32k-fast $W2/raw/hq-32k-exact q32k --vocab 248320
+judge.sh greedy $W/raw/qw-mia-det/qwen3.8-32k.json $W2/raw/hq-32k-fast q32k --vocab 248320 --bound 1.765
+judge.sh repeat $W2/raw/hq-128k-fast $W2/raw/hq-128k-fast2 q128k --vocab 248320
+harness.sh qwen $W2/raw/hq-ppl-128k 131072 4096 --ppl ppl-131072.ids
+judge.sh ppl $W/raw/qw-mia-det/ppl-131072.nll.json $W2/raw/hq-ppl-128k/ppl.nll.f64 --ctx 131072
+# Speed: the runtime at context 262144, plain and with MTP.
+python3 longctx.py jitllm $W2/raw/final-plain 8k.json 32k.json 64k.json 128k.json --port 18140 \
+  --runtime build/spark-native/src/runtime/jitllm-runtime --config qw-262144-off.toml --model qwen3.8 --retries 3
+# The profile: whole 4,096-row chunks, then the split.
+nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite -o qw3-64k \
+  jitllm_qwen38_exec --artifact ... --context 65536 --max-rows 4096 --prompts p64k.tsv --generate 3
+python3 profile.py qw3-64k.sqlite 248320
+# Speculation at depth: a prompts file whose one chat prompt is 64k.json's messages.
+jitllm_qwen38_spec ... --prompts deep.json --only deep64k --context 65536 --tokens 160 --check forced
+# MTP at depth: acceptance and a step's parts (the same file shape, 128k.json's messages).
+jitllm_qwen38_spec ... --prompts rv-128k.json --only deep128k --context 131072 --check greedy [--draft 3]
+```
+
+Raw outputs, logs and traces stay on `spark-b` under
+`~/.local/share/jitllm/m3lc2/`.
 
 ## Not run, and why
 

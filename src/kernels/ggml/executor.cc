@@ -85,6 +85,10 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanMoeGemm(launch, step.nodes.front());
     } else if (step.implementation == kMxfp8GemmName) {
       planned = PlanMxfp8Gemm(launch, step.nodes.front());
+    } else if (step.implementation == kQsaTopKName) {
+      planned = PlanQsaTopK(step.nodes.front());
+    } else if (step.implementation == kQsaAttnName) {
+      planned = PlanQsaAttn(step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaName) {
       auto attention = PlanFlashAttnMma(launch, step.nodes.front());
       if (!attention) {

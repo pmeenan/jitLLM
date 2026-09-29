@@ -120,7 +120,9 @@ enum class JitllmOp : std::uint8_t {
   kGdnHistory,
   kQsaPrep,
   kQsaGateQuantize,
-  kQsaSelect,
+  kQsaPool,
+  kQsaTopK,
+  kQsaAttn,
   kQuantizeQ8,
   kVecQ,
   kDsv4Route,
@@ -586,25 +588,126 @@ std::expected<void, KernelFailure> CheckQsaGateQuantize(const ggml_tensor* node)
 std::expected<void, KernelFailure> RunQsaPrep(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunQsaGateQuantize(LaunchContext& launch, ggml_tensor* node);
 
-//   jitllm.qsa.select   a token a block: build_qsa_top_k's selection and
-//                       build_attn_qsa's mask in one pass. Each cell's
-//                       score is its block's (the heads' relu scores
-//                       summed, plus the block's bias), -inf past the
-//                       token's position; the `width` best cells are kept
-//                       (by a radix select over the scores, the lower cell
-//                       first among equals, where GGML's top_k picks any),
-//                       and the mask is 0 at a kept cell at or before the
-//                       position, -inf elsewhere.
-// `score` F32 [blocks, heads, t], `bias` F32 [blocks, t], `cell_block` I32
-// [n_kv], `positions` I32 [4 · t] (the first t read): F16 [n_kv, t, 1, 1].
-// At most kQsaSelectMaxBlocks blocks (their scores fill 32 KiB of shared
-// memory: 32,768 cells at Qwen3.8's ratio of 4); past it the graph keeps
-// GGML's top-k.
-inline constexpr std::int64_t kQsaSelectMaxBlocks = 8192;
-ggml_tensor* QsaSelect(ggml_context* context, ggml_tensor* score, ggml_tensor* bias,
-                       ggml_tensor* cell_block, ggml_tensor* positions, std::int64_t width);
-std::expected<void, KernelFailure> CheckQsaSelect(const ggml_tensor* node);
-std::expected<void, KernelFailure> RunQsaSelect(LaunchContext& launch, ggml_tensor* node);
+// And QSA at any depth (qsa_sparse.cu; the fast graph's, qwen38_graph.h),
+// which never builds a tensor of every cell by every row:
+//
+//   jitllm.qsa.pool   the indexer's block keys, cached: for each block of
+//                     `ratio` cells that the chunk completes (all of its
+//                     cells at or before the chunk's last position, not
+//                     before its first), its raw keys summed in order and
+//                     scaled by 1 / ratio, then jitllm.qsa.prep's norm and
+//                     rotation at the block's first position, rounded to
+//                     BF16 and written in place into the state's block keys
+//                     (a warp a block). Its output is a marker the
+//                     selection reads, so it runs first.
+//   jitllm.qsa.topk   build_qsa_top_k's selection as a list of cells: each
+//                     complete block's score is its heads' relu scores
+//                     (the query rounded to BF16 times the block key, F32
+//                     sums; a tensor-core product past kQsaTopKVecRows
+//                     rows) summed in head order; the token's own
+//                     incomplete block is always kept (build_qsa_top_k's
+//                     1e9 bias) and later cells are never visible. The
+//                     `width` best visible cells are kept, the lower cell
+//                     first among equals (where GGML's top_k keeps any, RE-031),
+//                     deterministically at any depth: a byte-wise radix
+//                     select for the width-th largest order-preserving key
+//                     within tiles of kQsaTopKTile blocks, the tiles'
+//                     candidates then selected again (TensorFold #93's
+//                     technique). Out: each token's kept cells in
+//                     ascending order, then -1 to the row's end.
+//   jitllm.qsa.attn   attention over those cells alone: a warp a token's
+//                     KV head (its query heads as one tensor-core tile) and
+//                     a share of its cells, which it gathers 16 at a time
+//                     (K and V double-buffered), with the online softmax;
+//                     shares of one token combined in order. F16 products
+//                     with F32 sums and softmax, the query scaled before it
+//                     is rounded, as GGML's MMA flash attention computes.
+//
+// `raw` F32 [d, cells] (the raw key cache, as its set_rows node),
+// `blocks` BF16 [d, cells / ratio] (the block keys, written in place),
+// `weight` F32 [d], `positions` I32 [4 · t] (the first t read): I32 [1]. d
+// a multiple of 32, at most 512, 64 rotated dimensions.
+ggml_tensor* QsaPool(ggml_context* context, ggml_tensor* raw, ggml_tensor* blocks,
+                     ggml_tensor* weight, ggml_tensor* positions, std::int64_t ratio, float eps,
+                     float theta_scale);
+// `q` F32 [128, 4, t] (jitllm.qsa.prep's indexer queries), `blocks` BF16
+// [128, at least n_blocks] (the block keys), `positions` as the pool's,
+// `pool` its jitllm.qsa.pool node: I32 [QsaTopKRow(width), t]. Draws scratch
+// (PlanQsaTopK). At most kQsaTopKMaxTiles tiles.
+inline constexpr std::int64_t kQsaTopKVecRows = 16;
+inline constexpr std::int64_t kQsaTopKTile = 8192;
+// (Tiles to 262,144 cells at a ratio of 4, Qwen3.8's configured maximum.)
+inline constexpr std::int64_t kQsaTopKMaxTiles = 8;
+// The candidates the second selection holds: 256 threads, 32 each.
+inline constexpr std::int64_t kQsaTopKCandidates = 8192;
+inline constexpr std::int64_t kQsaIndexDim = 128;
+inline constexpr std::int64_t kQsaIndexHeads = 4;
+inline constexpr std::int64_t kQsaAttnHead = 256;
+// A token's row of kept cells: the width rounded up to whole 16-cell
+// gathers.
+constexpr std::int64_t QsaTopKRow(std::int64_t width) { return (width + 15) / 16 * 16; }
+// The selection's scratch: each token's block keys (U32 [n_blocks, t]), the
+// queries in BF16 ([128, 4, t]), and past one tile each tile's candidates
+// (U32 key and block pairs, `candidates` a tile) and their counts.
+struct QsaTopKLayout {
+  std::int64_t t = 0;
+  std::int64_t n_blocks = 0;
+  std::int64_t width = 0;
+  std::int64_t ratio = 0;
+  static constexpr std::uint64_t Align(std::uint64_t b) { return (b + 255) / 256 * 256; }
+  std::int64_t tiles() const { return (n_blocks + kQsaTopKTile - 1) / kQsaTopKTile; }
+  // A tile keeps at most every block with a kept cell: whole blocks but the
+  // token's own and the last one kept in part.
+  std::int64_t candidates() const { return ((width + ratio - 1) / ratio) + 2; }
+  static constexpr std::uint64_t keys() { return 0; }
+  std::uint64_t query() const {
+    return Align(static_cast<std::uint64_t>(t) * static_cast<std::uint64_t>(n_blocks) * 4);
+  }
+  std::uint64_t pairs() const {
+    return query() + Align(static_cast<std::uint64_t>(t * kQsaIndexDim * kQsaIndexHeads) * 2);
+  }
+  std::uint64_t counts() const {
+    return pairs() +
+           Align(tiles() > 1 ? static_cast<std::uint64_t>(t * tiles() * candidates()) * 8 : 0);
+  }
+  std::uint64_t bytes() const {
+    return counts() + Align(tiles() > 1 ? static_cast<std::uint64_t>(t * tiles()) * 4 : 0);
+  }
+};
+// The attention's shares of a token's KV head: enough warps for a decode
+// step or a verify, each at least 4 gathers; one past about 96 tokens.
+constexpr std::int64_t QsaAttnShares(std::int64_t t, std::int64_t kv_heads, std::int64_t row) {
+  const std::int64_t gathers = row / 16;
+  const std::int64_t items = t * kv_heads;
+  const std::int64_t wanted = (192 + items - 1) / items;
+  const std::int64_t most = (gathers + 3) / 4;
+  const std::int64_t shares = wanted < most ? wanted : most;
+  return shares < 1 ? 1 : shares;
+}
+// A share's partial result: each query head's running max and sum, then its
+// unnormalized output (F32).
+constexpr std::uint64_t QsaAttnPartial(std::int64_t group) {
+  return static_cast<std::uint64_t>(group) * (2 + kQsaAttnHead) * 4;
+}
+ggml_tensor* QsaTopK(ggml_context* context, ggml_tensor* q, ggml_tensor* blocks,
+                     ggml_tensor* positions, ggml_tensor* pool, std::int64_t n_blocks,
+                     std::int64_t width, std::int64_t ratio);
+// `q` F32 [256, heads, t] (jitllm.qsa.prep's), `k` and `v` F16 [256 ·
+// kv_heads, cells] (the caches, as their set_rows nodes), `cells` a
+// jitllm.qsa.topk node: F32 [256 · heads, t]. At most 16 query heads per KV
+// head. Draws scratch past one share per token's head (PlanQsaAttn).
+ggml_tensor* QsaAttn(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,
+                     ggml_tensor* cells, float scale);
+std::expected<void, KernelFailure> CheckQsaPool(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckQsaTopK(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckQsaAttn(const ggml_tensor* node);
+// Scratch bytes: the keys of every token's blocks, and past one tile the
+// tiles' candidates; the attention's shares' partial results.
+std::uint64_t PlanQsaTopK(const ggml_tensor* node);
+std::uint64_t PlanQsaAttn(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaPool(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaTopK(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor* node);
 
 // Byte ranges copied device to device in one kernel, not a graph node: a
 // speculative verify's snapshot of the state rows it will write, and the

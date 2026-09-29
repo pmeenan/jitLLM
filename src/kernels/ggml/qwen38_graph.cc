@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -197,11 +198,24 @@ class Builder {
            p_.indexer_head_dim >= 64 && p_.indexer_head_dim <= 512 && p_.head_dim % 32 == 0 &&
            p_.head_dim >= 64 && p_.head_dim <= 512;
   }
-  // Whether this chunk's QSA selection runs on the device (jitllm.qsa.select,
-  // which makes the attention's mask): the fast graph's, within the kernel's
-  // blocks. Otherwise GGML's top-k selects over the host's masks.
+  // Whether the fast graph caches block keys, selects and attends sparsely
+  // (jitllm.qsa.pool, .topk and .attn): the profile's heads are the kernels'.
+  bool Sparse() const {
+    return FastSelect() && p_.head_dim == kQsaAttnHead && p_.indexer_head_dim == kQsaIndexDim &&
+           p_.indexer_heads == kQsaIndexHeads && p_.kv_heads > 0 && p_.heads % p_.kv_heads == 0 &&
+           p_.heads / p_.kv_heads <= 16 && p_.indexer_ratio > 0 && p_.indexer_ratio <= 32;
+  }
+  // Whether this chunk's QSA selection runs on the device (jitllm.qsa.topk,
+  // then jitllm.qsa.attn over the kept cells): the sparse graph's, within
+  // the selection's tiles. Otherwise GGML's top-k selects over the host's
+  // masks and attention reads every cell under them.
   bool DeviceSelect() const {
-    return s_.qsa_select && FastSelect() && s_.qsa_blocks <= kQsaSelectMaxBlocks;
+    const QsaTopKLayout layout{.t = s_.rows,
+                               .n_blocks = s_.qsa_blocks,
+                               .width = std::int64_t{p_.indexer_budget} + p_.indexer_ratio - 1,
+                               .ratio = p_.indexer_ratio};
+    return s_.qsa_select && Sparse() && layout.tiles() <= kQsaTopKMaxTiles &&
+           layout.tiles() * layout.candidates() <= kQsaTopKCandidates;
   }
   // build_lora_mm_id with a per-expert scale (llama-graph.cpp:1545-1581).
   ggml_tensor* MulMatId(ggml_tensor* w, ggml_tensor* x, ggml_tensor* ids, ggml_tensor* scale) {
@@ -405,6 +419,8 @@ std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwe
     l.cache_k = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
     l.cache_v = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
     l.cache_idx = ggml_new_tensor_2d(c, GGML_TYPE_F32, p.indexer_head_dim, cells);
+    l.cache_pool = ggml_new_tensor_2d(c, GGML_TYPE_BF16, p.indexer_head_dim,
+                                      (cells + p.indexer_ratio - 1) / p.indexer_ratio);
   }
   if (ple) {
     JITLLM_LEAF(l.ple_key, w.ple_key)
@@ -511,11 +527,9 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
   g_.state_row = ggml_new_tensor_1d(c_, GGML_TYPE_I64, 1);
   g_.row_zero = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 1);
   g_.out_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.outputs);
-  if (s_.qsa_select) {
+  if (s_.qsa_select && !fast_select) {
     const std::int64_t blocks = s_.qsa_blocks;
-    if (!fast_select) {
-      g_.mask_f32 = ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
-    }
+    g_.mask_f32 = ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
     g_.cell_block = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.n_kv);
     g_.block_cells = ggml_new_tensor_1d(c_, GGML_TYPE_I32, std::int64_t{p_.indexer_ratio} * blocks);
     g_.block_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * blocks);
@@ -967,9 +981,28 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
   ggml_tensor* k_raw =
       ggml_view_2d(c_, qk, idx_dim, nt, qk->nb[1], ggml_row_size(qk->type, n_idx_h * idx_dim));
   // The cached keys are raw: pooling precedes their norm and rotation.
-  Expand(ggml_set_rows(c_, l.cache_idx, Packed(k_raw), g_.cells));
+  ggml_tensor* raw = ggml_set_rows(c_, l.cache_idx, Packed(k_raw), g_.cells);
+  Expand(raw);
+  const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
+  ggml_tensor* pool = nullptr;
+  if (Sparse()) {
+    // The sparse graph keeps each block's key from the chunk that completes
+    // it, every chunk, whether it selects or not (a later one will).
+    pool = QsaPool(c_, raw, l.cache_pool, l.idx_k_norm, g_.positions, r, p_.rms_eps, theta_scale);
+    Expand(pool);
+  }
   if (!s_.qsa_select) {
     return nullptr;
+  }
+  if (DeviceSelect()) {
+    // The queries' norm and rotation by jitllm.qsa.prep, then the selection
+    // over the cached block keys (jitllm.qsa.topk, after the pool), whose
+    // kept cells Attention reads alone.
+    ggml_tensor* q = QsaPrep(c_, qk, l.idx_q_norm, g_.positions, idx_dim, n_idx_h, idx_dim,
+                             p_.rms_eps, theta_scale);
+    const std::int64_t width =
+        std::min<std::int64_t>(n_kv, std::int64_t{p_.indexer_budget} + r - 1);
+    return ggml::QsaTopK(c_, q, l.cache_pool, g_.positions, pool, n_blocks, width, r);
   }
   ggml_tensor* k_all = ggml_view_2d(c_, l.cache_idx, idx_dim, n_kv, l.cache_idx->nb[1], 0);
   ggml_tensor* members = ggml_get_rows(c_, k_all, g_.block_cells);
@@ -982,22 +1015,6 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
     pooled = pooled != nullptr ? ggml_add(c_, pooled, slice) : slice;
   }
   pooled = ggml_scale(c_, pooled, 1.0f / static_cast<float>(r));
-  if (DeviceSelect()) {
-    // The fast graph: the pooled keys' and the queries' norm and rotation
-    // by jitllm.qsa.prep, then the selection and the attention's mask in one
-    // pass (jitllm.qsa.select), which Attention takes as is.
-    const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
-    pooled = QsaPrep(c_, pooled, l.idx_k_norm, g_.block_pos, idx_dim, 1, idx_dim, p_.rms_eps,
-                     theta_scale);
-    ggml_tensor* q = QsaPrep(c_, qk, l.idx_q_norm, g_.positions, idx_dim, n_idx_h, idx_dim,
-                             p_.rms_eps, theta_scale);
-    ggml_tensor* score = ggml_mul_mat(c_, ggml_reshape_2d(c_, pooled, idx_dim, n_blocks),
-                                      ggml_reshape_2d(c_, q, idx_dim, n_idx_h * nt));
-    score = ggml_reshape_3d(c_, score, n_blocks, n_idx_h, nt);
-    const std::int64_t width =
-        std::min<std::int64_t>(n_kv, std::int64_t{p_.indexer_budget} + r - 1);
-    return QsaSelect(c_, score, g_.block_bias, g_.cell_block, g_.positions, width);
-  }
   pooled = ggml_reshape_3d(c_, pooled, idx_dim, n_blocks, 1);
   pooled = Norm(pooled, l.idx_k_norm);
   pooled = ggml_reshape_3d(c_, pooled, idx_dim, 1, n_blocks);
@@ -1063,12 +1080,19 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   Expand(v);
   Expand(k);
   // llama_kv_cache::cpy_k and cpy_v: merge the heads, store at the cells.
-  Expand(ggml_set_rows(c_, l.cache_k, ggml_reshape_2d(c_, k, d * kvh, nt), g_.cells));
-  Expand(ggml_set_rows(c_, l.cache_v, ggml_reshape_2d(c_, v, d * kvh, nt), g_.cells));
+  ggml_tensor* stored_k =
+      ggml_set_rows(c_, l.cache_k, ggml_reshape_2d(c_, k, d * kvh, nt), g_.cells);
+  ggml_tensor* stored_v =
+      ggml_set_rows(c_, l.cache_v, ggml_reshape_2d(c_, v, d * kvh, nt), g_.cells);
+  Expand(stored_k);
+  Expand(stored_v);
+  const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+  ggml_tensor* attn = nullptr;
   ggml_tensor* kq_mask = g_.mask;
-  if (top_k != nullptr && JitllmOpOf(top_k) == JitllmOp::kQsaSelect) {
-    // The fast graph's selection is the mask.
-    kq_mask = top_k;
+  if (top_k != nullptr && JitllmOpOf(top_k) == JitllmOp::kQsaTopK) {
+    // The sparse graph: attention over each row's kept cells alone, read
+    // from the caches after this chunk's cells are stored.
+    attn = QsaAttn(c_, q, stored_k, stored_v, top_k, scale);
   } else if (top_k != nullptr) {
     // build_attn_qsa's mask: -inf everywhere but the selected cells, plus
     // the causal mask.
@@ -1086,16 +1110,17 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
                           masked->nb[3], masked->nb[3], 0);
     kq_mask = ggml_add(c_, masked, kq_mask);
   }
-  // get_k / get_v over the first n_kv cells: [d, n_kv, kv heads].
-  const std::size_t hrow = ggml_row_size(l.cache_k->type, d);
-  const std::size_t crow = l.cache_k->nb[1];
-  ggml_tensor* kc = ggml_view_3d(c_, l.cache_k, d, n_kv, kvh, crow, hrow, 0);
-  ggml_tensor* vc = ggml_view_3d(c_, l.cache_v, d, n_kv, kvh, crow, hrow, 0);
-  ggml_tensor* qp = ggml_permute(c_, q, 0, 2, 1, 3);
-  const float scale = 1.0f / std::sqrt(static_cast<float>(d));
-  ggml_tensor* attn = ggml_flash_attn_ext(c_, qp, kc, vc, kq_mask, scale, 0.0f, 0.0f);
-  ggml_prec_set_acc(attn, GGML_PREC_F32);
-  attn = ggml_reshape_2d(c_, attn, attn->ne[0] * attn->ne[1], attn->ne[2] * attn->ne[3]);
+  if (attn == nullptr) {
+    // get_k / get_v over the first n_kv cells: [d, n_kv, kv heads].
+    const std::size_t hrow = ggml_row_size(l.cache_k->type, d);
+    const std::size_t crow = l.cache_k->nb[1];
+    ggml_tensor* kc = ggml_view_3d(c_, l.cache_k, d, n_kv, kvh, crow, hrow, 0);
+    ggml_tensor* vc = ggml_view_3d(c_, l.cache_v, d, n_kv, kvh, crow, hrow, 0);
+    ggml_tensor* qp = ggml_permute(c_, q, 0, 2, 1, 3);
+    attn = ggml_flash_attn_ext(c_, qp, kc, vc, kq_mask, scale, 0.0f, 0.0f);
+    ggml_prec_set_acc(attn, GGML_PREC_F32);
+    attn = ggml_reshape_2d(c_, attn, attn->ne[0] * attn->ne[1], attn->ne[2] * attn->ne[3]);
+  }
   Name(attn, "attn_pregate", il);
   ggml_tensor* out = nullptr;
   if (fast_ && nt > kMxfp8VecColumns && l.o.bf16 == nullptr) {
@@ -1342,8 +1367,7 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
 std::vector<ggml_tensor*> Qwen38MtpGraph::inputs() const {
   std::vector<ggml_tensor*> all = {state_row, row_zero};
   for (const Qwen38MtpPass& p : passes) {
-    for (ggml_tensor* t : {p.tokens, p.positions, p.cells, p.mask, p.cell_block, p.block_cells,
-                           p.block_pos, p.block_bias, p.out_ids}) {
+    for (ggml_tensor* t : {p.tokens, p.positions, p.cells, p.mask, p.out_ids}) {
       if (t != nullptr) {
         all.push_back(t);
       }
@@ -1434,14 +1458,10 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     if (!b.SelectsOnDevice()) {
       in.mask = pg.mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, s.n_kv, n, 1, 1);
     }
-    if (s.qsa_select) {
-      if (!b.SelectsOnDevice()) {
-        return Rejected("the drafter selects on the device only (its shapes' blocks)");
-      }
-      in.cell_block = pg.cell_block = ggml_new_tensor_1d(c, GGML_TYPE_I32, s.n_kv);
-      in.block_cells = pg.block_cells = ggml_new_tensor_1d(c, GGML_TYPE_I32, ratio * s.qsa_blocks);
-      in.block_pos = pg.block_pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4 * s.qsa_blocks);
-      in.block_bias = pg.block_bias = ggml_new_tensor_2d(c, GGML_TYPE_F32, s.qsa_blocks, n);
+    // The drafter selects on the device (from its cached block keys), at
+    // any depth its selection's tiles hold.
+    if (s.qsa_select && !b.SelectsOnDevice()) {
+      return Rejected("the drafter selects on the device only (its shapes' blocks)");
     }
     const Builder::MtpOut out = b.MtpPass(m, tokens, hidden, s.head, s.head_rows);
     expanded.insert(expanded.end(), b.expanded().begin(), b.expanded().end());
@@ -1537,6 +1557,13 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
   }
   Builder builder(arena.context(), profile, binding, shape, g, options.fused, options.exact,
                   cutlass, options.verify, options.export_streams);
+  // A selection over the host's masks builds F32 [n_kv, rows] tensors, whose
+  // plane GGML strides in 32 bits (RE-037; model/qwen38.h Qwen38State).
+  if (s.qsa_select && !builder.SelectsOnDevice() &&
+      s.n_kv * s.rows * 4 > std::int64_t{std::numeric_limits<std::int32_t>::max()}) {
+    return Rejected(
+        "a chunk whose masks of every cell by every row pass GGML's 32-bit strides (RE-037)");
+  }
   if (auto leaves = builder.Leaves(options); !leaves) {
     return std::unexpected(leaves.error());
   }

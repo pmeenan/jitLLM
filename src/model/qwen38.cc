@@ -514,7 +514,7 @@ std::vector<StateRepresentation> Qwen38StateLayout::Representations() const {
   for (const Qwen38StateTensor& t : tensors) {
     if (t.kind == K::kK || t.kind == K::kV) {
       kv += t.bytes;
-    } else if (t.kind == K::kIndexerK) {
+    } else if (t.kind == K::kIndexerK || t.kind == K::kIndexerBlocks) {
       indexer += t.bytes;
     } else {
       recurrent += t.bytes;
@@ -534,19 +534,19 @@ std::vector<StateRepresentation> Qwen38StateLayout::Representations() const {
 
 std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p,
                                                           std::uint32_t context,
-                                                          std::uint32_t max_rows) {
+                                                          std::uint32_t max_rows, bool host_masks) {
   if (!ProfileIsSane(p)) {
     return Refused("the profile is not a Qwen3.8 model's");
   }
-  // A chunk's [n_kv, rows] tensors (the host-built masks, F16 and F32, and
-  // past the fast selection the indexer's expanded F32 scores) have planes
+  // The reference and unfused graphs' [n_kv, rows] tensors (the host-built
+  // masks, F16 and F32, and the indexer's expanded F32 scores) have planes
   // of up to n_kv x rows x 4 bytes, a stride GGML's flash attention takes as
-  // a 32-bit int and ggml_permute truncates to one (RE-037): so the chunk
-  // bound and the padded context are bounded together by those bytes.
+  // a 32-bit int and ggml_permute truncates to one (RE-037): for them the
+  // chunk bound and the padded context are bounded together by those bytes.
   if (context == 0 || max_rows == 0 || max_rows > context || max_rows > kQwen38MaxRows ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255 ||
-      Pad(context, 256) * max_rows * kMaskBytes >
-          std::uint64_t{std::numeric_limits<std::int32_t>::max()}) {
+      (host_masks && Pad(context, 256) * max_rows * kMaskBytes >
+                         std::uint64_t{std::numeric_limits<std::int32_t>::max()})) {
     return Refused(std::format("no state for {} positions in chunks of {}", context, max_rows));
   }
   using K = Qwen38StateTensor::Kind;
@@ -578,18 +578,21 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
       add(K::kK, il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
       add(K::kV, il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
       add(K::kIndexerK, il, false, p.indexer_head_dim, s.cells);
+      add(K::kIndexerBlocks, il, true, p.indexer_head_dim,
+          (std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio);
     }
   }
   return s;
 }
 
-std::uint32_t Qwen38MostRows(std::uint32_t context) {
+std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks) {
   if (context == 0 ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
     return 0;
   }
-  const std::uint64_t masks =
-      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / (Pad(context, 256) * kMaskBytes);
+  const std::uint64_t masks = host_masks ? std::uint64_t{std::numeric_limits<std::int32_t>::max()} /
+                                               (Pad(context, 256) * kMaskBytes)
+                                         : std::uint64_t{kQwen38MaxRows};
   return static_cast<std::uint32_t>(std::min<std::uint64_t>({context, kQwen38MaxRows, masks}));
 }
 
@@ -722,8 +725,12 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
     }
   }
   if (in.qsa_select) {
+    in.qsa.blocks = static_cast<std::uint32_t>((n_kv + ratio - 1) / ratio);
+  }
+  // The fast graph selects from the cached block keys on the device: no
+  // block tables.
+  if (in.qsa_select && selection_masks) {
     Qwen38QsaInputs& q = in.qsa;
-    q.blocks = static_cast<std::uint32_t>((n_kv + ratio - 1) / ratio);
     // Cell j holds position j; the full blocks are those every one of whose
     // ratio positions is written.
     const auto full = static_cast<std::uint32_t>(end / ratio);
@@ -796,7 +803,11 @@ std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile&
   s.k = 0;
   s.v = Pad(kv, 256);
   s.indexer = s.v + Pad(kv, 256);
-  s.hidden = s.indexer + Pad(std::uint64_t{p.indexer_head_dim} * s.cells * 4, 256);
+  s.blocks = s.indexer + Pad(std::uint64_t{p.indexer_head_dim} * s.cells * 4, 256);
+  s.hidden =
+      s.blocks + Pad(std::uint64_t{p.indexer_head_dim} *
+                         ((std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio) * 2,
+                     256);
   s.bytes = s.hidden + Pad(std::uint64_t{p.hc_width()} * s.hidden_rows * 4, 256);
   return s;
 }

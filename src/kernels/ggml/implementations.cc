@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 90> kKernels = {{
+constexpr std::array<Kernel::Entry, 92> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -662,14 +662,34 @@ constexpr std::array<Kernel::Entry, 90> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaGateQuantize(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaGateQuantize(launch, n[0]); }},
-    {.name = "jitllm.qsa.select",
-     .operation = execution::Operation::kTopK,
-     .variant = "QsaSelectKernel: a token a 512-thread block; the blocks' summed relu scores, a "
-                "four-pass radix select of the width-th cell, the mask with ties to the lower "
-                "cell",
+    {.name = "jitllm.qsa.pool",
+     .operation = execution::Operation::kRope,
+     .variant = "QsaPoolKernel: a block the chunk completes a warp; its raw keys summed in cell "
+                "order over the ratio, then qsa.prep's norm and rotation at its first position, "
+                "BF16 into the block keys in place",
      .arity = 1,
-     .check = [](ConstNodes n) { return CheckQsaSelect(n[0]); },
-     .run = [](LaunchContext& launch, Nodes n) { return RunQsaSelect(launch, n[0]); }},
+     .check = [](ConstNodes n) { return CheckQsaPool(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaPool(launch, n[0]); }},
+    {.name = "jitllm.qsa.topk",
+     .operation = execution::Operation::kTopK,
+     .variant = "QsaQueryBf16Kernel, then QsaScoreVecKernel (a block a thread, up to 16 tokens) "
+                "or QsaScoreMmaKernel (BF16 m16n8k16, 128 block keys in registers, 16-token "
+                "tiles), keys in scratch; QsaSelectTileKernel (a token's 8,192-block tile a "
+                "256-thread block, four-pass radix select over per-warp histograms, ties "
+                "to the lower cell) and past "
+                "one tile QsaSelectMergeKernel over the tiles' candidates",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQsaTopK(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaTopK(launch, n[0]); }},
+    {.name = "jitllm.qsa.attn",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "QsaAttnKernel: a warp a token's KV head and share of its cells, 16-cell "
+                "cp.async gathers of K and V double-buffered, F16 m16n8k16 with F32 sums and "
+                "online softmax; QsaAttnCombineKernel (a query head a block) over the shares in "
+                "order",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQsaAttn(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQsaAttn(launch, n[0]); }},
     // DeepSeek V4's fast plan (jitllm_ops.h; dsv4_fast.cu).
     {.name = "jitllm.q8_1",
      .operation = execution::Operation::kQuantize,

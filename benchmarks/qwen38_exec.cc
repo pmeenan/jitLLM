@@ -1573,7 +1573,9 @@ Status Run(const Options& o) {
   if (o.convert_experts && o.unfused) {
     return Error("--unfused reads GGML's layout, which --convert-experts replaces");
   }
-  auto state = md::Qwen38State(profile, o.context, o.max_rows);
+  // (The fast graph builds no tensor of every cell by every row: RE-037's
+  // chunk bound is the reference and unfused forms'.)
+  auto state = md::Qwen38State(profile, o.context, o.max_rows, o.unfused || o.exact);
   if (!state) {
     return std::unexpected(state.error());
   }

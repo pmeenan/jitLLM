@@ -216,16 +216,21 @@ std::expected<Qwen38PleHash, std::string> CheckQwen38PleHash(
 // as llama.cpp's cleared state rows are.
 struct Qwen38StateTensor {
   enum class Kind : std::uint8_t {
-    kK,          // F16 [head_dim · kv_heads, cells]
-    kV,          // F16 [head_dim · kv_heads, cells]
-    kIndexerK,   // F32 [indexer_head_dim, cells]: the indexer's raw keys (pooled when read)
+    kK,         // F16 [head_dim · kv_heads, cells]
+    kV,         // F16 [head_dim · kv_heads, cells]
+    kIndexerK,  // F32 [indexer_head_dim, cells]: the indexer's raw keys
+    // BF16 [indexer_head_dim, cells / indexer_ratio]: each complete block's
+    // pooled key, normalized and rotated (the fast graph writes each once,
+    // when its block completes, and reads them; kernels/ggml/jitllm_ops.h
+    // jitllm.qsa.pool)
+    kIndexerBlocks,
     kConv,       // F32 [(conv - 1) · channels]: the last conv - 1 inputs, time fastest
     kRecurrent,  // F32 [head_dim · head_dim · v_heads]
     kPleConv,    // F32 [ple_history · hc_width]: the n-gram layer's
   };
   Kind kind = Kind::kK;
   std::uint32_t layer = 0;
-  bool f16 = false;
+  bool f16 = false;  // two-byte elements (F16, or kIndexerBlocks' BF16)
   std::uint64_t ne0 = 0;
   std::uint64_t ne1 = 0;
   std::uint64_t offset = 0;
@@ -252,17 +257,21 @@ inline constexpr std::uint32_t kQwen38MaxRows = 8192;
 
 // Refused if the context or chunk bound is zero, the context is past the
 // graph's I32 positions, a chunk is longer than the context or than
-// kQwen38MaxRows, a chunk's F32 [padded context, rows] tensors (x 4 bytes, a
-// 32-bit stride in GGML's flash attention and ggml_permute: RE-037) would
-// pass I32 bytes, or the profile is not Qwen3.8's.
+// kQwen38MaxRows, or the profile is not Qwen3.8's; and, with `host_masks`
+// (the graphs that select over masks of every cell by every row: the
+// reference and unfused forms, kernels/ggml/qwen38_graph.h), if a chunk's
+// F32 [padded context, rows] tensors (x 4 bytes, a 32-bit stride in GGML's
+// flash attention and ggml_permute: RE-037) would pass I32 bytes. The fast
+// graph builds no such tensor.
 std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& profile,
                                                           std::uint32_t context,
-                                                          std::uint32_t max_rows);
+                                                          std::uint32_t max_rows,
+                                                          bool host_masks = true);
 
 // The widest chunk Qwen38State admits at `context`: the context,
-// kQwen38MaxRows and the F32 [n_kv, rows] tensors' I32 bytes (0 when none, or when the context
-// is refused whatever the chunk).
-std::uint32_t Qwen38MostRows(std::uint32_t context);
+// kQwen38MaxRows and, with `host_masks`, the F32 [n_kv, rows] tensors' I32
+// bytes (0 when none, or when the context is refused whatever the chunk).
+std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks = true);
 
 // ---------------------------------------------------------------- chunk inputs
 
@@ -298,9 +307,11 @@ struct Qwen38ChunkInputs {
 // empty, runs past the layout's context, is longer than its chunk bound,
 // the history is not n_past + rows tokens, or a token is outside the
 // vocabulary. With `selection_masks` false, a chunk whose QSA selects gets
-// no host-built masks (the GGML fast graph's selection makes them on the
-// device, kernels/ggml/qwen38_graph.h), which at a context of 8,192 are
-// 192 MiB a chunk.
+// neither host-built masks nor block tables (only `qsa_select` and
+// `qsa.blocks`): the fast graph selects on the device from the cached block
+// keys and attends the kept cells alone (kernels/ggml/qwen38_graph.h). The
+// masks are [n_kv, rows] and the bias [n_kv / ratio, rows]: at a context of
+// 8,192 192 MiB a chunk, growing with the context.
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& profile,
                                                           const Qwen38StateLayout& state,
                                                           const Qwen38PleHash& hash,
@@ -356,12 +367,14 @@ std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(const Qwen38Profile& 
                                                            const artifact::Artifact& artifact);
 
 // The drafter's state, one region: its layer's F16 K and V caches and F32
-// indexer keys (a cell per position, as the target's QSA layers'), and the
-// streams it reads: `hidden_rows` rows of the target's streams before the
-// head's mix (F32 [hc_width]), row 0 the pending one a prefill chunk leaves
+// indexer keys (a cell per position, as the target's QSA layers'), its BF16
+// block keys (kIndexerBlocks' layout), and the streams it reads:
+// `hidden_rows` rows of the target's streams before the head's mix (F32
+// [hc_width]), row 0 the pending one a prefill chunk leaves
 // (docs/experiments/qwen38-mtp/). A D-068 representation: the caches append,
 // and cells past the committed positions (a draft's) are rewritten before
-// any row reads them.
+// any row reads them, a block's key when the pass that writes its last cell
+// runs.
 struct Qwen38MtpState {
   std::uint32_t context = 0;
   std::uint32_t cells = 0;
@@ -369,6 +382,7 @@ struct Qwen38MtpState {
   std::uint64_t k = 0;  // offsets
   std::uint64_t v = 0;
   std::uint64_t indexer = 0;
+  std::uint64_t blocks = 0;
   std::uint64_t hidden = 0;
   std::uint64_t bytes = 0;
   std::vector<StateRepresentation> Representations() const;

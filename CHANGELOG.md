@@ -148,6 +148,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   swap), not only once generation starts; the service keeps serving, and
   the conversation keeps the chunks that ran, so a retried request
   continues from them.
+- Qwen3.8 Flash Next no longer slows with context: it caches each
+  block's indexer key once, selects its attended cells on the GPU at any
+  depth, and attends those 2,051 cells alone instead of every cell. Through
+  the runtime on a GB10, plain decode is 26.8 / 26.0 / 24.4 tok/s at 8K /
+  64K / 256K (before: 27.4 / 17.1 / 6.8) and prefill 2,314 / 2,359 / 2,178
+  tok/s (before: 2,320 / 1,367 / 487). Its selection now repeats bit for
+  bit at any depth, speculation with its MTP drafter works to its
+  configured 262,144 (it was refused above 32,768), the prefill chunk
+  stays 4,096 rows at every context (it was capped at 2,040 at 262,144),
+  and at 262,144 the memory it reserves falls from 24.7 to 11.1 GiB (its
+  peak from 101.2 to 84.7 GiB). Greedy tokens may differ from the
+  previous build's at near-ties.
 - Qwen3.8 Flash Next's plain decode is 5–8% faster (its recurrent state
   updated in place, and fused and clustered one-row kernels); its greedy
   tokens may differ from the previous build's at near-ties.

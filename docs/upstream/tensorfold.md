@@ -79,13 +79,18 @@
     311 → 145 s and a 140K one 86 → 74 s; identical state after 140K and
     250K prompts, with BF16 and int8 KV. All creator-reported.
   - **Relevance to jitLLM:** `jitllm.qsa.select`
-    (`src/kernels/ggml/jitllm_ops.h`, `kQsaSelectMaxBlocks` = 8,192 blocks,
-    32 KiB of shared memory, 32,768 cells at Qwen3.8's ratio of 4) falls
-    back to GGML's nondeterministic top-k past that
+    (`src/kernels/ggml/jitllm_ops.h`, 8,192 blocks in 32 KiB of shared
+    memory, 32,768 cells at Qwen3.8's ratio of 4) fell back to GGML's
+    nondeterministic top-k past that
     ([ggml.md](ggml.md#radix-top-k-breaks-ties-nondeterministically-re-031),
-    RE-031). A tiled, deterministic radix select through global memory like
-    #93's would lift the limit and keep long-context Qwen3.8 repeatable.
-    TensorFold is MIT, so porting the idea is fine (D-091).
-  - **Proposed action:** a jitLLM long-context slice; no upstream action.
+    RE-031). TensorFold is MIT, so porting the idea is fine (D-091).
+  - **Adopted (the technique, jitLLM's own code),** long context's phase 2
+    (2026-09-29): `jitllm.qsa.topk` (`src/kernels/ggml/qsa_sparse.cu`)
+    selects each token's 2,051 cells in tiles of 8,192 blocks (a byte-wise
+    radix select for the width-th order-preserving key, ties to the lower
+    cell), then once more over the tiles' candidates; Qwen3.8 repeats bit
+    for bit at 64K and 128K and speculates to 262,144
+    ([long-context](../experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
+  - **Proposed action:** none; no upstream action.
 - Other TensorFold techniques, ranked for jitLLM, are in
   [tensorfold-assessment.md](../tensorfold-assessment.md#upstream-to-0362-2026-09-28).

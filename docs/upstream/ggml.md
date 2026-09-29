@@ -165,8 +165,10 @@ sinks bound (RE-030).
 
 ## Radix top-k breaks ties nondeterministically (RE-031)
 
-- **Status:** carry for Qwen3.8 (jitLLM uses its own selection); open for
-  DeepSeek V4, whose indexer still uses GGML's top-k.
+- **Status:** carry: both models' default fast plans select with
+  jitLLM's own kernels, ties to the lower index (Qwen3.8's at any depth
+  since long context's phase 2); their reference (`--exact`) and unfused
+  forms still use GGML's top-k.
 - **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`; DeepSeek V4 on
   2026-09-29, `spark`.
 - **Problem:** for rows over 1,024 columns, the radix select in
@@ -187,13 +189,16 @@ sinks bound (RE-030).
   selects with jitLLM's `jitllm.dsv4.lid_topk`
   (`src/kernels/ggml/dsv4_sparse.cu`), ties to the lower row: its 32K run
   repeats bit for bit (long-context phase 2); `--exact on` does not. For
-  Qwen3.8, the default fast graph selects with jitLLM's
-  `jitllm.qsa.select` (`src/kernels/ggml/jitllm_ops.h`), which keeps the lower
-  cell among equals. It holds the block scores in 32 KiB of shared memory,
-  so past `kQsaSelectMaxBlocks` = 8,192 blocks (32,768 cells) the graph
-  falls back to GGML's top-k (`src/kernels/ggml/qwen38_graph.cc`). So
-  long-context Qwen3.8 is not repeatable by default, and neither are the
-  `--exact` and `--unfused` graphs.
+  Qwen3.8, the default fast graph selects with jitLLM's `jitllm.qsa.topk`
+  (`src/kernels/ggml/jitllm_ops.h`, `qsa_sparse.cu`), which keeps the lower cell among equals at any depth
+  to its configured 262,144 (a radix select over tiles of 8,192 blocks,
+  then over the tiles' candidates), and attends the kept cells alone
+  (`jitllm.qsa.attn`): its 64K and 128K runs repeat bit for bit
+  ([long-context](../experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
+  Until phase 2 its selection held the scores in 32 KiB of shared memory
+  and fell back to GGML's top-k past 8,192 blocks. The `--exact` and
+  `--unfused` graphs still select with GGML's top-k and are not
+  repeatable past 2,051 cells.
 - **Upstream master:** unchanged at `8019dc563`. The CUDA path with CUB uses
   CUB's top-k with `determinism::not_guaranteed`.
 - **Upstream refs:** issue
@@ -337,7 +342,11 @@ Checked 2026-09-29 at master `8019dc563`.
   cut its prefill attention (746 ms of a 2,048-row chunk at 64K).
 - **Sparse flash attention for Qwen3.8**
   ([#28770](https://github.com/ggml-org/llama.cpp/pull/28770)): 1.08–1.26×
-  prefill and 1.03–1.18× decode at 10K–100K.
+  prefill and 1.03–1.18× decode at 10K–100K. Not needed from upstream
+  since long context's phase 2: jitLLM's fast graph gathers the kept cells
+  with its own kernel (`jitllm.qsa.attn`, a warp a token's KV head, where
+  #28770 takes the union of 8 query rows' cells in GGML's MMA kernel), so
+  only the reference form would use it.
 - **The D 256/512 MMA retune**
   ([#29152](https://github.com/ggml-org/llama.cpp/pull/29152)): 1.00–1.02×
   on the Spark.

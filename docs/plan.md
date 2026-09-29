@@ -896,7 +896,16 @@ it appears.
         Qwen3.8's items below are the next slice:
         - tiled, deterministic QSA selection past 8,192 blocks
           (TensorFold PR #93's technique), which also closes RE-031's
-          long-context nondeterminism;
+          long-context nondeterminism; *done for Qwen3.8 2026-09-29*
+          with its block keys cached and attention over the kept cells
+          alone: per-token cost flat to within the indexer (plain decode
+          26.8 → 24.4 tok/s from 8K to 256K, prefill 2,314 → 2,178), at
+          least Mia's speed plain at every depth, repeatable, MTP to
+          262,144 ([long-context phase 2](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth));
+          open: MTP 0.91× / 0.96× Mia's MTP 3 at 128K / 256K (a step
+          costs the same at depth; at 128K the draft depth caps a
+          well-accepted answer, lever the depth chosen by acceptance
+          and a cheaper verify row; 256K not re-run on the final build);
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

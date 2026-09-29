@@ -83,7 +83,11 @@ Newest first. RE-numbers are never reused.
 - **Impact:** any context × rows product past 2^29 cells in F32 trips it
   until the pin includes #29227; a sparse attention path with block
   tables instead of dense masks and expanded scores removes the tensors
-  ([long-context](experiments/long-context/README.md)). The executor's
+  ([long-context](experiments/long-context/README.md)). Since phase 2
+  Qwen3.8's default (fast) graph builds none of them, so its chunks are no
+  longer bounded (the runtime's 4,096 rows at 262,144); the bound stays
+  for its reference and unfused graphs, and the graph builder refuses a
+  chunk of theirs past it. The executor's
   refusal now names the refused node and its operand, with shapes and
   strides, which is how the second one was found.
 
@@ -211,7 +215,7 @@ their outputs (the others are the same bit for bit); the fused test builds
 its unfused reference the same way, with no slack. Fix upstream: bound the
 load by the window's columns.
 
-## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in Qwen3.8's fast graph below 32,768 cells and in DeepSeek V4's fast plan at any depth; open for both reference (and unfused) graphs and Qwen3.8 past 32,768 cells)
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in both models' fast plans at any depth (Qwen3.8's since its long-context phase 2); open for both reference (and unfused) graphs)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
 `top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
@@ -246,7 +250,16 @@ equals, and its perplexity run (3,557 positions, past the budget)
 repeated exactly three times
 ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass));
 the reference (`--exact`) and unfused graphs keep GGML's top-k, and so
-does the fast graph past 32,768 cells (the kernel's shared memory).
+did the fast graph past 32,768 cells (the kernel's shared memory). Since
+long context's phase 2 (2026-09-29) the fast graph selects on the device
+at any depth up to its configured 262,144 (`jitllm.qsa.topk`: a
+byte-wise radix select over tiles of 8,192 blocks, then over the tiles'
+candidates, ties to the lower cell): two runs of the same 64K and 128K
+forced prompts gave identical logits at all 512 steps, so **for Qwen3.8's
+default graph RE-031 is closed**
+([long-context](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
+The reference and unfused graphs keep GGML's top-k and are still not
+repeatable past 2,051 cells.
 
 **DeepSeek V4 too** (`spark`, 2026-09-29, the `spark-native` build of
 the prefill-chunk slice): its lightning indexer keeps the top 512 of its

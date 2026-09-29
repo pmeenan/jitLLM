@@ -152,5 +152,7 @@ rather than works around:
   plan cache and graphs take them unchanged, and a prefill shape's capture
   rule is the runner's. DeepSeek's fast plan has them (its window cache a
   ring, `model/dsv4.h` `Dsv4Window`; `jitllm.dsv4.lid_topk` and
-  `sparse_mask`, [long-context](experiments/long-context/README.md));
-  Qwen3.8's selection past 8,192 blocks is the next slice.
+  `sparse_mask`, [long-context](experiments/long-context/README.md)), and
+  so does Qwen3.8's fast graph (`jitllm.qsa.pool`, `.topk`, `.attn`; its
+  block keys a state tensor of the model's layout, their verify saves the
+  runner's).

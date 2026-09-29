@@ -86,7 +86,9 @@ constinit std::array kTagMoeRouter = std::to_array("jitllm.moe.router");
 constinit std::array kTagGdnHistory = std::to_array("jitllm.gdn.history");
 constinit std::array kTagQsaPrep = std::to_array("jitllm.qsa.prep");
 constinit std::array kTagQsaGateQuantize = std::to_array("jitllm.qsa.gate_quantize");
-constinit std::array kTagQsaSelect = std::to_array("jitllm.qsa.select");
+constinit std::array kTagQsaPool = std::to_array("jitllm.qsa.pool");
+constinit std::array kTagQsaTopK = std::to_array("jitllm.qsa.topk");
+constinit std::array kTagQsaAttn = std::to_array("jitllm.qsa.attn");
 constinit std::array kTagQuantizeQ8 = std::to_array("jitllm.q8_1");
 constinit std::array kTagVecQ = std::to_array("jitllm.vecq");
 constinit std::array kTagDsv4Route = std::to_array("jitllm.dsv4.route");
@@ -183,11 +185,13 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 36> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 38> fused = {{
       {kTagGdnStep.data(), JitllmOp::kGdnStep},
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
-      {kTagQsaSelect.data(), JitllmOp::kQsaSelect},
+      {kTagQsaPool.data(), JitllmOp::kQsaPool},
+      {kTagQsaTopK.data(), JitllmOp::kQsaTopK},
+      {kTagQsaAttn.data(), JitllmOp::kQsaAttn},
       {kTagQsaPrep.data(), JitllmOp::kQsaPrep},
       {kTagQsaGateQuantize.data(), JitllmOp::kQsaGateQuantize},
       {kTagGdnHistory.data(), JitllmOp::kGdnHistory},
@@ -1542,53 +1546,210 @@ std::expected<void, KernelFailure> CheckQsaGateQuantize(const ggml_tensor* node)
   return CheckDense(node, {attn, q_full});
 }
 
-ggml_tensor* QsaSelect(ggml_context* context, ggml_tensor* score, ggml_tensor* bias,
-                       ggml_tensor* cell_block, ggml_tensor* positions, std::int64_t width) {
-  const std::int64_t n_kv = cell_block->ne[0];
-  const std::int64_t t = score->ne[2];
-  return WithInts(Custom(context, GGML_TYPE_F16, {n_kv, t, 1, 1},
-                         {score, bias, cell_block, positions}, kTagQsaSelect.data()),
-                  {score->ne[0], score->ne[1], t, n_kv, width});
+ggml_tensor* QsaPool(ggml_context* context, ggml_tensor* raw, ggml_tensor* blocks,
+                     ggml_tensor* weight, ggml_tensor* positions, std::int64_t ratio, float eps,
+                     float theta_scale) {
+  ggml_tensor* node = WithInts(Custom(context, GGML_TYPE_I32, {1, 1, 1, 1},
+                                      {raw, blocks, weight, positions}, kTagQsaPool.data()),
+                               {raw->ne[0], ratio, positions->ne[0] / 4});
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 12, &eps, sizeof(eps));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 16, &theta_scale,
+              sizeof(theta_scale));
+  return node;
+}
+
+ggml_tensor* QsaTopK(ggml_context* context, ggml_tensor* q, ggml_tensor* blocks,
+                     ggml_tensor* positions, ggml_tensor* pool, std::int64_t n_blocks,
+                     std::int64_t width, std::int64_t ratio) {
+  const std::int64_t t = q->ne[2];
+  return WithInts(Custom(context, GGML_TYPE_I32, {QsaTopKRow(width), t, 1, 1},
+                         {q, blocks, positions, pool}, kTagQsaTopK.data()),
+                  {n_blocks, width, ratio, t});
+}
+
+ggml_tensor* QsaAttn(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,
+                     ggml_tensor* cells, float scale) {
+  const std::int64_t d = q->ne[0];
+  const std::int64_t heads = q->ne[1];
+  const std::int64_t t = q->ne[2];
+  ggml_tensor* node = WithInts(
+      Custom(context, GGML_TYPE_F32, {d * heads, t, 1, 1}, {q, k, v, cells}, kTagQsaAttn.data()),
+      {heads, d > 0 ? k->ne[0] / d : 0, t, cells->ne[0]});
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 16, &scale, sizeof(scale));
+  return node;
 }
 
 namespace {
 
-// The selection's shared memory: every block's score.
-std::uint64_t QsaSelectShared(std::int64_t blocks) {
-  return static_cast<std::uint64_t>(blocks) * sizeof(float);
+// The selection's and the pool's positions: I32 [4 · t], packed.
+bool Positions(const ggml_tensor* positions, std::int64_t t) {
+  return positions->type == GGML_TYPE_I32 && Shaped(positions, 4 * t, 1, 1) && Packed(positions) &&
+         Aligned(positions, 4);
+}
+
+// A BF16 table of `d`-value rows, packed.
+bool Bf16Rows(const ggml_tensor* t, std::int64_t d) {
+  return t->type == GGML_TYPE_BF16 && t->ne[0] == d && t->ne[2] == 1 && t->ne[3] == 1 &&
+         Packed(t) && Aligned(t, 16);
 }
 
 }  // namespace
 
-std::expected<void, KernelFailure> CheckQsaSelect(const ggml_tensor* node) {
-  if (auto checked = CheckCustom(node, JitllmOp::kQsaSelect, 4); !checked) {
+std::expected<void, KernelFailure> CheckQsaPool(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaPool, 4); !checked) {
     return checked;
   }
-  const ggml_tensor* score = node->src[0];
-  const ggml_tensor* bias = node->src[1];
-  const ggml_tensor* cell_block = node->src[2];
+  const ggml_tensor* raw = node->src[0];
+  const ggml_tensor* blocks = node->src[1];
+  const ggml_tensor* weight = node->src[2];
   const ggml_tensor* positions = node->src[3];
-  const std::int64_t blocks = JitllmOpInt(node, 0);
-  const std::int64_t heads = JitllmOpInt(node, 1);
+  const std::int64_t d = JitllmOpInt(node, 0);
+  const std::int64_t ratio = JitllmOpInt(node, 1);
   const std::int64_t t = JitllmOpInt(node, 2);
-  const std::int64_t n_kv = JitllmOpInt(node, 3);
-  const std::int64_t width = JitllmOpInt(node, 4);
-  if (blocks <= 0 || blocks > kQsaSelectMaxBlocks || heads <= 0 || heads > 64 || t <= 0 ||
-      t > 65535 || n_kv <= 0 || width <= 0 || width > n_kv || QsaSelectShared(blocks) > 32768 ||
-      std::cmp_greater(n_kv * t, kInt32Max)) {
-    return Rejected("at most 8,192 blocks, 64 heads and 65,535 tokens, a width within the cells");
+  const float eps = JitllmOpFloat(node, 3);
+  const float theta_scale = JitllmOpFloat(node, 4);
+  if (d < 64 || d % 32 != 0 || d > 512 || ratio < 1 || ratio > 32 || t < 1 || !std::isfinite(eps) ||
+      eps < 0.0f || !std::isfinite(theta_scale)) {
+    return Rejected("keys of 64 to 512 values (whole warps), blocks of 1 to 32 cells");
   }
-  if (!IsF32(score) || !Shaped(score, blocks, heads, t) || !IsF32(bias) ||
-      !Shaped(bias, blocks, t, 1) || cell_block->type != GGML_TYPE_I32 ||
-      !Shaped(cell_block, n_kv, 1, 1) || positions->type != GGML_TYPE_I32 ||
-      ggml_nelements(positions) < t || node->type != GGML_TYPE_F16 || !Shaped(node, n_kv, t, 1) ||
-      !Aligned(score, 4) || !Aligned(bias, 4) || !Aligned(cell_block, 4) ||
-      !Aligned(positions, 4) || !Aligned(node, 2)) {
+  if (!IsF32(raw) || raw->ne[0] != d || raw->ne[2] != 1 || raw->ne[3] != 1 || !Packed(raw) ||
+      !Aligned(raw, 4) || !Bf16Rows(blocks, d) || blocks->ne[1] < raw->ne[1] / ratio ||
+      !Vector(weight, d) || !Aligned(weight, 4) || !Positions(positions, t) ||
+      node->type != GGML_TYPE_I32 || !Shaped(node, 1, 1, 1)) {
     return Rejected(
-        "F32 scores [blocks, heads, t] and bias [blocks, t], I32 cell blocks [n_kv] and "
-        "positions, into an F16 mask [n_kv, t]");
+        "F32 raw keys [d, cells], BF16 block keys [d, cells / ratio], an F32 weight [d] and "
+        "I32 positions [4 · t], into an I32 marker");
   }
-  return CheckDense(node, {score, bias, cell_block, positions});
+  if (std::cmp_greater(raw->ne[1], kInt32Max) || std::cmp_greater(blocks->ne[1], kInt32Max)) {
+    return Rejected("caches within the kernel's 32-bit cells");
+  }
+  if (AnyEmpty({node, raw, blocks, weight, positions}) ||
+      !AllSane({node, raw, blocks, weight, positions}) ||
+      !AllCurrent({node, raw, blocks, weight, positions})) {
+    return Rejected("jitllm.qsa.pool on an empty, unmeasurable or stale tensor");
+  }
+  // The block keys are written in place: nothing the kernel reads shares
+  // their bytes, and the marker is apart from everything.
+  for (const ggml_tensor* tensor : {raw, weight, positions}) {
+    if (!Disjoint(blocks, tensor, false) || !Disjoint(node, tensor, false)) {
+      return Rejected("jitllm.qsa.pool's block keys or marker overlap an operand");
+    }
+  }
+  if (!Disjoint(node, blocks, false)) {
+    return Rejected("jitllm.qsa.pool's marker overlaps the block keys");
+  }
+  return {};
+}
+
+std::uint64_t PlanQsaTopK(const ggml_tensor* node) {
+  return QsaTopKLayout{.t = JitllmOpInt(node, 3),
+                       .n_blocks = JitllmOpInt(node, 0),
+                       .width = JitllmOpInt(node, 1),
+                       .ratio = JitllmOpInt(node, 2)}
+      .bytes();
+}
+
+std::expected<void, KernelFailure> CheckQsaTopK(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaTopK, 4); !checked) {
+    return checked;
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* blocks = node->src[1];
+  const ggml_tensor* positions = node->src[2];
+  const ggml_tensor* pool = node->src[3];
+  const std::int64_t n_blocks = JitllmOpInt(node, 0);
+  const std::int64_t width = JitllmOpInt(node, 1);
+  const std::int64_t ratio = JitllmOpInt(node, 2);
+  const std::int64_t t = JitllmOpInt(node, 3);
+  const QsaTopKLayout layout{.t = t, .n_blocks = n_blocks, .width = width, .ratio = ratio};
+  if (n_blocks < 1 || layout.tiles() > kQsaTopKMaxTiles || width < 1 || ratio < 1 || ratio > 32 ||
+      t < 1 || t > 65535 || width > n_blocks * ratio ||
+      layout.tiles() * layout.candidates() > kQsaTopKCandidates) {
+    return Rejected(
+        "at most 8 tiles of 8,192 blocks, a width within the blocks' cells, at most 65,535 "
+        "tokens");
+  }
+  if (!IsF32(q) || !Shaped(q, kQsaIndexDim, kQsaIndexHeads, t) || !Packed(q) || !Aligned(q, 16) ||
+      !Bf16Rows(blocks, kQsaIndexDim) || blocks->ne[1] < n_blocks || !Positions(positions, t) ||
+      JitllmOpOf(pool) != JitllmOp::kQsaPool || pool->src[1] != blocks ||
+      pool->src[3] != positions || node->type != GGML_TYPE_I32 ||
+      !Shaped(node, QsaTopKRow(width), t, 1) || !Packed(node) || !Aligned(node, 16)) {
+    return Rejected(
+        "F32 queries [128, 4, t], the BF16 block keys its jitllm.qsa.pool node writes and its "
+        "positions, into I32 cells [row, t]");
+  }
+  if (AnyEmpty({node, q, blocks, positions}) || !AllSane({node, q, blocks, positions}) ||
+      !AllCurrent({node, q, blocks, positions})) {
+    return Rejected("jitllm.qsa.topk on an empty, unmeasurable or stale tensor");
+  }
+  for (const ggml_tensor* tensor : {q, blocks, positions, pool}) {
+    if (!Disjoint(node, tensor, false)) {
+      return Rejected("jitllm.qsa.topk's cells overlap an operand");
+    }
+  }
+  return {};
+}
+
+std::uint64_t PlanQsaAttn(const ggml_tensor* node) {
+  const std::int64_t heads = JitllmOpInt(node, 0);
+  const std::int64_t kv_heads = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const std::int64_t row = JitllmOpInt(node, 3);
+  if (kv_heads < 1 || heads < 1 || t < 1 || row < 16) {
+    return 0;
+  }
+  const std::int64_t shares = QsaAttnShares(t, kv_heads, row);
+  if (shares <= 1) {
+    return 0;
+  }
+  return QsaTopKLayout::Align(static_cast<std::uint64_t>(t * kv_heads * shares) *
+                              QsaAttnPartial(heads / kv_heads));
+}
+
+std::expected<void, KernelFailure> CheckQsaAttn(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQsaAttn, 4); !checked) {
+    return checked;
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const ggml_tensor* v = node->src[2];
+  const ggml_tensor* cells = node->src[3];
+  const std::int64_t heads = JitllmOpInt(node, 0);
+  const std::int64_t kv_heads = JitllmOpInt(node, 1);
+  const std::int64_t t = JitllmOpInt(node, 2);
+  const std::int64_t row = JitllmOpInt(node, 3);
+  const float scale = JitllmOpFloat(node, 4);
+  constexpr std::int64_t d = kQsaAttnHead;
+  if (heads < 1 || kv_heads < 1 || heads % kv_heads != 0 || heads / kv_heads > 16 || t < 1 ||
+      row < 16 || row % 16 != 0 || !std::isfinite(scale) ||
+      std::cmp_greater(t * kv_heads * QsaAttnShares(t, kv_heads, row), kInt32Max)) {
+    return Rejected(
+        "whole groups of at most 16 query heads a KV head, rows of whole 16-cell gathers");
+  }
+  if (!IsF32(q) || !Shaped(q, d, heads, t) || !Packed(q) || !Aligned(q, 16)) {
+    return Rejected("F32 queries [256, heads, t], packed");
+  }
+  for (const ggml_tensor* cache : {k, v}) {
+    if (cache->type != GGML_TYPE_F16 || cache->ne[0] != d * kv_heads || cache->ne[1] < 1 ||
+        cache->ne[2] != 1 || cache->ne[3] != 1 || cache->nb[0] != 2 ||
+        cache->nb[1] < static_cast<std::size_t>(d * kv_heads) * 2 || cache->nb[1] % 16 != 0 ||
+        !Aligned(cache, 16) || std::cmp_greater(cache->ne[1], kInt32Max)) {
+      return Rejected("F16 caches [256 · kv heads, cells], rows 16-byte aligned");
+    }
+  }
+  if (k->ne[1] != v->ne[1] || cells->type != GGML_TYPE_I32 || !Shaped(cells, row, t, 1) ||
+      !Packed(cells) || !Aligned(cells, 16) || !IsF32(node) || !Shaped(node, d * heads, t, 1) ||
+      !Aligned(node, 8)) {
+    return Rejected("I32 cells [row, t] into an F32 output [256 · heads, t]");
+  }
+  if (AnyEmpty({node, q, k, v, cells}) || !AllSane({node, q, k, v, cells}) ||
+      !AllCurrent({node, q, k, v, cells})) {
+    return Rejected("jitllm.qsa.attn on an empty, unmeasurable or stale tensor");
+  }
+  if (!Disjoint(node, k, false) || !Disjoint(node, v, false)) {
+    return Rejected("jitllm.qsa.attn's output overlaps a cache");
+  }
+  return CheckDense(node, {q, cells});
 }
 
 ggml_tensor* MoeRouter(ggml_context* context, ggml_tensor* logits, ggml_tensor* x,

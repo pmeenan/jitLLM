@@ -379,6 +379,12 @@ TEST(Qwen38Test, TheStateIsBoundedAndSized) {
   EXPECT_EQ(conv.bytes, 3ULL * 10240 * 4);
   const auto& ple = s->tensors[static_cast<std::size_t>(s->Find(1, K::kPleConv))];
   EXPECT_EQ(ple.bytes, 9ULL * 10240 * 4);
+  // Each QSA layer's block keys: BF16, a row per 4 cells.
+  const auto& blocks = s->tensors[static_cast<std::size_t>(s->Find(3, K::kIndexerBlocks))];
+  EXPECT_TRUE(blocks.f16);
+  EXPECT_EQ(blocks.ne1, 1024U);
+  EXPECT_EQ(blocks.bytes, 128ULL * 1024 * 2);
+  EXPECT_EQ(s->Find(0, K::kIndexerBlocks), -1);
   EXPECT_EQ(s->Find(0, K::kPleConv), -1);
   EXPECT_EQ(s->Find(0, K::kK), -1);
   std::uint64_t kv = 0;
@@ -399,6 +405,9 @@ TEST(Qwen38Test, TheStateIsBoundedAndSized) {
   EXPECT_TRUE(md::Qwen38State(p, 262144, 2047).has_value());
   EXPECT_FALSE(md::Qwen38State(p, 262144, 2048).has_value());
   EXPECT_FALSE(md::Qwen38State(p, 262400, 2048).has_value());
+  // The fast graph's state, which builds no such plane, has no such bound.
+  EXPECT_TRUE(md::Qwen38State(p, 262144, md::kQwen38MaxRows, false).has_value());
+  EXPECT_FALSE(md::Qwen38State(p, 262144, md::kQwen38MaxRows + 1, false).has_value());
   EXPECT_FALSE(
       md::Qwen38State(p, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), 1)
           .has_value());
@@ -420,6 +429,9 @@ TEST(Qwen38Test, TheWidestChunkIsBounded) {
     EXPECT_FALSE(md::Qwen38State(p, context, most + 1).has_value());
     EXPECT_TRUE(md::Qwen38State(p, context, most - 1).has_value());
   }
+  // Without the host's masks, only the context and kQwen38MaxRows.
+  EXPECT_EQ(md::Qwen38MostRows(262144, false), md::kQwen38MaxRows);
+  EXPECT_EQ(md::Qwen38MostRows(4000, false), 4000U);
   EXPECT_EQ(md::Qwen38MostRows(0), 0U);
   EXPECT_EQ(md::Qwen38MostRows(0x7FFFFF01U), 0U);
 }
@@ -447,7 +459,8 @@ TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {
   EXPECT_EQ(c->ple_rows.size(), 48U);
   // Without the selection's masks a chunk that does not select still gets
   // the causal mask (the fast graph's attention reads it), and one that
-  // selects gets neither (the fast graph's selection makes its own).
+  // selects gets neither, nor the block tables (the fast graph selects from
+  // the cached block keys on the device).
   auto unmasked = md::Qwen38Chunk(p, *s, h, history, 37, 3, false);
   ASSERT_TRUE(unmasked.has_value()) << Why(unmasked);
   EXPECT_EQ(unmasked->mask, c->mask);
@@ -458,7 +471,10 @@ TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {
   EXPECT_TRUE(past->qsa_select);
   EXPECT_TRUE(past->mask.empty());
   EXPECT_TRUE(past->mask_f32.empty());
-  EXPECT_FALSE(past->qsa.bias.empty());
+  EXPECT_EQ(past->qsa.blocks, 2560U / 4);
+  EXPECT_TRUE(past->qsa.bias.empty());
+  EXPECT_TRUE(past->qsa.cell_block.empty());
+  EXPECT_TRUE(past->qsa.block_cells.empty());
   // Refusals: history of the wrong length, a chunk past the context, a
   // token outside the vocabulary.
   EXPECT_FALSE(md::Qwen38Chunk(p, *s, h, history, 36, 3).has_value());
@@ -598,11 +614,17 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     for (const auto& step : plan->steps) {
       used.insert(step.implementation);
     }
-    for (const std::string_view name :
-         {kg::kNvfp4RowsName, kg::kFlashAttnMmaName, kg::kSetRowsExtName, kg::kConcatName,
-          kg::kSumRowsName, kg::kRepeatName}) {
+    for (const std::string_view name : {kg::kNvfp4RowsName, kg::kSetRowsExtName, kg::kConcatName,
+                                        kg::kSumRowsName, kg::kRepeatName}) {
       EXPECT_TRUE(used.contains(name)) << name << " at " << rows << " rows";
     }
+    // The fast form's selection keeps its cells and attention reads them
+    // alone; elsewhere GGML's flash attention reads every cell under a mask.
+    const bool sparse = fast && chunk->qsa_select;
+    EXPECT_EQ(used.contains(kg::kFlashAttnMmaName), !sparse) << rows << " at " << n_past;
+    EXPECT_EQ(used.contains(kg::kQsaAttnName), sparse) << rows << " at " << n_past;
+    // Every fast chunk caches the block keys it completes.
+    EXPECT_EQ(used.contains(kg::kQsaPoolName), fast) << rows << " at " << n_past;
     // The fast form routes, and normalizes and rotates QSA's heads, in
     // jitLLM's fusions; the others in GGML's nodes.
     EXPECT_EQ(used.contains(kg::kArgsortName), !fast) << rows;
@@ -667,9 +689,9 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(used.contains(kg::kBf16Name), bf16 && !fast) << rows;
     EXPECT_EQ(used.contains(kg::kGemmBf16Name), bf16 || fast) << rows;
     EXPECT_EQ(used.contains(kg::kTopKName), chunk->qsa_select && !fast) << rows << " at " << n_past;
-    EXPECT_EQ(used.contains(kg::kQsaSelectName), chunk->qsa_select && fast)
+    EXPECT_EQ(used.contains(kg::kQsaTopKName), chunk->qsa_select && fast)
         << rows << " at " << n_past;
-    // The fast form's selection makes the attention's mask: no host masks.
+    // The fast form's selection needs no host masks.
     EXPECT_EQ(graph->mask == nullptr, chunk->qsa_select && fast) << rows << " at " << n_past;
     EXPECT_EQ(graph->mask_f32 != nullptr, chunk->qsa_select && !fast) << rows << " at " << n_past;
     auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
@@ -679,43 +701,64 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(graph->logits->ne[0], 248320);
     EXPECT_EQ(graph->logits->ne[1], rows);
   }
-  // Past the device selection's blocks (32,768 cells) the fast form selects
-  // with GGML's top-k over the host's masks.
-  auto long_state = md::Qwen38State(p, 33280, 8);
-  ASSERT_TRUE(long_state.has_value());
-  std::vector<std::int32_t> history(33001, 1000);
-  auto chunk = md::Qwen38Chunk(p, *long_state, h, history, 33000, 1);
-  ASSERT_TRUE(chunk.has_value()) << Why(chunk);
-  ASSERT_TRUE(chunk->qsa_select);
-  EXPECT_GT(chunk->qsa.blocks, kg::kQsaSelectMaxBlocks);
-  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
-  ASSERT_TRUE(arena.has_value());
-  auto graph = kg::BuildQwen38Graph(
-      *arena, p, *binding, kg::Qwen38ShapeOf(*long_state, *chunk, 1),
-      {.expert_stride = strides, .experts = kg::Qwen38GraphOptions::Experts::kCutlass});
-  ASSERT_TRUE(graph.has_value()) << Why(graph);
-  EXPECT_NE(graph->mask, nullptr);
-  EXPECT_NE(graph->mask_f32, nullptr);
-  std::uint64_t next = std::uint64_t{1} << 40U;
-  for (ggml_tensor* node : graph->nodes) {
-    for (ggml_tensor* src : node->src) {
-      if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr &&
-          src->data == nullptr) {
-        kg::TensorArena::Bind(src, next);
-        next += ((ggml_nbytes(src) + 255) / 256 * 256) + 256;
+  // At depth (here past one 8,192-block tile, and a whole 8,192-row chunk
+  // at the configured maximum, which the host's masks could not take:
+  // RE-037) the fast form still selects on the device and reads no host
+  // mask; the reference form refuses the chunk whose masks would pass
+  // GGML's strides.
+  for (const auto& [context, n_past, rows] :
+       {std::tuple{33280U, 33000U, 1U}, std::tuple{262144U, 253952U, md::kQwen38MaxRows}}) {
+    auto long_state = md::Qwen38State(p, context, rows, false);
+    ASSERT_TRUE(long_state.has_value()) << Why(long_state);
+    std::vector<std::int32_t> history(std::size_t{n_past} + rows, 1000);
+    auto chunk = md::Qwen38Chunk(p, *long_state, h, history, n_past, rows, false);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    ASSERT_TRUE(chunk->qsa_select);
+    EXPECT_GT(chunk->qsa.blocks, kg::kQsaTopKTile);
+    const kg::Qwen38ChunkShape shape = kg::Qwen38ShapeOf(*long_state, *chunk, 1);
+    auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    auto graph = kg::BuildQwen38Graph(
+        *arena, p, *binding, shape,
+        {.expert_stride = strides, .experts = kg::Qwen38GraphOptions::Experts::kCutlass});
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    EXPECT_EQ(graph->mask, nullptr);
+    EXPECT_EQ(graph->mask_f32, nullptr);
+    EXPECT_EQ(graph->cell_block, nullptr);
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    for (ggml_tensor* node : graph->nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr &&
+            src->data == nullptr) {
+          kg::TensorArena::Bind(src, next);
+          next += ((ggml_nbytes(src) + 255) / 256 * 256) + 256;
+        }
       }
     }
+    kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+    auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+    ASSERT_TRUE(plan.has_value()) << Why(plan);
+    std::set<std::string_view> used;
+    for (const auto& step : plan->steps) {
+      used.insert(step.implementation);
+    }
+    EXPECT_FALSE(used.contains(kg::kTopKName));
+    EXPECT_FALSE(used.contains(kg::kFlashAttnMmaName));
+    for (const std::string_view name :
+         {kg::kQsaPoolName, kg::kQsaTopKName, kg::kQsaAttnName, kg::kQsaPrepName}) {
+      EXPECT_TRUE(used.contains(name)) << name << " at " << context;
+    }
+    auto reference = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(reference.has_value());
+    const auto exact = kg::BuildQwen38Graph(*reference, p, *binding, shape,
+                                            {.expert_stride = strides,
+                                             .exact = true,
+                                             .experts = kg::Qwen38GraphOptions::Experts::kCutlass});
+    EXPECT_EQ(exact.has_value(), rows == 1) << context;
+    if (!exact) {
+      EXPECT_NE(Why(exact).find("RE-037"), std::string::npos) << Why(exact);
+    }
   }
-  kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
-  auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
-  ASSERT_TRUE(plan.has_value()) << Why(plan);
-  std::set<std::string_view> used;
-  for (const auto& step : plan->steps) {
-    used.insert(step.implementation);
-  }
-  EXPECT_TRUE(used.contains(kg::kTopKName));
-  EXPECT_FALSE(used.contains(kg::kQsaSelectName));
-  EXPECT_TRUE(used.contains(kg::kQsaPrepName));
 }
 
 TEST(Qwen38Test, ExpertStridesAreWholeBlocks) {
@@ -948,7 +991,8 @@ TEST(Qwen38Test, TheMtpStateAndACommitAreSized) {
   EXPECT_EQ(s->hidden_rows, 513U);
   EXPECT_EQ(s->v - s->k, 512ULL * 4096 * 2);
   EXPECT_EQ(s->indexer - s->v, 512ULL * 4096 * 2);
-  EXPECT_EQ(s->hidden - s->indexer, 128ULL * 4096 * 4);
+  EXPECT_EQ(s->blocks - s->indexer, 128ULL * 4096 * 4);
+  EXPECT_EQ(s->hidden - s->blocks, 128ULL * 1024 * 2);
   EXPECT_EQ(s->bytes - s->hidden, 10240ULL * 513 * 4);
   EXPECT_EQ(s->Representations().size(), 2U);
   auto c = md::Qwen38Commit(p, 4);
@@ -1060,7 +1104,9 @@ TEST(Qwen38Test, TheDrafterAndAVerifyArePlannedByThisModulesImplementations) {
     EXPECT_FALSE(used.contains(kg::kMxfp8MulMatVecName)) << rows;
     EXPECT_EQ(used.contains(kg::kArgmaxName), head) << rows;
     EXPECT_TRUE(used.contains(kg::kSetRowsExtName)) << rows;  // its caches' writes
-    EXPECT_EQ(used.contains(kg::kQsaSelectName), select) << n_kv;
+    EXPECT_EQ(used.contains(kg::kQsaTopKName), select) << n_kv;
+    EXPECT_EQ(used.contains(kg::kQsaAttnName), select) << n_kv;
+    EXPECT_TRUE(used.contains(kg::kQsaPoolName)) << n_kv;      // its block keys, every pass
     EXPECT_EQ(used.contains(kg::kMoeGemvName), head) << rows;  // a prefill pass has no MoE
     // The fast mixes' products are jitllm.gemm.bf16 at every width; past
     // 16 rows the drafter's BF16 linears read their input rounded once.

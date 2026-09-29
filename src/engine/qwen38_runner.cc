@@ -90,7 +90,9 @@ Status Qwen38Runner::Setup() {
     return std::unexpected(binding.error());
   }
   binding_ = std::move(*binding);
-  auto layout = md::Qwen38State(profile_, o_.context, o_.max_rows);
+  // The fast graph (the runner's) builds no tensor of every cell by every
+  // row: no RE-037 bound on its chunks.
+  auto layout = md::Qwen38State(profile_, o_.context, o_.max_rows, false);
   if (!layout) {
     return std::unexpected(layout.error());
   }
@@ -233,14 +235,25 @@ Status Qwen38Runner::Setup() {
       Qwen38ChunkKind kind;
     };
     const std::uint32_t verify = o_.draft_rows + 1;
+    // (The fast graph's largest host input is the causal mask of the widest
+    // chunk that does not select: one whose cells stay within the
+    // indexer's budget, [2,048 cells, rows]; the chunks that select read
+    // no mask.)
+    const std::uint32_t unselected = std::min<std::uint32_t>(
+        o_.context, (profile_.indexer_budget + profile_.indexer_ratio - 1) / 256U * 256U);
+    const std::uint32_t unselected_rows = std::min(o_.max_rows, unselected);
     std::vector<Probe> probes = {{0, o_.max_rows, {}},
                                  {o_.context - o_.max_rows, o_.max_rows, {}},
+                                 {unselected - unselected_rows, unselected_rows, {}},
                                  {o_.context - 1, 1, {}},
                                  {0, 1, {}}};
     if (speculative()) {
       for (const std::uint32_t at : {0U, o_.context - o_.max_rows}) {
         probes.push_back({at, o_.max_rows, {.verify = false, .export_streams = true}});
       }
+      probes.push_back({unselected - unselected_rows,
+                        unselected_rows,
+                        {.verify = false, .export_streams = true}});
       for (const std::uint32_t at : {0U, o_.context - verify}) {
         probes.push_back({at, verify, {.verify = true, .export_streams = true}});
       }
@@ -257,7 +270,8 @@ Status Qwen38Runner::Setup() {
     };
     for (const Probe& probe : probes) {
       std::vector<std::int32_t> history(std::size_t{probe.n_past} + probe.rows, 1000);
-      auto in = md::Qwen38Chunk(profile_, layout_, stand_in, history, probe.n_past, probe.rows);
+      auto in =
+          md::Qwen38Chunk(profile_, layout_, stand_in, history, probe.n_past, probe.rows, false);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -273,10 +287,12 @@ Status Qwen38Runner::Setup() {
       }
     }
     if (speculative()) {
-      // A prefill pass of a whole chunk at the end, and a draft there.
+      // A prefill pass of a whole chunk at the end, and a draft there; and
+      // the widest pass that does not select (its mask).
       for (const auto& [from, rows, passes, head] :
            {std::tuple{o_.context - o_.max_rows - 1, o_.max_rows, 1U, false},
-            std::tuple{o_.context - verify - o_.draft_rows, verify, o_.draft_rows, true}}) {
+            std::tuple{o_.context - verify - o_.draft_rows, verify, o_.draft_rows, true},
+            std::tuple{unselected - unselected_rows, unselected_rows, 1U, false}}) {
         auto shaped = MtpInputs(from, rows, passes, head, head ? 1 : 0);
         if (!shaped) {
           return std::unexpected(shaped.error());
@@ -332,8 +348,14 @@ Status Qwen38Runner::Setup() {
     const std::uint64_t row_cells = (2 * std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2) +
                                     (std::uint64_t{profile_.indexer_head_dim} * 4);
     const std::uint64_t snapshot_offset = Round(commit_layout_.bytes, 256);
+    // (And the block keys a verify completes: at most one a ratio of rows,
+    // and one more across a block's boundary.)
+    const std::uint64_t block_keys =
+        ((std::uint64_t{o_.draft_rows + 1} / profile_.indexer_ratio) + 1) * qsa *
+        std::uint64_t{profile_.indexer_head_dim} * 2;
     const std::uint64_t commit_bytes =
-        snapshot_offset + Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + 4096, 256);
+        snapshot_offset +
+        Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256);
     if (auto r = resources_.Map(commit_, "the Qwen3.8 verify's saves", commit_bytes,
                                 MemoryClass::kRuntime);
         !r) {
@@ -633,8 +655,8 @@ void Qwen38Runner::Check(const kg::Qwen38Graph& graph) {
   std::vector<const ggml_tensor*> state;
   std::vector<const ggml_tensor*> saves;
   for (const kg::Qwen38LayerTensors& l : graph.layers) {
-    for (const ggml_tensor* t :
-         {l.cache_k, l.cache_v, l.cache_idx, l.conv_state, l.recurrent, l.ple_state}) {
+    for (const ggml_tensor* t : {l.cache_k, l.cache_v, l.cache_idx, l.cache_pool, l.conv_state,
+                                 l.recurrent, l.ple_state}) {
       if (t != nullptr) {
         state.push_back(t);
       }
@@ -661,8 +683,9 @@ void Qwen38Runner::Check(const kg::Qwen38Graph& graph) {
 }
 
 void Qwen38Runner::CheckMtp(const kg::Qwen38MtpGraph& graph) {
-  const std::array<const ggml_tensor*, 4> state = {graph.layer.cache_k, graph.layer.cache_v,
-                                                   graph.layer.cache_idx, graph.streams};
+  const std::array<const ggml_tensor*, 5> state = {graph.layer.cache_k, graph.layer.cache_v,
+                                                   graph.layer.cache_idx, graph.layer.cache_pool,
+                                                   graph.streams};
   const auto inputs = graph.inputs();
   CheckCoverage(
       node_, owner_, graph.nodes,
@@ -1073,6 +1096,21 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
       }
       const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
       if (auto added = live_.Save(state + t.offset + (cell * bytes), bytes, i); !added) {
+        return added;
+      }
+    }
+  }
+  // And each block key it writes: the row that completes the block writes
+  // it, so a rejected row's block is restored with its cells.
+  const std::uint32_t ratio = profile_.indexer_ratio;
+  for (std::uint64_t b = n_past / ratio; b < (std::uint64_t{n_past} + rows) / ratio; ++b) {
+    const auto row = static_cast<std::uint32_t>(((b + 1) * ratio) - 1 - n_past);
+    for (const md::Qwen38StateTensor& t : layout_.tensors) {
+      if (t.kind != K::kIndexerBlocks) {
+        continue;
+      }
+      const std::uint64_t bytes = t.ne0 * 2;
+      if (auto added = live_.Save(state + t.offset + (b * bytes), bytes, row); !added) {
         return added;
       }
     }

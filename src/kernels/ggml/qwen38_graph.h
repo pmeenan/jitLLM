@@ -48,12 +48,21 @@
 //     product; the router's softmax, top experts and the shared expert's
 //     gate are one kernel; Gated DeltaNet's QKV and z rows are BF16 and its
 //     gated norm is quantized for the output product in one pass; QSA's
-//     heads are normalized and rotated in one pass, its selection makes the
-//     attention's mask on the device (ties to the lower cell, so the
-//     selection repeats run to run), and the output gate is fused with the
-//     output product's quantization. Each is checked against an FP64
-//     reference (tests/unit/qwen38_fast_test.cc), and the model against
-//     the oracle coarsely (docs/experiments/qwen38-native/README.md).
+//     heads are normalized and rotated in one pass, and the output gate is
+//     fused with the output product's quantization. Each is checked against
+//     an FP64 reference (tests/unit/qwen38_fast_test.cc), and the model
+//     against the oracle coarsely (docs/experiments/qwen38-native/README.md);
+//   - and in the fast form QSA's cost per token does not grow with the
+//     context but for the indexer's scoring (docs/experiments/long-context/):
+//     each block's pooled, normalized and rotated key is cached in the state
+//     once, when the chunk that completes the block runs (jitllm.qsa.pool;
+//     the reference form pools every block again at every step); the
+//     selection scores the cached keys and keeps its cells on the device at
+//     any depth, deterministically, ties to the lower cell
+//     (jitllm.qsa.topk); and attention reads the kept cells alone
+//     (jitllm.qsa.attn) rather than every cell under a mask. No tensor of
+//     every cell by every row is built, and no mask or block table on the
+//     host.
 //
 // Routed experts are 3D weights [k, n, experts] at the caller's expert
 // stride (the resident expert layout, docs/artifact-format.md#executable-views);
@@ -145,6 +154,7 @@ struct Qwen38LayerTensors {
   ggml_tensor* cache_k = nullptr;     // F16 [head_dim · kv_heads, cells]
   ggml_tensor* cache_v = nullptr;     // F16 [head_dim · kv_heads, cells]
   ggml_tensor* cache_idx = nullptr;   // F32 [indexer_head_dim, cells]
+  ggml_tensor* cache_pool = nullptr;  // BF16 [indexer_head_dim, cells / ratio]: block keys
   ggml_tensor* conv_state = nullptr;  // F32 [(conv - 1) · channels, 1]
   ggml_tensor* recurrent = nullptr;   // F32 [head² · v_heads, 1]
   ggml_tensor* ple_state = nullptr;   // F32 [ple_history · hc_width, 1]
@@ -207,15 +217,16 @@ inline constexpr std::int64_t kQwen38Bf16Rows = 16;
 
 struct Qwen38Graph {
   // Inputs, host-built (model/qwen38.h Qwen38ChunkInputs).
-  ggml_tensor* tokens = nullptr;       // I32 [rows]
-  ggml_tensor* positions = nullptr;    // I32 [4 · rows]
-  ggml_tensor* cells = nullptr;        // I64 [rows]
-  ggml_tensor* mask = nullptr;         // F16 [n_kv, rows, 1, 1]
-  ggml_tensor* mask_f32 = nullptr;     // F32 [n_kv, rows] (QSA selection only)
-  ggml_tensor* ple_rows = nullptr;     // I32 [ple_heads · rows]
-  ggml_tensor* state_row = nullptr;    // I64 [1]: 0, the state tensors' only row
-  ggml_tensor* row_zero = nullptr;     // I32 [1]: 0, for reading a weight row as F32
-  ggml_tensor* out_ids = nullptr;      // I32 [outputs]: the rows the head computes
+  ggml_tensor* tokens = nullptr;     // I32 [rows]
+  ggml_tensor* positions = nullptr;  // I32 [4 · rows]
+  ggml_tensor* cells = nullptr;      // I64 [rows]
+  ggml_tensor* mask = nullptr;       // F16 [n_kv, rows, 1, 1] (none where the device selects)
+  ggml_tensor* mask_f32 = nullptr;   // F32 [n_kv, rows] (QSA selection only)
+  ggml_tensor* ple_rows = nullptr;   // I32 [ple_heads · rows]
+  ggml_tensor* state_row = nullptr;  // I64 [1]: 0, the state tensors' only row
+  ggml_tensor* row_zero = nullptr;   // I32 [1]: 0, for reading a weight row as F32
+  ggml_tensor* out_ids = nullptr;    // I32 [outputs]: the rows the head computes
+  // The host's selection tables (none where the device selects).
   ggml_tensor* cell_block = nullptr;   // I32 [n_kv] (QSA selection only)
   ggml_tensor* block_cells = nullptr;  // I32 [ratio · blocks]
   ggml_tensor* block_pos = nullptr;    // I32 [4 · blocks]
@@ -302,11 +313,7 @@ struct Qwen38MtpPass {
   ggml_tensor* tokens = nullptr;  // I32 [rows]: pass 0 only
   ggml_tensor* positions = nullptr;
   ggml_tensor* cells = nullptr;
-  ggml_tensor* mask = nullptr;  // (none where the device selection makes it)
-  ggml_tensor* cell_block = nullptr;
-  ggml_tensor* block_cells = nullptr;
-  ggml_tensor* block_pos = nullptr;
-  ggml_tensor* block_bias = nullptr;
+  ggml_tensor* mask = nullptr;     // F16 [n_kv, rows]: a pass that selects has none
   ggml_tensor* out_ids = nullptr;  // unused by the drafter, kept for the shared builder
 };
 

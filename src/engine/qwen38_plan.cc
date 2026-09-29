@@ -110,6 +110,7 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
     state(l.cache_k, K::kK);
     state(l.cache_v, K::kV);
     state(l.cache_idx, K::kIndexerK);
+    state(l.cache_pool, K::kIndexerBlocks);
     state(l.conv_state, K::kConv);
     state(l.recurrent, K::kRecurrent);
     state(l.ple_state, K::kPleConv);
@@ -193,6 +194,7 @@ void BindQwen38MtpWeights(const Qwen38Model& m, kg::Qwen38MtpGraph& g) {
   kg::TensorArena::Bind(l.cache_k, m.places.mtp_state + s.k);
   kg::TensorArena::Bind(l.cache_v, m.places.mtp_state + s.v);
   kg::TensorArena::Bind(l.cache_idx, m.places.mtp_state + s.indexer);
+  kg::TensorArena::Bind(l.cache_pool, m.places.mtp_state + s.blocks);
   kg::TensorArena::Bind(g.streams, m.places.mtp_state + s.hidden);
 }
 
@@ -300,12 +302,6 @@ void Qwen38MtpSources(const kg::Qwen38MtpGraph& g, std::span<const md::Qwen38Chu
     if (t.mask != nullptr) {
       out.sources.emplace_back(t.mask, in.mask.data());
     }
-    if (t.cell_block != nullptr) {
-      out.sources.emplace_back(t.cell_block, in.qsa.cell_block.data());
-      out.sources.emplace_back(t.block_cells, in.qsa.block_cells.data());
-      out.sources.emplace_back(t.block_pos, in.qsa.block_pos.data());
-      out.sources.emplace_back(t.block_bias, in.qsa.bias.data());
-    }
   }
 }
 
@@ -322,7 +318,7 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   out.zero_index = 0;
   out.sources = {
       {g.tokens, in.tokens.data()}, {g.positions, in.positions.data()}, {g.cells, in.cells.data()}};
-  // The fast graph's QSA selection makes its masks on the device.
+  // The fast graph's QSA selection needs no masks or tables from the host.
   if (g.mask != nullptr) {
     out.sources.emplace_back(g.mask, in.mask.data());
   }
@@ -330,10 +326,8 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   out.sources.emplace_back(g.state_row, &out.zero_row);
   out.sources.emplace_back(g.row_zero, &out.zero_index);
   out.sources.emplace_back(g.out_ids, out.out_ids.data());
-  if (in.qsa_select) {
-    if (g.mask_f32 != nullptr) {
-      out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
-    }
+  if (in.qsa_select && g.cell_block != nullptr) {
+    out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
     out.sources.emplace_back(g.cell_block, in.qsa.cell_block.data());
     out.sources.emplace_back(g.block_cells, in.qsa.block_cells.data());
     out.sources.emplace_back(g.block_pos, in.qsa.block_pos.data());

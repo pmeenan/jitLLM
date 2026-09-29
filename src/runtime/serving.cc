@@ -365,8 +365,10 @@ class Qwen38 final : public Llm {
     options_.out = roles.spill;
     options_.context = entry.context;
     configured_rows_ = entry.prefill_chunk;
+    // (The runner's fast graph builds no mask of every cell by every row, so
+    // RE-037's bound does not cap its chunks.)
     max_rows_ = PrefillChunkRows(entry.context, entry.prefill_chunk, kQwen38PrefillRows,
-                                 model::Qwen38MostRows(entry.context));
+                                 model::Qwen38MostRows(entry.context, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (speculate_) {

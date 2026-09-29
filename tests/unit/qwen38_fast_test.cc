@@ -7,27 +7,32 @@
 // the scale the smallest power of two that holds the block, the padding
 // rows' scales zero) and the tensor-core product over it (the product of
 // the quantized operands, from FP64); the fused hyper-connections, routing,
-// Gated DeltaNet and QSA kernels against FP64 references; QSA's selection
-// against an exact host selection (ties to the lower cell); and what their
-// checks refuse.
+// Gated DeltaNet and QSA kernels against FP64 references; QSA's cached
+// block keys, its selection against an exact host selection (ties to the
+// lower cell, at any depth) and its attention over the kept cells; and
+// what their checks refuse.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <span>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -956,71 +961,316 @@ TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {
                   "attention times its gate into MXFP8");
 }
 
-TEST_F(Qwen38FastTest, QsaSelectionKeepsTheBestCellsTiesToTheLowerCell) {
-  constexpr std::int64_t heads = 4;
+// The block keys a chunk completes, and only those, pooled, normalized,
+// rotated and rounded to BF16 in place; a later one-row step completes the
+// next block.
+TEST_F(Qwen38FastTest, QsaPoolWritesTheBlocksAChunkCompletes) {
+  constexpr std::int64_t d = 128;
   constexpr std::int64_t ratio = 4;
-  constexpr std::int64_t n_kv = 2304;
-  constexpr std::int64_t blocks = n_kv / ratio;
-  constexpr std::int64_t width = 2051;
-  constexpr std::int64_t t = 37;
-  // Scores on a coarse grid, so that many blocks tie; negative ones, which
-  // relu zeroes; and a bias with blocks hidden (-inf) and forced (1e9).
-  std::mt19937 random(61);  // NOLINT(bugprone-random-generator-seed): reproducible
-  std::vector<float> score(static_cast<std::size_t>(blocks * heads * t));
-  for (float& s : score) {
-    s = static_cast<float>(static_cast<int>(random() % 9) - 3) * 0.5f;
+  constexpr std::int64_t cells = 256;
+  constexpr std::int64_t n_blocks = cells / ratio;
+  constexpr float base = 10000000.0f;
+  const float theta_scale = std::pow(base, -2.0f / 64.0f);
+  const auto raw_h = Normal(71, static_cast<std::size_t>(d * cells), 2.0f);
+  auto norm_h = Normal(72, d, 0.2f);
+  for (float& v : norm_h) {
+    v += 1.0f;
   }
-  std::vector<float> bias(static_cast<std::size_t>(blocks * t), 0.0f);
-  for (std::int64_t r = 0; r < t; ++r) {
-    bias[static_cast<std::size_t>((r * blocks) + blocks - 1)] = -INFINITY;
-    bias[static_cast<std::size_t>((r * blocks) + 3)] = 1e9f;
-  }
-  std::vector<std::int32_t> cell_block(static_cast<std::size_t>(n_kv));
-  for (std::int64_t j = 0; j < n_kv; ++j) {
-    cell_block[static_cast<std::size_t>(j)] = static_cast<std::int32_t>(j / ratio);
-  }
-  // Positions below the width (every earlier cell kept) and past it.
-  std::vector<std::int32_t> pos(static_cast<std::size_t>(4 * t));
-  for (std::int64_t r = 0; r < t; ++r) {
-    pos[static_cast<std::size_t>(r)] = static_cast<std::int32_t>(1990 + (r * 8));
-  }
-  ggml_tensor* score_t = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, blocks, heads, t), score);
-  ggml_tensor* bias_t = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, blocks, t), bias);
-  ggml_tensor* cells_t = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, n_kv), cell_block);
-  ggml_tensor* pos_t = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 4 * t), pos);
-  ggml_tensor* mask = kg::QsaSelect(c(), score_t, bias_t, cells_t, pos_t, width);
-  Run({mask});
-  EXPECT_EQ(PlannedFor(mask), kg::kQsaSelectName);
-  const auto got = Download<std::uint16_t>(mask);
-  std::size_t wrong = 0;
-  for (std::int64_t r = 0; r < t; ++r) {
-    std::vector<double> block(static_cast<std::size_t>(blocks));
-    for (std::int64_t b = 0; b < blocks; ++b) {
-      double s = 0.0;
-      for (std::int64_t h = 0; h < heads; ++h) {
-        s += std::max(0.0f, score[static_cast<std::size_t>((((r * heads) + h) * blocks) + b)]);
+  constexpr std::uint16_t kUntouched = 0x1234;
+  ggml_tensor* raw = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, d, cells), raw_h);
+  ggml_tensor* blocks =
+      Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, d, n_blocks),
+           std::vector<std::uint16_t>(static_cast<std::size_t>(d * n_blocks), kUntouched));
+  ggml_tensor* norm = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, d), norm_h);
+  const auto positions_of = [&](std::int64_t n_past, std::int64_t t) {
+    std::vector<std::int32_t> pos(static_cast<std::size_t>(4 * t));
+    for (std::int64_t s = 0; s < 4; ++s) {
+      for (std::int64_t r = 0; r < t; ++r) {
+        pos[static_cast<std::size_t>((s * t) + r)] = static_cast<std::int32_t>(n_past + r);
       }
-      block[static_cast<std::size_t>(b)] = s + bias[static_cast<std::size_t>((r * blocks) + b)];
     }
-    const std::int64_t p = pos[static_cast<std::size_t>(r)];
-    std::vector<std::int64_t> order(static_cast<std::size_t>(n_kv));
-    std::ranges::iota(order, std::int64_t{0});
-    const auto value = [&](std::int64_t j) {
-      return j <= p ? block[static_cast<std::size_t>(cell_block[static_cast<std::size_t>(j)])]
-                    : -std::numeric_limits<double>::infinity();
-    };
-    std::ranges::stable_sort(order,
-                             [&](std::int64_t a, std::int64_t b) { return value(a) > value(b); });
-    std::vector<bool> keep(static_cast<std::size_t>(n_kv), false);
-    for (std::int64_t i = 0; i < width; ++i) {
-      keep[static_cast<std::size_t>(order[static_cast<std::size_t>(i)])] = true;
+    return Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 4 * t), pos);
+  };
+  // Cells 5 .. 14: blocks 1 and 2 complete (block 3 is short of cell 15).
+  ggml_tensor* chunk =
+      kg::QsaPool(c(), raw, blocks, norm, positions_of(5, 10), ratio, kEps, theta_scale);
+  Run({chunk});
+  EXPECT_EQ(PlannedFor(chunk), kg::kQsaPoolName);
+  const auto want_block = [&](std::int64_t b) {
+    std::vector<double> v(static_cast<std::size_t>(d));
+    double sum = 0.0;
+    for (std::int64_t i = 0; i < d; ++i) {
+      double s = 0.0;
+      for (std::int64_t k = 0; k < ratio; ++k) {
+        s += raw_h[static_cast<std::size_t>((((b * ratio) + k) * d) + i)];
+      }
+      v[static_cast<std::size_t>(i)] = s / ratio;
+      sum += v[static_cast<std::size_t>(i)] * v[static_cast<std::size_t>(i)];
     }
-    for (std::int64_t j = 0; j < n_kv; ++j) {
-      const bool visible = keep[static_cast<std::size_t>(j)] && j <= p;
-      wrong += got[static_cast<std::size_t>((r * n_kv) + j)] != (visible ? 0x0000 : 0xFC00);
+    const double scale = 1.0 / std::sqrt((sum / d) + kEps);
+    for (std::int64_t i = 0; i < d; ++i) {
+      v[static_cast<std::size_t>(i)] *= scale * norm_h[static_cast<std::size_t>(i)];
     }
+    for (std::int64_t i = 0; i < 32; ++i) {
+      const double theta = static_cast<double>(b * ratio) *
+                           std::pow(static_cast<double>(theta_scale), static_cast<double>(i));
+      const double x0 = v[static_cast<std::size_t>(i)];
+      const double x1 = v[static_cast<std::size_t>(i + 32)];
+      v[static_cast<std::size_t>(i)] = (x0 * std::cos(theta)) - (x1 * std::sin(theta));
+      v[static_cast<std::size_t>(i + 32)] = (x0 * std::sin(theta)) + (x1 * std::cos(theta));
+    }
+    return v;
+  };
+  const auto check = [&](const std::vector<std::int64_t>& written, const std::string& what) {
+    const auto got = Download<std::uint16_t>(blocks);
+    for (std::int64_t b = 0; b < n_blocks; ++b) {
+      const bool expect = std::ranges::find(written, b) != written.end();
+      const auto row =
+          std::span(got).subspan(static_cast<std::size_t>(b * d), static_cast<std::size_t>(d));
+      if (!expect) {
+        EXPECT_TRUE(std::ranges::all_of(row, [](std::uint16_t x) { return x == kUntouched; }))
+            << what << ": block " << b << " written";
+        continue;
+      }
+      std::vector<float> values(row.size());
+      std::ranges::transform(row, values.begin(), FromBf16);
+      ExpectNear(values, want_block(b), 1e-5, std::format("{}: block {}", what, b));
+    }
+  };
+  check({1, 2}, "a chunk");
+  // A decode step at 15 completes block 3.
+  ggml_tensor* step =
+      kg::QsaPool(c(), raw, blocks, norm, positions_of(15, 1), ratio, kEps, theta_scale);
+  Run({step});
+  check({1, 2, 3}, "a step");
+}
+
+namespace {
+
+std::uint32_t HostOrderKey(float f) {
+  const auto b = std::bit_cast<std::uint32_t>(f);
+  return (b & 0x80000000U) != 0 ? ~b : (b | 0x80000000U);
+}
+
+// The selection's host reference: every visible cell's key (its block's
+// summed relu scores; the token's own incomplete block first), the width
+// best in (key descending, cell ascending) order, then ascending, then -1.
+std::vector<std::int32_t> SelectCells(const std::vector<float>& q, const std::vector<float>& keys,
+                                      std::int64_t r, std::int64_t pos, std::int64_t ratio,
+                                      std::int64_t width, std::int64_t row) {
+  constexpr std::int64_t d = 128;
+  constexpr std::int64_t heads = 4;
+  const std::int64_t own = (pos + 1) / ratio;
+  std::vector<std::uint32_t> block_key(static_cast<std::size_t>(own));
+  for (std::int64_t b = 0; b < own; ++b) {
+    double s = 0.0;
+    for (std::int64_t h = 0; h < heads; ++h) {
+      double dot = 0.0;
+      for (std::int64_t i = 0; i < d; ++i) {
+        dot += static_cast<double>(q[static_cast<std::size_t>((((r * heads) + h) * d) + i)]) *
+               keys[static_cast<std::size_t>((b * d) + i)];
+      }
+      s += std::max(0.0, dot);
+    }
+    block_key[static_cast<std::size_t>(b)] = HostOrderKey(static_cast<float>(s));
   }
-  EXPECT_EQ(wrong, 0U);
+  std::vector<std::pair<std::uint32_t, std::int64_t>> cells;
+  for (std::int64_t j = 0; j <= pos; ++j) {
+    const std::int64_t b = j / ratio;
+    cells.emplace_back(b < own ? block_key[static_cast<std::size_t>(b)] : 0xffffffffU, j);
+  }
+  std::ranges::stable_sort(cells, [](const auto& a, const auto& b) { return a.first > b.first; });
+  std::vector<std::int32_t> kept;
+  for (std::size_t i = 0; i < cells.size() && std::cmp_less(i, width); ++i) {
+    kept.push_back(static_cast<std::int32_t>(cells[i].second));
+  }
+  std::ranges::sort(kept);
+  kept.resize(static_cast<std::size_t>(row), -1);
+  return kept;
+}
+
+}  // namespace
+
+// The selection against its host reference, with values whose sums are
+// exact in F32 (so the device's order of sums cannot move a key) and whose
+// blocks tie often: one tile and several, the vector scores (up to 16
+// tokens) and the tensor-core ones, tokens with fewer visible cells than
+// the width and with an incomplete block of their own. The same run twice
+// gives the same bits. And adversarial ones: every block tied (zero
+// queries) over one tile and over several, so that the tiles' candidates
+// and the merge must both keep the lowest cells; tokens whose own block is
+// the last of a tile, the first of the next, or none (a complete last
+// block at the context's end); a token with one visible cell.
+TEST_F(Qwen38FastTest, QsaTopKKeepsTheBestCellsTiesToTheLowerCell) {
+  constexpr std::int64_t d = kg::kQsaIndexDim;
+  constexpr std::int64_t heads = kg::kQsaIndexHeads;
+  constexpr std::int64_t ratio = 4;
+  constexpr std::int64_t width = 2051;
+  constexpr std::int64_t row = kg::QsaTopKRow(width);
+  constexpr float base = 10000000.0f;
+  const float theta_scale = std::pow(base, -2.0f / 64.0f);
+  // (tokens, blocks, the first token's position, the positions' step,
+  // every block tied)
+  for (const auto& [t, n_blocks, first, step, tied] :
+       {std::tuple{3L, 1024L, 3000L, 5L, false}, std::tuple{20L, 2000L, 5000L, 3L, false},
+        std::tuple{1L, 65536L, 262000L, 1L, false}, std::tuple{37L, 20480L, 1000L, 2201L, false},
+        std::tuple{9L, 20480L, 81913L, 1L, false}, std::tuple{4L, 576L, 0L, 700L, true},
+        std::tuple{6L, 16384L, 32765L, 1L, false}, std::tuple{20L, 20480L, 32760L, 1500L, true},
+        std::tuple{1L, 65536L, 262143L, 1L, true}}) {
+    SCOPED_TRACE(std::format("{} tokens over {} blocks{}", t, n_blocks, tied ? ", tied" : ""));
+    // NOLINTNEXTLINE(bugprone-random-generator-seed): reproducible
+    std::mt19937 random(static_cast<unsigned>(n_blocks + t));
+    std::vector<float> q(static_cast<std::size_t>(d * heads * t));
+    for (float& v : q) {
+      v = tied ? 0.0f : static_cast<float>(static_cast<int>(random() % 3) - 1);
+    }
+    std::vector<float> keys(static_cast<std::size_t>(d * n_blocks));
+    for (float& v : keys) {
+      v = static_cast<float>(static_cast<int>(random() % 5) - 2) * 0.5f;
+    }
+    std::vector<std::int32_t> pos(static_cast<std::size_t>(4 * t));
+    for (std::int64_t s = 0; s < 4; ++s) {
+      for (std::int64_t r = 0; r < t; ++r) {
+        pos[static_cast<std::size_t>((s * t) + r)] =
+            static_cast<std::int32_t>(std::min(first + (r * step), (n_blocks * ratio) - 1));
+      }
+    }
+    ggml_tensor* q_t = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, d, heads, t), q);
+    ggml_tensor* keys_t = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, d, n_blocks), ToBf16(keys));
+    ggml_tensor* pos_t = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 4 * t), pos);
+    // The selection names its pool, which is not run here: the keys are the
+    // test's (the pool would write the blocks the positions complete).
+    ggml_tensor* raw = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, d, 4),
+                            std::vector<float>(static_cast<std::size_t>(d * 4)));
+    ggml_tensor* weight = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, d),
+                               std::vector<float>(static_cast<std::size_t>(d), 1.0f));
+    ggml_tensor* pool = kg::QsaPool(c(), raw, keys_t, weight, pos_t, ratio, kEps, theta_scale);
+    TensorArena::Bind(pool, Allocate(ggml_nbytes(pool)));
+    const std::array<ggml_tensor*, 2> outputs = {
+        kg::QsaTopK(c(), q_t, keys_t, pos_t, pool, n_blocks, width, ratio),
+        kg::QsaTopK(c(), q_t, keys_t, pos_t, pool, n_blocks, width, ratio)};
+    for (ggml_tensor* out : outputs) {
+      TensorArena::Bind(out, Allocate(ggml_nbytes(out)));
+      EXPECT_EQ(PlannedFor(out), kg::kQsaTopKName);
+      auto checked = kg::CheckQsaTopK(out);
+      ASSERT_TRUE(checked.has_value()) << checked.error().detail;
+      ASSERT_TRUE(kg::RunQsaTopK(launch(), out).has_value());
+    }
+    const auto got = Download<std::int32_t>(outputs[0]);
+    EXPECT_EQ(got, Download<std::int32_t>(outputs[1])) << "the same run twice";
+    const std::vector<float> rounded = [&] {
+      std::vector<float> v(keys.size());
+      std::ranges::transform(ToBf16(keys), v.begin(), FromBf16);
+      return v;
+    }();
+    std::size_t wrong = 0;
+    for (std::int64_t r = 0; r < t; ++r) {
+      const auto want =
+          SelectCells(q, rounded, r, pos[static_cast<std::size_t>(r)], ratio, width, row);
+      for (std::int64_t i = 0; i < row; ++i) {
+        wrong += got[static_cast<std::size_t>((r * row) + i)] != want[static_cast<std::size_t>(i)];
+      }
+    }
+    EXPECT_EQ(wrong, 0U);
+  }
+}
+
+// Attention over each token's kept cells against FP64 (the query scaled,
+// then rounded to F16, as the kernel reads it): a decode step and a verify
+// (several shares of a token's cells combined) and a prefill tile (one
+// share), tokens with a full row of cells and with fewer. The same run
+// twice gives the same bits.
+TEST_F(Qwen38FastTest, QsaAttnReadsTheKeptCellsAlone) {
+  constexpr std::int64_t d = kg::kQsaAttnHead;
+  constexpr std::int64_t heads = 24;
+  constexpr std::int64_t kv_heads = 2;
+  constexpr std::int64_t cells = 4096;
+  constexpr std::int64_t row = kg::QsaTopKRow(2051);
+  const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+  const auto k_h = Normal(81, static_cast<std::size_t>(d * kv_heads * cells));
+  const auto v_h = Normal(82, static_cast<std::size_t>(d * kv_heads * cells));
+  const std::vector<std::uint16_t> k16 = [&] {
+    std::vector<std::uint16_t> out(k_h.size());
+    std::ranges::transform(k_h, out.begin(), [](float x) { return ggml_fp32_to_fp16(x); });
+    return out;
+  }();
+  const std::vector<std::uint16_t> v16 = [&] {
+    std::vector<std::uint16_t> out(v_h.size());
+    std::ranges::transform(v_h, out.begin(), [](float x) { return ggml_fp32_to_fp16(x); });
+    return out;
+  }();
+  ggml_tensor* k = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F16, d * kv_heads, cells), k16);
+  ggml_tensor* v = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F16, d * kv_heads, cells), v16);
+  for (const std::int64_t t : {1L, 3L, 100L}) {
+    SCOPED_TRACE(std::format("{} tokens", t));
+    const auto q_h =
+        Normal(83 + static_cast<std::uint64_t>(t), static_cast<std::size_t>(d * heads * t), 2.0f);
+    // NOLINTNEXTLINE(bugprone-random-generator-seed): reproducible
+    std::mt19937 random(static_cast<unsigned>(t));
+    std::vector<std::int32_t> idx(static_cast<std::size_t>(row * t), -1);
+    for (std::int64_t r = 0; r < t; ++r) {
+      // Some tokens keep 2,051 cells, the others fewer (17 the fewest).
+      const std::int64_t count = r % 3 == 0 ? 2051 : 17 + (r * 5);
+      std::vector<std::int32_t> all(static_cast<std::size_t>(cells));
+      std::ranges::iota(all, 0);
+      std::ranges::shuffle(all, random);
+      all.resize(static_cast<std::size_t>(count));
+      std::ranges::sort(all);
+      std::ranges::copy(all, idx.begin() + (r * row));
+    }
+    ggml_tensor* q = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, d, heads, t), q_h);
+    ggml_tensor* cells_t = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, row, t), idx);
+    ggml_tensor* first = kg::QsaAttn(c(), q, k, v, cells_t, scale);
+    ggml_tensor* again = kg::QsaAttn(c(), q, k, v, cells_t, scale);
+    Run({first, again});
+    EXPECT_EQ(PlannedFor(first), kg::kQsaAttnName);
+    const auto got = Download(first);
+    const auto got_again = Download(again);
+    EXPECT_EQ(std::memcmp(got.data(), got_again.data(), got.size() * sizeof(float)), 0);
+    std::vector<double> want(static_cast<std::size_t>(d * heads * t));
+    for (std::int64_t r = 0; r < t; ++r) {
+      for (std::int64_t h = 0; h < heads; ++h) {
+        const std::int64_t kh = h / (heads / kv_heads);
+        std::vector<double> qd(static_cast<std::size_t>(d));
+        for (std::int64_t i = 0; i < d; ++i) {
+          qd[static_cast<std::size_t>(i)] = ggml_fp16_to_fp32(ggml_fp32_to_fp16(
+              q_h[static_cast<std::size_t>((((r * heads) + h) * d) + i)] * scale));
+        }
+        std::vector<double> logits;
+        std::vector<std::int64_t> kept;
+        for (std::int64_t i = 0; i < row; ++i) {
+          const std::int32_t cell = idx[static_cast<std::size_t>((r * row) + i)];
+          if (cell < 0) {
+            break;
+          }
+          double s = 0.0;
+          for (std::int64_t j = 0; j < d; ++j) {
+            s += qd[static_cast<std::size_t>(j)] *
+                 ggml_fp16_to_fp32(
+                     k16[static_cast<std::size_t>((cell * d * kv_heads) + (kh * d) + j)]);
+          }
+          logits.push_back(s);
+          kept.push_back(cell);
+        }
+        const double m = *std::ranges::max_element(logits);
+        double l = 0.0;
+        for (double& s : logits) {
+          s = std::exp(s - m);
+          l += s;
+        }
+        for (std::int64_t j = 0; j < d; ++j) {
+          double o = 0.0;
+          for (std::size_t i = 0; i < kept.size(); ++i) {
+            o += logits[i] *
+                 ggml_fp16_to_fp32(
+                     v16[static_cast<std::size_t>((kept[i] * d * kv_heads) + (kh * d) + j)]);
+          }
+          want[static_cast<std::size_t>((((r * heads) + h) * d) + j)] = o / l;
+        }
+      }
+    }
+    ExpectNear(got, want, 1e-5, std::format("sparse attention, {} tokens", t));
+  }
 }
 
 TEST_F(Qwen38FastTest, TheChecksRefuseWhatTheKernelsCannotRun) {
@@ -1048,18 +1298,45 @@ TEST_F(Qwen38FastTest, TheChecksRefuseWhatTheKernelsCannotRun) {
   }
   EXPECT_EQ(reason(kg::CheckMxfp8Quantize(q2)), "accepted");
   EXPECT_NE(reason(kg::CheckMxfp8Gemm(y)), "accepted");
-  // A selection wider than the cells.
-  ggml_tensor* score = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 64, 4, 2),
-                            std::vector<float>(static_cast<std::size_t>(64 * 4 * 2), 0.0f));
-  ggml_tensor* bias = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, 2),
-                           std::vector<float>(static_cast<std::size_t>(64 * 2), 0.0f));
-  ggml_tensor* cells =
-      Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 256), std::vector<std::int32_t>(256, 0));
+  // A selection wider than its blocks' cells, one past the tiles, one whose
+  // pool writes other block keys; attention over more query heads a KV
+  // head than a tile's rows.
+  ggml_tensor* iq = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 128, 4, 2),
+                         std::vector<float>(static_cast<std::size_t>(128 * 4 * 2), 0.0f));
+  ggml_tensor* keys = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, 128, 64),
+                           std::vector<std::uint16_t>(static_cast<std::size_t>(128 * 64), 0));
+  ggml_tensor* foreign = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, 128, 64),
+                              std::vector<std::uint16_t>(static_cast<std::size_t>(128 * 64), 0));
+  ggml_tensor* raw = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, 256),
+                          std::vector<float>(static_cast<std::size_t>(128 * 256), 0.0f));
+  ggml_tensor* weight = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 128),
+                             std::vector<float>(static_cast<std::size_t>(128), 1.0f));
   ggml_tensor* pos =
       Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 8), std::vector<std::int32_t>(8, 0));
-  ggml_tensor* mask = kg::QsaSelect(c(), score, bias, cells, pos, 257);
-  TensorArena::Bind(mask, Allocate(ggml_nbytes(mask)));
-  EXPECT_NE(reason(kg::CheckQsaSelect(mask)), "accepted");
+  ggml_tensor* pool = kg::QsaPool(c(), raw, keys, weight, pos, 4, kEps, 0.5f);
+  ggml_tensor* pool_other = kg::QsaPool(c(), raw, foreign, weight, pos, 4, kEps, 0.5f);
+  for (ggml_tensor* t : {pool, pool_other}) {
+    TensorArena::Bind(t, Allocate(ggml_nbytes(t)));
+  }
+  EXPECT_EQ(reason(kg::CheckQsaPool(pool)), "accepted");
+  const auto topk_reason = [&](ggml_tensor* p, std::int64_t n_blocks, std::int64_t width) {
+    ggml_tensor* sel = kg::QsaTopK(c(), iq, keys, pos, p, n_blocks, width, 4);
+    TensorArena::Bind(sel, Allocate(ggml_nbytes(sel)));
+    return reason(kg::CheckQsaTopK(sel));
+  };
+  EXPECT_EQ(topk_reason(pool, 64, 255), "accepted");
+  EXPECT_NE(topk_reason(pool, 64, 257), "accepted");
+  EXPECT_NE(topk_reason(pool, 65, 255), "accepted");  // more blocks than the keys hold
+  EXPECT_NE(topk_reason(pool_other, 64, 255), "accepted");
+  ggml_tensor* aq = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 256, 34, 1),
+                         std::vector<float>(static_cast<std::size_t>(256 * 34), 0.0f));
+  ggml_tensor* kv = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 512, 64),
+                         std::vector<std::uint16_t>(static_cast<std::size_t>(512 * 64), 0));
+  ggml_tensor* kept =
+      Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 32, 1), std::vector<std::int32_t>(32, -1));
+  ggml_tensor* attn = kg::QsaAttn(c(), aq, kv, kv, kept, 0.0625f);
+  TensorArena::Bind(attn, Allocate(ggml_nbytes(attn)));
+  EXPECT_NE(reason(kg::CheckQsaAttn(attn)), "accepted");
   // More streams than the prep holds.
   ggml_tensor* streams = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1024, 9, 1),
                               std::vector<float>(static_cast<std::size_t>(1024 * 9), 1.0f));

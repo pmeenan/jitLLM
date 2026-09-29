@@ -202,12 +202,17 @@ not used. The options each renderer supports and refuses are in
   prefilled in 2,040-row chunks: RE-037), and against Mia's vLLM at 32K
   and 128K ([long-context](experiments/long-context/README.md): greedy
   within the near-tie bound, perplexity −2.1% / −1.4%, retrieval at every
-  rung to 256K). Its speed falls with depth (prefill 0.27× and decode
-  0.29× Mia's at 256K; the report's gap 2), and speculation is refused
-  above a context of 32,768 (the MTP drafter's selection). The minimum,
-  512, starts and serves
+  rung to 256K). Since long context's phase 2 its per-token cost is flat
+  with depth to within the indexer's scoring and selection (block keys
+  cached, the selection on the device at any depth, attention over the
+  2,051 kept cells alone): through the runtime prefill 2,314 / 2,359 /
+  2,178 tok/s and plain decode 26.8 / 26.0 / 24.4 tok/s at 8K / 64K / 256K,
+  1.2–1.4× and 1.03–1.08× Mia's vLLM from 32K on; bit-for-bit repeatable at
+  64K and 128K; speculation with its MTP drafter to the configured
+  262,144 ([long-context](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
+  The minimum, 512, starts and serves
   (checked on `spark`, with MTP: 510 tokens usable), its prefill chunk
-  504 rows; the default chunk is 4,096 rows
+  504 rows; the default chunk is 4,096 rows at every context
   ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).
 - **Verified:**
   - Against Mia's vLLM (the same checkpoint, deterministic mode, MTP
@@ -237,8 +242,9 @@ not used. The options each renderer supports and refuses are in
   - The near-tie bound was set after the first comparison with the
     oracle, not pre-registered.
   - The reference and unfused graphs' QSA top-k is not repeatable past
-    2,051 attended cells (RE-031); the default fast form breaks ties by
-    cell and repeats.
+    2,051 attended cells (RE-031), and their chunks stay bounded by
+    RE-037; the default fast form breaks ties by cell and repeats at any
+    depth.
   - The NVFP4 `tokenizer.json` normalizes to NFC, llama.cpp's Qwen3.8 GGUF
     does not (6 corpus items differ); jitLLM follows the NVFP4 file, as
     vLLM does.
@@ -262,6 +268,11 @@ not used. The options each renderer supports and refuses are in
   Speed headline: 1.12× / 1.03× Mia's MTP-3 decode on `prose` / `code`;
   with TensorFold's techniques the rate moved with acceptance (`prose`
   −2.5%, `code` +6%, [tensorfold-techniques](experiments/tensorfold-techniques/README.md#speculation-the-adaptive-window)).
+- **Context:** to its target's configured maximum, 262,144 (registered and
+  run with 128K and 256K prompts; forced rejections and rollback across a
+  swap checked at 64K). Until long context's phase 2 it was refused above
+  32,768 (its selection)
+  ([long-context](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
 - **Known divergences:** the verify is batched, not row-invariant, so
   speculation has no bit-exact mode; its own noise (p99 up to 2.37 on the
   forced run, 4.28 after TensorFold's techniques, whose plain decode and

@@ -169,7 +169,9 @@ inline constexpr std::string_view kGdnHistoryName = "jitllm.gdn.history";
 inline constexpr std::string_view kGdnStepName = "jitllm.gdn.step";
 inline constexpr std::string_view kQsaPrepName = "jitllm.qsa.prep";
 inline constexpr std::string_view kQsaGateQuantizeName = "jitllm.qsa.gate_quantize";
-inline constexpr std::string_view kQsaSelectName = "jitllm.qsa.select";
+inline constexpr std::string_view kQsaPoolName = "jitllm.qsa.pool";
+inline constexpr std::string_view kQsaTopKName = "jitllm.qsa.topk";
+inline constexpr std::string_view kQsaAttnName = "jitllm.qsa.attn";
 // DeepSeek V4's fast plan (jitllm_ops.h).
 inline constexpr std::string_view kQuantizeQ8Name = "jitllm.q8_1";
 inline constexpr std::string_view kVecQName = "jitllm.vecq";
