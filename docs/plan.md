@@ -1157,6 +1157,21 @@ family" guide, and its long-context scaling work.
       experts). The target is faster than ExLlamaV3 on the GB10, with
       TensorFold's EXL3 path reported beside it, at decode and prefill.
       It builds on M2's native EXL3 linear (D-080).
+      Study first: [TensorFold #42](https://github.com/ashhart/TensorFold/pull/42)
+      (merged 2026-09-28, MIT). It reads EXL3 on CUDA for any codebook
+      (3inst, mcg, mul1), 1–8 bits and mixed-K packs, with:
+      - a row-invariant dense EXL3 linear (1–128 rows), bit for bit with
+        ExLlamaV3's `reconstruct`;
+      - coalesced low-bit word reads with prefetch;
+      - one grouped kernel for mixed-width routed experts (no atomics or
+        host syncs, graph-safe).
+
+      It reports 1.5–1.6× ExLlamaV3 on Qwen3.8-27B and Flash Next, 1.5–3.6×
+      on mixed-K expert layers, and drafted output equal to serial
+      (creator-reported). Its prefill is untuned (decode kernels in 64-row
+      chunks), and mcg and 3inst are verified on partial packs only.
+      Measure it against ExLlamaV3 and us, then adopt what transfers
+      (D-091).
 - [ ] **Resident only.** Demand-paged experts stay M7's; M7 keeps its
       daily-driver usability work and builds on the families brought up
       here.
