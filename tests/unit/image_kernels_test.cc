@@ -7,13 +7,21 @@
 // rounding where it rounds: equal, or one BF16 step apart where the device's
 // and the host's transcendental functions or summation orders differ; the
 // products and attention against FP64 within a normalized squared error;
-// and their refusals.
+// and their refusals. The speed slice's fusions against the operations they
+// replace, bit for bit (the gated residual with its norm, the vectorized
+// SwiGLU, the Euler step reading dt on the device); its pinned cuBLASLt
+// products against cublasGemmEx's, bit for bit, at every pinned shape on the
+// GB10 the pins were tuned on; the implicit-GEMM convolution against FP64
+// and the im2col path; and the pipeline's plans bound through the registry
+// (kernels/image/pipeline.h), with the refusals of a plan that names what a
+// role does not take or an implementation this build lacks.
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -27,8 +35,12 @@
 #include <string>
 #include <vector>
 
+#include "execution/registry.h"
 #include "kernels/image/gemm.h"
+#include "kernels/image/implementations.h"
 #include "kernels/image/ops.h"
+#include "kernels/image/pipeline.h"
+#include "model/qwen_image.h"
 
 namespace {
 
@@ -570,6 +582,427 @@ TEST_F(ImageKernelsTest, VaeElementwiseStepsMatchTheirDefinitions) {
     }
   }
   EXPECT_FALSE(ki::AddDupUp(sum.get(), ds.get(), 3, 1, 2, 2, 3, s()).has_value());
+}
+
+// ---- the speed slice
+
+TEST_F(ImageKernelsTest, FusedResidualNormIsTheTwoOperationsBitForBit) {
+  // The denoiser's width (two chunks per thread, in registers) and one the
+  // kernel takes at a run-time chunk count; text rows before first_target;
+  // y at a wider stride.
+  for (const std::int64_t width : {std::int64_t{4096}, std::int64_t{3000}}) {
+    constexpr std::int64_t kRows = 11;
+    constexpr std::int64_t kFirstTarget = 4;
+    const auto x = Random(static_cast<std::size_t>(kRows * width), 91, 3.0f);
+    const auto y = Random(static_cast<std::size_t>(kRows * width * 2), 92, 2.0f);
+    const auto mod = Random(static_cast<std::size_t>(width * 4 * 2), 93, 0.5f);
+    Device<Bf16> x1(x);
+    Device<Bf16> x2(x);
+    Device<Bf16> dy(y);
+    Device<Bf16> dm(mod);
+    Device<Bf16> n1(static_cast<std::size_t>(kRows * width));
+    Device<Bf16> n2(static_cast<std::size_t>(kRows * width));
+    const std::int64_t stride = 4 * width;
+    Ok(ki::GatedResidual(x1.get(), dy.get(), 2 * width, kRows, width, dm.get() + width, stride,
+                         kFirstTarget, s()),
+       "residual");
+    Ok(ki::LayerNormModulate(x1.get(), n1.get(), kRows, width, 1e-6f, dm.get() + (2 * width),
+                             stride, kFirstTarget, s()),
+       "norm");
+    Ok(ki::GatedResidualNorm(x2.get(), dy.get(), 2 * width, kRows, width, dm.get() + width, stride,
+                             kFirstTarget, n2.get(), 1e-6f, dm.get() + (2 * width), stride, s()),
+       "fused");
+    EXPECT_EQ(x1.Get(), x2.Get()) << width;
+    EXPECT_EQ(n1.Get(), n2.Get()) << width;
+  }
+  Device<Bf16> x(64);
+  // A width over 8,192 and a misaligned row are refused.
+  EXPECT_FALSE(ki::GatedResidualNorm(x.get(), x.get(), 8200, 1, 8200, x.get(), 8200, 0, x.get(),
+                                     1e-6f, x.get(), 8200, s())
+                   .has_value());
+  EXPECT_FALSE(ki::GatedResidualNorm(x.get() + 1, x.get(), 8, 1, 8, x.get(), 8, 0, x.get(), 1e-6f,
+                                     x.get(), 8, s())
+                   .has_value());
+}
+
+TEST_F(ImageKernelsTest, PrefixedAttentionIsOneRangesBitForBit) {
+  // 25 prefix rows (the text's) and 1,500 more (a partial last tile), eight
+  // heads: the prefix read from its own buffers gives the bits of one range
+  // holding both. (Enough queries that a query normed differently in one
+  // element in ten thousand would show in the outputs.)
+  constexpr std::int64_t kPrefix = 25;
+  constexpr std::int64_t kRest = 1500;
+  constexpr std::int64_t kHeads = 8;
+  constexpr std::int64_t kWidth = kHeads * 128;
+  const auto q = Random(kRest * kWidth, 131, 2.0f);
+  const auto k = Random((kPrefix + kRest) * kWidth, 132, 2.0f);
+  const auto v = Random((kPrefix + kRest) * kWidth, 133);
+  Device<Bf16> dq(q);
+  Device<Bf16> dk(k);
+  Device<Bf16> dv(v);
+  Device<Bf16> kp(std::vector<Bf16>(k.begin(), k.begin() + (kPrefix * kWidth)));
+  Device<Bf16> vp(std::vector<Bf16>(v.begin(), v.begin() + (kPrefix * kWidth)));
+  Device<Bf16> one(kRest * kWidth);
+  Device<Bf16> two(kRest * kWidth);
+  const float scale = 1.0f / std::sqrt(128.0f);
+  Ok(ki::FlashAttention(dq.get(), kWidth, dk.get(), kWidth, dv.get(), kWidth, one.get(), kWidth,
+                        kRest, kPrefix + kRest, kHeads, kHeads, scale, s()),
+     "one range");
+  Ok(ki::FlashAttentionPrefixed(dq.get(), kWidth, kp.get(), vp.get(), kPrefix,
+                                dk.get() + (kPrefix * kWidth), kWidth,
+                                dv.get() + (kPrefix * kWidth), kWidth, two.get(), kWidth, kRest,
+                                kPrefix + kRest, kHeads, kHeads, scale, s()),
+     "prefixed");
+  EXPECT_EQ(one.Get(), two.Get());
+  // The queries normed and rotated in the kernel: HeadNormRopeComplex's
+  // bits, then the attention's (raw queries at the scale a projection gives).
+  const auto raw = Random(kRest * kWidth, 134, 8.0f);
+  const auto w = Random(128, 135);
+  std::vector<float> freqs(kRest * 128);
+  for (std::size_t i = 0; i < freqs.size(); i += 2) {
+    const float angle = static_cast<float>(i) * 0.013f;
+    freqs[i] = std::cos(angle);
+    freqs[i + 1] = std::sin(angle);
+  }
+  Device<Bf16> draw(raw);
+  Device<Bf16> rotated(raw);
+  Device<Bf16> dw(w);
+  Device<float> df(freqs);
+  Ok(ki::HeadNormRopeComplex(rotated.get(), kWidth, kRest, kHeads, dw.get(), df.get(), 1e-6f, s()),
+     "rotary");
+  Ok(ki::FlashAttentionPrefixed(rotated.get(), kWidth, kp.get(), vp.get(), kPrefix,
+                                dk.get() + (kPrefix * kWidth), kWidth,
+                                dv.get() + (kPrefix * kWidth), kWidth, one.get(), kWidth, kRest,
+                                kPrefix + kRest, kHeads, kHeads, scale, s()),
+     "rotated first");
+  const ki::QueryNorm norm{.weight = dw.get(), .freqs = df.get(), .eps = 1e-6f};
+  Ok(ki::FlashAttentionPrefixed(draw.get(), kWidth, kp.get(), vp.get(), kPrefix,
+                                dk.get() + (kPrefix * kWidth), kWidth,
+                                dv.get() + (kPrefix * kWidth), kWidth, two.get(), kWidth, kRest,
+                                kPrefix + kRest, kHeads, kHeads, scale, s(), &norm),
+     "normed in the kernel");
+  EXPECT_EQ(one.Get(), two.Get());
+  // A prefix longer than the keys is refused.
+  EXPECT_FALSE(ki::FlashAttentionPrefixed(dq.get(), kWidth, kp.get(), vp.get(), 400, dk.get(),
+                                          kWidth, dv.get(), kWidth, two.get(), kWidth, kRest, 325,
+                                          kHeads, kHeads, scale, s())
+                   .has_value());
+}
+
+TEST_F(ImageKernelsTest, VectorSwiGluAndDeviceDtMatchTheirDefinitions) {
+  constexpr std::int64_t kRows = 5;
+  constexpr std::int64_t kWidth = 64;
+  const auto g = Random(kRows * kWidth, 101, 2.0f);
+  const auto u = Random(kRows * kWidth, 102);
+  Device<Bf16> dg(g);
+  Device<Bf16> du(u);
+  Device<Bf16> out(kRows * kWidth);
+  Ok(ki::SwiGlu(dg.get(), kWidth, du.get(), kWidth, out.get(), kRows, kWidth, s()), "swiglu8");
+  std::vector<Bf16> want(kRows * kWidth);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    const float x = FromBf16(g[i]);
+    want[i] = ToBf16(R(x / (1.0f + std::exp(-x))) * FromBf16(u[i]));
+  }
+  ExpectClose(out.Get(), want, 1, 0.05, "SwiGlu8");
+  // In place, as the denoiser runs it.
+  Ok(ki::SwiGlu(dg.get(), kWidth, du.get(), kWidth, dg.get(), kRows, kWidth, s()), "in place");
+  EXPECT_EQ(dg.Get(), out.Get());
+  // EulerStepAt with EulerStepDt's dt is EulerStep.
+  const auto sample = Random(999, 103);
+  const auto noise = Random(999, 104);
+  Device<Bf16> ds(sample);
+  Device<Bf16> dn(noise);
+  Device<Bf16> a(999);
+  Device<Bf16> b(999);
+  const float dt = -0.0130362511f;
+  Device<float> ddt(std::vector<float>{ki::EulerStepDt(dt, true)});
+  Ok(ki::EulerStep(ds.get(), dn.get(), a.get(), dt, true, 999, s()), "euler");
+  Ok(ki::EulerStepAt(ds.get(), dn.get(), b.get(), ddt.get(), 999, s()), "euler at");
+  EXPECT_EQ(a.Get(), b.Get());
+}
+
+// The im2col path's convolution (FillBias, Im2Col3x3, ConvProduct).
+std::vector<Bf16> Im2colConv(cublasHandle_t blas, const Device<Bf16>& img, const Device<Bf16>& w,
+                             const Device<Bf16>& bias, std::int64_t ci, std::int64_t co,
+                             std::int64_t h, std::int64_t wd, void* stream) {
+  Device<Bf16> col(static_cast<std::size_t>(ci * 9 * h * wd));
+  Device<Bf16> out(static_cast<std::size_t>(co * h * wd));
+  Ok(ki::FillBias(bias.get(), out.get(), co, h * wd, stream), "bias");
+  Ok(ki::Im2Col3x3(img.get(), ci, h, wd, 0, h * wd, col.get(), stream), "im2col");
+  Ok(ki::ConvProduct(blas, w.get(), co, ci * 9, col.get(), h * wd, out.get(), h * wd, h * wd, true),
+     "conv");
+  return out.Get();
+}
+
+TEST_F(ImageKernelsTest, ImplicitConvolutionMatchesFp64AndTheIm2colPath) {
+  struct Case {
+    std::int64_t ci, co, h, w;
+  };
+  // Tiles past the image in both dimensions and a channel tile partly used
+  // (150 of 288), the VAE's conv_out (144 to 4), a tile row narrower than
+  // the tile, several input stages, and even widths not a multiple of 8
+  // (the VAE's at 992², 62 to 992 pixels wide), one of them past a tile's
+  // edge.
+  for (const Case c : std::vector<Case>{{16, 150, 6, 40},
+                                        {144, 4, 9, 16},
+                                        {48, 144, 5, 8},
+                                        {32, 288, 4, 64},
+                                        {64, 40, 5, 62},
+                                        {16, 8, 3, 34},
+                                        {32, 150, 7, 6}}) {
+    const std::string name = std::format("{} -> {} at {}x{}", c.ci, c.co, c.h, c.w);
+    const auto img = Random(static_cast<std::size_t>(c.ci * c.h * c.w), 111);
+    // F32 weights (their BF16 values, so that both paths round the same).
+    const auto wb = Random(static_cast<std::size_t>(c.co * c.ci * 9), 112, 0.1f);
+    std::vector<float> wf(wb.size());
+    for (std::size_t i = 0; i < wb.size(); ++i) {
+      wf[i] = FromBf16(wb[i]);
+    }
+    const auto bias = Random(static_cast<std::size_t>(c.co), 113);
+    Device<Bf16> di(img);
+    Device<float> dwf(wf);
+    Device<Bf16> dwb(wb);
+    Device<Bf16> db(bias);
+    Device<Bf16> krsc(wb.size());
+    Ok(ki::Conv3x3WeightsKrsc(dwf.get(), krsc.get(), c.co, c.ci, s()), name + " krsc");
+    const auto k = krsc.Get();
+    for (std::int64_t o = 0; o < c.co; ++o) {
+      for (std::int64_t i = 0; i < c.ci; ++i) {
+        for (std::int64_t t = 0; t < 9; ++t) {
+          ASSERT_EQ(k[static_cast<std::size_t>((((o * 9) + t) * c.ci) + i)],
+                    wb[static_cast<std::size_t>((((o * c.ci) + i) * 9) + t)])
+              << name;
+        }
+      }
+    }
+    Device<Bf16> out(static_cast<std::size_t>(c.co * c.h * c.w));
+    Ok(ki::Conv3x3Implicit(di.get(), c.ci, c.h, c.w, krsc.get(), db.get(), out.get(), c.co, s()),
+       name);
+    const auto got = out.Get();
+    std::vector<double> want(got.size());
+    for (std::int64_t o = 0; o < c.co; ++o) {
+      for (std::int64_t y = 0; y < c.h; ++y) {
+        for (std::int64_t x = 0; x < c.w; ++x) {
+          double acc = FromBf16(bias[static_cast<std::size_t>(o)]);
+          for (std::int64_t i = 0; i < c.ci; ++i) {
+            for (std::int64_t t = 0; t < 9; ++t) {
+              const std::int64_t sy = y + (t / 3) - 1;
+              const std::int64_t sx = x + (t % 3) - 1;
+              if (sy < 0 || sy >= c.h || sx < 0 || sx >= c.w) {
+                continue;
+              }
+              acc += static_cast<double>(
+                         FromBf16(img[static_cast<std::size_t>((((i * c.h) + sy) * c.w) + sx)])) *
+                     FromBf16(wb[static_cast<std::size_t>((((o * c.ci) + i) * 9) + t)]);
+            }
+          }
+          want[static_cast<std::size_t>((((o * c.h) + y) * c.w) + x)] = acc;
+        }
+      }
+    }
+    EXPECT_LE(Nmse(got, want), 1e-5) << name;
+    // Against the im2col path: rounding apart, one BF16 step at most.
+    ExpectClose(got, Im2colConv(blas_, di, dwb, db, c.ci, c.co, c.h, c.w, s()), 1, 0.02, name);
+  }
+  Device<Bf16> x(4096);
+  // Input channels not a multiple of 16, an odd width.
+  EXPECT_FALSE(
+      ki::Conv3x3Implicit(x.get(), 8, 4, 8, x.get(), x.get(), x.get(), 4, s()).has_value());
+  EXPECT_FALSE(
+      ki::Conv3x3Implicit(x.get(), 16, 4, 13, x.get(), x.get(), x.get(), 4, s()).has_value());
+}
+
+TEST_F(ImageKernelsTest, PinnedProductsAreCublasGemmExsBitForBit) {
+  void* workspace = nullptr;
+  constexpr std::uint64_t kWorkspace = std::uint64_t{32} << 20U;
+  ASSERT_EQ(cudaMalloc(&workspace, kWorkspace), cudaSuccess);
+  auto lt = ki::LtGemm::Create(reinterpret_cast<std::uint64_t>(workspace), kWorkspace);
+  ASSERT_TRUE(lt.has_value()) << lt.error();
+  // A shape nothing pins: cuBLASLt's first heuristic choice, against FP64.
+  {
+    constexpr std::int64_t kM = 7;
+    constexpr std::int64_t kN = 40;
+    constexpr std::int64_t kK = 96;
+    const auto x = Random(kM * kK, 121);
+    const auto w = Random(kN * kK, 122);
+    Device<Bf16> dx(x);
+    Device<Bf16> dw(w);
+    Device<Bf16> out(kM * kN);
+    Ok((*lt)->Linear(dx.get(), kK, dw.get(), kK, out.get(), kN, kM, kN, kK, s()), "lt");
+    std::vector<double> want(kM * kN);
+    for (std::int64_t m = 0; m < kM; ++m) {
+      for (std::int64_t n = 0; n < kN; ++n) {
+        for (std::int64_t k = 0; k < kK; ++k) {
+          want[static_cast<std::size_t>((m * kN) + n)] +=
+              static_cast<double>(FromBf16(x[static_cast<std::size_t>((m * kK) + k)])) *
+              FromBf16(w[static_cast<std::size_t>((n * kK) + k)]);
+        }
+      }
+    }
+    EXPECT_LE(Nmse(out.Get(), want), 1e-5);
+    // Misaligned operands are refused, with nothing queued.
+    EXPECT_FALSE(
+        (*lt)->Linear(dx.get() + 8, kK, dw.get(), kK, out.get(), kN, kM, kN, kK, s()).has_value());
+  }
+  // Every pin, on the device it was tuned on: the same bits as cublasGemmEx.
+  const ki::GemmPins pins = ki::PinnedGemms();
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
+  if ((prop.major * 100) + (prop.minor * 10) != pins.compute_capability ||
+      prop.multiProcessorCount != pins.sm_count) {
+    (void)cudaFree(workspace);
+    GTEST_SKIP() << "the pins are the GB10's";
+  }
+  EXPECT_FALSE(pins.pins.empty());
+  // cublasGemmEx with the workspace the image's handle has (upstream's 32
+  // MiB), which its algorithm choice depends on.
+  ASSERT_EQ(cublasSetWorkspace(blas_, workspace, kWorkspace), CUBLAS_STATUS_SUCCESS);
+  for (const ki::GemmPin& pin : pins.pins) {
+    const std::string name = std::format("{} x {} x {}", pin.m, pin.n, pin.k);
+    const auto x = Random(static_cast<std::size_t>(pin.m * pin.k), 123);
+    const auto w = Random(static_cast<std::size_t>(pin.n * pin.k), 124, 0.05f);
+    Device<Bf16> dx(x);
+    Device<Bf16> dw(w);
+    Device<Bf16> a(static_cast<std::size_t>(pin.m * pin.n));
+    Device<Bf16> b(static_cast<std::size_t>(pin.m * pin.n));
+    Ok(ki::Linear(blas_, dx.get(), pin.k, dw.get(), pin.k, a.get(), pin.n, pin.m, pin.n, pin.k),
+       name);
+    Ok((*lt)->Linear(dx.get(), pin.k, dw.get(), pin.k, b.get(), pin.n, pin.m, pin.n, pin.k, s()),
+       name);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    EXPECT_EQ(a.Get(), b.Get()) << name;
+  }
+  // Every pin was used, none fell back to the heuristic (a pin this
+  // cuBLASLt refuses would).
+  const std::string described = (*lt)->Describe();
+  std::size_t used = 0;
+  for (std::size_t at = described.find(R"("pinned": true)"); at != std::string::npos;
+       at = described.find(R"("pinned": true)", at + 1)) {
+    ++used;
+  }
+  EXPECT_EQ(used, pins.pins.size()) << described;
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  (void)cublasSetWorkspace(blas_, nullptr, 0);
+  lt->reset();
+  (void)cudaFree(workspace);
+}
+
+TEST_F(ImageKernelsTest, APinCublasLtRefusesFallsBackToItsHeuristic) {
+  void* workspace = nullptr;
+  constexpr std::uint64_t kWorkspace = std::uint64_t{32} << 20U;
+  ASSERT_EQ(cudaMalloc(&workspace, kWorkspace), cudaSuccess);
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
+  // Pins for this device and cuBLASLt that a later cuBLASLt might hold
+  // stale: an algorithm ID past any it defines, and a tile it lacks.
+  const std::array<ki::GemmPin, 2> stale{{{7, 40, 96, {1000000, 1, 1, 0, 0, 0, 0, 0, 0}},
+                                          {7, 48, 96, {67, 100000, 1, 0, 0, 0, 0, 0, 0}}}};
+  const ki::GemmPins table{.compute_capability = (prop.major * 100) + (prop.minor * 10),
+                           .sm_count = prop.multiProcessorCount,
+                           .cublaslt = CUBLAS_VERSION,
+                           .pins = stale};
+  auto lt =
+      ki::LtGemm::Create(reinterpret_cast<std::uint64_t>(workspace), kWorkspace, true, &table);
+  ASSERT_TRUE(lt.has_value()) << lt.error();
+  for (const ki::GemmPin& pin : stale) {
+    const auto x = Random(static_cast<std::size_t>(pin.m * pin.k), 125);
+    const auto w = Random(static_cast<std::size_t>(pin.n * pin.k), 126);
+    Device<Bf16> dx(x);
+    Device<Bf16> dw(w);
+    Device<Bf16> out(static_cast<std::size_t>(pin.m * pin.n));
+    Ok((*lt)->Linear(dx.get(), pin.k, dw.get(), pin.k, out.get(), pin.n, pin.m, pin.n, pin.k, s()),
+       "a stale pin");
+    std::vector<double> want(static_cast<std::size_t>(pin.m * pin.n));
+    for (std::int64_t m = 0; m < pin.m; ++m) {
+      for (std::int64_t n = 0; n < pin.n; ++n) {
+        for (std::int64_t k = 0; k < pin.k; ++k) {
+          want[static_cast<std::size_t>((m * pin.n) + n)] +=
+              static_cast<double>(FromBf16(x[static_cast<std::size_t>((m * pin.k) + k)])) *
+              FromBf16(w[static_cast<std::size_t>((n * pin.k) + k)]);
+        }
+      }
+    }
+    EXPECT_LE(Nmse(out.Get(), want), 1e-5);
+  }
+  const std::string described = (*lt)->Describe();
+  EXPECT_EQ(described.find(R"("pinned": true)"), std::string::npos) << described;
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  lt->reset();
+  (void)cudaFree(workspace);
+}
+
+TEST(ImagePlanTest, BothPlansBindAndAWrongOrMissingImplementationIsRefused) {
+  namespace ex = jitllm::execution;
+  auto registry = ex::Registry::Create(ki::Implementations());
+  ASSERT_TRUE(registry.has_value()) << registry.error().detail;
+  const auto& profile = jitllm::model::QwenImage21();
+  std::vector<std::string> identities;
+  for (const ki::PlanKind kind : {ki::PlanKind::kLegacy, ki::PlanKind::kFast}) {
+    auto choices = ki::QwenImageChoices(kind);
+    ASSERT_TRUE(choices.has_value()) << choices.error();
+    auto plan = ex::Plan::Build(*registry, *choices);
+    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
+    auto pipeline = ki::QwenImagePipeline::Bind(*registry, *plan, profile);
+    ASSERT_TRUE(pipeline.has_value()) << pipeline.error();
+    identities.push_back((*pipeline)->Describe());
+    const bool fast = kind == ki::PlanKind::kFast;
+    EXPECT_EQ((*pipeline)->bound(ki::Role::kDitLinear),
+              fast ? ki::Impl::kLinearCublasLt : ki::Impl::kLinearCublas);
+    EXPECT_EQ((*pipeline)->bound(ki::Role::kVaeConv3x3),
+              fast ? ki::Impl::kConvImplicit : ki::Impl::kConvIm2col);
+  }
+  EXPECT_NE(identities[0], identities[1]);
+  // Each declared implementation's name is its own.
+  for (int i = 0; i < static_cast<int>(ki::Impl::kCount); ++i) {
+    const auto impl = static_cast<ki::Impl>(i);
+    const auto found = registry->Find(ki::ImplName(impl));
+    if (!found.has_value()) {
+      ADD_FAILURE() << ki::ImplName(impl) << " is not declared";
+      continue;
+    }
+    EXPECT_EQ(ki::Bind(registry->at(*found)).value(), impl);
+  }
+  // One lever back: the legacy products in the fast plan.
+  const std::vector<std::string> back = {"dit.linear=image.linear.cublas"};
+  auto choices = ki::QwenImageChoices(ki::PlanKind::kFast, back);
+  ASSERT_TRUE(choices.has_value());
+  auto plan = ex::Plan::Build(*registry, *choices);
+  ASSERT_TRUE(plan.has_value());
+  auto one = ki::QwenImagePipeline::Bind(*registry, *plan, profile);
+  ASSERT_TRUE(one.has_value());
+  EXPECT_EQ((*one)->bound(ki::Role::kDitLinear), ki::Impl::kLinearCublas);
+  // A role given an implementation of its operation that it does not take,
+  // an implicit convolution over plainly laid out weights, and an unknown
+  // role or implementation.
+  for (const std::string& wrong : {std::string("dit.attention=image.attention.short"),
+                                   std::string("vae.convert_3x3=image.convert")}) {
+    const std::vector<std::string> o = {wrong};
+    auto c = ki::QwenImageChoices(ki::PlanKind::kFast, o);
+    ASSERT_TRUE(c.has_value()) << wrong;
+    auto p = ex::Plan::Build(*registry, *c);
+    ASSERT_TRUE(p.has_value()) << wrong;
+    EXPECT_FALSE(ki::QwenImagePipeline::Bind(*registry, *p, profile).has_value()) << wrong;
+  }
+  for (const std::string& unknown :
+       {std::string("dit.nothing=image.add"), std::string("dit.linear=image.linear.nothing")}) {
+    const std::vector<std::string> o = {unknown};
+    EXPECT_FALSE(ki::QwenImageChoices(ki::PlanKind::kFast, o).has_value()) << unknown;
+  }
+  // A registry without the pinned products: the fast plan is unsupported
+  // there, never bound to another product.
+  std::vector<ex::Implementation> fewer;
+  for (auto& d : ki::Implementations()) {
+    if (d.name != "image.linear.cublaslt") {
+      fewer.push_back(std::move(d));
+    }
+  }
+  auto smaller = ex::Registry::Create(std::move(fewer));
+  ASSERT_TRUE(smaller.has_value());
+  auto fast = ki::QwenImageChoices(ki::PlanKind::kFast);
+  ASSERT_TRUE(fast.has_value());
+  const auto refused = ex::Plan::Build(*smaller, *fast);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().error, ex::PlanError::kUnsupported);
 }
 
 }  // namespace

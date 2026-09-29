@@ -260,12 +260,16 @@ not used. The options each renderer supports and refuses are in
   pre-registered bounds; the paged node's and the runtime's pixels equal
   the harness's, before and after swaps
   ([qwen-image-native](experiments/qwen-image-native/README.md#results-spark-2026-09-28),
-  [swap](experiments/fast-swap/swap.md#qwen-image-21-on-the-paged-node)).
-  Speed headline: full generation 0.70× diffusers' time, weights resident.
-  Other sizes, step counts, prompts and seeds: not verified.
+  [swap](experiments/fast-swap/swap.md#qwen-image-21-on-the-paged-node));
+  since the speed slice (same BF16 numerics; image 41.77 dB PSNR, SSIM
+  0.996, pixels `3b7770ca…`) also its pixels, repeatable run to run
+  ([speed](experiments/qwen-image-native/README.md#speed)).
+  Speed headline: full generation 0.64× diffusers' time, weights
+  resident. Other sizes, step counts, prompts and seeds: not verified; the
+  products' pinned algorithms are the GB10's at this prompt's shapes.
 - **Known divergences:** jitLLM rounds differently from diffusers'
-  BF16 (bounded, above). The image path's operations are called directly,
-  not declared in the registry or dispatched through a bound plan (D-053).
+  BF16 (bounded, above). The operations run through a plan bound against
+  the implementation registry (D-053, `kernels/image/pipeline.h`).
 
 ## M2 fixtures
 

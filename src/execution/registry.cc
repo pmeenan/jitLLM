@@ -163,6 +163,24 @@ std::string_view OperationName(Operation operation) {
       return "quantize";
     case Operation::kNormGate:
       return "norm_gate";
+    case Operation::kHeadNormRope:
+      return "head_norm_rope";
+    case Operation::kLayerNormModulate:
+      return "layer_norm_modulate";
+    case Operation::kGatedResidual:
+      return "gated_residual";
+    case Operation::kGatedResidualNorm:
+      return "gated_residual_norm";
+    case Operation::kEulerStep:
+      return "euler_step";
+    case Operation::kConv2d:
+      return "conv2d";
+    case Operation::kChannelNorm:
+      return "channel_norm";
+    case Operation::kUpsample:
+      return "upsample";
+    case Operation::kDupUpAdd:
+      return "dup_up_add";
   }
   return "unknown";
 }

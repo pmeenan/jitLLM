@@ -150,6 +150,30 @@ __global__ void SwiGluKernel(const std::uint16_t* gate, std::int64_t gate_stride
   }
 }
 
+// The same, 8 elements per thread (widths and strides multiples of 8,
+// 16-byte aligned rows); `chunks` is width / 8.
+__global__ void SwiGlu8Kernel(const std::uint16_t* gate, std::int64_t gate_stride,
+                              const std::uint16_t* up, std::int64_t up_stride, std::uint16_t* out,
+                              std::int64_t rows, std::int64_t chunks) {
+  const std::int64_t n = rows * chunks;
+  for (std::int64_t i = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x; i < n;
+       i += static_cast<std::int64_t>(gridDim.x) * blockDim.x) {
+    const std::int64_t r = i / chunks;
+    const std::int64_t c = (i - (r * chunks)) * 8;
+    const uint4 gp = *reinterpret_cast<const uint4*>(gate + r * gate_stride + c);
+    const uint4 up8 = *reinterpret_cast<const uint4*>(up + r * up_stride + c);
+    const auto* g = reinterpret_cast<const std::uint16_t*>(&gp);
+    const auto* u = reinterpret_cast<const std::uint16_t*>(&up8);
+    uint4 result;
+    auto* o = reinterpret_cast<std::uint16_t*>(&result);
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      o[j] = F2B(R(SiluF(B2F(g[j]))) * B2F(u[j]));
+    }
+    *reinterpret_cast<uint4*>(out + (r * chunks * 8) + c) = result;
+  }
+}
+
 __global__ void Bf16ToF16Kernel(const std::uint16_t* x, std::uint16_t* out, std::int64_t n) {
   for (std::int64_t i = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x; i < n;
        i += static_cast<std::int64_t>(gridDim.x) * blockDim.x) {
@@ -229,29 +253,73 @@ __global__ void ZeroCenterRmsNormKernel(const std::uint16_t* x, const std::uint1
 // Width a multiple of 8 and at most 8 x 1,024 (checked by the caller); each
 // thread keeps its 8-element chunks in registers between the passes.
 constexpr int kLnChunks = 4;  // up to 4 chunks of 8 per thread
+constexpr int kLnThreads = 256;
 
-__global__ void LayerNormModulateKernel(const std::uint16_t* x, std::uint16_t* out,
-                                        std::int64_t width, float eps, const std::uint16_t* mod,
-                                        std::int64_t mod_stride, std::int64_t first_target) {
+// The gated residual's arithmetic on one 8-element chunk (GatedResidual):
+// x = bf16(x + bf16(bf16(tanh(gate)) * y)), in place in `xs`.
+__device__ __forceinline__ void GatedChunk(std::uint16_t* xs, const std::uint16_t* ys,
+                                           const std::uint16_t* gs) {
+#pragma unroll
+  for (int j = 0; j < 8; ++j) {
+    const float t = R(R(tanhf(B2F(gs[j]))) * B2F(ys[j]));
+    xs[j] = F2B(B2F(xs[j]) + t);
+  }
+}
+
+// One row per block of kLnThreads threads, thread t taking the chunks at
+// t * 8 + i * kLnThreads * 8. kChunks > 0: exactly that many chunks per
+// thread (width = kChunks * kLnThreads * 8), kept in registers; 0: any width
+// up to kLnChunks chunks (the loop's bound at run time). kResidual: the
+// gated residual first, written back to x, then the norm of the new x
+// (GatedResidualNorm); the sums take the same elements in the same order
+// either way, so the norm is LayerNormModulate's to the bit.
+template <int kChunks, bool kResidual>
+__global__ void __launch_bounds__(kLnThreads)
+    LayerNormModulateKernel(std::uint16_t* x, std::uint16_t* out, std::int64_t width, float eps,
+                            const std::uint16_t* mod, std::int64_t mod_stride,
+                            std::int64_t first_target, const std::uint16_t* y,
+                            std::int64_t y_stride, const std::uint16_t* gate,
+                            std::int64_t gate_stride) {
   __shared__ float shared[32];
+  constexpr int kMax = kChunks > 0 ? kChunks : kLnChunks;
   const std::int64_t r = blockIdx.x;
-  const std::uint16_t* row = x + r * width;
+  std::uint16_t* row = x + r * width;
   const std::uint16_t* scale = mod + (r >= first_target ? 0 : mod_stride);
-  float v[kLnChunks][8];
-  int chunks = 0;
+  const int chunks =
+      kChunks > 0
+          ? kChunks
+          : static_cast<int>((width - threadIdx.x * 8 + kLnThreads * 8 - 1) / (kLnThreads * 8));
+  float v[kMax][8];
   float sum = 0.0f;
-  for (std::int64_t c = threadIdx.x * 8; c < width; c += blockDim.x * 8, ++chunks) {
-    const uint4 packed = *reinterpret_cast<const uint4*>(row + c);
-    const auto* h = reinterpret_cast<const std::uint16_t*>(&packed);
+#pragma unroll
+  for (int k = 0; k < kMax; ++k) {
+    if (kChunks == 0 && k >= chunks) {
+      break;
+    }
+    const std::int64_t c = (threadIdx.x * 8) + (static_cast<std::int64_t>(k) * kLnThreads * 8);
+    uint4 packed = *reinterpret_cast<const uint4*>(row + c);
+    auto* h = reinterpret_cast<std::uint16_t*>(&packed);
+    if constexpr (kResidual) {
+      const uint4 yp = *reinterpret_cast<const uint4*>(y + r * y_stride + c);
+      const std::uint16_t* g = gate + (r >= first_target ? 0 : gate_stride) + c;
+      const uint4 gp = *reinterpret_cast<const uint4*>(g);
+      GatedChunk(h, reinterpret_cast<const std::uint16_t*>(&yp),
+                 reinterpret_cast<const std::uint16_t*>(&gp));
+      *reinterpret_cast<uint4*>(row + c) = packed;
+    }
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
-      v[chunks][j] = B2F(h[j]);
-      sum += v[chunks][j];
+      v[k][j] = B2F(h[j]);
+      sum += v[k][j];
     }
   }
   const float mean = BlockSum(sum, shared) / static_cast<float>(width);
   float sq = 0.0f;
-  for (int k = 0; k < chunks; ++k) {
+#pragma unroll
+  for (int k = 0; k < kMax; ++k) {
+    if (kChunks == 0 && k >= chunks) {
+      break;
+    }
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
       const float d = v[k][j] - mean;
@@ -259,8 +327,12 @@ __global__ void LayerNormModulateKernel(const std::uint16_t* x, std::uint16_t* o
     }
   }
   const float rstd = rsqrtf(BlockSum(sq, shared) / static_cast<float>(width) + eps);
-  int k = 0;
-  for (std::int64_t c = threadIdx.x * 8; c < width; c += blockDim.x * 8, ++k) {
+#pragma unroll
+  for (int k = 0; k < kMax; ++k) {
+    if (kChunks == 0 && k >= chunks) {
+      break;
+    }
+    const std::int64_t c = (threadIdx.x * 8) + (static_cast<std::int64_t>(k) * kLnThreads * 8);
     const uint4 packed = *reinterpret_cast<const uint4*>(scale + c);
     const auto* s = reinterpret_cast<const std::uint16_t*>(&packed);
     uint4 result;
@@ -270,6 +342,36 @@ __global__ void LayerNormModulateKernel(const std::uint16_t* x, std::uint16_t* o
       o[j] = F2B(R((v[k][j] - mean) * rstd) * R(1.0f + B2F(s[j])));
     }
     *reinterpret_cast<uint4*>(out + r * width + c) = result;
+  }
+}
+
+template <bool kResidual>
+void LaunchLayerNorm(std::uint16_t* x, std::uint16_t* out, std::int64_t rows, std::int64_t width,
+                     float eps, const std::uint16_t* mod, std::int64_t mod_stride,
+                     std::int64_t first_target, const std::uint16_t* y, std::int64_t y_stride,
+                     const std::uint16_t* gate, std::int64_t gate_stride, cudaStream_t s) {
+  const auto blocks = static_cast<unsigned>(rows);
+  switch (width / (kLnThreads * 8) * (width % (kLnThreads * 8) == 0 ? 1 : 0)) {
+    case 1:
+      LayerNormModulateKernel<1, kResidual><<<blocks, kLnThreads, 0, s>>>(
+          x, out, width, eps, mod, mod_stride, first_target, y, y_stride, gate, gate_stride);
+      break;
+    case 2:
+      LayerNormModulateKernel<2, kResidual><<<blocks, kLnThreads, 0, s>>>(
+          x, out, width, eps, mod, mod_stride, first_target, y, y_stride, gate, gate_stride);
+      break;
+    case 3:
+      LayerNormModulateKernel<3, kResidual><<<blocks, kLnThreads, 0, s>>>(
+          x, out, width, eps, mod, mod_stride, first_target, y, y_stride, gate, gate_stride);
+      break;
+    case 4:
+      LayerNormModulateKernel<4, kResidual><<<blocks, kLnThreads, 0, s>>>(
+          x, out, width, eps, mod, mod_stride, first_target, y, y_stride, gate, gate_stride);
+      break;
+    default:
+      LayerNormModulateKernel<0, kResidual><<<blocks, kLnThreads, 0, s>>>(
+          x, out, width, eps, mod, mod_stride, first_target, y, y_stride, gate, gate_stride);
+      break;
   }
 }
 
@@ -327,24 +429,26 @@ __global__ void HeadNormRopeComplexKernel(const std::uint16_t* x, std::int64_t x
   const uint2 packed = *reinterpret_cast<const uint2*>(h);
   const auto* e = reinterpret_cast<const std::uint16_t*>(&packed);
   float v[4];
+  // The contractions spelled out (as the compiler made them before they
+  // were: flash_attention.cu's query norm reproduces them bit for bit).
   float sum = 0.0f;
 #pragma unroll
   for (int j = 0; j < 4; ++j) {
     v[j] = B2F(e[j]);
-    sum += v[j] * v[j];
+    sum = __fmaf_rn(v[j], v[j], sum);
   }
-  const float rrms = rsqrtf(WarpSum(sum) / 128.0f + eps);
+  const float rrms = rsqrtf(__fmaf_rn(WarpSum(sum), 0.0078125f, eps));
   float n[4];
 #pragma unroll
   for (int j = 0; j < 4; ++j) {
-    n[j] = R(R(v[j] * rrms) * B2F(w[lane * 4 + j]));
+    n[j] = R(R(__fmul_rn(v[j], rrms)) * B2F(w[lane * 4 + j]));
   }
   const float4 f = *reinterpret_cast<const float4*>(freqs + r * 128 + lane * 4);
   // (a + ib)(c + is), as c10::complex<float>'s operator*.
-  const float o0 = n[0] * f.x - n[1] * f.y;
-  const float o1 = n[0] * f.y + n[1] * f.x;
-  const float o2 = n[2] * f.z - n[3] * f.w;
-  const float o3 = n[2] * f.w + n[3] * f.z;
+  const float o0 = __fmaf_rn(n[0], f.x, -__fmul_rn(n[1], f.y));
+  const float o1 = __fmaf_rn(n[0], f.y, __fmul_rn(n[1], f.x));
+  const float o2 = __fmaf_rn(n[2], f.z, -__fmul_rn(n[3], f.w));
+  const float o3 = __fmaf_rn(n[2], f.w, __fmul_rn(n[3], f.z));
   const std::int64_t at = item * 128 + lane * 4;
   if constexpr (kOut == 2) {
     uint2 packed_out;
@@ -397,6 +501,15 @@ __global__ void EulerStepKernel(const std::uint16_t* sample, const std::uint16_t
   for (std::int64_t i = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x; i < n;
        i += static_cast<std::int64_t>(gridDim.x) * blockDim.x) {
     out[i] = F2B(B2F(sample[i]) + R(dt * B2F(noise[i])));
+  }
+}
+
+__global__ void EulerStepAtKernel(const std::uint16_t* sample, const std::uint16_t* noise,
+                                  std::uint16_t* out, const float* dt, std::int64_t n) {
+  const float step = *dt;
+  for (std::int64_t i = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x; i < n;
+       i += static_cast<std::int64_t>(gridDim.x) * blockDim.x) {
+    out[i] = F2B(B2F(sample[i]) + R(step * B2F(noise[i])));
   }
 }
 
@@ -639,6 +752,12 @@ Status SwiGlu(const Bf16* gate, std::int64_t gate_stride, const Bf16* up, std::i
   if (!Product({rows, width}) || gate_stride < width || up_stride < width) {
     return Refuse("SwiGlu: size");
   }
+  if (width % 8 == 0 && gate_stride % 8 == 0 && up_stride % 8 == 0 && Aligned(gate, 16) &&
+      Aligned(up, 16) && Aligned(out, 16)) {
+    SwiGlu8Kernel<<<Blocks(rows * width / 8, 256), 256, 0, S(stream)>>>(
+        gate, gate_stride, up, up_stride, out, rows, width / 8);
+    return Launched("SwiGlu");
+  }
   SwiGluKernel<<<Blocks(rows * width, 256), 256, 0, S(stream)>>>(gate, gate_stride, up, up_stride,
                                                                  out, rows, width);
   return Launched("SwiGlu");
@@ -733,15 +852,31 @@ Status ZeroCenterRmsNorm(const Bf16* x, const Bf16* w, Bf16* out, std::int64_t r
 Status LayerNormModulate(const Bf16* x, Bf16* out, std::int64_t rows, std::int64_t width, float eps,
                          const Bf16* mod, std::int64_t mod_stride, std::int64_t first_target,
                          Stream stream) {
-  constexpr int kThreads = 256;
   if (!Product({rows, width}) || rows > kMaxGrid || width % 8 != 0 ||
-      width > std::int64_t{kThreads} * 8 * kLnChunks || mod_stride < width || mod_stride % 8 != 0 ||
-      !Aligned(x, 16) || !Aligned(out, 16) || !Aligned(mod, 16)) {
+      width > std::int64_t{kLnThreads} * 8 * kLnChunks || mod_stride < width ||
+      mod_stride % 8 != 0 || !Aligned(x, 16) || !Aligned(out, 16) || !Aligned(mod, 16)) {
     return Refuse("LayerNormModulate: width a multiple of 8 up to 8,192, 16-byte aligned rows");
   }
-  LayerNormModulateKernel<<<static_cast<unsigned>(rows), kThreads, 0, S(stream)>>>(
-      x, out, width, eps, mod, mod_stride, first_target);
+  // x is only read without the residual.
+  LaunchLayerNorm<false>(const_cast<Bf16*>(x), out, rows, width, eps, mod, mod_stride, first_target,
+                         nullptr, 0, nullptr, 0, S(stream));
   return Launched("LayerNormModulate");
+}
+
+Status GatedResidualNorm(Bf16* x, const Bf16* y, std::int64_t y_stride, std::int64_t rows,
+                         std::int64_t width, const Bf16* gate_mod, std::int64_t gate_stride,
+                         std::int64_t first_target, Bf16* out, float eps, const Bf16* scale_mod,
+                         std::int64_t scale_stride, Stream stream) {
+  if (!Product({rows, width}) || rows > kMaxGrid || width % 8 != 0 ||
+      width > std::int64_t{kLnThreads} * 8 * kLnChunks || y_stride < width || y_stride % 8 != 0 ||
+      gate_stride < width || gate_stride % 8 != 0 || scale_stride < width ||
+      scale_stride % 8 != 0 || !Aligned(x, 16) || !Aligned(y, 16) || !Aligned(out, 16) ||
+      !Aligned(gate_mod, 16) || !Aligned(scale_mod, 16)) {
+    return Refuse("GatedResidualNorm: width a multiple of 8 up to 8,192, 16-byte aligned rows");
+  }
+  LaunchLayerNorm<true>(x, out, rows, width, eps, scale_mod, scale_stride, first_target, y,
+                        y_stride, gate_mod, gate_stride, S(stream));
+  return Launched("GatedResidualNorm");
 }
 
 Status HeadNormRopeComplexF32(const Bf16* x, std::int64_t x_stride, std::int64_t rows,
@@ -802,11 +937,7 @@ Status GatedResidual(Bf16* x, const Bf16* y, std::int64_t y_stride, std::int64_t
   return Launched("GatedResidual");
 }
 
-Status EulerStep(const Bf16* sample, const Bf16* noise, Bf16* out, float dt, bool dt_bf16,
-                 std::int64_t n, Stream stream) {
-  if (!Positive(n)) {
-    return Refuse("EulerStep: size");
-  }
+float EulerStepDt(float dt, bool dt_bf16) {
   float step = dt;
   if (dt_bf16) {
     // Host rounding, as F2B does.
@@ -816,8 +947,26 @@ Status EulerStep(const Bf16* sample, const Bf16* noise, Bf16* out, float dt, boo
     u &= 0xffff0000U;
     std::memcpy(&step, &u, sizeof u);
   }
-  EulerStepKernel<<<Blocks(n, 256), 256, 0, S(stream)>>>(sample, noise, out, step, n);
+  return step;
+}
+
+Status EulerStep(const Bf16* sample, const Bf16* noise, Bf16* out, float dt, bool dt_bf16,
+                 std::int64_t n, Stream stream) {
+  if (!Positive(n)) {
+    return Refuse("EulerStep: size");
+  }
+  EulerStepKernel<<<Blocks(n, 256), 256, 0, S(stream)>>>(sample, noise, out,
+                                                         EulerStepDt(dt, dt_bf16), n);
   return Launched("EulerStep");
+}
+
+Status EulerStepAt(const Bf16* sample, const Bf16* noise, Bf16* out, const float* dt,
+                   std::int64_t n, Stream stream) {
+  if (!Positive(n) || !Aligned(dt, 4)) {
+    return Refuse("EulerStepAt: size");
+  }
+  EulerStepAtKernel<<<Blocks(n, 256), 256, 0, S(stream)>>>(sample, noise, out, dt, n);
+  return Launched("EulerStepAt");
 }
 
 Status Transpose(const Bf16* x, Bf16* out, std::int64_t rows, std::int64_t cols, Stream stream) {

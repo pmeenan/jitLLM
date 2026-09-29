@@ -101,7 +101,9 @@ their composition (D-089), each a set of extents (`paged_weights.h`,
 only the groups its phase reads: the text encoder's table and language
 layers, 15.14 GB; the denoiser, 14.23 GB; the VAE's decoder, 1.35 GB of
 F32), with the resident harness's kernels in its call order (copied from
-`qwen_image_exec.cc`, whose comparison with diffusers then needs no rerun).
+`qwen_image_exec.cc`, whose comparison with diffusers then needs no rerun;
+since the image speed slice both run one pipeline through the same bound
+plan, `kernels/image/pipeline.h`, and later steps replay a captured graph).
 - **Phases run over only their component:** encode (one job over the text
   encoder's closure), denoise (a job per step over the denoiser's; the
   first also projects the text rows and fills the prefix K/V cache),
@@ -121,6 +123,16 @@ F32), with the resident harness's kernels in its call order (copied from
 - **Endpoint:** the prompt encoded and the first denoising step's output
   produced (M3's image endpoint). The rest of the generation and the
   decoder follow when the image is A.
+- **After the image speed slice** (`spark`, 2026-09-28, the host otherwise
+  idle, Qwen3.8 A with 8,192 context tokens, the image B, the page cache
+  dropped before each, one run each of the M3 slice's build and this one,
+  back to back): the swap into the image's first output took 5.28 / 5.21 s
+  before (first use / prepared) and 5.11 / 5.09 s after, the encode and
+  first step 1.60 / 1.58 s before and 1.52 / 1.52 s after; eviction and
+  the 30.72 GB page-in (13.2–13.3 GB/s) unchanged. The paged image's
+  pixels equal the resident harness's (`3b7770ca…`), its whole generation
+  33.0 s (`spark-b`)
+  ([qwen-image-native](../qwen-image-native/README.md#speed)).
 
 ### The swap pairs runner
 
@@ -995,6 +1007,10 @@ page-in beside the chunk takes 0.07 s more than alone.
 
 ## Reproduction
 
+(The image's expected pixels are `3b7770ca…` since the image speed slice's
+fast plan, its default; the runs recorded above, before it, gave and
+checked `95fbcbc5…`, which its `--plan legacy` still gives.)
+
 Through the runtime (D-096): a configuration naming the three models (as
 [runtime-serving.md](../../runtime-serving.md#configuration) shows, with
 `storage.installed` the store holding the artifacts and the composition,
@@ -1002,7 +1018,7 @@ and Qwen3.8's `tokenizer` and `chat_template` the checkpoint's), then
 
     jitllm-runtime --config FILE --anchor PATH swap-table \
       --context-text decisions.md --image-noise ref1/latents_init.bf16 \
-      --image-expect 95fbcbc5… --report table.json [--plain] [--pairs A:B,...]
+      --image-expect 3b7770ca… --report table.json [--plain] [--pairs A:B,...]
 
 It takes about 11 minutes for the whole table (4 for the two LLM pairs)
 and needs about 110 GiB free; it exits 1 on any failed check.
@@ -1034,10 +1050,10 @@ installed as qwen-image-native's are (copied to `spark-b` for these runs):
       --image-composition eca21baa… --image-noise ref1/latents_init.bf16 \
       --text decisions.md --qwen38-tokenizer tokenizer.json \
       --dsv4-prompt dsv4-native/oracle/unfused/prompts.tokens \
-      --qwen38-prompt qwen38-native/prompts.tsv [--image-expect 95fbcbc5…]
+      --qwen38-prompt qwen38-native/prompts.tsv [--image-expect 3b7770ca…]
     jitllm_swap_pairs --a qwen38 --b dsv4 ... --cycles 0 --context 4096 \
       --prompts qwen38-native/prompts.tsv --expect RESIDENT --generate 32
-    jitllm_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 95fbcbc5…
+    jitllm_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 3b7770ca…
     jitllm_swap_pairs --a dsv4|qwen38 --b ... --cycles 0 --bench 64|128 [--poll-us 200]
 
 where RESIDENT is `jitllm_qwen38_exec --context 4096 --max-rows 512

@@ -111,6 +111,14 @@ if(JITLLM_CUDA)
                                                        jitllm_warnings)
   target_link_options(jitllm_qwen_image_exec PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+  # Its products' cuBLASLt candidates, timed, for the algorithms the image
+  # kernels pin (kernels/image/gemm.h).
+  add_executable(jitllm_qwen_image_gemm_tune qwen_image_gemm_tune.cc)
+  target_include_directories(jitllm_qwen_image_gemm_tune SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_qwen_image_gemm_tune PRIVATE jitllm_image_kernels jitllm_warnings)
+  target_link_options(jitllm_qwen_image_gemm_tune PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # The paged harnesses' model runners: the FP16 fixture and an EXL3
   # fixture, each a model on the engine's paged node

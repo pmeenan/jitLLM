@@ -31,7 +31,6 @@ constexpr int kWarps = kBr / 16;
 constexpr int kThreads = kWarps * 32;
 constexpr int kChunks = kD * 2 / 16;  // 16-byte chunks per row: 16
 constexpr int kTileBytes = kBc * kD * 2;
-constexpr int kSmem = 4 * kTileBytes;  // K and V, two stages each
 
 __device__ __forceinline__ std::uint32_t Swizzle(int row, int chunk) {
   return static_cast<std::uint32_t>(row * kChunks + (chunk ^ (row & 7))) * 16U;
@@ -79,16 +78,100 @@ __device__ __forceinline__ std::uint32_t PackBf16(float lo, float hi) {
   return out;
 }
 
+__device__ __forceinline__ float B2F(std::uint32_t half) { return __uint_as_float(half << 16U); }
+__device__ __forceinline__ std::uint16_t F2B(float f) {
+  std::uint32_t u = __float_as_uint(f);
+  if ((u & 0x7fffffffU) > 0x7f800000U) {
+    return static_cast<std::uint16_t>((u >> 16U) | 0x40U);
+  }
+  u += 0x7fffU + ((u >> 16U) & 1U);
+  return static_cast<std::uint16_t>(u >> 16U);
+}
+__device__ __forceinline__ float R(float f) { return B2F(F2B(f)); }
+
+// HeadNormRopeComplex (ops.cu) on one query row's fragments, in place: the
+// row's 128 dimensions are spread over the four threads of a quad, each
+// holding, per k-step kk, the pairs at 16 kk + 2 tig and 16 kk + 2 tig + 8
+// (a[kk], b[kk]). The sum of squares is taken in the order ops.cu's warp
+// takes it (each four consecutive dimensions summed in order, then the
+// warp's butterfly over those 32 sums), so the result is its bits.
+__device__ __forceinline__ void NormRopeRow(std::uint32_t (&a)[8], std::uint32_t (&b)[8],
+                                            const std::uint16_t* w, const float* freqs, int tig,
+                                            int lane, float eps) {
+  float va[8][2];
+  float vb[8][2];
+  float pa[8];
+  float pb[8];
+#pragma unroll
+  for (int kk = 0; kk < 8; ++kk) {
+    va[kk][0] = B2F(a[kk] & 0xffffU);
+    va[kk][1] = B2F(a[kk] >> 16U);
+    vb[kk][0] = B2F(b[kk] & 0xffffU);
+    vb[kk][1] = B2F(b[kk] >> 16U);
+    // The first two of four dimensions (an even tig), then the last two
+    // added to them (an odd tig, whose sums are the ones used).
+    const float xa = __fmaf_rn(va[kk][1], va[kk][1], __fmul_rn(va[kk][0], va[kk][0]));
+    const float xb = __fmaf_rn(vb[kk][1], vb[kk][1], __fmul_rn(vb[kk][0], vb[kk][0]));
+    const float ya = __shfl_xor_sync(0xffffffffU, xa, 1);
+    const float yb = __shfl_xor_sync(0xffffffffU, xb, 1);
+    pa[kk] = __fmaf_rn(va[kk][1], va[kk][1], __fmaf_rn(va[kk][0], va[kk][0], ya));
+    pb[kk] = __fmaf_rn(vb[kk][1], vb[kk][1], __fmaf_rn(vb[kk][0], vb[kk][0], yb));
+  }
+  // The butterfly's tree: partial sums of groups g and g + 16, then + 8,
+  // + 4 (all within this thread), + 2 (a's with b's) and + 1 (tig 1 with 3).
+  float s1a[4];
+  float s1b[4];
+#pragma unroll
+  for (int kk = 0; kk < 4; ++kk) {
+    s1a[kk] = __fadd_rn(pa[kk], pa[kk + 4]);
+    s1b[kk] = __fadd_rn(pb[kk], pb[kk + 4]);
+  }
+  const float s3a = __fadd_rn(__fadd_rn(s1a[0], s1a[2]), __fadd_rn(s1a[1], s1a[3]));
+  const float s3b = __fadd_rn(__fadd_rn(s1b[0], s1b[2]), __fadd_rn(s1b[1], s1b[3]));
+  const float s4 = __fadd_rn(s3a, s3b);
+  const float total = __fadd_rn(s4, __shfl_xor_sync(0xffffffffU, s4, 2));
+  const float sum = __shfl_sync(0xffffffffU, total, (lane & ~3) | 1);
+  // ops.cu's contractions, as its kernel compiles them (SASS): the mean and
+  // eps one FFMA, then each rotated pair's product fused as there.
+  const float rrms = rsqrtf(__fmaf_rn(sum, 0.0078125f, eps));
+#pragma unroll
+  for (int kk = 0; kk < 8; ++kk) {
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+      const int d = (kk * 16) + (tig * 2) + (h * 8);
+      const float* v = h == 0 ? va[kk] : vb[kk];
+      const float n0 = R(R(__fmul_rn(v[0], rrms)) * B2F(w[d]));
+      const float n1 = R(R(__fmul_rn(v[1], rrms)) * B2F(w[d + 1]));
+      const float2 f = *reinterpret_cast<const float2*>(freqs + d);
+      const float o0 = __fmaf_rn(n0, f.x, -__fmul_rn(n1, f.y));
+      const float o1 = __fmaf_rn(n0, f.y, __fmul_rn(n1, f.x));
+      const std::uint32_t packed =
+          static_cast<std::uint32_t>(F2B(o0)) | (static_cast<std::uint32_t>(F2B(o1)) << 16U);
+      (h == 0 ? a[kk] : b[kk]) = packed;
+    }
+  }
+}
+
+// The key pipeline's depth: two stages of K and V tiles (three, 96 KiB,
+// measured no faster end to end in the speed slice).
+constexpr int kDepth = 2;
+constexpr int SmemFor(int stages) { return stages * 2 * kTileBytes; }
+
+template <bool kNormQ, int kStages>
 __global__ void __launch_bounds__(kThreads, 1)
     FlashForwardKernel(const std::uint16_t* __restrict__ q, std::int64_t q_stride,
                        const std::uint16_t* __restrict__ k, std::int64_t k_stride,
                        const std::uint16_t* __restrict__ v, std::int64_t v_stride,
                        std::uint16_t* __restrict__ out, std::int64_t out_stride, int q_rows,
-                       int kv_rows, int group, float scale_log2) {
+                       int kv_rows, int group, float scale_log2,
+                       const std::uint16_t* __restrict__ kp, const std::uint16_t* __restrict__ vp,
+                       int prefix, const std::uint16_t* __restrict__ q_norm,
+                       const float* __restrict__ freqs, float eps) {
   extern __shared__ __align__(128) unsigned char smem[];
   const std::uint32_t base = static_cast<std::uint32_t>(__cvta_generic_to_shared(smem));
-  const std::uint32_t k_smem[2] = {base, base + kTileBytes};
-  const std::uint32_t v_smem[2] = {base + 2 * kTileBytes, base + 3 * kTileBytes};
+  // K stage s at s tiles, V stage s after the K stages.
+  const auto k_smem = [&](int stage) { return base + (stage * kTileBytes); };
+  const auto v_smem = [&](int stage) { return base + ((kStages + stage) * kTileBytes); };
   const int tid = static_cast<int>(threadIdx.x);
   const int warp = tid / 32;
   const int lane = tid % 32;
@@ -100,6 +183,9 @@ __global__ void __launch_bounds__(kThreads, 1)
 
   const std::uint16_t* kh = k + static_cast<std::int64_t>(kv_head) * kD;
   const std::uint16_t* vh = v + static_cast<std::int64_t>(kv_head) * kD;
+  // Keys below `prefix` from kp and vp (same strides), the rest from k and v.
+  const std::uint16_t* kph = kp + static_cast<std::int64_t>(kv_head) * kD;
+  const std::uint16_t* vph = vp + static_cast<std::int64_t>(kv_head) * kD;
   const int tiles = (kv_rows + kBc - 1) / kBc;
 
   // Stage one key and value tile: 64 rows x 16 chunks each, 4 per thread.
@@ -112,14 +198,26 @@ __global__ void __launch_bounds__(kThreads, 1)
       const int chunk = item % kChunks;
       const int key = key0 + row;
       const bool valid = key < kv_rows;
-      const std::int64_t at = static_cast<std::int64_t>(valid ? key : 0);
-      CpAsync16(k_smem[stage] + Swizzle(row, chunk), kh + at * k_stride + chunk * 8, valid);
-      CpAsync16(v_smem[stage] + Swizzle(row, chunk), vh + at * v_stride + chunk * 8, valid);
+      const bool front = key < prefix;
+      const std::int64_t at = static_cast<std::int64_t>(!valid ? 0 : front ? key : key - prefix);
+      CpAsync16(k_smem(stage) + Swizzle(row, chunk), (front ? kph : kh) + at * k_stride + chunk * 8,
+                valid);
+      CpAsync16(v_smem(stage) + Swizzle(row, chunk), (front ? vph : vh) + at * v_stride + chunk * 8,
+                valid);
     }
     CpAsyncCommit();
   };
 
-  load_tile(0, 0);
+  // The first kStages - 1 tiles in flight (an empty group for each tile
+  // past the end, so that every iteration's wait counts the same groups).
+#pragma unroll
+  for (int t = 0; t < kStages - 1; ++t) {
+    if (t < tiles) {
+      load_tile(t, t);
+    } else {
+      CpAsyncCommit();
+    }
+  }
 
   // This warp's queries as A fragments, 8 k-steps of 16 dimensions.
   std::uint32_t qa[8][4];
@@ -138,6 +236,29 @@ __global__ void __launch_bounds__(kThreads, 1)
       qa[kk][2] = r0 < q_rows ? *reinterpret_cast<const std::uint32_t*>(q0 + c + 8) : 0U;
       qa[kk][3] = r1 < q_rows ? *reinterpret_cast<const std::uint32_t*>(q1 + c + 8) : 0U;
     }
+    if constexpr (kNormQ) {
+      // The raw projections, normed and rotated here (rows past the end
+      // are zeros, with the last row's frequencies).
+      std::uint32_t a0[8], b0[8], a1[8], b1[8];
+#pragma unroll
+      for (int kk = 0; kk < 8; ++kk) {
+        a0[kk] = qa[kk][0];
+        b0[kk] = qa[kk][2];
+        a1[kk] = qa[kk][1];
+        b1[kk] = qa[kk][3];
+      }
+      const float* f0 = freqs + static_cast<std::int64_t>(r0 < q_rows ? r0 : q_rows - 1) * kD;
+      const float* f1 = freqs + static_cast<std::int64_t>(r1 < q_rows ? r1 : q_rows - 1) * kD;
+      NormRopeRow(a0, b0, q_norm, f0, tig, lane, eps);
+      NormRopeRow(a1, b1, q_norm, f1, tig, lane, eps);
+#pragma unroll
+      for (int kk = 0; kk < 8; ++kk) {
+        qa[kk][0] = a0[kk];
+        qa[kk][2] = b0[kk];
+        qa[kk][1] = a1[kk];
+        qa[kk][3] = b1[kk];
+      }
+    }
   }
 
   float o[16][4];
@@ -153,13 +274,16 @@ __global__ void __launch_bounds__(kThreads, 1)
   const int lm_mat = lane / 8;
 
   for (int tile = 0; tile < tiles; ++tile) {
-    const int stage = tile & 1;
-    if (tile + 1 < tiles) {
-      load_tile(tile + 1, stage ^ 1);
-      CpAsyncWait<1>();
+    const int stage = tile % kStages;
+    // The tile kStages - 1 ahead into the stage the last iteration read
+    // (the barrier ending it made that safe), then this tile's arrival.
+    const int ahead = tile + kStages - 1;
+    if (ahead < tiles) {
+      load_tile(ahead, ahead % kStages);
     } else {
-      CpAsyncWait<0>();
+      CpAsyncCommit();
     }
+    CpAsyncWait<kStages - 1>();
     __syncthreads();
 
     // S = Q K^T: 16 x 64 per warp, 8 n-tiles of 8 keys.
@@ -177,7 +301,7 @@ __global__ void __launch_bounds__(kThreads, 1)
         const int key = np * 16 + (lm_mat >> 1) * 8 + lm_row;
         const int chunk = kk * 2 + (lm_mat & 1);
         std::uint32_t b0, b1, b2, b3;
-        LdMatrixX4(k_smem[stage] + Swizzle(key, chunk), b0, b1, b2, b3);
+        LdMatrixX4(k_smem(stage) + Swizzle(key, chunk), b0, b1, b2, b3);
         Mma(s[np * 2], qa[kk], b0, b1);
         Mma(s[np * 2 + 1], qa[kk], b2, b3);
       }
@@ -256,7 +380,7 @@ __global__ void __launch_bounds__(kThreads, 1)
         const int key = j * 16 + (lm_mat & 1) * 8 + lm_row;
         const int chunk = np * 2 + (lm_mat >> 1);
         std::uint32_t b0, b1, b2, b3;
-        LdMatrixX4Trans(v_smem[stage] + Swizzle(key, chunk), b0, b1, b2, b3);
+        LdMatrixX4Trans(v_smem(stage) + Swizzle(key, chunk), b0, b1, b2, b3);
         Mma(o[np * 2], pa[j], b0, b1);
         Mma(o[np * 2 + 1], pa[j], b2, b3);
       }
@@ -289,19 +413,22 @@ __global__ void __launch_bounds__(kThreads, 1)
   }
 }
 
-}  // namespace
-
-Status FlashAttention(const Bf16* q, std::int64_t q_stride, const Bf16* k, std::int64_t k_stride,
-                      const Bf16* v, std::int64_t v_stride, Bf16* out, std::int64_t out_stride,
-                      std::int64_t q_rows, std::int64_t kv_rows, std::int64_t heads,
-                      std::int64_t kv_heads, float scale, Stream stream) {
+Status Launch(const Bf16* q, std::int64_t q_stride, const Bf16* k, std::int64_t k_stride,
+              const Bf16* v, std::int64_t v_stride, Bf16* out, std::int64_t out_stride,
+              std::int64_t q_rows, std::int64_t kv_rows, std::int64_t heads, std::int64_t kv_heads,
+              float scale, const Bf16* kp, const Bf16* vp, std::int64_t prefix, const Bf16* q_norm,
+              const float* freqs, float eps, Stream stream) {
   const auto aligned = [](const void* p) { return reinterpret_cast<std::uintptr_t>(p) % 16 == 0; };
+  if (q_norm != nullptr && (freqs == nullptr || !aligned(freqs) || !std::isfinite(eps))) {
+    return std::unexpected(std::string("FlashAttention: the query norm's frequencies"));
+  }
   if (q_rows <= 0 || q_rows > (std::int64_t{1} << 30) || kv_rows <= 0 ||
       kv_rows > (std::int64_t{1} << 30) || heads <= 0 || heads > 65535 || kv_heads <= 0 ||
       heads % kv_heads != 0 || q_stride < heads * kD || k_stride < kv_heads * kD ||
       v_stride < kv_heads * kD || out_stride < heads * kD || q_stride % 8 != 0 ||
       k_stride % 8 != 0 || v_stride % 8 != 0 || out_stride % 8 != 0 || !aligned(q) || !aligned(k) ||
-      !aligned(v) || !aligned(out)) {
+      !aligned(v) || !aligned(out) || prefix < 0 || prefix > kv_rows || !aligned(kp) ||
+      !aligned(vp)) {
     return std::unexpected(std::string("FlashAttention: sizes, strides or alignment"));
   }
   // A positive, finite scale: the running maximum is taken over unscaled
@@ -309,22 +436,48 @@ Status FlashAttention(const Bf16* q, std::int64_t q_stride, const Bf16* k, std::
   if (!(scale > 0.0f) || !std::isfinite(scale)) {
     return std::unexpected(std::string("FlashAttention: the scale must be positive and finite"));
   }
+  const bool norm = q_norm != nullptr;
+  const auto kernel = norm ? FlashForwardKernel<true, kDepth> : FlashForwardKernel<false, kDepth>;
+  const auto smem = static_cast<std::size_t>(SmemFor(kDepth));
   // Per call: the attribute is per device, and a cached flag would race
   // between threads.
-  if (cudaFuncSetAttribute(FlashForwardKernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                           kSmem) != cudaSuccess) {
+  if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, SmemFor(kDepth)) !=
+      cudaSuccess) {
     return std::unexpected(std::string("FlashAttention: shared memory limit"));
   }
   const dim3 grid(static_cast<unsigned>((q_rows + kBr - 1) / kBr), static_cast<unsigned>(heads));
   constexpr float kLog2e = 1.4426950408889634f;
-  FlashForwardKernel<<<grid, kThreads, kSmem, static_cast<cudaStream_t>(stream)>>>(
+  kernel<<<grid, kThreads, smem, static_cast<cudaStream_t>(stream)>>>(
       q, q_stride, k, k_stride, v, v_stride, out, out_stride, static_cast<int>(q_rows),
-      static_cast<int>(kv_rows), static_cast<int>(heads / kv_heads), scale * kLog2e);
+      static_cast<int>(kv_rows), static_cast<int>(heads / kv_heads), scale * kLog2e, kp, vp,
+      static_cast<int>(prefix), q_norm, freqs, norm ? eps : 0.0f);
   const cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
     return std::unexpected(std::format("FlashAttention: {}", cudaGetErrorString(error)));
   }
   return {};
+}
+
+}  // namespace
+
+Status FlashAttention(const Bf16* q, std::int64_t q_stride, const Bf16* k, std::int64_t k_stride,
+                      const Bf16* v, std::int64_t v_stride, Bf16* out, std::int64_t out_stride,
+                      std::int64_t q_rows, std::int64_t kv_rows, std::int64_t heads,
+                      std::int64_t kv_heads, float scale, Stream stream) {
+  return Launch(q, q_stride, k, k_stride, v, v_stride, out, out_stride, q_rows, kv_rows, heads,
+                kv_heads, scale, k, v, 0, nullptr, nullptr, 0.0f, stream);
+}
+
+Status FlashAttentionPrefixed(const Bf16* q, std::int64_t q_stride, const Bf16* k_prefix,
+                              const Bf16* v_prefix, std::int64_t prefix, const Bf16* k,
+                              std::int64_t k_stride, const Bf16* v, std::int64_t v_stride,
+                              Bf16* out, std::int64_t out_stride, std::int64_t q_rows,
+                              std::int64_t kv_rows, std::int64_t heads, std::int64_t kv_heads,
+                              float scale, Stream stream, const QueryNorm* q_norm) {
+  return Launch(
+      q, q_stride, k, k_stride, v, v_stride, out, out_stride, q_rows, kv_rows, heads, kv_heads,
+      scale, k_prefix, v_prefix, prefix, q_norm != nullptr ? q_norm->weight : nullptr,
+      q_norm != nullptr ? q_norm->freqs : nullptr, q_norm != nullptr ? q_norm->eps : 0.0f, stream);
 }
 
 }  // namespace jitllm::kernels::image

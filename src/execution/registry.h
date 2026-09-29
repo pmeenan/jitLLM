@@ -90,6 +90,16 @@ enum class Operation : std::uint8_t {
   kMoeRoute,    // routed rows sorted by expert
   kQuantize,    // activations into a quantized format
   kNormGate,    // rows scaled to unit RMS, times a weight and a sigmoid gate
+  // Qwen-Image-2.1's operations (M3; kernels/image/implementations.h).
+  kHeadNormRope,       // each head's rows scaled to unit RMS, times a weight, then rotated
+  kLayerNormModulate,  // rows layer-normed, then scaled by a modulation row
+  kGatedResidual,      // x + tanh(gate) * y, the gate a modulation row
+  kGatedResidualNorm,  // the gated residual, then the next layer_norm_modulate of its x
+  kEulerStep,          // the flow-matching scheduler's step
+  kConv2d,             // a 2-D convolution plus a bias
+  kChannelNorm,        // each pixel's channels scaled to unit norm, times a weight
+  kUpsample,           // nearest 2x upsampling
+  kDupUpAdd,           // a shortcut's channels spread over 2x2 pixels, added
 };
 
 std::string_view OperationName(Operation operation);

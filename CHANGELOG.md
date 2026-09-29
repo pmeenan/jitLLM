@@ -97,3 +97,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 - Qwen3.8 Flash Next's plain decode is 5–8% faster (its recurrent state
   updated in place, and fused and clustered one-row kernels); its greedy
   tokens may differ from the previous build's at near-ties.
+- Qwen-Image-2.1 generates about 8% faster (33.4 s against 36.2 s at
+  1,024², 40 steps, weights resident, on a GB10) with the same BF16
+  numerics (pinned cuBLASLt products, fused norms and attention,
+  implicit-GEMM VAE convolutions, a CUDA graph per denoising step), its
+  operations run through a plan bound against the implementation
+  registry; its pixels differ from the previous build's in the last bits
+  of the VAE's convolutions (still within the bounds of diffusers' image).

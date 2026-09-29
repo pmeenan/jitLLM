@@ -28,6 +28,29 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-035: NVCC contracts `a*b + c*d` and `a*b - c*d` into different FMAs, so one expression copied into another kernel need not give its bits  (2026-09-28, status: worked-around)
+
+- **Environment:** `spark-b`, the SDK's CUDA 13.4 NVCC, sm_121a, default
+  `-fmad=true`; `kernels/image`, M3 image speed slice.
+- **Observed:** the query norm fused into FlashAttention
+  (`flash_attention.cu`) was meant to reproduce `HeadNormRopeComplexKernel`
+  (`ops.cu`) bit for bit, from the same C++. The denoiser's latents moved
+  (relative RMS to diffusers 0.0174017 → 0.0176318) while a 300-row unit
+  test still matched. The SASS of the original showed the complex product
+  `n0*c - n1*s` as `fma(n0, c, -(n1*s))` but `n0*s + n1*c` as
+  `fma(n0, s, n1*c)`: the product fused is not the same one in the two, and
+  a first explicit rewrite that guessed `fma(n1, c, n0*s)` changed the M3
+  slice's pixels.
+- **Worked around:** both kernels now spell every contraction out with
+  `__fmaf_rn` / `__fmul_rn` as the original compiled (read from its SASS),
+  the legacy plan's image is again `95fbcbc5…` and the fused plan's latents
+  equal it byte for byte; the unit test runs 1,500 rows × 8 heads, enough
+  that one query element in 10⁴ rounding differently shows.
+- **Impact:** any "same values as that kernel" fusion should compare the
+  fused output directly on production-sized data, and write the arithmetic
+  with explicit intrinsics on both sides rather than trust the compiler to
+  contract two copies alike.
+
 ## RE-034: CUTLASS's SM120 MXFP8 GEMM halves its speed on wide products at 8,192 rows unless its tiles are swizzled  (2026-09-28, status: worked-around)
 
 `spark-b`, GB10, CUTLASS 4.7.1's SM120 block-scaled GEMM (MXFP8 × MXFP8,

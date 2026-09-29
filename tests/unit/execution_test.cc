@@ -69,7 +69,7 @@ std::vector<Choice> Layer(std::string norm, std::string mul_mat = "fake.mul_mat.
 // no two operations share one.
 TEST(PlanRegistryTest, EveryOperationHasItsOwnName) {
   std::set<std::string_view> names;
-  for (int i = 0; i <= static_cast<int>(Operation::kNormGate); ++i) {
+  for (int i = 0; i <= static_cast<int>(Operation::kDupUpAdd); ++i) {
     const std::string_view name = OperationName(static_cast<Operation>(i));
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(names.insert(name).second) << name;

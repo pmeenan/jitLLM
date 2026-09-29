@@ -116,7 +116,12 @@ runs, and peak memory as the drop in `MemAvailable`.
   Each kernel rounds to BF16 where the pinned PyTorch code materializes a
   BF16 tensor, so fusing does not change the values: the scheduler's step,
   for one, rounds `dt` to BF16 before multiplying (0 of 10.2 million values
-  differ from diffusers' steps that way, 287,316 with an F32 `dt`).
+  differ from diffusers' steps that way, 287,316 with an F32 `dt`). Since
+  the speed slice ([Speed](#speed)) both harnesses run the three phases
+  through one pipeline ([pipeline.h](../../../src/kernels/image/pipeline.h))
+  dispatched through a plan bound against the implementation registry
+  (D-053): `--plan legacy` is the kernels above, `--plan fast` (the
+  default) the speed slice's.
 
 ## Results (`spark`, 2026-09-28)
 
@@ -176,13 +181,143 @@ table of steps 0 and 1).
 
 **Attention, chosen by speed** (D-053): GGML's tensor-core kernel covers
 D = 128 with one query head per KV head once its ncols2 = 1 instances are
-built (`kernels/ggml/fattn_mma_d128.cu`, `--attention ggml`; RE-030's sinks
+built (`kernels/ggml/fattn_mma_d128.cu`, then `--attention ggml`, an arm
+the speed slice retired from the harness; RE-030's sinks
 issue does not arise without sinks) and matches FP64 within upstream's
 bound, but takes 19.9 ms per block call here (0.64 s per step, 64 columns
 per tile, stream-k), about 14 TFLOPS. jitLLM's own FlashAttention-2 kernel
 (`kernels/image/flash_attention.cu`, BF16 `mma.sync`) takes 3.37 ms, as
 PyTorch's does, so neither cuDNN (whose license D-017 would first have to
 admit) nor a cuBLAS formulation was needed.
+
+## Speed
+
+The speed slice (2026-09-28, the owner: "see how much we can squeeze out of
+it without sacrificing quality"): the same BF16 numerics, lower-precision
+levers (FP8 linears, step caching) left to the quality/performance-modes
+item ([plan](../../plan.md)). Each lever is an implementation a plan names
+(D-053; [implementations.h](../../../src/kernels/image/implementations.h)),
+so turning one back is one `--choose`:
+
+- **Pinned cuBLASLt products** (`image.linear.cublaslt`,
+  [gemm.h](../../../src/kernels/image/gemm.h)): for each product shape the
+  pipeline makes at 1,024² with the teapot prompt, the fastest of cuBLASLt's
+  heuristic candidates whose output equals `cublasGemmEx`'s bit for bit
+  (five of the sixteen pins split K, reduced in a fixed order, as
+  `cublasGemmEx`'s own choice evidently does there), timed sustained by
+  `jitllm_qwen_image_gemm_tune` (median of five batches of back-to-back
+  launches after half a second of warm-up) and pinned by its nine
+  algorithm attributes, as the EXL3 reconstruction's are; other shapes,
+  and a pin a later cuBLASLt would refuse, take cuBLASLt's first heuristic
+  choice. The 4,096³ products run `nvjet` 192×144 tiles at 1.48 ms against
+  `cublasGemmEx`'s CUTLASS kernel at 1.64 ms, the MLP's up projections
+  4.21 against 4.35 ms; its down projection has no faster candidate.
+- **The gated residual fused with the next norm**
+  (`image.gated_residual_norm`): the residual written back and the next
+  block's (or `norm_out`'s) layer norm and modulation of the new rows in
+  one pass, the norm's sums in `LayerNormModulate`'s order, so the same
+  bits; the norm kernels keep their chunks in registers at a compile-time
+  count, and SwiGLU takes eight elements per thread (both plans).
+- **Attention reads the prefix cache in place**
+  (`image.flash_attention.prefixed`): the text rows' K and V are read from
+  the cache instead of being copied in front of the image rows each block
+  (64 copies a step), the same keys in the same order.
+- **The query norm and rotation in the attention's registers**
+  (`image.flash_attention.norm_q`): each query row normed and rotated as
+  `HeadNormRopeComplex` computes it, its sum of squares in that kernel's
+  order and its contractions spelled out as that kernel compiles them
+  (RE-035), so the same bits, and the rotated queries never written.
+- **Implicit-GEMM convolutions** (`image.conv2d.implicit`,
+  [conv.cu](../../../src/kernels/image/conv.cu)) for the VAE's 3×3
+  convolutions: 128 pixels × 144 channels per block, the input patch with
+  its halo and all nine taps' KRSC weights per 16 input channels in
+  shared memory, `mma.sync` BF16 with F32 accumulation, the bias added
+  before one rounding, as the im2col path's bias fill and `beta = 1` do.
+  The sums run in another order than cuBLAS's over the im2col matrix, so
+  this lever alone changes bits (the VAE's).
+- **A CUDA graph per denoising step** (both harnesses): the third step
+  captured once and replayed, its sinusoid and `dt` uploaded to fixed
+  places first (the Euler step reads `dt` on the device); on the paged
+  node the capture lives for the runner's life, every address it holds
+  pinned (D-090).
+- **Tried, not kept or not needed:** batching q, k and v (or gate and up)
+  as one strided product gave nothing over the pinned single products
+  (tuner: 4.40 ms for three 4,096³ against 3 × 1.47, and 8.52 ms for the
+  batched pair against 2 × 4.12); a third key and value stage in the
+  attention (96 KiB) ran it at 3.43 ms against 3.49 in the profile but
+  32.56 s against 32.58 s end to end (four plain runs each, `spark-b`), so
+  it stays at two; the prefix cache read in place, alone, did not move the
+  full generation measurably (kept as the query norm's base, which does); the attention runs at about 79 TFLOPS against the
+  products' 93–100, the rest of the gap needing another design than
+  FlashAttention-2 on `mma.sync`. The text encoder takes 0.07 s and was
+  not worked on beyond its products' pins.
+
+**Results** (`spark`, 2026-09-28, the host otherwise idle for the batch;
+GB10, driver 580.178.04, the SDK's CUDA 13.4 and cuBLAS 13.8.0.4; the M3
+slice's build (`c9a17ac`) and this slice's, two plain runs per arm, the
+fast plan run between every two other arms; raw outputs in
+`~/.local/share/jitllm/m3imgspd-20260928/` on `spark`, the `h-` runs):
+
+| | M3 slice | Speed slice | diffusers |
+| --- | ---: | ---: | ---: |
+| Full generation, weights resident (plain runs) | 35.95–36.39 s (mean 36.19, 4 runs) | 32.97–34.17 s (mean 33.41, 14 runs) | 52.6 s |
+| Against diffusers | 0.69 | **0.64** | 1 |
+| Per denoising step, median | 0.870–0.874 s | 0.811–0.826 s | 1.259 s |
+| Text encode / VAE decode (first run) | 0.137 / 1.09–1.10 s | 0.072 / 0.36–0.41 s | 1.95 / 1.46 s |
+| Peak memory, resident (`MemAvailable` drop) | 30.5–32.3 GiB | 31.5–31.8 GiB | 43.4 GiB |
+| Full generation, released, cold page cache | 40.36 s, peak 16.6 GiB | 37.70 s, peak 15.2 GiB | |
+| Swap Qwen3.8 → image, to the first step's output (first use / prepared) | 5.28 / 5.21 s, of it encode and step 1.60 / 1.58 s | 5.11 / 5.09 s, 1.52 / 1.52 s | |
+
+The drift over the hour (the fast plan's arms from 32.97 to 33.55 s) is
+larger than a single lever's gain, so each lever is judged against the fast
+arms either side of it:
+
+| Lever turned back (`--choose`) | Full generation | Gain |
+| --- | ---: | ---: |
+| products on `cublasGemmEx` | 34.08 s | 0.91 s |
+| VAE convolutions by im2col | 33.94 s | 0.53 s (decode 0.36 → 0.95 s) |
+| attention without the query norm (prefix read in place kept) | 33.84 s | 0.39 s |
+| attention as the M3 slice's (the prefix copied, the query normed apart) | 33.72 s | 0.31 s (the prefix alone: within noise) |
+| no step graphs | 33.71 s | 0.29 s |
+| residual and norm apart | 33.56 s | 0.11 s (0.5 s on `spark-b`) |
+| the M3 slice's plan (`--plan legacy`) | 35.63 s | 2.2 s |
+
+The legacy plan in this build is 0.56 s faster than the M3 slice's build:
+both plans share the harness's changes (working memory laid out once
+rather than allocated per phase, which took 0.065 s off the encode; the
+norms' chunks in registers and the eight-wide SwiGLU).
+
+Where a step goes (nsys, kernel time per step; before: all 40 steps of the
+M3 slice's build; after: steps 0 and 1 of this slice's, launched one by
+one, since nsys traced graphs as single launches): products 648 → 610 ms,
+attention 112 → 111 ms (the query norm's 4.8 ms moved into it, its kernel
+no slower), everything else 112 → 87 ms (the separate gated residual,
+26 ms, gone into the norm; the rotation of q, 17.5 → 12.7 ms for k alone),
+GPU idle between operations 2 ms a step before.
+
+**Quality** ([compare.py](compare.py), bounds 1–6, run in the
+`jitllm-exl3-reference:20260922` container on `spark-b`, which has NumPy
+and Pillow; the same numbers in `jitllm-image-reference:20260922` on
+`spark`): every bound passes, and every number but the VAE's and the
+image's is the M3 slice's to the last digit, since the text encoder and the
+denoiser write the same bits (the fast plan's final latents equal the
+legacy plan's byte for byte):
+
+| Check | Speed slice | M3 slice | Bound |
+| --- | --- | --- | --- |
+| 1. Tokens | 39 of 39 equal, 14 dropped | the same | exact |
+| 2. Text encoder | rel. RMS 0.0437, cosine 0.99905 | the same | ≤ 0.20, ≥ 0.99 |
+| 3. DiT, first step | rel. RMS 0.00644, cosine 0.999980 | the same | ≤ 0.0125, ≥ 0.99996 |
+| 4. DiT, 40 teacher-forced steps | worst rel. RMS 0.00937 (step 39) | the same | ≤ 0.046 |
+| 5. VAE on diffusers' latents | rel. RMS 0.00354; PSNR 55.93 dB, SSIM 0.9992 | 0.0035; 55.9 dB, 0.9992 | ≤ 0.0055, ≥ 47.5 dB |
+| 6. **Image, end to end** | **PSNR 41.770 dB, SSIM 0.99604** | 41.768 dB, 0.99604 | ≥ 32.0 dB, ≥ 0.98 |
+
+The image is repeatable: every run of the fast plan, first or plain,
+resident, released or paged, gives the same pixels (RGBA SHA-256
+`3b7770ca…`); the legacy plan still gives the M3 slice's (`95fbcbc5…`).
+The two differ only through the VAE's convolutions' summation order
+(decoded tensor 0.0180959 against 0.0180977 from diffusers' in relative
+RMS).
 
 ## Judgement calls
 
@@ -201,6 +336,29 @@ admit) nor a cuBLAS formulation was needed.
   reference rounds each to BF16, and its attention was 6× slower here.
 - **Bounds from calibration:** twice the measured BF16-versus-FP32 distance
   per component, fixed before jitLLM's first run.
+- **Speed without new numbers** (the speed slice): every lever but the
+  VAE's convolution keeps the M3 slice's bits. Pinned algorithms are chosen
+  among the candidates that write `cublasGemmEx`'s bits, not the fastest
+  of all (for three of the small text-encoder and `txt_in` shapes the
+  fastest candidate writes other bits, about 2% faster on products of
+  0.015–0.49 ms); fused kernels reproduce the unfused
+  kernels' summation orders and contractions, checked byte for byte. The
+  implicit convolution is the one lever that sums in another order; its
+  image is 41.770 dB against the M3 slice's 41.768.
+- **Pins recorded in the source** (`gemm.cc`, covered by the module's
+  identity digest) for the GB10, the pinned cuBLASLt and the teapot's
+  shapes, rather than tuned at start-up: deterministic and reviewable; any
+  other shape or device takes cuBLASLt's first heuristic choice, also
+  deterministic for a given cuBLASLt and device.
+- **One pipeline for both harnesses** in `kernels/image` rather than two
+  copies of the phases (the paged runner's was a copy): the registry-bound
+  plan (D-053) that the runtime needs, and every lever lands once.
+- **The GGML attention arm retired** from the harness: its A/B (19.9 ms
+  against 3.37 ms per block) stands as measured, and keeping it would have
+  kept a second attention path outside the bound plan.
+- **A lever kept only if the full generation moves** (the owner's rule):
+  the third attention stage and batched products were measured and
+  dropped.
 
 ## Limits
 
@@ -213,12 +371,18 @@ admit) nor a cuBLAS formulation was needed.
 - The phases here run on `cudaMalloc` memory. On the paged node each phase
   is a device job over its own component's closure, a generation is one
   request leasing all three components once (D-093), and the image is
-  this harness's pixel for pixel (RGBA SHA-256 `95fbcbc5…`,
-  [swap](../fast-swap/swap.md#qwen-image-21-on-the-paged-node)). In both,
-  the kernels are called directly: the image path's operations are not yet
-  declared in the registry or dispatched through a bound plan (D-053,
-  D-086).
-- The VAE's convolutions use im2col (0.47 s of the 1.07 s decode).
+  this harness's pixel for pixel (RGBA SHA-256 `95fbcbc5…` with the M3
+  slice's kernels, `3b7770ca…` with the speed slice's,
+  [swap](../fast-swap/swap.md#qwen-image-21-on-the-paged-node)). Both run
+  the same pipeline through the same bound plan ([Speed](#speed)).
+- The pinned products hold for the GB10 (48 SMs) and the pinned cuBLASLt
+  at the teapot prompt's shapes (1,024², 39 tokens); elsewhere cuBLASLt's
+  first heuristic choice runs, which need not write cublasGemmEx's bits.
+  One other size was run, 992² (the teapot, 40 steps, the reference's
+  initial latents cut to size; `spark`, 2026-09-28), whose VAE widths are
+  not all multiples of 8: the fast plan's final latents equal the legacy
+  plan's byte for byte, its image 62.4 dB from the legacy plan's (the
+  convolutions' order); neither was compared with diffusers there.
 - Load times are with a warm page cache.
 
 ## Reproduce
@@ -245,13 +409,20 @@ sudo -n docker run --rm --memory 96g --device nvidia.com/gpu=all --network none 
   jitllm-image-reference:20260922 /exp/qwen-image-native/reference.py /model /out/ref1 \
   /exp/fast-swap/prompts.json
 # jitLLM: end to end (with two plain timed runs), then each component alone.
+# The fast plan and step graphs are the defaults; --plan legacy is the M3
+# slice's kernels, --choose ROLE=IMPLEMENTATION turns one lever back, and
+# --graphs off replays nothing (Speed).
 B=build/spark-native/benchmarks/jitllm_qwen_image_exec; C=eca21baa...; R=$REF_PARENT/ref1
 $B --store $S --composition $C --out full --reference $R --runs 2
 $B --store $S --composition $C --out first --reference $R --embeds reference --stop-after 1 --no-vae
 $B --store $S --composition $C --out forced --reference $R --embeds reference --force-latents --no-vae
 $B --store $S --composition $C --out vae --reference $R --embeds reference --stop-after 1 --decode-reference
 $B --store $S --composition $C --out released --reference $R --phases released --runs 1
-# The verdicts, in the image-reference container:
+# The verdicts, in the image-reference container (or any with NumPy and
+# Pillow; see Speed for the speed slice's):
 python3 compare.py $R --tokens full --text full --image full --dit-first first \
   --dit-forced forced --vae vae
+# The products' candidates at the pipeline's shapes (the pins' source):
+build/spark-native/benchmarks/jitllm_qwen_image_gemm_tune --candidates 16 --reps 10 \
+  --shape 4096,4096,4096 --shape 4096,12288,4096 ...   # each m,n,k the pipeline makes
 ```

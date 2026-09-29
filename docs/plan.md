@@ -298,9 +298,11 @@ it appears.
       rotary embeddings, residuals and the VAE, each rounding where
       diffusers rounds (`kernels/image`,
       [qwen-image-native](experiments/qwen-image-native/README.md)); the
-      VAE's convolutions are im2col and cuBLAS (its causal 3D convolutions
-      are 2-D at one frame), so GGML's were not needed. No source-lock
-      change.
+      VAE's convolutions (its causal 3D convolutions are 2-D at one frame)
+      were im2col and cuBLAS and are, since the speed slice, jitLLM's own
+      implicit GEMM, so GGML's were not needed; the products are pinned
+      cuBLASLt algorithms. The image's operations are declared in the
+      registry and run through a bound plan. No source-lock change.
       Open: the vector attention at D = 256, which
       upstream picks for Qwen3.8's decode below 8,192 cells (the MMA kernel
       runs it meanwhile). CUB stays out although its licenses are
@@ -400,8 +402,17 @@ it appears.
       closure, a generation one request leasing all three (D-093); the
       image pixel for pixel the resident
       harness's, generated before and after swaps
-      ([swap](experiments/fast-swap/swap.md)). Open: the image path's
-      operations in the registry and a bound plan (D-053).
+      ([swap](experiments/fast-swap/swap.md)).
+      *Speed* (the same BF16 numerics): both harnesses run one pipeline
+      dispatched through a plan bound against the registry (D-053,
+      `kernels/image/pipeline.h`); pinned cuBLASLt products (bit for bit
+      `cublasGemmEx`'s), the gated residual fused with the next norm, the
+      prefix cache read in place and the query norm fused into the
+      attention (all bit for bit the M3 slice's denoiser), implicit-GEMM
+      VAE convolutions and a CUDA graph per step: full generation 33.4 s
+      against 36.2 s before on the same host (0.64× diffusers' 52.6 s), a
+      step 0.82 s, decode 0.36 s; image 41.77 dB, SSIM 0.996, repeatable
+      ([qwen-image-native](experiments/qwen-image-native/README.md#speed)).
 - [ ] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.

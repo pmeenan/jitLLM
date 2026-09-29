@@ -122,6 +122,25 @@ Status FlashAttention(const Bf16* q, std::int64_t q_stride, const Bf16* k, std::
                       const Bf16* v, std::int64_t v_stride, Bf16* out, std::int64_t out_stride,
                       std::int64_t q_rows, std::int64_t kv_rows, std::int64_t heads,
                       std::int64_t kv_heads, float scale, Stream stream);
+// The same with the first `prefix` keys and values read from k_prefix and
+// v_prefix (the prefix K/V cache, at k's and v's strides) and the rest,
+// kv_rows - prefix of them, from k and v: the same keys in the same order
+// as one range holding both, so the same values bit for bit. With q_norm,
+// q is the raw projection, and each query row is first normed and rotated
+// as HeadNormRopeComplex does it (its weight, the row's F32 frequencies,
+// rows 128 floats apart from q's first row, eps), bit for bit, in
+// registers: the rotated queries are never written.
+struct QueryNorm {
+  const Bf16* weight = nullptr;  // [128]
+  const float* freqs = nullptr;  // [q_rows, 64, 2]
+  float eps = 0.0f;
+};
+Status FlashAttentionPrefixed(const Bf16* q, std::int64_t q_stride, const Bf16* k_prefix,
+                              const Bf16* v_prefix, std::int64_t prefix, const Bf16* k,
+                              std::int64_t k_stride, const Bf16* v, std::int64_t v_stride,
+                              Bf16* out, std::int64_t out_stride, std::int64_t q_rows,
+                              std::int64_t kv_rows, std::int64_t heads, std::int64_t kv_heads,
+                              float scale, Stream stream, const QueryNorm* q_norm = nullptr);
 // Strided BF16 rows to packed F16 rows (v for the attention kernel).
 Status Bf16RowsToF16(const Bf16* x, std::int64_t x_stride, F16* out, std::int64_t rows,
                      std::int64_t width, Stream stream);
@@ -130,12 +149,27 @@ Status Bf16RowsToF16(const Bf16* x, std::int64_t x_stride, F16* out, std::int64_
 Status GatedResidual(Bf16* x, const Bf16* y, std::int64_t y_stride, std::int64_t rows,
                      std::int64_t width, const Bf16* mod, std::int64_t mod_stride,
                      std::int64_t first_target, Stream stream);
+// GatedResidual, then LayerNormModulate of the new x into `out` (with
+// `scale_mod` rows `scale_stride` apart), in one pass: the same values, bit
+// for bit, as the two calls (both select their modulation row by
+// first_target).
+Status GatedResidualNorm(Bf16* x, const Bf16* y, std::int64_t y_stride, std::int64_t rows,
+                         std::int64_t width, const Bf16* gate_mod, std::int64_t gate_stride,
+                         std::int64_t first_target, Bf16* out, float eps, const Bf16* scale_mod,
+                         std::int64_t scale_stride, Stream stream);
 // FlowMatchEulerDiscreteScheduler.step: out = bf16(f32(sample) +
 // bf16(dt * noise)) when dt_bf16 is false, else with dt rounded to BF16
 // first (bf16(f32(sample) + bf16(bf16(dt) * noise))); n elements. `out`
 // may be `sample`.
 Status EulerStep(const Bf16* sample, const Bf16* noise, Bf16* out, float dt, bool dt_bf16,
                  std::int64_t n, Stream stream);
+// The same with dt read from device memory when the kernel runs (a step
+// that a graph replays): *dt is used as it is (the caller rounds it to
+// BF16 first, EulerStepDt).
+Status EulerStepAt(const Bf16* sample, const Bf16* noise, Bf16* out, const float* dt,
+                   std::int64_t n, Stream stream);
+// dt as EulerStep uses it: rounded to BF16 when dt_bf16.
+float EulerStepDt(float dt, bool dt_bf16);
 
 // ---- the VAE decoder (AutoencoderKLQwenImage21), channels-first [C, H, W]
 
@@ -157,6 +191,20 @@ Status ChannelRmsNorm(const Bf16* x, const Bf16* gamma, Bf16* out, std::int64_t 
 // [channels*9, count], packed.
 Status Im2Col3x3(const Bf16* x, std::int64_t channels, std::int64_t height, std::int64_t width,
                  std::int64_t pixel0, std::int64_t count, Bf16* col, Stream stream);
+// A 3x3, stride 1, zero-padded convolution plus bias as one implicit GEMM
+// (conv.cu): out[co, y, x] = bf16(bias[co] + sum over ky, kx, ci of
+// w[co, ky, kx, ci] x[ci, y + ky - 1, x + kx - 1]) in F32, channels-first
+// x [in_channels, height, width] and out [out_channels, height, width];
+// the weights in KRSC order (Conv3x3WeightsKrsc); out does not overlap x.
+// Input channels a multiple of 16, an even width (Qwen-Image's VAE widths
+// are at every size it takes, a multiple of 32), tensors 16-byte aligned.
+Status Conv3x3Implicit(const Bf16* x, std::int64_t in_channels, std::int64_t height,
+                       std::int64_t width, const Bf16* w_krsc, const Bf16* bias, Bf16* out,
+                       std::int64_t out_channels, Stream stream);
+// PyTorch's F32 [co, ci, 3, 3] convolution weights, rounded to BF16, in
+// KRSC order [co, 3, 3, ci].
+Status Conv3x3WeightsKrsc(const float* w, Bf16* out, std::int64_t out_channels,
+                          std::int64_t in_channels, Stream stream);
 // out[c, p] = bias[c] for every pixel (the convolution's C before beta = 1).
 Status FillBias(const Bf16* bias, Bf16* out, std::int64_t channels, std::int64_t pixels,
                 Stream stream);

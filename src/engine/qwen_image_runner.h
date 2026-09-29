@@ -39,6 +39,13 @@
 // - The endpoint (M3's swap table): FirstOutput encodes the prompt and runs
 //   the first denoising step; Finish runs the rest and the decoder, and
 //   hashes the image's RGBA pixels.
+// - Kernels: the pipeline's (kernels/image/pipeline.h), dispatched through
+//   a plan bound against the implementation registry (D-053), the resident
+//   harness's plans (QwenImageOptions::plan, fast by default). Steps from
+//   the third on replay a CUDA graph of one step, captured in the third's
+//   job the first time and kept for the runner's life: every address it
+//   holds (the weights' pinned places, D-090, the image's own memory, the
+//   workspace) stays put.
 
 #ifndef JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
 #define JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
@@ -56,6 +63,7 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "kernels/ggml/cublas.h"
+#include "kernels/image/pipeline.h"
 #include "model/qwen_image.h"
 
 namespace jitllm::engine {
@@ -68,6 +76,11 @@ struct QwenImageOptions {
   std::string prompt = "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
   std::uint32_t size = 1024;
   std::uint32_t steps = 40;
+  kernels::image::PlanKind plan = kernels::image::PlanKind::kFast;
+  // Denoising steps from the third on replayed from one captured step
+  // (their inputs uploaded to fixed places first; D-090 keeps the weights'
+  // places for the model's life).
+  bool graphs = true;
 };
 
 class QwenImageRunner final : public PagedModel {
