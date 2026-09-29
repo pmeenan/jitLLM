@@ -7,8 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -179,6 +181,247 @@ TEST(VerifyDraft, PreservesTheDistribution) {
   ASSERT_TRUE(a && b);
   EXPECT_EQ(a->accepted, b->accepted);
   EXPECT_EQ(a->token, b->token);
+}
+
+// The distribution the documented order gives, computed the plain way (a
+// full sort, double softmax): each token's probability.
+std::vector<double> Reference(const std::vector<float>& logits, const ex::SamplingParams& p) {
+  struct C {
+    double value;
+    std::int32_t id;
+  };
+  std::vector<C> c;
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    if (std::isfinite(logits[i])) {
+      c.push_back({static_cast<double>(logits[i]) / p.temperature, static_cast<std::int32_t>(i)});
+    }
+  }
+  std::ranges::sort(c, [](const C& a, const C& b) {
+    return a.value > b.value || (a.value == b.value && a.id < b.id);
+  });
+  if (p.top_k != 0 && p.top_k < c.size()) {
+    c.resize(p.top_k);
+  }
+  const double top = c[0].value;
+  double total = 0;
+  for (C& x : c) {
+    x.value = std::exp(x.value - top);
+    total += x.value;
+  }
+  std::size_t keep = c.size();
+  while (p.min_p > 0 && keep > 1 && c[keep - 1].value < p.min_p * c[0].value) {
+    total -= c[--keep].value;
+  }
+  if (p.top_p < 1) {
+    double cumulative = 0;
+    std::size_t n = 0;
+    while (n < keep && cumulative < p.top_p * total) {
+      cumulative += c[n++].value;
+    }
+    keep = n;
+    total = cumulative;
+  }
+  std::vector<double> probability(logits.size(), 0.0);
+  for (std::size_t i = 0; i < keep; ++i) {
+    probability[static_cast<std::size_t>(c[i].id)] = c[i].value / total;
+  }
+  return probability;
+}
+
+// Total variation between draws' counts and a distribution; `outside`:
+// draws of tokens it gives no probability.
+double TotalVariation(const std::vector<std::uint64_t>& counts, const std::vector<double>& p,
+                      std::uint64_t draws, std::uint64_t& outside) {
+  double tv = 0;
+  outside = 0;
+  for (std::size_t i = 0; i < p.size(); ++i) {
+    tv += std::abs((static_cast<double>(counts[i]) / static_cast<double>(draws)) - p[i]);
+    outside += p[i] == 0 ? counts[i] : 0;
+  }
+  return tv / 2;
+}
+
+// A bound on the total variation of `draws` exact draws from `p`: three
+// times its expectation (each count's mean absolute deviation, about
+// sqrt(2 p (1 - p) / (pi draws))), plus a little.
+double TvBound(const std::vector<double>& p, std::uint64_t draws) {
+  double expected = 0;
+  for (const double x : p) {
+    expected += std::sqrt(2 * x * (1 - x) / (3.141592653589793 * static_cast<double>(draws)));
+  }
+  return (3 * expected / 2) + 0.002;
+}
+
+// Logits spread over [-4, 4] by a fixed formula, with ties and a masked
+// token, so each filter's boundary falls between tokens.
+std::vector<float> Spread(std::size_t n) {
+  std::vector<float> logits(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    logits[i] = 4.0F * std::sin(static_cast<float>(i) * 1.7F + 0.3F);
+  }
+  logits[n / 2] = -INFINITY;
+  logits[3] = logits[5];  // a tie
+  return logits;
+}
+
+// The draws follow the exact softmax with each filter and their mix
+// (total variation over many draws; never a token the filters drop), for
+// plain draws and for speculative verdicts on a likely and an unlikely
+// draft, on a small vocabulary.
+TEST(Sample, DrawsFollowTheExactDistribution) {
+  std::vector<ex::SamplingCandidate> scratch;
+  const std::vector<float> logits = Spread(48);
+  constexpr std::uint64_t kDraws = 200000;
+  const std::array<ex::SamplingParams, 7> cases = {{
+      {},
+      {.temperature = 0.6F},
+      {.temperature = 1.0F, .top_k = 5},
+      {.temperature = 1.0F, .top_k = 0, .top_p = 0.8F},
+      {.temperature = 1.0F, .top_k = 0, .top_p = 1.0F, .min_p = 0.1F},
+      {.temperature = 1.3F, .top_k = 12, .top_p = 0.9F, .min_p = 0.02F},
+      {.temperature = 0.9F, .top_k = 0, .top_p = 0.7F, .min_p = 0.05F},
+  }};
+  const auto greedy = ex::Greedy(logits);
+  ASSERT_TRUE(greedy.has_value());
+  for (std::size_t k = 0; k < cases.size(); ++k) {
+    const ex::SamplingParams& p = cases[k];
+    const std::vector<double> want = Reference(logits, p);
+    // An unlikely draft that the filters may or may not keep.
+    const std::int32_t unlikely = 7;
+    for (int mode = 0; mode < 3; ++mode) {
+      std::vector<std::uint64_t> counts(logits.size(), 0);
+      for (std::uint64_t s = 0; s < kDraws; ++s) {
+        const ex::SamplingKey key{.seed = 17, .stream = k, .position = s};
+        std::int32_t token = -1;
+        if (mode == 0) {
+          token = ex::Sample(logits, p, key, scratch).value_or(-1);
+        } else {
+          const auto v = ex::VerifyDraft(logits, mode == 1 ? *greedy : unlikely, p, key, scratch);
+          token = v ? v->token : -1;
+        }
+        ASSERT_GE(token, 0);
+        ++counts[static_cast<std::size_t>(token)];
+      }
+      std::uint64_t outside = 0;
+      EXPECT_LT(TotalVariation(counts, want, kDraws, outside), TvBound(want, kDraws))
+          << "case " << k << " mode " << mode;
+      EXPECT_EQ(outside, 0U) << "case " << k << " mode " << mode;
+      // Each token's count within five standard deviations of its
+      // expectation: the total variation alone would miss a 1% mass error
+      // (its bound is about 0.02 here), which this catches on any token
+      // (at 200,000 draws, 1% is 2,000 draws, five deviations at most
+      // about 1,120).
+      for (std::size_t i = 0; i < want.size(); ++i) {
+        const double mean = want[i] * static_cast<double>(kDraws);
+        EXPECT_LE(std::abs(static_cast<double>(counts[i]) - mean),
+                  (5 * std::sqrt(mean * (1 - want[i]))) + 5)
+            << "case " << k << " mode " << mode << " token " << i;
+      }
+    }
+  }
+}
+
+// Filter edges: every logit equal (top-p's boundary bucket holds them
+// all, ties by ID), a temperature near 0, top-k beyond the vocabulary,
+// one finite logit among -infinity, and min-p with top-p (min-p first).
+TEST(Sample, FilterEdges) {
+  std::vector<ex::SamplingCandidate> scratch;
+  const auto drawn = [&](const std::vector<float>& logits, const ex::SamplingParams& p) {
+    std::vector<std::uint64_t> counts(logits.size(), 0);
+    for (std::uint64_t s = 0; s < 20000; ++s) {
+      const auto t = ex::Sample(logits, p, {.seed = 5, .stream = 0, .position = s}, scratch);
+      EXPECT_TRUE(t.has_value());
+      if (t) {
+        ++counts[static_cast<std::size_t>(*t)];
+      }
+    }
+    return counts;
+  };
+  const auto kept = [](const std::vector<std::uint64_t>& counts) {
+    std::vector<std::size_t> ids;
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+      if (counts[i] != 0) {
+        ids.push_back(i);
+      }
+    }
+    return ids;
+  };
+  // 1000 equal logits, top-p 0.25: the 250 lowest IDs.
+  const std::vector<float> flat(1000, 0.5F);
+  const auto nucleus = drawn(flat, {.temperature = 1.0F, .top_k = 0, .top_p = 0.25F});
+  const auto ids = kept(nucleus);
+  ASSERT_EQ(ids.size(), 250U);
+  EXPECT_EQ(ids.front(), 0U);
+  EXPECT_EQ(ids.back(), 249U);
+  // Top-k past the vocabulary is off; top-p 1 is off.
+  EXPECT_EQ(kept(drawn(flat, {.temperature = 1.0F, .top_k = 5000, .top_p = 1.0F})).size(), 1000U);
+  // A temperature near 0 draws the most likely token only.
+  std::vector<float> spread(64);
+  for (std::size_t i = 0; i < spread.size(); ++i) {
+    spread[i] = std::sin(static_cast<float>(i));
+  }
+  const auto cold = kept(drawn(spread, {.temperature = 1e-30F}));
+  ASSERT_EQ(cold.size(), 1U);
+  EXPECT_EQ(static_cast<std::int32_t>(cold[0]), *ex::Greedy(spread));
+  // One finite logit: it, whatever the filters.
+  std::vector<float> one(50, -INFINITY);
+  one[17] = -3.0F;
+  for (const ex::SamplingParams& p :
+       {ex::SamplingParams{}, ex::SamplingParams{.temperature = 2.0F, .top_k = 3},
+        ex::SamplingParams{.temperature = 0.5F, .top_k = 0, .top_p = 0.2F, .min_p = 0.9F}}) {
+    EXPECT_EQ(kept(drawn(one, p)), std::vector<std::size_t>{17});
+  }
+  // min-p before top-p. Weights 1, 0.8, 0.1, 0.1: min-p 0.5 leaves 1 and
+  // 0.8 (total 1.8), and top-p 0.55 of that (0.99) is reached by the first
+  // alone; top-p first would need 0.55 of 2.0 (1.1), keeping two.
+  const std::vector<float> four = {0.0F, std::log(0.8F), std::log(0.1F), std::log(0.1F)};
+  EXPECT_EQ(kept(drawn(four, {.temperature = 1.0F, .top_k = 0, .top_p = 0.55F, .min_p = 0.5F})),
+            std::vector<std::size_t>{0});
+  EXPECT_EQ(kept(drawn(four, {.temperature = 1.0F, .top_k = 0, .top_p = 0.55F, .min_p = 0.0F})),
+            (std::vector<std::size_t>{0, 1}));
+  // The same through top-k's path (top-k 3 keeps 1, 0.8 and the lower ID's
+  // 0.1).
+  EXPECT_EQ(kept(drawn(four, {.temperature = 1.0F, .top_k = 3, .top_p = 0.55F, .min_p = 0.5F})),
+            std::vector<std::size_t>{0});
+  EXPECT_EQ(kept(drawn(four, {.temperature = 1.0F, .top_k = 3, .top_p = 1.0F, .min_p = 0.0F})),
+            (std::vector<std::size_t>{0, 1, 2}));
+}
+
+// At a real vocabulary's size: top-k's one pass cuts back many times, and
+// top-p's boundary falls in a crowded bucket. The kept set is exactly the
+// reference's (every kept token drawn, none other) and the draws follow it.
+TEST(Sample, LargeVocabulariesKeepExactlyTheReferenceSet) {
+  std::vector<ex::SamplingCandidate> scratch;
+  std::vector<float> logits(60000);
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    // Ascending in parts, so the top-k pass meets ever better candidates.
+    logits[i] = (static_cast<float>(i % 5000) / 1000.0F) + (0.5F * std::sin(static_cast<float>(i)));
+  }
+  constexpr std::uint64_t kDraws = 10000;
+  for (const ex::SamplingParams& p :
+       {ex::SamplingParams{.temperature = 0.2F, .top_k = 40},
+        ex::SamplingParams{.temperature = 0.05F, .top_k = 0, .top_p = 0.9F},
+        ex::SamplingParams{.temperature = 0.05F, .top_k = 0, .top_p = 0.9F, .min_p = 0.2F}}) {
+    const std::vector<double> want = Reference(logits, p);
+    std::vector<std::uint64_t> counts(logits.size(), 0);
+    for (std::uint64_t s = 0; s < kDraws; ++s) {
+      const auto t = ex::Sample(logits, p, {.seed = 3, .stream = p.top_k, .position = s}, scratch);
+      ASSERT_TRUE(t.has_value());
+      ++counts[static_cast<std::size_t>(*t)];
+    }
+    std::uint64_t outside = 0;
+    std::size_t kept = 0;
+    std::size_t unseen = 0;
+    for (std::size_t i = 0; i < want.size(); ++i) {
+      kept += want[i] > 0 ? 1 : 0;
+      unseen += want[i] > 20.0 / kDraws && counts[i] == 0 ? 1 : 0;
+    }
+    EXPECT_GT(kept, 20U);
+    EXPECT_EQ(unseen, 0U) << "tokens the reference keeps, never drawn";
+    EXPECT_LT(TotalVariation(counts, want, kDraws, outside), TvBound(want, kDraws))
+        << kept << " kept";
+    EXPECT_EQ(outside, 0U);
+  }
 }
 
 TEST(VerifyDraft, GreedyAndFilteredDrafts) {

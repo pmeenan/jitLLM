@@ -94,6 +94,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Sampling (temperature above 0, the chat route's default) no longer sorts
+  the vocabulary for each token: a draw takes 0.45 ms instead of 5.9 ms at
+  DeepSeek V4 Flash's vocabulary and 0.87 ms instead of 11.9 ms at
+  Qwen3.8's, on a GB10, speculative verification included. A seed still
+  draws the same tokens every time within a build, from the same
+  distribution, but may draw other tokens than the previous build did.
+- On the chat route, a client that shuts its sending side after a whole
+  request now gets its response (a stream starts at once; a non-streaming
+  response on HTTP/1.1 is preceded by an interim `102 Processing`), where
+  before the request was cancelled; a client that closes
+  its connection still cancels. A connection kept alive between requests
+  no longer keeps its last request's body or response allocated.
 - Qwen3.8 Flash Next's plain decode is 5–8% faster (its recurrent state
   updated in place, and fused and clustered one-row kernels); its greedy
   tokens may differ from the previous build's at near-ties.

@@ -1343,6 +1343,171 @@ TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
   EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
 }
 
+// A connection kept alive after its request keeps none of the request's
+// or the response's bytes allocated: the accounting sees a body arrive,
+// and then nothing large on connections that sit idle.
+TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
+  const std::string text(std::size_t{900} << 10U, 'a');  // under a message's 1 MiB
+  const std::string whole = Post(Chat(text));
+  const auto wait_for = [&](const auto& done) {
+    for (int i = 0; i < 400 && !done(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return done();
+  };
+  // Half a body: the buffer the rest arrives in is held and counted.
+  const int first = Connect(std::string_view(whole).substr(0, whole.size() / 2));
+  EXPECT_TRUE(wait_for([&] { return server_->held_bytes() >= whole.size(); }))
+      << server_->held_bytes();
+  EXPECT_TRUE(
+      jitllm::runtime::http::WriteAll(first, std::string_view(whole).substr(whole.size() / 2)));
+  std::vector<int> kept{first};
+  for (int i = 0; i < 8; ++i) {
+    if (i > 0) {
+      kept.push_back(Connect(whole));
+    }
+    std::string pending;
+    const std::string response = ReadResponse(kept.back(), pending);
+    EXPECT_THAT(response,
+                AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("Connection: keep-alive")));
+    EXPECT_GT(response.size(), text.size());  // the answer echoes it
+  }
+  // Nine requests of about 1 MiB each, answered at about 1 MiB each: the
+  // connections, all still open, hold at most a small buffer each way.
+  const std::size_t bound = kept.size() * 2 * api::kKeptBufferBytes;
+  EXPECT_TRUE(wait_for([&] { return server_->held_bytes() <= bound; })) << server_->held_bytes();
+  // Each still serves.
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
+      kept[3], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(kept[3], pending), StartsWith("HTTP/1.1 200 "));
+  for (const int fd : kept) {
+    (void)::close(fd);
+  }
+}
+
+// A client that shuts its sending side after a whole request still gets
+// its response (after an interim 102 when it half-closed first, and only
+// when not streaming), then the connection closes; the generation is not
+// cancelled. A shutdown before the request is whole is a disconnect: no
+// response.
+TEST_F(ServerTest, AHalfClosedClientGetsItsResponse) {
+  constexpr std::string_view kInterim = "HTTP/1.1 102 Processing\r\n\r\n";
+  const auto half = [&](const std::string& bytes, bool strip = true) {
+    const int fd = Connect(bytes);
+    EXPECT_EQ(::shutdown(fd, SHUT_WR), 0);
+    std::string all;
+    while (Recv(fd, all)) {
+    }
+    (void)::close(fd);
+    if (strip && all.starts_with(kInterim)) {
+      all.erase(0, kInterim.size());  // sent when the shutdown was seen first
+    }
+    return all;
+  };
+  // The reviewer's case: a whole POST, then SHUT_WR, then read.
+  const std::string plain = half(Post(Chat("Hello world")));
+  EXPECT_THAT(plain, AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr("Connection: close\r\n"),
+                           HasSubstr(R"("content":"Hello world")")));
+  // A stream is never sent a 1xx: its probe is its own start.
+  const std::string streamed = half(Post(Chat("Hello world", R"(,"stream":true)")), false);
+  EXPECT_THAT(streamed, AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr(R"("content":"Hello")"),
+                              HasSubstr("data: [DONE]\n\n")));
+  EXPECT_TRUE(streamed.ends_with("0\r\n\r\n")) << streamed;
+  EXPECT_THAT(half("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 OK\r\n"));
+  // Before the request is whole: nobody to answer.
+  EXPECT_EQ(half("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: "
+                 "application/json\r\nContent-Length: 50\r\n\r\n{"),
+            "");
+  EXPECT_EQ(half("GET /v1/models HTTP/1.1\r\nHost: loc"), "");
+  // A generation under way when the client half-closes: the interim
+  // response comes at once, the generation goes on, the answer follows.
+  backend_.release.store(false);
+  const int fd = Connect(Post(Chat("block")));
+  WaitStarted();
+  ASSERT_EQ(::shutdown(fd, SHUT_WR), 0);
+  std::string got;
+  EXPECT_THAT(ReadUntil(fd, got, "\r\n\r\n"), StartsWith(kInterim));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(backend_.cancelled.load());
+  backend_.release.store(true);
+  while (Recv(fd, got)) {
+  }
+  (void)::close(fd);
+  EXPECT_FALSE(backend_.cancelled.load());
+  EXPECT_THAT(got.substr(std::min(got.size(), kInterim.size())),
+              AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr("Connection: close\r\n"),
+                    HasSubstr(R"("content":"block")")));
+}
+
+// A client that closes entirely while a stream waits for its first token
+// is told apart from a half-close by the probe, and its generation ends.
+TEST_F(ServerTest, AStreamsClientThatLeavesCancelsItsGeneration) {
+  backend_.release.store(false);
+  const int fd = Connect(Post(Chat("block", R"(,"stream":true)")));
+  WaitStarted();
+  std::string head;
+  EXPECT_THAT(ReadUntil(fd, head, "\n\n"), StartsWith("HTTP/1.1 200 OK"));  // admitted
+  (void)::close(fd);
+  for (int i = 0; i < 400 && !backend_.cancelled.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(backend_.cancelled.load());
+  EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
+}
+
+// A queued stream whose client half-closes starts at once (headers and
+// role chunk, no 1xx, well before `keepalive`) and is answered after its
+// turn. A queued request whose client closes entirely leaves the queue
+// (the probe draws a reset), streaming or not: its place is free.
+TEST_F(ServerTest, QueuedRequestsTellAHalfCloseFromALeave) {
+  Stop();
+  backend_.release.store(false);
+  api::ServerOptions options;
+  options.max_queued = 1;
+  options.keepalive = std::chrono::seconds(30);
+  Start(options);
+  const int running = Connect(Post(Chat("block")));
+  WaitStarted();
+  const int waiting = Connect(Post(Chat("second", R"(,"stream":true)")));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the I/O thread queues it
+  ASSERT_EQ(::shutdown(waiting, SHUT_WR), 0);
+  std::string early;
+  EXPECT_THAT(ReadUntil(waiting, early, "\n\n"),
+              AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr("Connection: close\r\n"),
+                    HasSubstr(R"("delta":{"role":"assistant","content":""})")));
+  backend_.release.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(running, pending), StartsWith("HTTP/1.1 200 OK"));
+  EXPECT_THAT(ReadUntil(waiting, early, "data: [DONE]\n\n"), HasSubstr(R"("content":"ond")"));
+  (void)::close(running);
+  (void)::close(waiting);
+
+  for (const bool stream : {true, false}) {
+    backend_.release.store(false);
+    backend_.started.store(false);
+    const int busy = Connect(Post(Chat("block")));
+    WaitStarted();
+    const int leaving =
+        Connect(Post(Chat("second", stream ? R"(,"stream":true)" : std::string_view{})));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    (void)::close(leaving);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // The queue's one place is free again.
+    const int next = Connect(Post(Chat("third")));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend_.release.store(true);
+    std::string a;
+    std::string b;
+    EXPECT_THAT(ReadResponse(busy, a), StartsWith("HTTP/1.1 200 OK")) << stream;
+    EXPECT_THAT(ReadResponse(next, b), AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("third")))
+        << stream;
+    (void)::close(busy);
+    (void)::close(next);
+  }
+}
+
 TEST_F(ServerTest, StoppingEndsARunningRequest) {
   backend_.release.store(false);
   const int fd = Connect(Post(Chat("block")));

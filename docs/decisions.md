@@ -137,6 +137,15 @@ amended it to what follows.
   (30 s without progress, or 1 MiB of a stream behind) and its generation
   ends at the next step; a client that leaves ends its generation at the
   next step and the request's lease is released as the backend returns.
+  A client that shuts only its sending side after a whole request has
+  not left: its response is finished, then the connection closes
+  (2026-09-29, from the outside review of M3; before, that half-close
+  cancelled the request). Telling the two apart needs something sent,
+  which a closed socket answers with a reset: at once, a stream's start
+  or a `: keepalive` comment, and before a non-streaming response's head
+  an interim `102 Processing` (HTTP/1.1 only; no 1xx is safe for every
+  client, runtime-serving.md). A half-close before the request is whole
+  is a disconnect.
 - **Keepalives.** A streamed request that waits in the queue for 15 s is
   admitted early: its headers and role chunk go out then, and `:
   keepalive` comment lines follow every 15 s without output, queued,
@@ -1167,7 +1176,12 @@ The machinery around development was holding it back.
   within 3%. A bit-exact kernel may stay as an optional reference mode
   where that is cheap, never at the default's expense. jitLLM's own
   determinism still holds: a swap, spill or restore leaves every later
-  result bit-identical to the uninterrupted run's.
+  result bit-identical to the uninterrupted run's. Owner, 2026-09-29:
+  performance over bit-exactness at the same quality. Defaults may change
+  bits (reduction order, the seed-to-token mapping) but not output
+  quality or the sampling distribution; trades of quality for speed are
+  quality/performance modes, a runtime flag per model alias, off by
+  default (the deferred quality/performance-modes item).
 
 **Reopen if.** A regression that a skipped long run would have caught
 costs more than the time the rule saves.

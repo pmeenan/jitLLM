@@ -8,9 +8,10 @@ D-067, D-088): a byte-level BPE tokenizer for the M3 models, native
 renderers for their pinned chat templates, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
 every profile. D-088 (accepted 2026-09-28) clears its Unicode tables for
-shipped binaries. Nothing shipped links it yet: the swap runner, once in
-`jitllm-runtime`, and the chat route will be its first users there. A package built from the tables
-lists Unicode-3.0 and carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
+shipped binaries, and `jitllm-runtime` links them: its serving commands
+and the chat route (runtime-serving.md) tokenize, render and sample with
+these modules. A package built from the tables lists Unicode-3.0 and
+carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 
 ## Modules
 
@@ -217,6 +218,43 @@ speculative verifier can redraw any position, and a restored request
 continues exactly. NaN or +infinity logits and out-of-range parameters are
 refused. The Philox implementation passes Random123's known-answer vectors.
 
+A draw never sorts the vocabulary. The weights are float exponentials
+relative to the most likely token's; the uniform number picks a token by
+inverse CDF over the kept tokens: in ID order without truncation; top-k
+keeps the k highest logits (ties to the lower ID) in one pass that cuts
+its buffer back as it fills; min-p is a threshold; top-p buckets the
+weights by their bits (eight a binary octave) and sorts only the bucket
+its boundary falls in (ties to the lower ID). Speculative verification
+(`VerifyDraft`) builds the same distribution, so plain and speculative
+decoding draw identically distributed tokens. On `spark-b`
+(`jitllm_sampling_bench`, synthetic peaked and flat rows, median of 200
+draws), a temperature-1 draw took 5.9 ms at DeepSeek's 129,280 logits and
+11.9 ms at Qwen3.8's 248,320 with the full sort it replaced; now 0.45 ms
+and 0.87 ms (a speculative verdict the same; top-p 0.95 0.68–1.0 ms and
+1.5–2.0 ms from a peaked row to a flat one; top-k 0.20 and 0.37 ms).
+Through the chat route on `spark-b` (384 tokens from a 27- or 77-token
+prompt, two seeds), temperature 1 went from 19.1 to 21.4 tok/s for
+DeepSeek's plain decode (greedy 21.7), from 18.8 to 26.1 for Qwen3.8's
+(greedy 27.3), and speculative from 23.9 to 27.1 (DeepSeek, greedy 29.8)
+and from 24.5 to 32.2 (Qwen3.8, greedy 43.5; sampled drafts are accepted
+less often); the rates include the short prefill. With plain sampling
+within 1–5% of greedy, the step's logits row copied to the host and
+sampled there, a device-side softmax was not pursued.
+
+**The seed-to-token mapping changed** when the sort went (M3, 2026-09-29;
+D-085's performance over bit-exactness at the same quality). It is a
+change of bits only: the same distribution, the full softmax with the
+requested top-k, top-p and min-p exactly (no candidate pool, no
+approximate cutoff; the weights differ from the old double-precision
+ones by float rounding), but a given seed maps to different tokens than
+before. The tokens a seed gives are fixed within a build, not promised
+across builds. The evidence is `sampling_test`'s distribution tests
+(every filter and their mix, plain and speculative, against a full-sort
+double-precision reference) and the harnesses' sampled-speculation
+checks, rerun on `spark-b` after the change (256 seeds, 8 tokens, 4
+prompts; total variation, bound 0.1): DeepSeek 0.0034, 0.0186, 0.0381,
+0.0142; Qwen3.8 0.0312, 0.0146, 0.0220, 0.0337.
+
 ## Reference generation
 
 `docs/experiments/tokenizer-reference/` holds the generator and its pins;
@@ -226,11 +264,13 @@ skip where the files are absent; a present file with another hash fails.
 
 ## Not yet done
 
-- The output side: parsing tool calls and reasoning out of generated text
-  per family (DeepSeek's DSML, Qwen's XML), and stop strings a client sends.
-- Mapping an OpenAI request to the conversation (roles such as `developer`,
-  content blocks, tool definitions as the client sent them): the chat
-  route's work.
-- The prepared artifact's tokenizer and template section (the importer).
+- Tool calls: parsing them out of generated text per family (DeepSeek's
+  DSML, Qwen's XML), and rendering the tool definitions a client sends
+  (the chat route refuses `tools` for now; runtime-serving.md). The
+  reasoning split and client stop strings are the chat route's
+  (`runtime/api.h`), as is the text subset of an OpenAI request.
+- The prepared artifact's tokenizer and template section (the importer):
+  a GGUF-sourced artifact carries them in its source metadata; Qwen3.8's
+  are configured as files beside its artifact (runtime-serving.md).
 - Segment boundaries for cache breakpoints inside content blocks (D-067):
   renderers report prefix, message and generation-prompt boundaries only.

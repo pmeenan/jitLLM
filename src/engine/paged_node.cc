@@ -272,6 +272,23 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
   return pointer;
 }
 
+bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
+                           std::span<void* const> landings) {
+  if (ring == nullptr || ring->in_flight() == 0) {
+    return false;  // every read was harvested: nothing can land any more
+  }
+  for (void* const landing : landings) {
+    if (const auto it = std::ranges::find(pinned_, landing); it != pinned_.end()) {
+      pinned_.erase(it);
+      kept_pinned_.push_back(landing);
+    }
+  }
+  // Destroying a ring with reads in flight is fatal (UringStorage), and
+  // closing it would not stop them landing: it is never destroyed.
+  kept_rings_.push_back(ring.release());
+  return true;
+}
+
 void PagedNode::SortSpans() { std::ranges::sort(spans_, {}, &Span::base); }
 
 std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64_t bytes,

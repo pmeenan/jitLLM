@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -60,27 +62,40 @@ double UniformAt(const SamplingKey& key) {
 
 namespace {
 
-std::expected<void, SamplingError> CheckLogits(std::span<const float> logits) {
+constexpr float kInfinity = std::numeric_limits<float>::infinity();
+
+// One pass over the logits: whether they may be sampled, their largest
+// and how many are finite.
+struct Scan {
+  float max = -kInfinity;
+  std::size_t finite = 0;
+};
+
+std::expected<Scan, SamplingError> ScanLogits(std::span<const float> logits) {
   if (logits.empty()) {
     return std::unexpected(SamplingError::kNoLogits);
   }
-  bool finite = false;
+  // Branch-free, so it vectorizes: a NaN or +infinity anywhere refuses them.
+  unsigned bad = 0;
+  Scan scan;
   for (const float x : logits) {
-    if (std::isnan(x) || (std::isinf(x) && x > 0)) {
-      return std::unexpected(SamplingError::kInvalidLogits);
-    }
-    finite = finite || std::isfinite(x);
+    bad |= static_cast<unsigned>(std::isnan(x)) | static_cast<unsigned>(x == kInfinity);
+    scan.finite += static_cast<std::size_t>(x > -kInfinity);
+    scan.max = x > scan.max ? x : scan.max;
   }
-  if (!finite) {
+  if (bad != 0) {
+    return std::unexpected(SamplingError::kInvalidLogits);
+  }
+  if (scan.finite == 0) {
     return std::unexpected(SamplingError::kNoLogits);
   }
-  return {};
+  return scan;
 }
 
 }  // namespace
 
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits) {
-  if (auto c = CheckLogits(logits); !c) {
+  if (auto c = ScanLogits(logits); !c) {
     return std::unexpected(c.error());
   }
   std::size_t best = 0;
@@ -100,66 +115,160 @@ bool ParamsValid(const SamplingParams& p) {
          p.top_p > 0 && p.top_p <= 1 && !std::isnan(p.min_p) && p.min_p >= 0 && p.min_p <= 1;
 }
 
-// What sampling draws from: `scratch`'s first `keep` candidates, in draw
-// order, each with its unnormalized weight, `total` their sum.
+// Candidates ranked for top-k and top-p: more likely first, then the lower
+// ID, so ties never depend on sort stability.
+bool Before(const SamplingCandidate& a, const SamplingCandidate& b) {
+  return a.value > b.value || (a.value == b.value && a.id < b.id);
+}
+
+// What a draw takes from: `scratch`'s first `keep` candidates, in draw
+// order, each with its unnormalized weight (0: never drawn), `total` their
+// sum. Dense: every token, candidate i being token i.
 struct Kept {
   std::size_t keep = 0;
   double total = 0;
+  bool dense = false;
 };
 
-// Temperature, top-k, softmax, min-p and top-p, in that order (p.temperature
-// above 0, the logits checked).
-Kept Distribution(std::span<const float> logits, const SamplingParams& p,
-                  std::vector<SamplingCandidate>& scratch) {
+// The bucket of a weight in (0, 1] for top-p's first cut, from its bits
+// (monotonic in a positive float's value): eight a binary octave below
+// 1.0, which is bucket 0, down to 2^-64; everything smaller in the last.
+constexpr std::uint32_t kBuckets = 512;
+std::uint32_t Bucket(float w) {
+  constexpr std::uint32_t kOne = 0x3f800000U;  // 1.0F
+  return std::min((kOne - std::bit_cast<std::uint32_t>(w)) >> 20U, kBuckets - 1);
+}
+
+// top-p over candidates ranked by Before: the shortest prefix whose weight
+// reaches `target`.
+Kept Nucleus(std::vector<SamplingCandidate>& scratch, std::size_t count, double target) {
+  std::sort(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(count), Before);
+  double cumulative = 0;
+  std::size_t n = 0;
+  while (n < count) {
+    cumulative += scratch[n].value;
+    ++n;
+    if (cumulative >= target) {
+      break;
+    }
+  }
+  return {.keep = n, .total = cumulative, .dense = false};
+}
+
+// The top_k highest logits (ties to the lower ID) into `scratch`, as
+// candidates valued by logit: one pass that keeps what beats the k-th best
+// seen so far, cutting back to k whenever the buffer fills.
+void TopK(std::span<const float> logits, std::size_t k, std::vector<SamplingCandidate>& scratch) {
+  const std::size_t cap = std::max<std::size_t>(2 * k, 1024);
   scratch.clear();
-  for (std::size_t i = 0; i < logits.size(); ++i) {
-    if (std::isfinite(logits[i])) {
-      scratch.push_back(
-          {static_cast<double>(logits[i]) / p.temperature, static_cast<std::int32_t>(i)});
-    }
-  }
-  auto before = [](const SamplingCandidate& a, const SamplingCandidate& b) {
-    return a.value > b.value || (a.value == b.value && a.id < b.id);
+  scratch.reserve(cap);
+  const auto cut = [&] {
+    std::nth_element(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(k - 1),
+                     scratch.end(), Before);
+    scratch.resize(k);
   };
-  std::size_t keep = scratch.size();
-  if (p.top_k != 0 && p.top_k < keep) {
-    keep = p.top_k;
-    std::nth_element(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(keep - 1),
-                     scratch.end(), before);
-    scratch.resize(keep);
-  }
-  std::ranges::sort(scratch, before);
-  // Softmax, as unnormalized weights relative to the largest.
-  const double top = scratch[0].value;
-  double total = 0;
-  for (auto& c : scratch) {
-    c.value = std::exp(c.value - top);
-    total += c.value;
-  }
-  // min-p: drop what is less likely than min_p times the most likely.
-  if (p.min_p > 0) {
-    const double floor = static_cast<double>(p.min_p) * scratch[0].value;
-    while (keep > 1 && scratch[keep - 1].value < floor) {
-      total -= scratch[keep - 1].value;
-      --keep;
-    }
-  }
-  // top-p: the shortest prefix whose probability reaches top_p.
-  if (p.top_p < 1) {
-    double cumulative = 0;
-    const double target = static_cast<double>(p.top_p) * total;
-    std::size_t n = 0;
-    while (n < keep) {
-      cumulative += scratch[n].value;
-      ++n;
-      if (cumulative >= target) {
-        break;
+  // A later logit equal to the k-th best ranks after it (a higher ID), so
+  // only a greater one can enter.
+  float floor = -kInfinity;
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    if (logits[i] > floor) {
+      scratch.push_back({static_cast<double>(logits[i]), static_cast<std::int32_t>(i)});
+      if (scratch.size() == cap) {
+        cut();
+        floor =
+            static_cast<float>(std::ranges::min_element(scratch, [](const auto& a, const auto& b) {
+                                 return a.value < b.value;
+                               })->value);
       }
     }
-    keep = n;
-    total = cumulative;
   }
-  return {.keep = keep, .total = total};
+  if (scratch.size() > k) {
+    cut();
+  }
+}
+
+// Temperature, top-k, softmax, min-p and top-p, in that order (p.temperature
+// above 0, the logits scanned). Weights are relative to the most likely
+// token's, which is exactly 1.
+Kept Distribution(std::span<const float> logits, const SamplingParams& p, const Scan& scan,
+                  std::vector<SamplingCandidate>& scratch) {
+  const double inverse = 1.0 / static_cast<double>(p.temperature);
+  const auto weight = [&](float x) {
+    // A float exponential: the weights need no more, and it is the pass's cost.
+    return std::exp(static_cast<float>((static_cast<double>(x) - scan.max) * inverse));
+  };
+  const float floor = p.min_p;  // min-p: less likely than min_p times the most likely
+  if (p.top_k != 0 && p.top_k < scan.finite) {
+    TopK(logits, p.top_k, scratch);
+    std::size_t kept = 0;
+    double total = 0;
+    for (const SamplingCandidate& c : scratch) {
+      const float w = weight(static_cast<float>(c.value));
+      if (w >= floor) {
+        scratch[kept++] = {static_cast<double>(w), c.id};
+        total += w;
+      }
+    }
+    if (p.top_p < 1) {
+      return Nucleus(scratch, kept, static_cast<double>(p.top_p) * total);
+    }
+    return {.keep = kept, .total = total, .dense = false};
+  }
+  // Every token, in ID order.
+  scratch.resize(logits.size());
+  std::array<double, kBuckets> buckets{};
+  const bool nucleus = p.top_p < 1;
+  double total = 0;
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    float w = weight(logits[i]);
+    w = w >= floor ? w : 0.0F;
+    scratch[i] = {static_cast<double>(w), static_cast<std::int32_t>(i)};
+    total += w;
+    if (nucleus && w > 0) {
+      buckets[Bucket(w)] += w;
+    }
+  }
+  if (!nucleus) {
+    return {.keep = logits.size(), .total = total, .dense = true};
+  }
+  // top-p without a full sort. The buckets, most likely first, until their
+  // weight reaches the target: those before the last are wholly in the
+  // nucleus, in any order; only the last one's candidates are sorted, and
+  // taken until the target is reached.
+  const double target = static_cast<double>(p.top_p) * total;
+  double cumulative = 0;
+  std::uint32_t last = kBuckets - 1;
+  for (std::uint32_t b = 0; b < kBuckets; ++b) {
+    cumulative += buckets[b];
+    if (cumulative >= target) {
+      last = b;
+      break;
+    }
+  }
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    const auto w = static_cast<float>(scratch[i].value);
+    if (w > 0 && Bucket(w) <= last) {
+      scratch[count++] = scratch[i];
+    }
+  }
+  const auto end = scratch.begin() + static_cast<std::ptrdiff_t>(count);
+  const auto boundary = std::partition(scratch.begin(), end, [last](const SamplingCandidate& c) {
+    return Bucket(static_cast<float>(c.value)) < last;
+  });
+  double kept = 0;
+  for (auto it = scratch.begin(); it != boundary; ++it) {
+    kept += it->value;
+  }
+  std::sort(boundary, end, Before);
+  auto it = boundary;
+  while (it != end && kept < target) {
+    kept += it->value;
+    ++it;
+  }
+  // (Only the summation's rounding can leave the target unreached with
+  // the last bucket taken whole: then that is the nucleus.)
+  return {.keep = static_cast<std::size_t>(it - scratch.begin()), .total = kept, .dense = false};
 }
 
 // The candidate `u` (in [0, 1)) falls on, weights summing to `total`,
@@ -168,15 +277,16 @@ std::int32_t Draw(const std::vector<SamplingCandidate>& scratch, Kept kept, doub
                   std::int32_t skip) {
   const double target = u * kept.total;
   double cumulative = 0;
-  std::int32_t last = scratch[0].id;
+  std::int32_t last = -1;
   for (std::size_t i = 0; i < kept.keep; ++i) {
-    if (scratch[i].id == skip) {
+    const SamplingCandidate& c = scratch[i];
+    if (c.value == 0 || c.id == skip) {
       continue;
     }
-    last = scratch[i].id;
-    cumulative += scratch[i].value;
+    last = c.id;
+    cumulative += c.value;
     if (target < cumulative) {
-      return scratch[i].id;
+      return c.id;
     }
   }
   return last;
@@ -193,10 +303,11 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
   if (p.temperature == 0) {
     return Greedy(logits);
   }
-  if (auto c = CheckLogits(logits); !c) {
-    return std::unexpected(c.error());
+  auto scan = ScanLogits(logits);
+  if (!scan) {
+    return std::unexpected(scan.error());
   }
-  const Kept kept = Distribution(logits, p, scratch);
+  const Kept kept = Distribution(logits, p, *scan, scratch);
   return Draw(scratch, kept, UniformAt(key), -1);
 }
 
@@ -214,14 +325,21 @@ std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> lo
     }
     return DraftVerdict{.accepted = *greedy == draft, .token = *greedy};
   }
-  if (auto c = CheckLogits(logits); !c) {
-    return std::unexpected(c.error());
+  auto scan = ScanLogits(logits);
+  if (!scan) {
+    return std::unexpected(scan.error());
   }
-  const Kept kept = Distribution(logits, p, scratch);
+  const Kept kept = Distribution(logits, p, *scan, scratch);
   double weight = 0;
-  for (std::size_t i = 0; i < kept.keep; ++i) {
-    if (scratch[i].id == draft) {
-      weight = scratch[i].value;
+  if (kept.dense) {
+    if (draft >= 0 && static_cast<std::size_t>(draft) < kept.keep) {
+      weight = scratch[static_cast<std::size_t>(draft)].value;
+    }
+  } else {
+    for (std::size_t i = 0; i < kept.keep; ++i) {
+      if (scratch[i].id == draft) {
+        weight = scratch[i].value;
+      }
     }
   }
   // Accepted with the draft's probability.
@@ -232,7 +350,7 @@ std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> lo
   }
   // Rejected: the distribution without the draft, renormalized. (A draft
   // holding all the weight is never rejected: its probability is 1.)
-  const Kept rest{.keep = kept.keep, .total = kept.total - weight};
+  const Kept rest{.keep = kept.keep, .total = kept.total - weight, .dense = kept.dense};
   return DraftVerdict{.accepted = false, .token = Draw(scratch, rest, UniformAt(key), draft)};
 }
 

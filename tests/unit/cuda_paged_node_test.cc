@@ -32,6 +32,7 @@
 #include <ctime>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <print>
 #include <set>
 #include <stop_token>
@@ -44,6 +45,8 @@
 #include "catalog/catalog.h"
 #include "paged_node.h"
 #include "paged_programs.h"
+#include "providers/fake/fake_storage.h"
+#include "providers/storage.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
@@ -649,6 +652,53 @@ TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
   (void)cudaFreeHost(flag);
+}
+
+// A model's own ring whose read never completed (Qwen3.8's n-gram rows
+// after a stall), retired at the model's end: the ring and the pinned
+// landing that read writes outlive the node's teardown, so the read can
+// still land after it without writing freed memory. A ring with nothing
+// in flight is simply destroyed.
+TEST(CudaPagedNodeTest, AStalledReadKeepsItsLandingPastTeardown) {
+  ts::PagedNode node({.compute_streams = 1, .slots = 4, .inline_lanes = false, .coalesce = false});
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  constexpr std::uint32_t kBytes = 4096;
+  std::vector<ExtentId> staging;
+  auto pinned = node.Pinned(kBytes, 0, staging);
+  ASSERT_TRUE(pinned.has_value()) << pinned.error();
+  auto* const landing = static_cast<std::byte*>(*pinned);
+  std::memset(landing, 0, kBytes);
+
+  auto storage = std::make_unique<jitllm::providers::fake::FakeStorage>(4, kBytes);
+  jitllm::providers::fake::FakeStorage* const ring = storage.get();
+  const int fd = ring->AddFile(std::vector<std::byte>(kBytes, std::byte{0x5a}));
+  ring->ScriptNext({.submission = jitllm::providers::Submission::kAccepted,
+                    .result = std::nullopt,
+                    .hold = true});
+  ASSERT_EQ(ring->Submit({.token = 7,
+                          .kind = jitllm::providers::IoKind::kRead,
+                          .fd = fd,
+                          .offset = 0,
+                          .memory = landing,
+                          .length = kBytes,
+                          .segments = {}}),
+            jitllm::providers::Submission::kAccepted);
+  const std::array<void*, 1> landings = {landing};
+  EXPECT_TRUE(node.RetireRing(std::move(storage), landings));
+  EXPECT_EQ(node.kept_pinned(), 1U);
+  EXPECT_FALSE(
+      node.RetireRing(std::make_unique<jitllm::providers::fake::FakeStorage>(4, kBytes), landings));
+  const std::array<ts::PagedModel*, 0> none{};
+  const ts::Status finished = node.TearDown(none);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  // The read lands after the teardown, into memory still allocated.
+  ASSERT_TRUE(ring->Release(7));
+  std::array<jitllm::providers::IoCompletion, 1> done{};
+  ASSERT_EQ(ring->Harvest(done, false), 1U);
+  EXPECT_EQ(done[0].result, kBytes);
+  EXPECT_EQ(landing[kBytes - 1], std::byte{0x5a});
+  EXPECT_EQ(ring->in_flight(), 0U);
 }
 
 }  // namespace

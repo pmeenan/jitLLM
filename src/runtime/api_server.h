@@ -30,12 +30,20 @@
 // is dropped, and its generation ends at the next step. A connection that
 // closes ends its request's generation at the next step; the backend
 // releases the request's lease as it returns (completion-aware: the
-// channel outlives the connection until the driver lets go of it).
+// channel outlives the connection until the driver lets go of it). A
+// client that shuts only its sending side after a whole request gets its
+// response, then the connection closes; that looks like a close until
+// something is sent, so the server sends at once a probe that a closed
+// peer answers with a reset: a stream's start (headers and role chunk) or
+// a `: keepalive` comment; before a non-streaming response's head, on
+// HTTP/1.1, an interim 102 (HTTP/1.0 runs to its end). A connection
+// between requests keeps no large buffer (held_bytes).
 //
 // A request's end. Non-streaming: one JSON body once the outcome is known
-// (a 504 past `deadline`, a 503 when the runtime stops), nothing before.
-// Streaming: the headers and the role chunk once the backend admits it, or
-// earlier, once it has waited `keepalive` in the queue; then a chunk per
+// (a 504 past `deadline`, a 503 when the runtime stops), nothing before
+// but that 102. Streaming: the headers and the role chunk once the backend
+// admits it, or earlier, once it has waited `keepalive` in the queue or
+// its client has half-closed; then a chunk per
 // step's text, the finish chunk, the usage chunk if asked for, and
 // `[DONE]`, with `: keepalive` comment lines whenever nothing was sent for
 // `keepalive` (queued, swapping, prefilling). A failure after the headers
@@ -47,6 +55,7 @@
 #ifndef JITLLM_RUNTIME_API_SERVER_H_
 #define JITLLM_RUNTIME_API_SERVER_H_
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -70,6 +79,11 @@
 namespace jitllm::runtime::api {
 
 using Clock = std::chrono::steady_clock;
+
+// A connection between requests keeps at most this much of each buffer's
+// allocation; a larger one is given back once its request is done, so idle
+// connections hold no body's or response's bytes outside the budgets.
+inline constexpr std::size_t kKeptBufferBytes = std::size_t{16} << 10U;
 
 // One admitted request as the backend sees it. Each call returns whether
 // to go on: false ends the generation (a stop string, the peer gone, the
@@ -162,6 +176,10 @@ class Server {
 
   // The unknown fields seen so far.
   const IgnoredFields& ignored_fields() const { return ignored_; }
+  // The bytes the connections' own buffers hold allocated (read and write,
+  // by capacity), as of the I/O thread's last pass (at least once a
+  // second). Between requests a connection keeps at most 16 KiB of each.
+  std::size_t held_bytes() const { return held_bytes_.load(std::memory_order_relaxed); }
 
   struct Channel;
   struct Connection;
@@ -186,6 +204,9 @@ class Server {
   void Flush(Connection& c);
   void Drop(Connection& c);
   void Linger(Connection& c);
+  // The peer shut its sending side after a whole request: the response goes
+  // on, then the connection closes; a probe tells a closed peer apart.
+  void InputClosed(Connection& c);
   void Watch(Connection& c);
   Clock::time_point Sweep(Clock::time_point now);
   bool EvictIdle();
@@ -217,6 +238,7 @@ class Server {
   Clock::time_point accept_paused_until_{};
   Clock::time_point out_of_files_logged_{};
   bool draining_ = false;
+  std::atomic<std::size_t> held_bytes_{0};  // written by the I/O thread, read by any
 
   // Under mutex_: the queue, every channel's shared state, stopping_.
   std::mutex mutex_;

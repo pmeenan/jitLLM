@@ -106,7 +106,10 @@ class LtGemm {
   // Linear's product (no accumulation), BF16 out. The shape's descriptors
   // and algorithm are made on its first use (host work, nothing queued) and
   // kept; a refusal queues nothing. Every operand 256-byte aligned (the
-  // heuristic's assumption), leading dimensions at least the rows.
+  // heuristic's assumption), leading dimensions at least the rows. The
+  // weights are read in place from their artifact's extents, so this rests
+  // on the artifact's member_alignment of 256 (docs/artifact-format.md),
+  // which the importer must keep guaranteeing (owner, 2026-09-29).
   Status Linear(const Bf16* x, std::int64_t ldx, const Bf16* w, std::int64_t ldw, Bf16* out,
                 std::int64_t ldo, std::int64_t m, std::int64_t n, std::int64_t k, Stream stream);
   // Makes the shape's descriptors and algorithm now (Linear's first use).

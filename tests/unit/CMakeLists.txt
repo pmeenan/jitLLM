@@ -163,7 +163,7 @@ if(JITLLM_CUDA)
   add_executable(cuda_paged_node_test cuda_paged_node_test.cc)
   target_include_directories(cuda_paged_node_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(cuda_paged_node_test PRIVATE jitllm_paged_node)
+  target_link_libraries(cuda_paged_node_test PRIVATE jitllm_paged_node jitllm_fake_providers)
   jitllm_gpu_gtest(cuda_paged_node_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 

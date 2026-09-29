@@ -54,6 +54,22 @@ constexpr auto kAcceptPause = std::chrono::milliseconds(100);
 // How long a stopping server lets responses finish going out.
 constexpr auto kDrain = std::chrono::seconds(1);
 constexpr std::size_t kReadChunk = 65536;
+// Sent to an HTTP/1.1 client whose input side closed while its
+// non-streaming response is being made: a client that half-closed must
+// accept an interim response (RFC 9110, section 15.2), though Python's
+// http.client takes any 1xx but 100 as the final one (and undici fails on
+// an unasked 100); one that closed entirely answers with a reset, which
+// ends the request as a disconnect.
+constexpr std::string_view kProcessing = "HTTP/1.1 102 Processing\r\n\r\n";
+
+// Empties a buffer, giving back its allocation when that is large.
+void Release(std::string& buffer) {
+  if (buffer.capacity() > kKeptBufferBytes) {
+    std::string().swap(buffer);
+  } else {
+    buffer.clear();
+  }
+}
 
 Error Refusal(int status, std::string message, std::string code = {}) {
   std::string type = "invalid_request_error";
@@ -235,7 +251,8 @@ struct Server::Connection {
   std::string wbuf;
   std::size_t woff = 0;
   std::shared_ptr<Channel> channel;
-  bool close_after = false;  // pipelined, or refused mid-request: no reuse
+  bool close_after = false;   // pipelined, refused mid-request, or input closed: no reuse
+  bool input_closed = false;  // the peer shut its sending side after a whole request
   std::uint32_t interest = 0;
   std::uint64_t last_active = 0;
   std::size_t lingered = 0;
@@ -487,8 +504,11 @@ void Server::Watch(Connection& c) {
   if (c.dead) {
     return;
   }
-  std::uint32_t want = EPOLLRDHUP;
-  if (c.state != Connection::State::kBusy || !c.close_after) {
+  // A closed input side reads as ready forever: it is watched no longer,
+  // except while lingering, which reads to the end and then drops.
+  std::uint32_t want = c.input_closed ? 0U : static_cast<std::uint32_t>(EPOLLRDHUP);
+  if (c.state == Connection::State::kLinger ||
+      (!c.input_closed && (c.state != Connection::State::kBusy || !c.close_after))) {
     want |= EPOLLIN;
   }
   if (c.pending_output()) {
@@ -637,7 +657,7 @@ void Server::Refuse(Connection& c, const Error& error, std::vector<std::string> 
 void Server::Flush(Connection& c) {
   while (!c.dead) {
     if (!c.pending_output()) {
-      c.wbuf.clear();
+      Release(c.wbuf);
       c.woff = 0;
       bool ended = false;
       bool gone = false;
@@ -659,7 +679,7 @@ void Server::Flush(Connection& c) {
           c.channel.reset();
           if (keep_alive && !c.close_after && !draining_) {
             c.state = Connection::State::kIdle;
-            c.in.clear();
+            Release(c.in);
             c.head_end = 0;
             c.request = {};
             c.idle_by = Clock::now() + options_.idle_timeout;
@@ -720,7 +740,11 @@ void Server::OnReadable(Connection& c) {
       // Bytes before the response has ended: a pipelined request, which is
       // not served; the connection closes after this response. Or the end.
       const ssize_t n = ::recv(c.fd.get(), chunk.data(), 1, 0);
-      if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+      if (n == 0) {
+        InputClosed(c);
+        return;
+      }
+      if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
         Drop(c);
         return;
       }
@@ -784,6 +808,8 @@ void Server::OnReadable(Connection& c) {
         }
         body_in_use_ += c.request.body_bytes;
         c.reserved = c.request.body_bytes;
+        // The buffer grows to what the budget was charged for, no further.
+        c.in.reserve(c.head_end + c.request.body_bytes);
       }
       c.state = State::kBody;
       if (c.request.expect_continue && c.in.size() < c.head_end + c.request.body_bytes) {
@@ -801,7 +827,7 @@ void Server::OnReadable(Connection& c) {
       if (c.in.size() > c.head_end + request.body_bytes) {
         c.close_after = true;  // bytes after the body: a pipelined request
       }
-      c.in.clear();
+      Release(c.in);  // the body's bytes are the request's now, not the connection's
       body_in_use_ -= c.reserved;
       c.reserved = 0;
       c.request = {};
@@ -970,14 +996,53 @@ void Server::OnEvent(Connection& c, std::uint32_t events) {
     Flush(c);
   }
   if (!c.dead && (events & (EPOLLRDHUP | EPOLLHUP)) != 0) {
-    // The peer closed its side. Reading states find that out from recv
-    // (after taking what it sent); a response in the making ends.
-    if (c.state == Connection::State::kBusy || (events & EPOLLHUP) != 0) {
+    // The peer closed its sending side. Reading states find that out from
+    // recv (after taking what it sent): a request not yet whole is a
+    // disconnect. A whole request's response goes on (InputClosed); a
+    // connection closed both ways (a reset) ends it.
+    if ((events & EPOLLHUP) != 0) {
       Drop(c);
+    } else if (c.state == Connection::State::kBusy) {
+      InputClosed(c);
     } else if ((c.interest & EPOLLIN) != 0 && (events & EPOLLIN) == 0) {
       OnReadable(c);
     }
   }
+}
+
+void Server::InputClosed(Connection& c) {
+  if (c.input_closed) {
+    return;
+  }
+  c.input_closed = true;
+  c.close_after = true;  // nothing more can arrive: the connection closes after this response
+  if (c.channel) {
+    {
+      const std::scoped_lock lock(mutex_);
+      Channel& ch = *c.channel;
+      ch.keep_alive = false;
+      // Whether the peer shut only its sending side or closed entirely looks
+      // the same until something is sent: a closed socket answers with a
+      // reset (EPOLLERR, a disconnect, which ends the generation). A stream
+      // sends what any client parses: its start (as after `keepalive` in the
+      // queue) or a comment. A non-streaming response has nothing to send
+      // before its head but an interim response: a 102 on HTTP/1.1 (no 1xx
+      // is safe for every client, docs/runtime-serving.md, but a client
+      // that half-closes is rare). On HTTP/1.0 it runs to its end.
+      if (!ch.ended && !ch.gone) {
+        if (ch.stream && !ch.head_sent) {
+          ch.PutStart();
+        } else if (ch.stream) {
+          ch.PutBody(": keepalive\n\n");
+        } else if (!ch.head_sent && !ch.http10) {
+          ch.out += kProcessing;
+        }
+      }
+    }
+    Flush(c);
+    return;
+  }
+  Watch(c);
 }
 
 Clock::time_point Server::Sweep(Clock::time_point now) {
@@ -1077,6 +1142,13 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
       }
     }
   }
+  std::size_t held = 0;
+  for (const auto& [id, c] : connections_) {
+    if (!c->dead) {
+      held += c->in.capacity() + c->wbuf.capacity();
+    }
+  }
+  held_bytes_.store(held, std::memory_order_relaxed);
   return next;
 }
 

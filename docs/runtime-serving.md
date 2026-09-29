@@ -270,7 +270,7 @@ checked before any model work (runtime/api.h):
 | `stop` | at most 4 strings of 1 to 128 bytes | 400 | OpenAI's count; the held-back text stays short |
 | Unknown fields | 64 names a request, 64 bytes a name; 256 names kept | ignored | The table stays small whatever a client sends |
 | Head, body arrival | 10 s, 30 s from the request's first byte | 408, then the connection closes | A local client sends at once; a stalled one holds only its own connection |
-| Idle connection | 60 s between requests, told to the client (`Keep-Alive: timeout=60`) | closed | An idle connection costs a descriptor and a small buffer; a minute spans a client's pauses between turns |
+| Idle connection | 60 s between requests, told to the client (`Keep-Alive: timeout=60`) | closed | An idle connection costs a descriptor and a small buffer (at most 16 KiB each way: a larger one, a body's or a response's, is freed once its request is done); a minute spans a client's pauses between turns |
 | Connections | 1,024 (`[client] max_connections`) | the oldest idle one is closed for the new one; with none idle, 503 | Agents and their subagents keep pools; each is a descriptor, and the open-file limit is raised to fit |
 | Output not taken | 30 s without progress, or 1 MiB of a stream | the connection is dropped; the generation ends at its next step | A reader that stops reading cannot grow a buffer |
 | Queue | 64 waiting behind the running request (`[client] max_queued`), 120 s each | 429, `Retry-After: 10`, `x-should-retry: true` (in-stream once a stream has started) | One user; a subagent's request waits for the main one instead of failing |
@@ -292,8 +292,28 @@ browser guards, without M5's CORS. A JSON route needs `Content-Type: application
 (415). Errors are OpenAI's `{"error": {message, type, param, code}}`. A
 client that disconnects, or the runtime stopping (SIGTERM or SIGINT, 503),
 ends the generation after its current step; the state keeps what it
-accepted. A failure of the node itself (a swap or a job that failed) ends
-the request with a 500 or 503 and stops the service with status 1.
+accepted. A client that shuts only its sending side after a whole
+request (a half-close) has not disconnected: its response is finished and
+the connection then closes. The two look alike until something is sent,
+which a closed socket answers with a reset, ending the generation as a
+disconnect; so the route sends something at once. A stream gets what any
+client parses: its start (headers and role chunk, as after `keepalive`
+in the queue; a later refusal is then an in-stream error) or a
+`: keepalive` comment. A non-streaming response has nothing to send
+before its head but an interim 1xx, so on HTTP/1.1 it gets `HTTP/1.1 102
+Processing`; on HTTP/1.0 it runs to its end. No 1xx is safe for every
+client (checked on `spark-b`, 2026-09-29, a 1xx before a 200 on a live
+connection): httpx and the OpenAI Python SDK, aiohttp, Node's `http`,
+Go's `net/http` and curl skip 100, 102 and 103; Node's `fetch` (undici)
+and the OpenAI Node SDK fail on an unasked 100 and skip 102 and 103;
+Python's `http.client` (and so `requests` and `urllib3`) skips only 100
+and takes a 102 or 103 as the final response. The 102 only reaches a
+client that half-closed and is still reading, which none of those
+libraries does, or one that has gone; a client that half-closes should
+parse 1xx (RFC 9110, section 15.2). A half-close before the request is
+whole is a disconnect. A failure of the node itself (a swap or a job
+that failed) ends the request with a 500 or 503 and stops the service
+with status 1.
 
 **Connections.** HTTP/1.1 connections persist: a response carries
 `Connection: keep-alive` unless the client asked to close, an HTTP/1.0
@@ -319,8 +339,9 @@ a time, watching the runtime's signals (a signalfd) between requests and
 between generation steps. It never touches a socket: it appends each
 response's bytes to a buffer, whole events at a time, which the I/O
 thread writes out as the client takes them. A connection that closes
-marks its request gone; the generation ends at its next step and the
-request's lease is released as the backend returns, while the buffer
+(not one only half-closed, above) marks its request gone; the generation
+ends at its next step and the request's lease is released as the backend
+returns, while the buffer
 lives until the driver lets go of it. Parsing a request's JSON (at most 4
 MiB) is the one piece of CPU work on the I/O thread.
 

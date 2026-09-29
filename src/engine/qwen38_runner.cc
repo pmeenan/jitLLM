@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -1674,14 +1675,16 @@ Status Qwen38Runner::Release() {
     (void)::close(spill_fd_);  // unnamed: nothing outlives the process
     spill_fd_ = -1;
   }
-  if (ring_ != nullptr && ring_->in_flight() != 0) {
-    // Reads that stalled may still land: the ring (and the pages the
-    // kernel holds for them) is left to the process's end, never freed
-    // under them.
-    abandoned_ring_ = ring_.release();
-    problems.emplace_back("n-gram row reads were still in flight; their ring was not destroyed");
+  // Reads that stalled may still land: the ring and their landing are left
+  // to the process's end, the landing kept from the node's frees at Close.
+  // Otherwise every read was harvested (ReadPleRows drains) and the ring
+  // goes.
+  std::array<void*, 1> landing = {landing_};
+  if (node_.RetireRing(std::move(ring_), landing)) {
+    problems.emplace_back(
+        "n-gram row reads were still in flight; their ring and landing are kept to the "
+        "process's end");
   }
-  ring_.reset();  // otherwise every read was harvested (ReadPleRows drains)
   if (problems.empty()) {
     return {};
   }

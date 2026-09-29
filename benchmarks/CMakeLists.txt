@@ -9,6 +9,11 @@
 add_executable(jitllm_lanes_bench lanes_bench.cc)
 target_link_libraries(jitllm_lanes_bench PRIVATE jitllm_scheduler jitllm_warnings)
 
+# Host sampling's cost a draw at the served vocabularies (execution/sampling.h;
+# docs/tokenizer.md#sampling).
+add_executable(jitllm_sampling_bench sampling_bench.cc)
+target_link_libraries(jitllm_sampling_bench PRIVATE jitllm_sampling jitllm_warnings)
+
 # The retained-backing comparison's deterministic replay of the swap trace
 # on the fake provider (docs/experiments/retained-backing/).
 add_subdirectory(retained_backing)

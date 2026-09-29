@@ -268,6 +268,14 @@ class PagedNode {
   // Pinned host memory, cataloged as staging. Before Run; freed at Close.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes, int owner,
                                            std::vector<catalog::ExtentId>& staging);
+  // A model's own storage ring, at its end. With reads still in flight
+  // (stalled ones, which may yet land), the ring and the pinned memory
+  // (from Pinned) those reads write are kept to the process's end, neither
+  // destroyed nor freed, since only a read's completion retires its memory
+  // (storage.h); returns true then. Otherwise the ring is destroyed.
+  bool RetireRing(std::unique_ptr<providers::Storage> ring, std::span<void* const> landings);
+  // Pinned allocations RetireRing kept from Close's frees.
+  std::size_t kept_pinned() const { return kept_pinned_.size(); }
 
   void AddSpan(const Span& span) { spans_.push_back(span); }
   void EraseSpans(const std::function<bool(const Span&)>& which) { std::erase_if(spans_, which); }
@@ -384,6 +392,9 @@ class PagedNode {
   Mapped activations_;
   Mapped pool_;
   std::vector<void*> pinned_;
+  // Left to the process's end on purpose (RetireRing): never freed.
+  std::vector<void*> kept_pinned_;
+  std::vector<providers::Storage*> kept_rings_;
 
   // Before the scheduler, so it outlives the programs that refer to it.
   std::map<std::uint32_t, std::unique_ptr<OpenRequest>> requests_;  // by stream

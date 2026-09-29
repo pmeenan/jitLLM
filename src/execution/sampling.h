@@ -7,8 +7,18 @@
 // Greedy takes the highest logit, the lowest ID among equals (as
 // torch.argmax and llama.cpp's greedy sampler do). Sampling applies, in
 // order: temperature (0 means greedy), top-k, softmax, min-p, top-p; then
-// draws from what remains with one uniform number. Candidates are ordered by
-// probability, then by ID, so ties never depend on sort stability.
+// draws from what remains with one uniform number, by inverse CDF over the
+// kept tokens in a fixed order. Nothing sorts the vocabulary (a draw is a
+// few linear passes; docs/tokenizer.md#sampling has its cost): top-k keeps
+// the k highest logits in one pass, ranked by logit then by ID, so ties
+// never depend on sort stability; min-p is a threshold; top-p buckets the
+// weights by their bits and sorts only the bucket its boundary falls in,
+// ranked by weight then by ID. The weights are float exponentials relative
+// to the most likely token's. The distribution is the exact one (float
+// rounding aside: no candidate pool, no approximate cutoff); without
+// truncation the draw walks the tokens in ID order. Which token a key
+// draws is a property of this implementation, not a contract across
+// builds (it changed in M3, when the full sort went).
 //
 // The uniform number is Philox4x32-10 (Salmon et al., SC'11) keyed by the
 // seed, over a counter made of the stream and the position: the same (seed,
@@ -52,7 +62,8 @@ std::string_view SamplingErrorName(SamplingError e);
 // The greedy choice.
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits);
 
-// A seeded draw. `scratch` is reused between calls to avoid allocating.
+// A seeded draw. `scratch` is reused between calls to avoid allocating (it
+// grows to one candidate a logit).
 struct SamplingCandidate {
   double value;
   std::int32_t id;

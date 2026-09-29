@@ -357,8 +357,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint32_t* sources_ = nullptr;
   std::uint32_t* ple_count_ = nullptr;  // pinned: the rows the next gather takes
   std::unique_ptr<providers::UringStorage> ring_;
-  bool rows_stalled_ = false;                          // reads left in flight: no chunk runs again
-  providers::UringStorage* abandoned_ring_ = nullptr;  // such a ring, never destroyed
+  bool rows_stalled_ = false;  // reads left in flight: no chunk runs again
   PleStats ple_;
 
   Mapped state_;
