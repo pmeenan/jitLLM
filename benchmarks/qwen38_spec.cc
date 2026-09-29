@@ -180,6 +180,19 @@ bool SameBits(std::span<const float> a, std::span<const float> b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size_bytes()) == 0;
 }
 
+// Every row's logits, in order, as one SHA-256: a fingerprint to compare
+// two builds' generations bit for bit ("" for none kept).
+std::string LogitsDigest(const std::vector<std::vector<float>>& rows) {
+  if (rows.empty()) {
+    return {};
+  }
+  jitllm::base::Sha256 hash;
+  for (const std::vector<float>& row : rows) {
+    hash.Update(std::as_bytes(std::span(row)));
+  }
+  return jitllm::base::ToHex(hash.Finish());
+}
+
 // FNV-1a over 64-bit words (and the tail's bytes).
 std::uint64_t Fingerprint(std::span<const std::byte> bytes) {
   std::uint64_t h = 0xcbf29ce484222325ULL;
@@ -470,12 +483,7 @@ Status Harness::Tokenize() {
 // ------------------------------------------------------------------ runs
 
 Status Harness::InRequest(std::string_view what, const std::function<Status()>& body) {
-  if (auto r = node_.BeginRequest(qwen_.stream(), qwen_.everything(), what); !r) {
-    return r;
-  }
-  Status ran = body();
-  Status ended = node_.EndRequest(qwen_.stream());
-  return !ran ? ran : ended;
+  return node_.WithRequest(qwen_.stream(), qwen_.everything(), what, body);
 }
 
 Status Harness::Prefill(const Prompt& prompt, bool inject, std::vector<float>& last) {
@@ -944,11 +952,13 @@ Status Harness::Greedy() {
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},)"
         R"("acceptance_by_position":[{}],"verifies":{},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},"text":{},)"
-        R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}]}})",
+        R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
+        R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
         prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
         acceptance, positions_json, spec.verifies, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms, escaped,
-        ids(prompt.ids), ids(plain.tokens), ids(spec.tokens)));
+        ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
+        LogitsDigest(first_run.logits.empty() ? spec.logits : first_run.logits)));
   }
   return {};
 }

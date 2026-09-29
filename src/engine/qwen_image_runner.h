@@ -12,6 +12,11 @@
 // with diffusers need no rerun; the pixels are checked equal to its image's
 // instead).
 //
+// Of the engine's skeleton (docs/engine.md) it uses the weights' paging, the
+// runner's resources (its own memory, cuBLAS, staging) and the pinned
+// places; it holds no conversation state and no GGML plans, and records one
+// step through the device runtime rather than the launch context.
+//
 // - Weights: each component a set of extents (paged_weights.h), only the
 //   groups its phase reads (the text encoder's table and language layers,
 //   the denoiser, the VAE's decoder), a dense region per group, landed from
@@ -62,7 +67,6 @@
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
-#include "kernels/ggml/cublas.h"
 #include "kernels/image/pipeline.h"
 #include "model/qwen_image.h"
 

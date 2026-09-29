@@ -182,6 +182,19 @@ bool SameBits(std::span<const float> a, std::span<const float> b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size_bytes()) == 0;
 }
 
+// Every row's logits, in order, as one SHA-256: a fingerprint to compare
+// two builds' generations bit for bit ("" for none kept).
+std::string LogitsDigest(const std::vector<std::vector<float>>& rows) {
+  if (rows.empty()) {
+    return {};
+  }
+  jitllm::base::Sha256 hash;
+  for (const std::vector<float>& row : rows) {
+    hash.Update(std::as_bytes(std::span(row)));
+  }
+  return jitllm::base::ToHex(hash.Finish());
+}
+
 // FNV-1a over 64-bit words (and the tail's bytes): a fingerprint of state
 // bytes, for comparing two runs' states without keeping either.
 std::uint64_t Fingerprint(std::span<const std::byte> bytes) {
@@ -499,12 +512,7 @@ Status Harness::Prefill(const Prompt& prompt, bool inject, std::vector<float>& l
 }
 
 Status Harness::InRequest(std::string_view what, const std::function<Status()>& body) {
-  if (auto r = node_.BeginRequest(kDsv4, dsv4_.everything(), what); !r) {
-    return r;
-  }
-  Status ran = body();
-  Status ended = node_.EndRequest(kDsv4);
-  return !ran ? ran : ended;
+  return node_.WithRequest(kDsv4, dsv4_.everything(), what, body);
 }
 
 Status Harness::Plain(const Prompt& prompt, std::uint32_t count, Generation& out) {
@@ -1016,12 +1024,14 @@ Status Harness::Greedy() {
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},"verifies":{},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},)"
         R"("draft_path":{{"eager":{},"captured":{},"replayed":{}}},"text":{},)"
-        R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}]}})",
+        R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
+        R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
         prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
         acceptance, spec.verifies, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms,
         dsv4_.draft_stats().eager, dsv4_.draft_stats().captured, dsv4_.draft_stats().replayed,
-        escaped, ids(prompt.ids), ids(plain.tokens), ids(spec.tokens)));
+        escaped, ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
+        LogitsDigest(spec.logits)));
   }
   return {};
 }

@@ -42,7 +42,7 @@ bool EqualsIgnoringCase(std::string_view a, std::string_view b) {
 // RFC 9110's tchar.
 bool IsTokenChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-         std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos;
+         std::string_view("!#$%&'*+-.^_`|~").contains(c);
 }
 
 // A decimal Content-Length, or -1.

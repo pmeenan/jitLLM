@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <limits>
@@ -121,7 +122,8 @@ TEST_F(GgmlExtValidateTest, ExpertProductsFollowMulMatIdsShapes) {
 
 TEST_F(GgmlExtValidateTest, TheHadamardProductNeedsItsHintAndARowTheTransformTakes) {
   ggml_tensor* rotation = New(GGML_TYPE_F32, 128, 128);
-  ggml_tensor* node = Bound(ggml_mul_mat(c(), rotation, New(GGML_TYPE_F32, 128, 64 * 5)));
+  ggml_tensor* node =
+      Bound(ggml_mul_mat(c(), rotation, New(GGML_TYPE_F32, 128, std::int64_t{64} * 5)));
   Refused(kg::CheckMulMatHadamard(node));  // no hint
   ggml_mul_mat_set_hint(node, GGML_HINT_SRC0_IS_HADAMARD);
   Accepted(kg::CheckMulMatHadamard(node));
@@ -218,15 +220,15 @@ TEST_F(GgmlExtValidateTest, RopeTakesTheModelsModesOffsetsAndPositions) {
   Bound(ggml_rope_set_offset(odd, 3));
   Refused(kg::CheckRopeExt(odd));
   // Qwen3.8: interleaved multi-section rotation, four positions per token.
-  int sections[GGML_MROPE_SECTIONS] = {11, 11, 10, 0};
+  std::array<int, GGML_MROPE_SECTIONS> sections = {11, 11, 10, 0};
   ggml_tensor* x = New(GGML_TYPE_F32, 256, 24, 5);
   Accepted(kg::CheckRopeExt(
-      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, sections,
+      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, sections.data(),
                             GGML_ROPE_TYPE_IMROPE, 262144, 1e7f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
   // No position section: the launcher asserts one.
-  int empty[GGML_MROPE_SECTIONS] = {0, 0, 0, 32};
+  std::array<int, GGML_MROPE_SECTIONS> empty = {0, 0, 0, 32};
   Refused(kg::CheckRopeExt(
-      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, empty,
+      Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, empty.data(),
                             GGML_ROPE_TYPE_MROPE, 262144, 1e7f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
   // Frequency factors are not implemented.
   Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,

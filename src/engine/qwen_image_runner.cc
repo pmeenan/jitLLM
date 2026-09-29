@@ -11,8 +11,6 @@
 #include <cstring>
 #include <format>
 #include <fstream>
-#include <initializer_list>
-#include <map>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -21,6 +19,8 @@
 #include "artifact/composition.h"
 #include "base/sha256.h"
 #include "chat/chat.h"
+#include "engine/runner_resources.h"
+#include "engine/support.h"
 #include "execution/registry.h"
 #include "kernels/image/gemm.h"
 #include "kernels/image/implementations.h"
@@ -37,21 +37,18 @@ namespace jitllm::engine {
 namespace {
 
 namespace ja = jitllm::artifact;
-namespace kg = jitllm::kernels::ggml;
 namespace ki = jitllm::kernels::image;
 namespace md = jitllm::model;
 namespace sc = jitllm::scheduler;
-using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
-using catalog::Recovery;
-using providers::BackingKind;
+using support::Error;
+using support::Round;
+using support::Seconds;
 using Bf16 = std::uint16_t;
 using Clock = std::chrono::steady_clock;
 
 constexpr std::uint64_t kExtent = kPagedExtent;
-
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
 Status Checked(providers::DeviceStatus result, std::string_view what) {
   if (!result.ok()) {
@@ -68,9 +65,6 @@ T* At(std::uint64_t address) {
   return reinterpret_cast<T*>(address);  // NOLINT(performance-no-int-to-ptr)
 }
 
-double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
-std::uint64_t Round(std::uint64_t bytes, std::uint64_t to) { return (bytes + to - 1) / to * to; }
-
 std::expected<std::vector<Bf16>, std::string> ReadBf16(const std::filesystem::path& p,
                                                        std::size_t count) {
   std::ifstream in(p, std::ios::binary);
@@ -86,10 +80,8 @@ std::expected<std::vector<Bf16>, std::string> ReadBf16(const std::filesystem::pa
 }
 
 struct Component {
-  std::optional<ja::Artifact> artifact;
+  PagedWeights weights;  // its artifact and the groups its phase reads
   std::vector<std::uint32_t> bound;
-  std::vector<ja::FileDescriptor> shards;
-  PagedWeights weights;
   std::vector<std::uint64_t> tensor;  // bound tensors' device addresses
   catalog::Closure closure;           // its phase's
 };
@@ -97,6 +89,8 @@ struct Component {
 }  // namespace
 
 struct QwenImageRunner::State {
+  State(PagedNode& node, int owner, std::uint32_t stream) : resources(node, owner, stream) {}
+
   const md::QwenImageProfile& profile = md::QwenImage21();
   std::array<Component, 3> c;  // text encoder, denoiser, VAE
   std::vector<std::int32_t> ids;
@@ -114,11 +108,10 @@ struct QwenImageRunner::State {
   std::optional<jitllm::execution::Registry> registry;
   std::unique_ptr<ki::QwenImagePipeline> pipeline;
 
+  // Its own memory, the cuBLAS workspace and handle, the staging.
+  RunnerResources resources;
   Mapped own_memory;
-  Mapped cublas_workspace;
-  std::uint64_t cublas_bytes = 0;
-  std::unique_ptr<kg::CublasHandle> cublas;
-  std::unique_ptr<ki::LtGemm> lt;
+  std::unique_ptr<ki::LtGemm> lt;  // on the cuBLAS workspace
   ki::DitMemory own;
   std::uint64_t own_bytes = 0;
   std::uint64_t text_bytes = 0, dit_bytes = 0, vae_bytes = 0;
@@ -126,8 +119,7 @@ struct QwenImageRunner::State {
   ki::DitMemory dw;
   ki::VaeMemory vw;
   std::vector<std::uint64_t> vae_weights;  // BF16 copies in the workspace
-  std::vector<ExtentId> staging;
-  std::byte* in = nullptr;  // pinned: what a job uploads
+  std::byte* in = nullptr;                 // pinned: what a job uploads
   std::uint64_t in_bytes = 0;
   std::byte* out = nullptr;  // pinned: what a job downloads
   std::uint64_t out_bytes = 0;
@@ -141,7 +133,6 @@ struct QwenImageRunner::State {
   double decode = 0;
   std::uint64_t generations = 0;
 
-  State() = default;
   State(const State&) = delete;
   State& operator=(const State&) = delete;
   State(State&&) = delete;
@@ -154,7 +145,11 @@ struct QwenImageRunner::State {
 
 QwenImageRunner::QwenImageRunner(PagedNode& node, const QwenImageOptions& options, int owner,
                                  std::uint32_t stream)
-    : node_(node), o_(options), owner_(owner), stream_(stream), s_(std::make_unique<State>()) {}
+    : node_(node),
+      o_(options),
+      owner_(owner),
+      stream_(stream),
+      s_(std::make_unique<State>(node, owner, stream)) {}
 
 QwenImageRunner::~QwenImageRunner() = default;
 
@@ -219,28 +214,20 @@ Status QwenImageRunner::Setup() {
     }
     ja::OpenOptions options;
     options.expected_id = found->artifact;
-    auto a = ja::Artifact::Open(o_.store / found->artifact, options);
-    if (!a) {
-      return Error(std::format("{}: {}", role, a.error().ToString()));
+    Component& c = s.c.at(i);
+    if (auto r = c.weights.Open(o_.store / found->artifact, options); !r) {
+      return Error(std::format("{}: {}", role, r.error()));
     }
-    if (a->model().architecture != found->architecture) {
+    const ja::Artifact& a = c.weights.artifact();
+    if (a.model().architecture != found->architecture) {
       return Error(
           std::format("{}: the artifact's architecture differs from the composition's", role));
     }
-    auto bound = md::BindQwenImageComponent(tensors, arch, *a);
+    auto bound = md::BindQwenImageComponent(tensors, arch, a);
     if (!bound) {
       return Error(std::format("{}: {}", role, bound.error()));
     }
-    Component& c = s.c.at(i);
-    c.artifact.emplace(std::move(*a));
     c.bound = std::move(*bound);
-    for (std::uint32_t sh = 0; sh < c.artifact->shards().size(); ++sh) {
-      auto fd = c.artifact->OpenShardForDirectRead(sh);
-      if (!fd) {
-        return Error(std::format("{}: shard {} cannot be opened for direct reads", role, sh));
-      }
-      c.shards.push_back(std::move(*fd));
-    }
   }
 
   // The prompt's tokens (the native tokenizer and renderer, D-088).
@@ -294,24 +281,19 @@ Status QwenImageRunner::Setup() {
 
   // Each component's weights: the groups its bound tensors are in.
   for (Component& c : s.c) {
-    if (!c.artifact) {
+    if (!c.weights.opened()) {
       return Error("a component without its artifact");
     }
-    const ja::Artifact& a = *c.artifact;
-    const auto groups = a.groups();
-    std::vector<bool> place(groups.size(), false);
+    const ja::Artifact& a = c.weights.artifact();
+    std::vector<GroupPlace> place(a.groups().size(), GroupPlace::kNone);
     for (const std::uint32_t r : c.bound) {
-      place[a.resources()[r].group] = true;
+      place[a.resources()[r].group] = GroupPlace::kDevice;
     }
-    if (auto r = c.weights.Reserve(node_, a, c.shards, ArtifactKey(a), place, {}); !r) {
+    if (auto r = c.weights.Reserve(node_, place, {}); !r) {
       return r;
     }
   }
-  const std::optional<ja::Artifact>& vae_artifact = s.c[2].artifact;
-  if (!vae_artifact.has_value()) {
-    return Error("the VAE without its artifact");
-  }
-  const ja::Artifact& vae = *vae_artifact;
+  const ja::Artifact& vae = s.c[2].weights.artifact();
   for (const std::uint32_t r : s.c[2].bound) {
     const auto& res = vae.resources()[r];
     if (res.bytes.value() % 4 != 0) {
@@ -326,34 +308,19 @@ Status QwenImageRunner::Setup() {
   (void)ki::DitLayout(0, profile.denoiser, s.text + s.image, s.dit_bytes);
   (void)ki::VaeLayout(0, profile.vae, s.grid, s.vae_f32_bytes, true, s.vae_weights, s.vae_bytes);
   work_bytes_ = Round(std::max({s.text_bytes, s.dit_bytes, s.vae_bytes}), kExtent);
-  if (auto r =
-          node_.MapResident(s.own_memory, "the image's own memory", s.own_bytes,
-                            BackingKind::kDevice, MemoryClass::kScratch, Recovery::kPinned, owner_);
+  if (auto r = s.resources.Map(s.own_memory, "the image's own memory", s.own_bytes,
+                               MemoryClass::kScratch);
       !r) {
     return r;
   }
   std::uint64_t unused = 0;
   s.own = ki::OwnLayout(s.own_memory.base, profile.denoiser, s.text, s.image, unused);
 
-  const providers::DeviceFacts facts =
-      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-  s.cublas_bytes =
-      kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
-  if (auto r =
-          node_.MapResident(s.cublas_workspace, "the image's cuBLAS workspace", s.cublas_bytes,
-                            BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned, owner_);
-      !r) {
+  if (auto r = s.resources.OpenCublas("the image's cuBLAS workspace"); !r) {
     return r;
   }
-  auto blas =
-      kg::CublasHandle::Create(0, node_.execution(), node_.stream(stream_),
-                               {.base = s.cublas_workspace.base, .size = Bytes(s.cublas_bytes)});
-  if (!blas) {
-    return Error("cuBLAS: " + blas.error().detail);
-  }
-  s.cublas = std::move(*blas);
   // cuBLASLt shares the workspace: both queue on the image's one stream.
-  auto lt = ki::LtGemm::Create(s.cublas_workspace.base, s.cublas_bytes);
+  auto lt = ki::LtGemm::Create(s.resources.cublas_workspace().base, s.resources.cublas_bytes());
   if (!lt) {
     return Error("cuBLASLt: " + lt.error());
   }
@@ -370,8 +337,8 @@ Status QwenImageRunner::Setup() {
   s.out_bytes = std::max<std::uint64_t>(
       std::uint64_t{profile.vae.out_channels} * o_.size * o_.size * 2,
       static_cast<std::uint64_t>(s.image * profile.denoiser.out_channels * 2));
-  auto in = node_.Pinned(s.in_bytes, owner_, s.staging);
-  auto out = node_.Pinned(s.out_bytes, owner_, s.staging);
+  auto in = s.resources.Pinned(s.in_bytes);
+  auto out = s.resources.Pinned(s.out_bytes);
   if (!in || !out) {
     return Error("pinned staging for the image");
   }
@@ -397,12 +364,11 @@ Status QwenImageRunner::Register() {
 Status QwenImageRunner::Bind() {
   State& s = *s_;
   auto& catalog = node_.catalog();
-  std::vector<ExtentId> common;
-  for (const Mapped* mapped : std::initializer_list<const Mapped*>{
-           &s.own_memory, &node_.activations(), &s.cublas_workspace}) {
-    common.insert(common.end(), mapped->extents.begin(), mapped->extents.end());
-  }
-  common.insert(common.end(), s.staging.begin(), s.staging.end());
+  // What every phase leases beside its component: the image's own memory,
+  // the cuBLAS workspace and the staging, and the activations.
+  std::vector<ExtentId> common = s.resources.extents();
+  common.insert(common.end(), node_.activations().extents.begin(),
+                node_.activations().extents.end());
   std::vector<ExtentId> all = common;
   for (Component& c : s.c) {
     std::vector<ExtentId> mine = c.weights.extents();
@@ -410,13 +376,8 @@ Status QwenImageRunner::Bind() {
     c.closure = catalog.ClosureOfExtents(mine).value();
     all.insert(all.end(), c.weights.extents().begin(), c.weights.extents().end());
     c.tensor.clear();
-    if (!c.artifact.has_value()) {
-      return Error("a component without its artifact");
-    }
-    const ja::Artifact& a = *c.artifact;
     for (const std::uint32_t r : c.bound) {
-      const auto& res = a.resources()[r];
-      c.tensor.push_back(c.weights.group_address(res.group) + res.offset.value());
+      c.tensor.push_back(c.weights.resource_address(r));
     }
   }
   everything_ = catalog.ClosureOfExtents(all).value();
@@ -457,7 +418,7 @@ Status QwenImageRunner::Encode() {
   const Component& c = s.c[0];
   const auto rows = static_cast<std::int64_t>(s.ids.size());
   const ki::TextMemory& w = s.tw;
-  const ki::Handles handles{.blas = s.cublas->native(), .lt = s.lt.get()};
+  const ki::Handles handles{.blas = s.resources.cublas().native(), .lt = s.lt.get()};
   const auto started = Clock::now();
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
@@ -515,7 +476,7 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
   // dt is a 0-dim F32 tensor times the BF16 noise: PyTorch rounds it to
   // BF16 first (the resident harness's rounding).
   const float dt = ki::EulerStepDt(s.schedule.sigmas[index + 1] - s.schedule.sigmas[index], true);
-  const ki::Handles handles{.blas = s.cublas->native(), .lt = s.lt.get()};
+  const ki::Handles handles{.blas = s.resources.cublas().native(), .lt = s.lt.get()};
   const auto started = Clock::now();
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
@@ -597,7 +558,7 @@ Status QwenImageRunner::Decode(std::string& sha) {
   const Component& c = s.c[2];
   const ki::VaeMemory& w = s.vw;
   const std::size_t count = std::size_t{p.out_channels} * o_.size * o_.size;
-  const ki::Handles handles{.blas = s.cublas->native(), .lt = s.lt.get()};
+  const ki::Handles handles{.blas = s.resources.cublas().native(), .lt = s.lt.get()};
   const auto started = Clock::now();
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
@@ -665,8 +626,8 @@ Status QwenImageRunner::Finish(std::string& sha) {
 std::vector<std::filesystem::path> QwenImageRunner::data() const {
   std::vector<std::filesystem::path> dirs;
   for (const Component& c : s_->c) {
-    if (c.artifact) {
-      dirs.push_back(o_.store / c.artifact->id() / "data");
+    if (c.weights.opened()) {
+      dirs.push_back(o_.store / c.weights.artifact().id() / "data");
     }
   }
   return dirs;
@@ -695,39 +656,17 @@ std::string QwenImageRunner::Report() const {
 Status QwenImageRunner::Release() {
   State& s = *s_;
   std::vector<std::string> problems;
+  // The recorded step first (it names the memory below), then cuBLASLt on
+  // the workspace, then the runner's resources.
   s.DropGraph();
   s.lt.reset();
-  s.cublas.reset();
-  auto& memory = node_.memory();
-  for (Mapped* mapped : {&s.own_memory, &s.cublas_workspace}) {
-    if (!mapped->reservation.valid()) {
-      continue;
-    }
-    bool released =
-        mapped->backings.empty() ||
-        memory.Unmap(mapped->reservation, Bytes(0), Bytes(mapped->backings.size() * kExtent))
-            .has_value();
-    for (const auto backing : mapped->backings) {
-      released = memory.Release(backing).has_value() && released;
-    }
-    if (!released || !memory.Free(mapped->reservation)) {
-      problems.push_back(std::format("{} could not be released", mapped->name));
-    }
-    mapped->reservation = {};
-  }
+  s.resources.Release(problems);
   for (Component& c : s.c) {
-    if (auto r = c.weights.Release(memory); !r) {
+    if (auto r = c.weights.Release(node_.memory()); !r) {
       problems.push_back(r.error());
     }
   }
-  if (problems.empty()) {
-    return {};
-  }
-  std::string all;
-  for (const std::string& problem : problems) {
-    all += (all.empty() ? "" : "; ") + problem;
-  }
-  return Error(all);
+  return support::Joined(problems);
 }
 
 }  // namespace jitllm::engine

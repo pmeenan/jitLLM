@@ -1113,17 +1113,7 @@ Status Fp16Runner::Release() {
   cublas_.reset();
   auto& memory = node_.memory();
   for (ts::Mapped* mapped : {&kv_, &workspace_}) {
-    if (!mapped->reservation.valid()) {
-      continue;
-    }
-    bool released =
-        mapped->backings.empty() ||
-        memory.Unmap(mapped->reservation, Bytes(0), Bytes(mapped->backings.size() * kExtent))
-            .has_value();
-    for (const auto backing : mapped->backings) {
-      released = memory.Release(backing).has_value() && released;
-    }
-    if (!released || !memory.Free(mapped->reservation)) {
+    if (!ts::ReleaseMapped(memory, *mapped)) {
       problems.push_back(std::format("{} could not be released", mapped->name));
     }
   }

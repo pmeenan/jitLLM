@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -205,7 +206,7 @@ class NodeBackend final : public api::Backend {
           thinking = true;  // the model opened reasoning itself
           continue;
         }
-        (void)decoder.Push(token, piece);  // a token it cannot decode adds nothing
+        std::ignore = decoder.Push(token, piece);  // a token it cannot decode adds nothing
       }
       send();
       return said ? go : exchange.Continue();
@@ -403,6 +404,9 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     if (!started) {
       Say(log, "refusing to serve: " + started.error());
       status = kExitFailure;
+    } else if (!backend.has_value() || !http.has_value()) {
+      Say(log, "refusing to serve: the chat route was not set up");  // not reached
+      status = kExitFailure;
     } else {
       constexpr std::array kWatched = {SIGTERM, SIGINT, SIGHUP, SIGCHLD};
       const platform::SignalWatch signals = platform::SignalWatch::Open(kWatched);
@@ -432,7 +436,9 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
           return stop;
         };
         auto ran = http->Run(signals.descriptor(), on_wake);
-        (void)platform::NotifyServiceManager("STOPPING=1");
+        if (auto notified = platform::NotifyServiceManager("STOPPING=1"); !notified) {
+          Say(log, notified.error());
+        }
         if (!ran) {
           Say(log, "stopping after a failure: " + ran.error());
           status = kExitFailure;

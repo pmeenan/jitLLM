@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "base/bounded_queue.h"
+#include "engine/support.h"
 #include "platform/crash_policy.h"
 #include "providers/device_runtime.h"
 #include "providers/direct_reader.h"
@@ -35,6 +36,9 @@ using sc::RequestProgram;
 using sc::RunProgram;
 using sc::SwapProgram;
 using sc::SwapReport;
+using support::Address;
+using support::Error;
+using support::Joined;
 
 constexpr auto kPatience = std::chrono::minutes(10);
 // A request's driver spins from this long before a step's expected end
@@ -51,21 +55,6 @@ constexpr std::size_t kLaneHandoff = 256;
 // ever makes one as it goes (RE-029: cuEventCreate blocks while another
 // thread launches into a full stream).
 constexpr std::size_t kEventsAhead = (2 * ((2 * kLaneHandoff) + 1)) + 16;
-
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
-
-Status Joined(const std::vector<std::string>& problems) {
-  if (problems.empty()) {
-    return {};
-  }
-  std::string all;
-  for (const std::string& problem : problems) {
-    all += (all.empty() ? "" : "; ") + problem;
-  }
-  return Error(all);
-}
-
-std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintptr_t>(pointer); }
 
 // A fence after everything queued on the stream, seen complete and
 // released; false if it could not be, or its outcome is unknown.
@@ -121,6 +110,39 @@ PagedNode::~PagedNode() {
     copy_lane_->Close();
   }
   threads_.clear();
+}
+
+bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped) {
+  if (!mapped.reservation.valid()) {
+    return true;
+  }
+  bool released =
+      mapped.backings.empty() ||
+      memory.Unmap(mapped.reservation, Bytes(0), Bytes(mapped.backings.size() * kPagedExtent))
+          .has_value();
+  for (const auto backing : mapped.backings) {
+    released = memory.Release(backing).has_value() && released;
+  }
+  if (!released || !memory.Free(mapped.reservation)) {
+    return false;
+  }
+  mapped.backings.clear();
+  mapped.reservation = {};
+  return true;
+}
+
+void PlaceCheck::Check(const sc::Scheduler& scheduler, ExtentId extent,
+                       const sc::PageSource& registered) {
+  const sc::PageSource* now = scheduler.SourceOf(extent);
+  if (now == nullptr || !sc::SamePlace(*now, registered) || !scheduler.PlacePinned(extent)) {
+    Missing(std::format("extent {}", extent.index()));
+  }
+}
+
+void PlaceCheck::Missing(std::string what) {
+  if (moved++ == 0) {
+    first = std::move(what);
+  }
 }
 
 bool HavePinned(void*& pointer, std::uint64_t bytes) {
@@ -775,6 +797,16 @@ Status PagedNode::EndRequest(std::uint32_t stream) {
   return ended;
 }
 
+Status PagedNode::WithRequest(std::uint32_t stream, const catalog::Closure& closure,
+                              std::string_view what, const std::function<Status()>& body) {
+  if (auto r = BeginRequest(stream, closure, what); !r) {
+    return r;
+  }
+  Status ran = body();
+  Status ended = EndRequest(stream);
+  return !ran ? ran : ended;
+}
+
 std::expected<std::uint64_t, std::string> PagedNode::EndRequestsOver(
     std::span<const ExtentId> extents) {
   std::vector<std::uint32_t> holding;
@@ -945,18 +977,7 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   events_.clear();
   if (memory_ != nullptr) {
     for (Mapped* mapped : {&zone_, &activations_, &pool_}) {
-      if (!mapped->reservation.valid()) {
-        continue;
-      }
-      bool released =
-          mapped->backings.empty() ||
-          memory_
-              ->Unmap(mapped->reservation, Bytes(0), Bytes(mapped->backings.size() * kPagedExtent))
-              .has_value();
-      for (const auto backing : mapped->backings) {
-        released = memory_->Release(backing).has_value() && released;
-      }
-      if (!released || !memory_->Free(mapped->reservation)) {
+      if (!ReleaseMapped(*memory_, *mapped)) {
         problems.push_back(std::format("{} could not be released", mapped->name));
       }
     }

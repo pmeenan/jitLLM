@@ -234,54 +234,40 @@ GB10's plans, which keep their fastest implementations.
 
 ## The runners' shared skeleton
 
-The M3 runners (`src/engine/`: `dsv4_runner.cc` 2,037 lines,
-`qwen38_runner.cc` 1,708, `qwen_image_runner.cc` 732) grew one model at a
-time, and a port touches every copy of what they share. Audit of
-2026-09-29 (line numbers at this revision):
+The M3 runners grew one model at a time, and the audit of 2026-09-29
+found about 1,000–1,300 of the two LLM runners' 3,750 lines
+near-duplicates: weight paging (DeepSeek kept its own copy of
+`PagedWeights`), setup, plan caches and `PlaceAndPlan`, graph capture and
+replay, speculation's snapshot and rollback, state spill and restore,
+teardown (copied six times with the node and two harness runners) and the
+request's lease. They are now one skeleton in `src/engine/`
+([engine.md](engine.md)), which a runner holds as members, in the order of
+value the audit recommended:
 
-| Concern | DeepSeek V4 | Qwen3.8 | Qwen-Image | Shared today |
-| --- | --- | --- | --- | --- |
-| Weights as extents | its own `ReservePart`/`Register` (dsv4 457–688), a near copy of `PagedWeights::Reserve`/`Register` with a host-memory token table, per-layer slabs and drafter tags | `PagedWeights` | `PagedWeights` | `paged_weights.h` (not by DeepSeek) |
-| Setup | cuBLAS workspace and handle (280–296), launch context and registry bind (835–847), pinned staging (398–438), shape measuring (328–396) | the same blocks (267–282, 622–634, 397–451, 318–394) | cuBLAS block (338–353) | nothing |
-| Chunk plans | `Planned`, `PlannedDraft` (925–998): plan, scratch, pool check, bind, coverage, drop past 32 | `Planned`, `PlannedMtp` (768–843), the same | its own phases | `PlaceAndPlan` / `PlanPlaced` (`dsv4_plan.cc` 106–152, `qwen38_plan.cc` 204–250), identical but for names (DeepSeek summed its inputs unrounded while `Stage` rounds each to 256 bytes, as Qwen3.8 did; fixed in this slice) |
-| Graph capture and replay | `QueueRuns` (1452–1528), `Stage`, graph eviction inline twice, path counting inline three times | `QueueRuns` (963–1041, a superset: the gather hook, several outputs), `Stage`, `RoomForGraph`, `Count` | one recorded step (`RecordedWork`) | the `Runs`/`Queued` types, copied |
-| Speculation | `Settle`, `Usable`, `Accept`, `Rollback`, `QueueRestore`, `PlanSnapshot`, saved ranges | the same mechanics (1095–1134, 1558–1603), `QueueCommit` adding the commit kernel | none | nothing; which ranges a verify writes is model-specific |
-| State spill and restore | `RegisterState` (748–782), `Clear` (852–880), `ReadState` (1835–1874), `CheckPlaces` | byte-identical apart from names (528–562, 702–731, 1605–1644) | none | nothing |
-| Teardown | the unmap-release-free loop (2000–2014) | the same (1657–1671) | the same (701–716) | copied six times with the node and two harness runners |
-| Serving adapters | `serving.cc` 150–348 | 352–585: the same constructor, forwarding overrides, tokenizer tail and accept loop | its own | `Llm::Prefill`/`Generate` are shared |
+| Concern | Now | Was |
+| --- | --- | --- |
+| Graph capture and replay (D-090) | `graph_runs.h`: `GraphRuns` (staging, input and output copies, capture, replay, the launch-by-launch fallback), `PlanRuns`, `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` (the harnesses keep those names as aliases) |
+| State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
+| Plans and shape caches | `planned.h`: `PlannedGraph`, one `PlaceAndPlan`, `BindPlanned`, `PlanCache`, `RoomForGraph`, `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
+| Speculation mechanics | `LiveState`'s snapshot: saves, `Accept`, the owed restore and a commit hook (Qwen3.8's kernel), `Rollback`, `Settle` | the same semantics written twice |
+| Setup and teardown | `runner_resources.h`: own memory, staging, cuBLAS, the launch context and registry, their ordered release; `ReleaseMapped` for the node, the runners and the FP16 and EXL3 harness runners | copied per runner |
+| Weight paging | `paged_weights.h` for every runner: host groups (DeepSeek's token table), `ExpertSlab`, per-extent groups, place checks; `LayOutSlab` moved here | DeepSeek's own `ReservePart`/`Register` |
+| The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 
-About 1,000–1,300 of the LLM runners' 3,750 lines are near-duplicates.
-Recommended skeleton, as helpers a runner holds rather than one deep base
-class (the image runner needs only the resource helpers), in order of
-value:
+What stays each family's own is its plan builder, state layout and steps
+(`*_plan.h`, `*_runner.h`). The image runner shares the weights, the
+resources and the pinned places; it holds no conversation state or GGML
+plans and records its one step through the device runtime, which the
+skeleton does not force on it. The serving adapters in `runtime/serving.cc`
+(the audit's seventh item) stay as they are. A port changes the skeleton
+once: a backend without recorded work is `GraphRuns`' fallback, and a
+platform's spill file is `LiveState`'s. Both LLMs now check their places
+after a swap, still registered where they were and pinned (Qwen3.8 did
+not before); the image's are checked only as pinned, by the swap's
+check of every managed extent.
 
-1. **`GraphRuns`**: `Runs`, `Queued`, Qwen3.8's `QueueRuns`, `Stage`,
-   `RoomForGraph`, `Count`, with model-neutral names for `Dsv4Path` and
-   `Dsv4GraphStats`. About 170 lines; low risk. It is also where a
-   backend without recorded work falls back to launch by launch.
-2. **`LiveState`**: the state's mapped regions and spill sources,
-   `RegisterState`, `Clear`, `ReadState` and the state half of
-   `CheckPlaces`. About 110 lines; keeps the extent order (state before
-   weights) and the slot numbering across target and drafter.
-3. **`PlanCache<Planned>`** and one `PlaceAndPlan`. About 150 lines.
-4. **`RunnerResources`**: the cuBLAS workspace, launch context, registry,
-   pinned staging, `ReleaseMapped` with the node's `Joined`, place pinning,
-   and the `Error`/`Pointer`/`Address`/`Round` helpers each file repeats.
-   About 150 lines over seven files.
-5. **DeepSeek onto `PagedWeights`**, once it takes a host-memory group and
-   per-extent tags. About 210 lines; medium risk.
-6. **`VerifySnapshot`**: saved ranges, `Accept`, `Rollback`, `Settle` and
-   the quarantine, with hooks for Qwen3.8's commit kernel and pending
-   rows. About 110 lines; medium risk (subtle semantics).
-7. **`LlmServed<Runner>`** for the serving adapters. About 80 lines.
-
-Each is a refactor with the harnesses' greedy, forced-rejection and swap
-checks as its guard; none is done here. Of the small defects the audit
-found on the way, the two that differed from Qwen3.8 are fixed (DeepSeek
-sized its input staging without `Stage`'s rounding, and its `Release`
-closed `spill_fd_` without resetting it); left: `qwen38_runner.h`
-includes `dsv4_runner.h` only for the path and statistics types, and
-`paged_weights.cc` includes it for `LayOutSlab`.
+Behaviour on the GB10 is unchanged, bit for bit where it was
+deterministic (the evidence is in plan.md's item for this slice).
 
 ## Distribution
 

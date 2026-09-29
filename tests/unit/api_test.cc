@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <expected>
 #include <format>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -69,6 +70,20 @@ std::string ErrorOf(std::string_view body) {
     return "(accepted)";
   }
   return std::format("{} {} [{}]", r.error().status, r.error().message, r.error().param);
+}
+
+// The member at `path` below `v`, which the test expects; a missing one
+// fails the test and yields the last value found.
+json::Value In(json::Value v, std::initializer_list<std::string_view> path) {
+  for (const std::string_view name : path) {
+    const std::optional<json::Value> found = v.find(name);
+    if (!found.has_value()) {
+      ADD_FAILURE() << "no member " << name;
+      return v;
+    }
+    v = *found;
+  }
+  return v;
 }
 
 constexpr std::string_view kMinimal =
@@ -224,18 +239,18 @@ TEST(IgnoredFields, CountsNamesUpToItsSize) {
   EXPECT_THAT(table.Record({"a", "c"}, 200), ElementsAre("c"));
   auto doc = json::Parse(table.Json());
   ASSERT_TRUE(doc.has_value()) << table.Json();
-  const json::Value a = doc->root().find("data")->at(0);
-  EXPECT_EQ(a.find("name")->string(), "a");
-  EXPECT_EQ(a.find("count")->int64(), 2);
-  EXPECT_EQ(a.find("first_seen")->int64(), 100);
-  EXPECT_EQ(a.find("last_seen")->int64(), 200);
+  const json::Value a = In(doc->root(), {"data"}).at(0);
+  EXPECT_EQ(In(a, {"name"}).string(), "a");
+  EXPECT_EQ(In(a, {"count"}).int64(), 2);
+  EXPECT_EQ(In(a, {"first_seen"}).int64(), 100);
+  EXPECT_EQ(In(a, {"last_seen"}).int64(), 200);
   for (std::size_t i = 0; i < api::IgnoredFields::kMaxNames + 5; ++i) {
     (void)table.Record({std::format("n{}", i)}, 300);
   }
   auto full = json::Parse(table.Json());
   ASSERT_TRUE(full.has_value());
-  EXPECT_EQ(full->root().find("data")->size(), api::IgnoredFields::kMaxNames);
-  EXPECT_EQ(full->root().find("unrecorded")->int64(), 8);  // 3 names were in before
+  EXPECT_EQ(In(full->root(), {"data"}).size(), api::IgnoredFields::kMaxNames);
+  EXPECT_EQ(In(full->root(), {"unrecorded"}).int64(), 8);  // 3 names were in before
   EXPECT_THAT(table.Record({"a"}, 400), IsEmpty());        // a known name is still counted
 }
 
@@ -361,13 +376,12 @@ TEST(ApiJson, ShapesParseBack) {
                                                      api::Finish::kLength, usage);
   auto doc = json::Parse(completion);
   ASSERT_TRUE(doc.has_value()) << completion;
-  const json::Value choice = doc->root().find("choices")->at(0);
-  EXPECT_EQ(choice.find("message")->find("content")->string(), "a\"b");
-  EXPECT_EQ(choice.find("message")->find("reasoning")->string(), "r");
-  EXPECT_EQ(choice.find("finish_reason")->string(), "length");
-  EXPECT_EQ(doc->root().find("usage")->find("total_tokens")->int64(), 10);
-  EXPECT_EQ(
-      doc->root().find("usage")->find("prompt_tokens_details")->find("cached_tokens")->int64(), 2);
+  const json::Value choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"message", "content"}).string(), "a\"b");
+  EXPECT_EQ(In(choice, {"message", "reasoning"}).string(), "r");
+  EXPECT_EQ(In(choice, {"finish_reason"}).string(), "length");
+  EXPECT_EQ(In(doc->root(), {"usage", "total_tokens"}).int64(), 10);
+  EXPECT_EQ(In(doc->root(), {"usage", "prompt_tokens_details", "cached_tokens"}).int64(), 2);
   for (const std::string& chunk :
        {api::ChunkJson("i", 1, "m", api::Delta::kRole, {}),
         api::ChunkJson("i", 1, "m", api::Delta::kContent, "x\n"),
@@ -398,7 +412,7 @@ jitllm::platform::InterfaceAddress Address(std::string_view interface, std::stri
                                            bool loopback = false) {
   jitllm::platform::InterfaceAddress a;
   a.interface = std::string(interface);
-  a.ipv6 = text.find(':') != std::string_view::npos;
+  a.ipv6 = text.contains(':');
   const std::string owned(text);
   EXPECT_EQ(::inet_pton(a.ipv6 ? AF_INET6 : AF_INET, owned.c_str(), a.bytes.data()), 1) << text;
   a.up = true;
@@ -437,6 +451,7 @@ std::optional<std::string> SparkReverse(const jitllm::platform::InterfaceAddress
 
 std::vector<std::string> Endpoints(const api::Listening& l) {
   std::vector<std::string> out;
+  out.reserve(l.endpoints.size());
   for (const auto& e : l.endpoints) {
     out.push_back(e.ipv6 ? std::format("[{}]:{}", e.address, e.port)
                          : std::format("{}:{}", e.address, e.port));
@@ -444,7 +459,7 @@ std::vector<std::string> Endpoints(const api::Listening& l) {
   return out;
 }
 
-jitllm::config::ClientConfig Bind(std::vector<std::string_view> entries) {
+jitllm::config::ClientConfig Bind(const std::vector<std::string_view>& entries) {
   jitllm::config::ClientConfig client;
   client.bind.clear();
   for (const std::string_view e : entries) {
@@ -681,7 +696,7 @@ std::string ReadResponse(int fd, std::string& pending) {
     }
     body = pending.substr(head_end, length);
     used = std::min(pending.size(), head_end + length);
-  } else if (head.find("Transfer-Encoding: chunked\r\n") != std::string::npos) {
+  } else if (head.contains("Transfer-Encoding: chunked\r\n")) {
     std::size_t at = head_end;
     for (;;) {
       std::size_t eol = 0;
@@ -719,7 +734,7 @@ std::string ReadResponse(int fd, std::string& pending) {
 
 // Reads until `needle` has arrived (or the connection ends); all of it.
 std::string ReadUntil(int fd, std::string& pending, std::string_view needle) {
-  while (pending.find(needle) == std::string::npos && Recv(fd, pending)) {
+  while (!pending.contains(needle) && Recv(fd, pending)) {
   }
   return pending;
 }
@@ -769,6 +784,10 @@ class ServerTest : public ::testing::Test {
   // A connection, with a receive timeout.
   int Open(int receive_buffer = 0) const {
     const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+      ADD_FAILURE() << "socket: " << errno;
+      return fd;
+    }
     if (receive_buffer > 0) {
       (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof receive_buffer);
     }
@@ -817,7 +836,7 @@ class ServerTest : public ::testing::Test {
     return at == std::string::npos ? std::string() : response.substr(at + 4);
   }
 
-  void WaitStarted() {
+  void WaitStarted() const {
     for (int i = 0; i < 2000 && !backend_.started.load(); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -840,14 +859,14 @@ TEST_F(ServerTest, AnswersAChatCompletion) {
   auto doc = json::Parse(BodyOf(response));
   ASSERT_TRUE(doc.has_value()) << response;
   const json::Value root = doc->root();
-  EXPECT_THAT(std::string(root.find("id")->string()), StartsWith("chatcmpl-"));
-  EXPECT_EQ(root.find("model")->string(), "alpha");
-  const json::Value message = root.find("choices")->at(0).find("message").value();
-  EXPECT_EQ(message.find("content")->string(), "Hello world");
-  EXPECT_EQ(message.find("reasoning")->string(), "hmm");
-  EXPECT_EQ(root.find("choices")->at(0).find("finish_reason")->string(), "stop");
-  EXPECT_EQ(root.find("usage")->find("prompt_tokens")->int64(), 10);
-  EXPECT_EQ(root.find("usage")->find("completion_tokens")->int64(), 4);
+  EXPECT_THAT(std::string(In(root, {"id"}).string()), StartsWith("chatcmpl-"));
+  EXPECT_EQ(In(root, {"model"}).string(), "alpha");
+  const json::Value message = In(In(root, {"choices"}).at(0), {"message"});
+  EXPECT_EQ(In(message, {"content"}).string(), "Hello world");
+  EXPECT_EQ(In(message, {"reasoning"}).string(), "hmm");
+  EXPECT_EQ(In(In(root, {"choices"}).at(0), {"finish_reason"}).string(), "stop");
+  EXPECT_EQ(In(root, {"usage", "prompt_tokens"}).int64(), 10);
+  EXPECT_EQ(In(root, {"usage", "completion_tokens"}).int64(), 4);
 }
 
 TEST_F(ServerTest, StreamsChunksThenDone) {
@@ -878,9 +897,9 @@ TEST_F(ServerTest, StopStringsEndTheAnswer) {
   const std::string response = Exchange(Post(Chat("Hello world", R"(,"stop":"lo w")")));
   auto doc = json::Parse(BodyOf(response));
   ASSERT_TRUE(doc.has_value()) << response;
-  const json::Value choice = doc->root().find("choices")->at(0);
-  EXPECT_EQ(choice.find("message")->find("content")->string(), "Hel");
-  EXPECT_EQ(choice.find("finish_reason")->string(), "stop");
+  const json::Value choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"message", "content"}).string(), "Hel");
+  EXPECT_EQ(In(choice, {"finish_reason"}).string(), "stop");
 }
 
 TEST_F(ServerTest, ListsModels) {
@@ -1092,6 +1111,7 @@ TEST_F(ServerTest, TimesOutASlowHead) {
 // room for a new one.
 TEST_F(ServerTest, HoldsManyIdleConnections) {
   std::vector<int> idle;
+  idle.reserve(200);
   for (int i = 0; i < 200; ++i) {
     idle.push_back(Open());
   }
@@ -1251,7 +1271,10 @@ TEST_F(ServerTest, SlowClientsDoNotHoldUpOthers) {
 TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
   Stop();
   std::FILE* log = std::tmpfile();
-  ASSERT_NE(log, nullptr);
+  if (log == nullptr) {
+    ADD_FAILURE() << "no temporary file";
+    return;
+  }
   api::ServerOptions options;
   options.log = log;
   Start(options);
@@ -1261,17 +1284,23 @@ TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
               StartsWith("HTTP/1.1 200 "));
   const std::string table =
       BodyOf(Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  // No early return from here until the log is closed.
   auto doc = json::Parse(table);
-  ASSERT_TRUE(doc.has_value()) << table;
-  ASSERT_EQ(doc->root().find("data")->size(), 1U);
-  EXPECT_EQ(doc->root().find("data")->at(0).find("name")->string(), "frobnicate");
-  EXPECT_EQ(doc->root().find("data")->at(0).find("count")->int64(), 2);
+  EXPECT_TRUE(doc.has_value()) << table;
+  if (doc.has_value()) {
+    const json::Value data = In(doc->root(), {"data"});
+    EXPECT_EQ(data.size(), 1U);
+    if (data.size() == 1) {
+      EXPECT_EQ(In(data.at(0), {"name"}).string(), "frobnicate");
+      EXPECT_EQ(In(data.at(0), {"count"}).int64(), 2);
+    }
+  }
   EXPECT_THAT(Exchange("POST /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n"
                        "Content-Length: 0\r\n\r\n"),
               StartsWith("HTTP/1.1 405 "));
   Stop();
   (void)std::fflush(log);
-  std::rewind(log);
+  EXPECT_EQ(std::fseek(log, 0, SEEK_SET), 0);
   std::string text;
   std::array<char, 4096> buf{};
   for (std::size_t n = 0; (n = std::fread(buf.data(), 1, buf.size(), log)) > 0;) {
@@ -1349,6 +1378,11 @@ TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
 TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
   const std::string text(std::size_t{900} << 10U, 'a');  // under a message's 1 MiB
   const std::string whole = Post(Chat(text));
+  if (!server_.has_value()) {
+    ADD_FAILURE() << "no server";
+    return;
+  }
+  const api::Server& server = *server_;
   const auto wait_for = [&](const auto& done) {
     for (int i = 0; i < 400 && !done(); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1357,8 +1391,7 @@ TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
   };
   // Half a body: the buffer the rest arrives in is held and counted.
   const int first = Connect(std::string_view(whole).substr(0, whole.size() / 2));
-  EXPECT_TRUE(wait_for([&] { return server_->held_bytes() >= whole.size(); }))
-      << server_->held_bytes();
+  EXPECT_TRUE(wait_for([&] { return server.held_bytes() >= whole.size(); })) << server.held_bytes();
   EXPECT_TRUE(
       jitllm::runtime::http::WriteAll(first, std::string_view(whole).substr(whole.size() / 2)));
   std::vector<int> kept{first};
@@ -1375,7 +1408,7 @@ TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
   // Nine requests of about 1 MiB each, answered at about 1 MiB each: the
   // connections, all still open, hold at most a small buffer each way.
   const std::size_t bound = kept.size() * 2 * api::kKeptBufferBytes;
-  EXPECT_TRUE(wait_for([&] { return server_->held_bytes() <= bound; })) << server_->held_bytes();
+  EXPECT_TRUE(wait_for([&] { return server.held_bytes() <= bound; })) << server.held_bytes();
   // Each still serves.
   EXPECT_TRUE(jitllm::runtime::http::WriteAll(
       kept[3], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
@@ -1399,16 +1432,31 @@ TEST_F(ServerTest, AHalfClosedClientGetsItsResponse) {
     std::string all;
     while (Recv(fd, all)) {
     }
+    // The server closed the connection (nothing more can arrive), rather
+    // than the receive timing out on a connection it kept open.
+    char byte = 0;
+    const ssize_t last = ::recv(fd, &byte, 1, MSG_DONTWAIT);
+    EXPECT_FALSE(last < 0 && errno == EAGAIN) << "the connection was kept open after a half-close";
     (void)::close(fd);
     if (strip && all.starts_with(kInterim)) {
       all.erase(0, kInterim.size());  // sent when the shutdown was seen first
     }
     return all;
   };
-  // The reviewer's case: a whole POST, then SHUT_WR, then read.
-  const std::string plain = half(Post(Chat("Hello world")));
-  EXPECT_THAT(plain, AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr("Connection: close\r\n"),
-                           HasSubstr(R"("content":"Hello world")")));
+  // The reviewer's case: a whole POST, then SHUT_WR, then read. The server
+  // learns of the shutdown only when its I/O thread sees it, which may come
+  // after the backend made the response (a race the client starts): then
+  // no interim response came and the head says keep-alive, true when it
+  // was made. Seen first, the interim response comes and the head says
+  // close. Either way the response is whole and the connection then closes
+  // (`half` reads to the end), since nothing more can arrive.
+  const std::string raw = half(Post(Chat("Hello world")), false);
+  const bool seen_first = raw.starts_with(kInterim);
+  const std::string plain = seen_first ? raw.substr(kInterim.size()) : raw;
+  EXPECT_THAT(plain,
+              AllOf(StartsWith("HTTP/1.1 200 OK\r\n"),
+                    HasSubstr(seen_first ? "Connection: close\r\n" : "Connection: keep-alive\r\n"),
+                    HasSubstr(R"("content":"Hello world")")));
   // A stream is never sent a 1xx: its probe is its own start.
   const std::string streamed = half(Post(Chat("Hello world", R"(,"stream":true)")), false);
   EXPECT_THAT(streamed, AllOf(StartsWith("HTTP/1.1 200 OK\r\n"), HasSubstr(R"("content":"Hello")"),

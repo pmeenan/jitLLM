@@ -389,7 +389,7 @@ std::expected<void, KernelFailure> CheckConcat(const ggml_tensor* node) {
     return Rejected("concat into a packed output from rows of contiguous elements");
   }
   const auto plane = Product({node->ne[0], node->ne[1], node->ne[2]});
-  if (!plane || *plane / 256 >= kInt32Max || node->ne[1] > static_cast<std::int64_t>(kInt32Max) ||
+  if (!plane || *plane / 256 >= kInt32Max || std::cmp_greater(node->ne[1], kInt32Max) ||
       node->ne[2] > 65535 || node->ne[3] > 65535) {
     return Rejected("concat beyond the kernels' grid");
   }
@@ -481,8 +481,7 @@ std::expected<void, KernelFailure> CheckTopK(const ggml_tensor* node) {
     return Rejected("top_k whose shape does not follow from its input");
   }
   // Rows, columns and k are passed as int (top-k.cu:17-39).
-  if (x->ne[0] > static_cast<std::int64_t>(kInt32Max) ||
-      ggml_nrows(x) > static_cast<std::int64_t>(kInt32Max) ||
+  if (std::cmp_greater(x->ne[0], kInt32Max) || std::cmp_greater(ggml_nrows(x), kInt32Max) ||
       !Aligned(node, sizeof(std::int32_t)) || !Aligned(x, sizeof(float))) {
     return Rejected("top_k beyond its 32-bit counts, or misaligned");
   }
@@ -745,7 +744,7 @@ std::expected<void, KernelFailure> CheckSsmConv(const ggml_tensor* node) {
   if (!Packed(window) || weights->nb[0] != sizeof(float) || node->nb[0] != sizeof(float) ||
       !ElementStrides(weights) || !ElementStrides(node) || !StridesFitInt(weights) ||
       Span(window) > kInt32Max || Span(weights) > kInt32Max || Span(node) > kInt32Max ||
-      window->ne[2] > static_cast<std::int64_t>(kInt32Max) || channels / 128 > 65535 ||
+      std::cmp_greater(window->ne[2], kInt32Max) || channels / 128 > 65535 ||
       (tokens + 31) / 32 > 65535) {
     return Rejected("ssm_conv operands beyond the kernel's 32-bit indexing or grid");
   }
@@ -819,7 +818,7 @@ std::expected<void, KernelFailure> CheckGatedDeltaNet(const ggml_tensor* node) {
   // One block per value head, sequence and 4 value columns (y and z
   // bounded by 65,535); fast divisors of the query heads and the sequence
   // ratio (32-bit).
-  if (seqs > 65535 || heads > static_cast<std::int64_t>(kInt32Max) ||
+  if (seqs > 65535 || std::cmp_greater(heads, kInt32Max) ||
       std::cmp_greater(q->ne[1], std::numeric_limits<std::uint32_t>::max())) {
     return Rejected("gated_delta_net beyond its grid");
   }

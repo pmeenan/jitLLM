@@ -479,7 +479,7 @@ std::expected<std::vector<std::uint16_t>, std::string> Server::Listen() {
   return ports;
 }
 
-void Server::Log(std::string_view line) {
+void Server::Log(std::string_view line) const {
   if (options_.log == nullptr) {
     return;
   }

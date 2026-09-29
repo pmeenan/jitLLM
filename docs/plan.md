@@ -776,7 +776,7 @@ it appears.
       1.48× and 1.78× the 512-row prefill at 8K tokens), configurable
       (`prefill_chunk`) and capped by the model at its context, so the
       minimum context, 512, starts for both.
-- [ ] **Engine cleanup before the gate** (the owner, 2026-09-29: leave M3
+- [x] **Engine cleanup before the gate** (the owner, 2026-09-29: leave M3
       with the code as clean as possible and set up for later work):
       - the per-model runners' shared mechanics become one engine
         skeleton: graph capture and replay, state spill and restore, plan
@@ -791,6 +791,38 @@ it appears.
         test is fixed.
       It lands before long context's optimization slices, so they change
       one skeleton rather than each runner.
+      *Done 2026-09-29* ([engine.md](engine.md), [portability.md](portability.md#the-runners-shared-skeleton)):
+      the skeleton is `paged_weights.h` (every runner's weights, DeepSeek's
+      host table and slabs included), `live_state.h` (regions, spill,
+      quarantine, a verify's snapshot, accept, rollback and a commit hook),
+      `planned.h` (one `PlaceAndPlan`, plan caches, the graph cap, BP-A1's
+      coverage), `graph_runs.h` (staging, capture, replay) and
+      `runner_resources.h`, with `PagedNode::WithRequest` for a request's
+      lease; engine.md says how a model family plugs in and where the
+      long-context work goes. DeepSeek's runner went from 2,607 lines to
+      1,610, Qwen3.8's from 2,136 to 1,558, the image's from 879 to 822,
+      beside 1,407 of skeleton. Qwen3.8 now checks its pinned places after
+      a swap too. On `spark-b` in one session, main (90660dd) against the
+      slice: DeepSeek's and Qwen3.8's greedy tokens and logits, plain and
+      speculative, on the eight fixed prompts (64 tokens) identical by
+      SHA-256, DeepSeek's reference mode too (where speculative equals
+      plain bit for bit); the forced-rejection checks 0 stale bytes
+      (DeepSeek, 17.6 GB compared) and 0 state differences (Qwen3.8), the
+      swap checks 0 states differ and 0 logits differ, graphs replayed
+      after the swap; `swap-table --pairs deepseek:qwen3.8` exact in every
+      row, totals 7.89–9.77 s against main's 7.91–9.67 s over two
+      alternating passes; Qwen-Image's pixels `3b7770ca…` and its pair
+      exact; through `jitllm-runtime chat` the same replies, prefill at 8K
+      451–456 tok/s (DeepSeek) and 2,179–2,186 (Qwen3.8) on both, plain
+      decode at 8K 19.06–19.17 and 25.54–25.58 tok/s on both. Main is
+      clang-tidy clean over all of `src/`, `tests/` and `benchmarks/`
+      (225 units, `spark-native`'s database). The half-close test's
+      expectation was too strict: a client's shutdown can reach the I/O
+      thread after the backend made the response, so it now expects close
+      after an interim response and keep-alive without one, the server
+      closing either way (a generation held until the shutdown is seen
+      still must say close); 24 copies ×
+      500 repeats passed 12,000 of 12,000 where main's test failed 136.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

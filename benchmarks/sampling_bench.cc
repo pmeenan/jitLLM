@@ -13,14 +13,15 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <print>
 #include <random>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "execution/sampling.h"
@@ -39,7 +40,7 @@ std::vector<float> Row(std::size_t vocab, bool peaked, std::uint64_t seed) {
   if (peaked) {
     const std::array<float, 5> tops = {14.0F, 13.0F, 12.5F, 11.0F, 10.0F};
     for (std::size_t i = 0; i < tops.size(); ++i) {
-      logits[(i * 7919U + 17U) % vocab] = tops[i];
+      logits[((i * 7919U) + 17U) % vocab] = tops[i];
     }
   }
   return logits;
@@ -58,7 +59,11 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--draws" && i + 1 < argc) {
-      draws = std::max(1, std::atoi(argv[++i]));  // NOLINT(cert-err34-c): a harness flag
+      const std::string_view value = argv[++i];
+      int parsed = 0;
+      if (std::from_chars(value.data(), value.data() + value.size(), parsed).ec == std::errc()) {
+        draws = std::max(1, parsed);
+      }
     }
   }
   const std::array<Case, 7> cases = {{

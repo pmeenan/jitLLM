@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The resident expert slab's pages (engine/dsv4_runner.h LayOutSlab):
+// The resident expert slab's pages (engine/paged_weights.h LayOutSlab):
 // each 2 MiB page of the slab's address range reads one 4 KiB-aligned
 // range of one file, at most a slot long, and copies pieces of it into the
 // page; together the pages put every stored byte of every group at
@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "engine/dsv4_runner.h"
+#include "engine/paged_weights.h"
 #include "expected_error.h"
 
 namespace {

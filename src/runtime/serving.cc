@@ -135,8 +135,7 @@ std::string GraphJson(const GraphCounts& g) {
                      g.eager, g.captured, g.replayed, g.refused, g.kept);
 }
 
-GraphCounts Sum(const engine::Dsv4GraphStats& a, const engine::Dsv4GraphStats& b,
-                std::size_t kept) {
+GraphCounts Sum(const engine::GraphStats& a, const engine::GraphStats& b, std::size_t kept) {
   return {.eager = a.eager + b.eager,
           .captured = a.captured + b.captured,
           .replayed = a.replayed + b.replayed,
@@ -452,6 +451,7 @@ class Qwen38 final : public Llm {
   const catalog::Closure& everything() const override { return runner_.everything(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
   Status AfterLoad() override { return runner_.ReadPleHash(); }
+  Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }
   double plan_seconds() const override { return runner_.plan_seconds(); }
   double demand_seconds() const override { return runner_.ple().seconds; }
@@ -766,14 +766,8 @@ std::expected<bool, std::string> Llm::Keep(std::span<const float> row, std::int3
 }
 
 void Llm::FindThinkTokens() {
-  think_start_.reset();
-  think_end_.reset();
-  if (auto id = tokenizer_->Find("<think>")) {
-    think_start_ = *id;
-  }
-  if (auto id = tokenizer_->Find("</think>")) {
-    think_end_ = *id;
-  }
+  think_start_ = tokenizer_->Find("<think>");
+  think_end_ = tokenizer_->Find("</think>");
 }
 
 Status Llm::Clear() {
@@ -1177,14 +1171,8 @@ Served* Server::Find(std::string_view name) {
 }
 
 Status Server::InRequest(Served& m, const std::function<Status()>& body) {
-  if (auto r = node_.BeginRequest(m.paged().stream(), m.everything(),
-                                  std::format("{}'s request", m.name()));
-      !r) {
-    return r;
-  }
-  Status ran = body();
-  Status ended = node_.EndRequest(m.paged().stream());
-  return !ran ? ran : ended;
+  return node_.WithRequest(m.paged().stream(), m.everything(),
+                           std::format("{}'s request", m.name()), body);
 }
 
 Status Server::WaitReleased() {

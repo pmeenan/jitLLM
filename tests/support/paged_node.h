@@ -22,6 +22,7 @@ using engine::Mapped;
 using engine::NodeSettings;
 using engine::PagedModel;
 using engine::PagedNode;
+using engine::ReleaseMapped;
 using engine::Span;
 using engine::Status;
 using engine::StepTimes;

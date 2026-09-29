@@ -12,16 +12,15 @@
 #include <string_view>
 #include <utility>
 
+#include "engine/support.h"
+
 namespace jitllm::engine {
 
 namespace {
 
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
-
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
-
-std::uint64_t Round(std::uint64_t bytes, std::uint64_t to) { return (bytes + to - 1) / to * to; }
+using support::Error;
 
 }  // namespace
 
@@ -96,62 +95,6 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
     state(l.hca_state_score, K::kHcaStateScore);
   }
 }
-
-namespace {
-
-// Places a graph's computed tensors as PlanDsv4Chunk describes: first every
-// computed tensor at its own address, then in `activations` by that plan,
-// planned again, which must give the same plan.
-template <typename Planned>
-std::expected<void, std::string> PlaceAndPlan(Planned& out, std::span<ggml_tensor* const> nodes,
-                                              std::span<ggml_tensor* const> inputs,
-                                              std::span<ggml_tensor* const> keep,
-                                              const kg::DeviceChoices& choices,
-                                              std::uint64_t activations,
-                                              std::uint64_t activation_bytes) {
-  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
-  std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
-  for (ggml_tensor* input : inputs) {
-    kg::TensorArena::Bind(input, leaf);
-    leaf += Round(ggml_nbytes(input), 256) + 256;
-  }
-  kg::BindDistinct(nodes, kDistinct);
-  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices);
-  if (!first) {
-    return Error(first.error().detail);
-  }
-  auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, keep);
-  if (!placement) {
-    return Error(placement.error().detail);
-  }
-  out.placement = std::move(*placement);
-  for (ggml_tensor* input : inputs) {
-    out.inputs_bytes += Round(ggml_nbytes(input), 256);  // as Stage places them
-  }
-  if (activations == 0) {
-    out.plan = std::move(*first);
-    return {};
-  }
-  if (out.placement.extent > activation_bytes) {
-    return Error(std::format("the activations ({} bytes) exceed their region ({} bytes)",
-                             out.placement.extent, activation_bytes));
-  }
-  for (const auto& [tensor, offset] : out.placement.offsets) {
-    kg::TensorArena::Bind(tensor, activations + offset);
-  }
-  kg::BindViews(nodes);
-  auto second = kg::PlanGraph(nodes, false, choices);
-  if (!second) {
-    return Error(second.error().detail);
-  }
-  if (!kg::SamePlan(*first, *second)) {
-    return Error("the plan changed once the activations were placed");
-  }
-  out.plan = std::move(*second);
-  return {};
-}
-
-}  // namespace
 
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,

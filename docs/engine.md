@@ -1,0 +1,153 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# The engine
+
+`src/engine/` is the layer above the kernels that runs models on a paged
+node (D-096; [architecture.md](architecture.md#layers-and-dependency-rules)).
+It holds the node, one skeleton of shared mechanics every model runner is
+built from, and each model family's runner, which adds only what is that
+family's own. `jitllm-runtime` serves through it
+([runtime-serving.md](runtime-serving.md)) and the paged harnesses drive the
+same code under their old names (`benchmarks/engine_names.h`,
+`tests/support/paged_node.h`).
+
+## The node
+
+`paged_node.h`: device 0 with its providers, a stream per model and the
+copy stream, the storage ring, one catalog domain, the landing zone
+(D-081), the scheduler and its lanes, and the workspace the models share
+(activations and the GGML pool). A runner registers its memory and page
+sources with it and posts its work through it: `Job` (one device job on the
+model's stream over a closure), `Load`, `Evict`, `Swap`, `Call` (a function
+on the scheduler's thread), and requests: `BeginRequest`/`EndRequest`, or
+`WithRequest` around a body, lease a model's closure once for all its steps
+(D-093). Its teardown fences each model's stream, evicts the managed
+extents, stops the scheduler and only then calls each model's `Release`
+(`PagedModel`). `ReleaseMapped` and `PlaceCheck` are the node's memory
+helpers every runner uses.
+
+## The skeleton
+
+Composition, not inheritance: a runner holds these as members and calls
+them; nothing in them is virtual, and nothing runs per kernel.
+
+| Part | File | What it does | The runner supplies |
+| --- | --- | --- | --- |
+| Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
+| Live state | `live_state.h` | The conversation state's regions (mapped before the weights, so a swap restores state first), their write-back places in an unnamed direct-I/O spill file, clear, read, the pinned places, the quarantine; a verify's snapshot: saves, accept, the owed restore and the model's commit hook, rollback, and undoing a failed verify | The state layout's bytes per region; which ranges a verify writes; a commit kernel if kept rows need one |
+| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, capped), `RoomForGraph` (the graph cap, D-090), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
+| Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
+| Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
+
+`support.h` holds the small helpers (errors, addresses, rounding, seconds,
+joined problems).
+
+## A runner's life
+
+1. **Setup** (before the scheduler): open the artifacts
+   (`PagedWeights::Open`), bind the model (`model/*.h`), lay out its state;
+   add the live-state regions first, then any scratch the model keeps
+   (`RunnerResources::Map`), reserve the weights, open cuBLAS; measure the
+   largest shapes over placeless addresses (`MeasuringContext`,
+   `PlaceAndPlan` with no activations) to size the activations, pool and
+   staging; pin the staging (`RunnerResources::Pinned`, then
+   `GraphRuns::SetStaging`); map a verify's snapshot if the model
+   speculates (`LiveState::SnapshotAt`, `AllocateSnapshot`).
+2. **Register** (after the node's Start): each weight's source
+   (`PagedWeights::Register`), the state's write-back places
+   (`LiveState::RegisterSpill`), then every managed extent's place pinned
+   (`Scheduler::PinPlaces`, D-090).
+3. **Bind** (after the workspace): the closures (`everything`, the state's
+   fence, any narrower ones), the model's places as the plan's address
+   functions, the commit hook, and the launch context
+   (`RunnerResources::BindLaunch`, then `GraphRuns::SetLaunch`).
+4. **Steps**: each chunk, draft or verify checks `LiveState::Usable` and
+   `AwaitingAccept`, finds or plans its shape (`PlanCache::Find`, else plan,
+   `BindPlanned`, `CheckCoverage`, `Add`), decides whether to capture
+   (`PlanRuns::CaptureDue` plus the model's rule, then `RoomForGraph`), and
+   posts one job that queues what the live state owes (`QueueOwed`), a
+   verify's saves (`QueueSaves`), and the run (`GraphRuns::Queue`). A
+   failure settles the state (`LiveState::Settle`: a verify undone, else a
+   quarantine); success counts the path (`Count`).
+5. **Release** (after the node's teardown): the plans and graphs first
+   (they name the launch context and the memory), then
+   `RunnerResources::Release`, `LiveState::Release`, each
+   `PagedWeights::Release`.
+
+## Adding a model family
+
+What a new family writes, and nothing else:
+
+- `model/<family>.h`: its profile, the binding to an artifact, its state
+  layout (bytes per region, where each tensor lives), each chunk's
+  host-built inputs, and for speculation which state ranges a verify
+  writes, by row.
+- `kernels/ggml/<family>_graph.h` (or another kernel module): the chunk
+  graph builder and shape; its operations registered (D-053) with a
+  primitive fallback for any fused one ([portability.md](portability.md#the-registry-rule)).
+- `engine/<family>_plan.h`: `using <Family>Planned =
+  PlannedGraph<Graph>`, the function that builds, binds the weights and
+  state at the model's places, and calls `PlaceAndPlan`; the host inputs
+  in the graph's copy order.
+- `engine/<family>_runner.h`: a `PagedModel` holding `RunnerResources`,
+  `LiveState`, `GraphRuns`, a `PagedWeights` per artifact and a
+  `PlanCache` per kind of plan, with Setup, Register and Bind as above and
+  the family's steps. The DeepSeek and Qwen3.8 runners are the worked
+  examples: DeepSeek with a host table, a chained draft-and-verify job and
+  a snapshot of every written range; Qwen3.8 with rows read on demand and
+  gathered between the inputs and the plan, a commit kernel, and two
+  variants of a verify's plan.
+- `runtime/serving.cc`: a `Served`/`Llm` adapter that forwards to the
+  runner (its tokenizer and template, chunks, speculative step, its
+  `CheckPlaces`), and the architecture name that selects it.
+
+Outside the engine, a family may also need its import to a prepared
+artifact (`docs/experiments/artifact-layout/import_m3.py` today), its
+tokenizer's pre-tokenizer if it is new ([tokenizer.md](tokenizer.md)) and
+its chat renderer (`chat/`, by template hash, D-067).
+
+The checks a family gets by composing the skeleton: the pinned places
+after each swap (the runner's `CheckPlaces` over its `PagedWeights` and
+`LiveState`, forwarded by its adapter; the adapter's default checks
+nothing), BP-A1's coverage of every planned shape, the quarantine, and
+graphs that replay only with the staging they were captured with.
+
+What the skeleton assumes today, which a family that differs changes here
+rather than works around:
+
+- **GGML plans.** `planned.h` and `GraphRuns::Queue` run a GGML
+  `BoundGraph`, and `RunnerResources::BindLaunch` binds against GGML's
+  implementations only. A family run by another executor (EXL3's, or its
+  own kernels as Qwen-Image's are) composes the weights, resources and
+  live state but runs and captures its own steps, as the image runner
+  does.
+- **State mapped whole.** Each live-state region is its layout's bytes,
+  mapped and spilled whole; how the layout divides them (full caches,
+  sliding-window rings, recurrent and convolution state, one region or
+  several) is the model's. A verify's writes are ranges by row, and state
+  a verify rewrites whole (recurrent) is restored and then rebuilt for the
+  kept rows by the commit hook, as Qwen3.8's is.
+- **One target and one drafter.** Regions, weights and plan caches are the
+  runner's own members; nothing here counts them, but the runners and
+  their adapters are written for a target with at most one drafter.
+
+## Where the long-context work goes
+
+- **State that grows with use**: a live-state region's bytes are the
+  layout's today and are mapped whole at setup; mapping, spilling and
+  restoring only the extents in use is a change to `LiveState` (regions
+  that grow, sources registered as they do) and to each model's layout,
+  not to each runner's spill code.
+- **Turn-boundary checkpoints** of recurrent or indexer state: a
+  checkpoint is a set of saved ranges kept across jobs, the verify
+  snapshot's mechanism with a longer life, and belongs beside it in
+  `LiveState`; which ranges to save is the model's (as `Dsv4ChunkWrites`
+  is today).
+- **Turn-to-turn prefix reuse**: the runtime's conversation (`history`)
+  and `LiveState::Clear` are where a turn decides to keep or drop state;
+  restoring a checkpoint rather than clearing is the new path.
+- **Deterministic top-k and sparse prefill attention**: graph builders and
+  kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
+  plan cache and graphs take them unchanged, and a prefill shape's capture
+  rule is the runner's.

@@ -11,6 +11,7 @@
 #include <thread>
 #include <utility>
 
+#include "engine/support.h"
 #include "providers/storage.h"
 
 namespace jitllm::engine {
@@ -19,7 +20,7 @@ namespace {
 
 constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
 
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
+using support::Error;
 
 std::uint64_t Down(std::uint64_t v, std::uint64_t to) { return v / to * to; }
 std::uint64_t Up(std::uint64_t v, std::uint64_t to) { return (v + to - 1) / to * to; }

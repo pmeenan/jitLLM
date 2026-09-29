@@ -3,30 +3,24 @@
 
 #include "engine/qwen38_runner.h"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <expected>
 #include <format>
 #include <initializer_list>
-#include <numeric>
 #include <optional>
 #include <string>
-#include <system_error>
+#include <tuple>
 #include <utility>
 
 #include "artifact/layout.h"
+#include "engine/support.h"
 #include "ggml.h"
-#include "kernels/ggml/dsv4_graph.h"  // GgmlTypeOf
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/implementations.h"
 #include "kernels/paging/paging.h"
-#include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
@@ -38,11 +32,13 @@ namespace {
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 namespace sc = jitllm::scheduler;
-using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
-using catalog::Recovery;
-using providers::BackingKind;
+using support::Address;
+using support::Error;
+using support::Pointer;
+using support::Round;
+using support::Seconds;
 
 constexpr std::uint64_t kExtent = kPagedExtent;
 constexpr std::size_t kRingDepth = 32;
@@ -56,58 +52,15 @@ constexpr std::size_t kArgmaxAt = 64;
 // And a draft's probabilities (F32 bits), after its drafts (at most 8).
 constexpr std::size_t kProbabilityAt = 32;
 
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
-
-void* Pointer(std::uint64_t address) {
-  return reinterpret_cast<void*>(address);  // NOLINT(performance-no-int-to-ptr)
-}
-
-std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintptr_t>(pointer); }
-
-std::uint64_t Round(std::uint64_t bytes, std::uint64_t to) { return (bytes + to - 1) / to * to; }
-
-double Seconds(std::chrono::steady_clock::duration d) {
-  return std::chrono::duration<double>(d).count();
-}
-
-kg::KernelFailure Unknown(std::string what) {
-  return {.error = kg::KernelError::kUnknown, .detail = std::move(what)};
-}
-
-void Count(Dsv4GraphStats& stats, Dsv4Path path) {
-  switch (path) {
-    case Dsv4Path::kEager:
-      ++stats.eager;
-      break;
-    case Dsv4Path::kCaptured:
-      ++stats.captured;
-      break;
-    case Dsv4Path::kReplayed:
-      ++stats.replayed;
-      break;
-  }
-}
-
-// Every layer's expert arrays of `binding` share their groups: the slab
-// of the layer's first group at the stride over its stored bytes.
-std::expected<std::pair<std::uint32_t, std::uint64_t>, std::string> SlabOf(
-    const artifact::Artifact& artifact, const md::Qwen38Layer& l, bool cutlass, std::uint32_t il) {
-  std::uint64_t unit = 16;
-  std::optional<std::uint32_t> first_group;
+// The slab of a layer's expert arrays (paged_weights.h ExpertSlab).
+std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
+                                            const md::Qwen38Layer& l, bool cutlass,
+                                            std::uint32_t count, std::uint32_t il) {
+  std::vector<std::pair<std::uint32_t, std::string_view>> arrays;
   for (const md::Qwen38Tensor* t : l.expert_arrays(cutlass)) {
-    const auto& a = artifact.expert_arrays()[t->index];
-    auto type = kg::GgmlTypeOf(t->type);
-    if (!type) {
-      return Error(type.error().detail);
-    }
-    unit = std::lcm(unit, static_cast<std::uint64_t>(ggml_type_size(*type)));
-    if (first_group && *first_group != a.first_group) {
-      return Error(std::format("layer {}'s expert arrays do not share their groups", il));
-    }
-    first_group = a.first_group;
+    arrays.emplace_back(t->index, t->type);
   }
-  const std::uint32_t g = first_group.value_or(0);
-  return std::pair{g, Round(artifact.groups()[g].stored.value(), unit)};
+  return ExpertSlab(artifact, arrays, count, kSlabAlignment, il);
 }
 
 }  // namespace
@@ -120,12 +73,6 @@ std::vector<ExtentId> Qwen38Runner::weights() const {
   return all;
 }
 
-std::vector<ExtentId> Qwen38Runner::state() const {
-  std::vector<ExtentId> all = state_.extents;
-  all.insert(all.end(), mstate_.extents.begin(), mstate_.extents.end());
-  return all;
-}
-
 std::vector<ExtentId> Qwen38Runner::managed_extents() const {
   std::vector<ExtentId> all = weights();
   const std::vector<ExtentId> live = state();
@@ -134,12 +81,11 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
-  auto artifact = artifact::Artifact::Open(o_.artifact);
-  if (!artifact) {
-    return Error(std::format("the artifact was refused: {}", artifact.error().reason));
+  if (auto r = weights_.Open(o_.artifact); !r) {
+    return r;
   }
-  artifact_ = std::make_unique<artifact::Artifact>(std::move(*artifact));
-  auto binding = md::BindQwen38(profile_, *artifact_);
+  const artifact::Artifact& a = weights_.artifact();
+  auto binding = md::BindQwen38(profile_, a);
   if (!binding) {
     return std::unexpected(binding.error());
   }
@@ -154,19 +100,11 @@ Status Qwen38Runner::Setup() {
   // row before its chunk), and beside a drafter a verify after its drafts.
   // Checked here, so those positions cannot wrap.
   if (o_.max_rows >= o_.context ||
-      (!o_.drafter.empty() && std::uint64_t{o_.draft_rows} * 2 + 1 > o_.context)) {
+      (!o_.drafter.empty() && (std::uint64_t{o_.draft_rows} * 2) + 1 > o_.context)) {
     return Error(std::format(
         "a context of {} leaves no room for chunks of {} rows{}", o_.context, o_.max_rows,
         o_.drafter.empty() ? std::string() : std::format(" and drafts of {}", o_.draft_rows)));
   }
-  for (std::uint32_t s = 0; s < artifact_->shards().size(); ++s) {
-    auto fd = artifact_->OpenShardForDirectRead(s);
-    if (!fd) {
-      return Error(std::format("shard {} cannot be opened for direct reads", s));
-    }
-    shards_.push_back(std::move(*fd));
-  }
-  id_ = ArtifactKey(*artifact_);
   if (!o_.drafter.empty()) {
     const std::uint32_t verify = o_.draft_rows + 1;
     if (o_.draft_rows == 0 || verify > kg::kMxfp8VecColumns || verify > o_.max_rows ||
@@ -176,12 +114,10 @@ Status Qwen38Runner::Setup() {
                       "most the vocabulary, beside a CUTLASS-layout target",
                       kg::kMxfp8VecColumns - 1));
     }
-    auto drafter = artifact::Artifact::Open(o_.drafter);
-    if (!drafter) {
-      return Error(std::format("the drafter was refused: {}", drafter.error().reason));
+    if (auto r = dweights_.Open(o_.drafter); !r) {
+      return Error(std::format("the drafter: {}", r.error()));
     }
-    dartifact_ = std::make_unique<artifact::Artifact>(std::move(*drafter));
-    auto dbinding = md::BindQwen38Mtp(profile_, *dartifact_);
+    auto dbinding = md::BindQwen38Mtp(profile_, dweights_.artifact());
     if (!dbinding) {
       return Error(std::format("the drafter: {}", dbinding.error()));
     }
@@ -193,34 +129,23 @@ Status Qwen38Runner::Setup() {
     }
     mtp_layout_ = *mtp;
     commit_layout_ = std::move(*commit);
-    for (std::uint32_t s = 0; s < dartifact_->shards().size(); ++s) {
-      auto fd = dartifact_->OpenShardForDirectRead(s);
-      if (!fd) {
-        return Error(std::format("the drafter's shard {} cannot be opened for direct reads", s));
-      }
-      dshards_.push_back(std::move(*fd));
-    }
-    did_ = ArtifactKey(*dartifact_);
   }
 
   // The n-gram table: its group alone, stored contiguously in one shard.
-  const auto groups = artifact_->groups();
-  const artifact::Resource& table = artifact_->resources()[binding_.ple_table.index];
+  const auto groups = a.groups();
+  const artifact::Resource& table = a.resources()[binding_.ple_table.index];
   const std::uint32_t table_group = table.group;
-  for (std::uint32_t r = 0; r < artifact_->resources().size(); ++r) {
-    if (r != binding_.ple_table.index && artifact_->resources()[r].group == table_group) {
-      return Error(
-          std::format("{} shares the n-gram table's group", artifact_->resources()[r].name));
+  for (std::uint32_t r = 0; r < a.resources().size(); ++r) {
+    if (r != binding_.ple_table.index && a.resources()[r].group == table_group) {
+      return Error(std::format("{} shares the n-gram table's group", a.resources()[r].name));
     }
   }
-  const auto first =
-      artifact::ChunkRangeOf(artifact_->layout(), {.group = table_group, .chunk = 0});
+  const auto first = artifact::ChunkRangeOf(a.layout(), {.group = table_group, .chunk = 0});
   if (!first) {
     return Error("the n-gram table's file range");
   }
   for (std::uint32_t c = 1; c < groups[table_group].chunks; ++c) {
-    const auto range =
-        artifact::ChunkRangeOf(artifact_->layout(), {.group = table_group, .chunk = c});
+    const auto range = artifact::ChunkRangeOf(a.layout(), {.group = table_group, .chunk = c});
     if (!range || range->shard != first->shard ||
         range->file_offset.value() != first->file_offset.value() + (std::uint64_t{c} * kExtent)) {
       return Error("the n-gram table is not stored contiguously in one shard");
@@ -229,7 +154,7 @@ Status Qwen38Runner::Setup() {
   if (binding_.ple_table.ne.size() != 2) {
     return Error("the n-gram table is not a table of rows");
   }
-  table_ = PleTable{.fd = shards_.at(first->shard).get(),
+  table_ = PleTable{.fd = weights_.shard_fd(first->shard),
                     .file_offset = first->file_offset.value() + table.offset.value(),
                     .rows = binding_.ple_table.ne[1],
                     .row_bytes = binding_.ple_table.ne[0],
@@ -241,45 +166,28 @@ Status Qwen38Runner::Setup() {
 
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in.
-  if (auto r = node_.MapResident(state_, "the Qwen3.8 state", layout_.bytes, BackingKind::kDevice,
-                                 MemoryClass::kLiveState, Recovery::kPreserve, owner_);
-      !r) {
+  if (auto r = live_.Add(node_, "the Qwen3.8 state", layout_.bytes, owner_); !r) {
     return r;
   }
   if (speculative()) {
-    if (auto r = node_.MapResident(mstate_, "the Qwen3.8 MTP drafter's state", mtp_layout_.bytes,
-                                   BackingKind::kDevice, MemoryClass::kLiveState,
-                                   Recovery::kPreserve, owner_);
+    if (auto r = live_.Add(node_, "the Qwen3.8 MTP drafter's state", mtp_layout_.bytes, owner_);
         !r) {
       return r;
     }
   }
-  if (auto r =
-          node_.MapResident(slot_memory_, "the Qwen3.8 n-gram row slots", slots_ * table_.row_bytes,
-                            BackingKind::kDevice, MemoryClass::kScratch, Recovery::kPinned, owner_);
+  if (auto r = resources_.Map(slot_memory_, "the Qwen3.8 n-gram row slots",
+                              slots_ * table_.row_bytes, MemoryClass::kScratch);
       !r) {
     return r;
   }
-  if (auto r = ReserveWeights(); !r) {
+  std::vector<std::uint64_t> stride;
+  std::uint64_t mtp_stride = 0;
+  if (auto r = ReserveWeights(stride, mtp_stride); !r) {
     return r;
   }
-
-  const providers::DeviceFacts facts =
-      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
-  if (auto r =
-          node_.MapResident(cublas_workspace_, "the Qwen3.8 cuBLAS workspace", cublas_bytes_,
-                            BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned, owner_);
-      !r) {
+  if (auto r = resources_.OpenCublas("the Qwen3.8 cuBLAS workspace"); !r) {
     return r;
   }
-  auto cublas =
-      kg::CublasHandle::Create(0, node_.execution(), node_.stream(stream_),
-                               {.base = cublas_workspace_.base, .size = Bytes(cublas_bytes_)});
-  if (!cublas) {
-    return Error(cublas.error().detail);
-  }
-  cublas_ = std::move(*cublas);
 
   // The largest shapes, as the resident harness sizes them (one output
   // row: the runner reads only the last row's logits; a verify every
@@ -287,9 +195,7 @@ Status Qwen38Runner::Setup() {
   // do not shape a chunk); beside a drafter, its prefill pass and its draft
   // too.
   const auto placeless = [](std::uint32_t) { return std::uint64_t{1} << 44U; };
-  std::vector<std::uint64_t> stride = std::move(model_.places.stride);  // ReserveWeights's
-  const std::uint64_t mtp_stride = model_.mtp_stride;
-  model_ = Qwen38Model{.artifact = artifact_.get(),
+  model_ = Qwen38Model{.artifact = &a,
                        .profile = &profile_,
                        .binding = &graph_binding_,
                        .state = &layout_,
@@ -316,10 +222,9 @@ Status Qwen38Runner::Setup() {
   std::uint64_t most_scratch = 0;
   std::uint64_t most_inputs = 0;
   {
-    auto measure = kg::LaunchContext::Create(0, node_.execution(), node_.stream(stream_),
-                                             {.base = 0, .size = Bytes(0)}, cublas_.get());
+    auto measure = resources_.MeasuringContext();
     if (!measure) {
-      return Error(measure.error().detail);
+      return std::unexpected(measure.error());
     }
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
     struct Probe {
@@ -340,14 +245,14 @@ Status Qwen38Runner::Setup() {
         probes.push_back({at, verify, {.verify = true, .export_streams = true}});
       }
     }
-    const auto account = [&](auto& planned) -> Status {
-      most_activations = std::max(most_activations, planned->placement.extent);
-      auto scratch = kg::PlanScratch(**measure, planned->plan);
+    const auto account = [&](const PlannedBase& planned) -> Status {
+      most_activations = std::max(most_activations, planned.placement.extent);
+      auto scratch = kg::PlanScratch(**measure, planned.plan);
       if (!scratch) {
         return Error(scratch.error().detail);
       }
       most_scratch = std::max(most_scratch, *scratch);
-      most_inputs = std::max(most_inputs, planned->inputs_bytes);
+      most_inputs = std::max(most_inputs, planned.inputs_bytes);
       return {};
     };
     for (const Probe& probe : probes) {
@@ -363,7 +268,7 @@ Status Qwen38Runner::Setup() {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
       }
-      if (auto r = account(*planned); !r) {
+      if (auto r = account(**planned); !r) {
         return r;
       }
     }
@@ -380,7 +285,7 @@ Status Qwen38Runner::Setup() {
         if (!planned) {
           return Error(std::format("measuring the drafter: {}", planned.error()));
         }
-        if (auto r = account(*planned); !r) {
+        if (auto r = account(**planned); !r) {
           return r;
         }
       }
@@ -388,29 +293,27 @@ Status Qwen38Runner::Setup() {
   }
   activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
   scratch_bytes_ = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
-  input_bytes_ = Round((most_inputs * 2) + (1U << 20U), kExtent);
+  const std::uint64_t input_bytes = Round((most_inputs * 2) + (1U << 20U), kExtent);
   // A drafter pass's inputs from the staging's second half, which the
   // largest inputs fit, so one job stages a chunk's and its pass's.
-  mtp_base_ = Round(input_bytes_ / 2, 256);
+  mtp_base_ = Round(input_bytes / 2, 256);
 
   landing_bytes_ = PleLandingBound(slots_);
   const std::uint64_t logit_rows = speculative() ? o_.draft_rows + 1 : 1;
-  auto inputs = node_.Pinned(input_bytes_, owner_, staging_);
-  auto logits =
-      node_.Pinned(logit_rows * std::uint64_t{profile_.vocab} * sizeof(float), owner_, staging_);
-  auto hash =
-      node_.Pinned((std::uint64_t{profile_.ngram} + (2 * std::uint64_t{profile_.ple_heads()})) * 8,
-                   owner_, staging_);
-  auto landing = node_.Pinned(landing_bytes_, owner_, staging_);
+  auto inputs = resources_.Pinned(input_bytes);
+  auto logits = resources_.Pinned(logit_rows * std::uint64_t{profile_.vocab} * sizeof(float));
+  auto hash = resources_.Pinned(
+      (std::uint64_t{profile_.ngram} + (2 * std::uint64_t{profile_.ple_heads()})) * 8);
+  auto landing = resources_.Pinned(landing_bytes_);
   // The slots' sources, then the count of rows the next gather takes.
-  auto sources = node_.Pinned((slots_ + 1) * sizeof(std::uint32_t), owner_, staging_);
+  auto sources = resources_.Pinned((slots_ + 1) * sizeof(std::uint32_t));
   unwritten_ = weights_.Unwritten();
-  auto scrub = node_.Pinned(unwritten_.size() * 2 * sizeof(std::uint64_t), owner_, staging_);
+  auto scrub = resources_.Pinned(unwritten_.size() * 2 * sizeof(std::uint64_t));
   if (!inputs || !logits || !hash || !landing || !sources || !scrub) {
     return Error("pinned staging for Qwen3.8");
   }
   scrub_ = static_cast<std::uint64_t*>(*scrub);
-  inputs_ = *inputs;
+  runs_.SetStaging(*inputs, input_bytes);
   logits_ = *logits;
   hash_host_ = *hash;
   landing_ = static_cast<std::byte*>(*landing);
@@ -426,26 +329,25 @@ Status Qwen38Runner::Setup() {
     const std::uint32_t qsa = profile_.layers / 4;
     const std::uint64_t row_cells = (2 * std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2) +
                                     (std::uint64_t{profile_.indexer_head_dim} * 4);
-    snapshot_offset_ = Round(commit_layout_.bytes, 256);
+    const std::uint64_t snapshot_offset = Round(commit_layout_.bytes, 256);
     const std::uint64_t commit_bytes =
-        snapshot_offset_ + Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + 4096, 256);
-    if (auto r = node_.MapResident(commit_, "the Qwen3.8 verify's saves", commit_bytes,
-                                   BackingKind::kDevice, MemoryClass::kRuntime, Recovery::kPinned,
-                                   owner_);
+        snapshot_offset + Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + 4096, 256);
+    if (auto r = resources_.Map(commit_, "the Qwen3.8 verify's saves", commit_bytes,
+                                MemoryClass::kRuntime);
         !r) {
       return r;
     }
-    auto save = node_.Pinned(kRangeCapacity * sizeof(kg::RangeCopy), owner_, staging_);
-    auto restore = node_.Pinned(kRangeCapacity * sizeof(kg::RangeCopy), owner_, staging_);
-    auto carry = node_.Pinned(4 * sizeof(kg::RangeCopy), owner_, staging_);
+    live_.SnapshotAt(commit_.base + snapshot_offset, commit_.bytes - snapshot_offset);
+    if (auto r = live_.AllocateSnapshot(resources_, kRangeCapacity); !r) {
+      return r;
+    }
+    auto carry = resources_.Pinned(4 * sizeof(kg::RangeCopy));
     // A draft's drafts, their probabilities (from kProbabilityAt), then
     // (from kArgmaxAt) a verify's argmaxes.
-    auto drafts = node_.Pinned(512, owner_, staging_);
-    if (!save || !restore || !carry || !drafts) {
+    auto drafts = resources_.Pinned(512);
+    if (!carry || !drafts) {
       return Error("pinned staging for Qwen3.8's speculation");
     }
-    save_ = static_cast<kg::RangeCopy*>(*save);
-    restore_ = static_cast<kg::RangeCopy*>(*restore);
     carry_ = static_cast<kg::RangeCopy*>(*carry);
     drafts_ = *drafts;
   }
@@ -458,48 +360,48 @@ Status Qwen38Runner::Setup() {
 }
 
 // Every dense group but the n-gram table's, and a slab per layer; the
-// drafter's dense groups and its slab.
-Status Qwen38Runner::ReserveWeights() {
-  const auto groups = artifact_->groups();
-  std::vector<bool> place(groups.size(), false);
+// drafter's dense groups and its slab. Each layer's expert stride in
+// `stride`, the drafter's in `mtp_stride`.
+Status Qwen38Runner::ReserveWeights(std::vector<std::uint64_t>& stride, std::uint64_t& mtp_stride) {
+  const artifact::Artifact& a = weights_.artifact();
+  const auto groups = a.groups();
+  std::vector<GroupPlace> place(groups.size(), GroupPlace::kNone);
   for (std::size_t g = 0; g < groups.size(); ++g) {
-    place[g] = groups[g].kind != artifact::GroupKind::kExpert;
+    if (groups[g].kind != artifact::GroupKind::kExpert) {
+      place[g] = GroupPlace::kDevice;
+    }
   }
-  place[artifact_->resources()[binding_.ple_table.index].group] = false;
+  place[a.resources()[binding_.ple_table.index].group] = GroupPlace::kNone;
   std::vector<SlabSpec> slabs;
-  model_.places.stride.assign(profile_.layers, 0);
+  stride.assign(profile_.layers, 0);
   for (std::uint32_t il = 0; il < profile_.layers; ++il) {
-    auto slab = SlabOf(*artifact_, binding_.layers[il], binding_.cutlass(), il);
+    auto slab = SlabOf(a, binding_.layers[il], binding_.cutlass(), profile_.experts, il);
     if (!slab) {
       return std::unexpected(slab.error());
     }
-    model_.places.stride[il] = slab->second;
-    slabs.push_back({.first_group = slab->first,
-                     .count = profile_.experts,
-                     .stride = slab->second,
-                     .alignment = kSlabAlignment});
+    stride[il] = slab->stride;
+    slabs.push_back(*slab);
   }
-  if (auto r = weights_.Reserve(node_, *artifact_, shards_, id_, place, slabs); !r) {
+  if (auto r = weights_.Reserve(node_, place, slabs); !r) {
     return r;
   }
   if (!speculative()) {
     return {};
   }
-  const auto dgroups = dartifact_->groups();
-  std::vector<bool> dplace(dgroups.size(), false);
-  for (std::size_t g = 0; g < dgroups.size(); ++g) {
-    dplace[g] = dgroups[g].kind != artifact::GroupKind::kExpert;
+  const artifact::Artifact& d = dweights_.artifact();
+  std::vector<GroupPlace> dplace(d.groups().size(), GroupPlace::kNone);
+  for (std::size_t g = 0; g < d.groups().size(); ++g) {
+    if (d.groups()[g].kind != artifact::GroupKind::kExpert) {
+      dplace[g] = GroupPlace::kDevice;
+    }
   }
-  auto slab = SlabOf(*dartifact_, dbinding_.layer, true, 0);
+  auto slab = SlabOf(d, dbinding_.layer, true, profile_.experts, 0);
   if (!slab) {
     return std::unexpected(slab.error());
   }
-  model_.mtp_stride = slab->second;
-  const std::array<SlabSpec, 1> dslabs = {SlabSpec{.first_group = slab->first,
-                                                   .count = profile_.experts,
-                                                   .stride = slab->second,
-                                                   .alignment = kSlabAlignment}};
-  return dweights_.Reserve(node_, *dartifact_, dshards_, did_, dplace, dslabs);
+  mtp_stride = slab->stride;
+  const std::array<SlabSpec, 1> dslabs = {*slab};
+  return dweights_.Reserve(node_, dplace, dslabs);
 }
 
 Status Qwen38Runner::Register() {
@@ -511,7 +413,7 @@ Status Qwen38Runner::Register() {
       return r;
     }
   }
-  if (auto r = RegisterState(); !r) {
+  if (auto r = live_.RegisterSpill(node_, o_.out); !r) {
     return r;
   }
   // D-090, for every model: the places stay put for the model's life
@@ -522,115 +424,94 @@ Status Qwen38Runner::Register() {
   return {};
 }
 
-// The state's write-back places: one 2 MiB range of an unnamed direct-I/O
-// spill file per extent (the target's, then the drafter's), landed through
-// the zone, its backing managed.
-Status Qwen38Runner::RegisterState() {
-  std::filesystem::create_directories(o_.out);
-  const auto opened = platform::OpenUnnamedDirectFile(o_.out);
-  if (!opened) {
-    return Error(std::format("the spill file in {}: {}", o_.out.string(),
-                             std::generic_category().message(opened.error())));
+Status Qwen38Runner::CheckPlaces() {
+  PlaceCheck check;
+  auto checked = node_.Call(
+      [&]() -> Status {
+        weights_.CheckPlaces(node_.scheduler(), check);
+        dweights_.CheckPlaces(node_.scheduler(), check);
+        live_.CheckPlaces(node_.scheduler(), check);
+        return {};
+      },
+      "checking Qwen3.8's places");
+  if (!checked) {
+    return checked;
   }
-  spill_fd_ = *opened;
-  std::uint64_t slot = 0;
-  const auto spill = [&](Mapped& mapped, std::vector<sc::PageSource>& sources) -> Status {
-    sources.clear();
-    for (std::size_t i = 0; i < mapped.extents.size(); ++i, ++slot) {
-      const sc::PageSource source{
-          .read = {.fd = spill_fd_, .offset = slot * kExtent, .memory = nullptr, .length = kExtent},
-          .landed = true,
-          .destination = mapped.base + (i * kExtent),
-          .backing = sc::BackingPlace{.reservation = mapped.reservation,
-                                      .offset = Bytes(i * kExtent),
-                                      .size = Bytes(kExtent),
-                                      .allocation_class = node_.device_class()},
-          .write_back = true};
-      auto set = node_.scheduler().SetSource(mapped.extents[i], source);
-      if (!set) {
-        return Error(std::format("the state's write-back place: {}", sc::ToString(set.error())));
-      }
-      sources.push_back(source);
-    }
-    mapped.backings.clear();  // the VMM lane releases them on eviction (D-033)
-    return {};
-  };
-  if (auto r = spill(state_, state_sources_); !r) {
-    return r;
+  if (check.moved != 0) {
+    DropPlans();
+    return Error(
+        std::format("{} extents are no longer pinned at their places (first: {}); every "
+                    "graph was dropped",
+                    check.moved, check.first));
   }
-  return spill(mstate_, mstate_sources_);
+  return {};
 }
 
 Status Qwen38Runner::Bind() {
   auto& catalog = node_.catalog();
   std::vector<ExtentId> all = weights();
+  const std::vector<ExtentId> live = live_.extents();
+  all.insert(all.end(), live.begin(), live.end());
   for (const Mapped* mapped :
-       std::initializer_list<const Mapped*>{&state_, &mstate_, &slot_memory_, &node_.activations(),
-                                            &node_.pool(), &cublas_workspace_, &commit_}) {
+       std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
     all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
   }
-  all.insert(all.end(), staging_.begin(), staging_.end());
+  const std::vector<ExtentId> own = resources_.extents();
+  all.insert(all.end(), own.begin(), own.end());
   everything_ = catalog.ClosureOfExtents(all).value();
   fence_ = catalog.ClosureOfExtents(state()).value();
   model_.places.resource = [this](std::uint32_t resource) {
-    const auto& r = artifact_->resources()[resource];
-    return weights_.group_address(r.group) + r.offset.value();
+    return weights_.resource_address(resource);
   };
-  model_.places.array = [this](std::uint32_t array) {
-    const auto& a = artifact_->expert_arrays()[array];
-    return weights_.group_address(a.first_group) + a.group_offset.value();
-  };
-  model_.places.state = state_.base;
+  model_.places.array = [this](std::uint32_t array) { return weights_.array_address(array); };
+  model_.places.state = live_.base(kTarget);
   model_.places.ple_table = slot_memory_.base;
   if (speculative()) {
     model_.places.mtp_resource = [this](std::uint32_t resource) {
-      const auto& r = dartifact_->resources()[resource];
-      return dweights_.group_address(r.group) + r.offset.value();
+      return dweights_.resource_address(resource);
     };
     model_.places.mtp_array = [this](std::uint32_t array) {
-      const auto& a = dartifact_->expert_arrays()[array];
-      return dweights_.group_address(a.first_group) + a.group_offset.value();
+      return dweights_.array_address(array);
     };
-    model_.places.mtp_state = mstate_.base;
+    model_.places.mtp_state = live_.base(kDrafter);
     model_.places.commit = commit_.base;
     // The commit's places: every linear-attention layer's state and saves.
     using K = md::Qwen38StateTensor::Kind;
+    const std::uint64_t state = live_.base(kTarget);
     const auto at = [&](std::uint32_t il, K kind) {
-      return state_.base + layout_.tensors[static_cast<std::size_t>(layout_.Find(il, kind))].offset;
+      return state + layout_.tensors[static_cast<std::size_t>(layout_.Find(il, kind))].offset;
     };
-    kg::Qwen38CommitArgs& a = commit_args_;
-    a.layers = static_cast<int>(commit_layout_.layers.size());
-    a.channels = static_cast<int>(profile_.conv_channels());
-    a.qk_heads = static_cast<int>(profile_.lin_k_heads);
-    a.v_heads = static_cast<int>(profile_.lin_v_heads);
-    a.taps = static_cast<int>(profile_.conv - 1);
+    kg::Qwen38CommitArgs& c = commit_args_;
+    c.layers = static_cast<int>(commit_layout_.layers.size());
+    c.channels = static_cast<int>(profile_.conv_channels());
+    c.qk_heads = static_cast<int>(profile_.lin_k_heads);
+    c.v_heads = static_cast<int>(profile_.lin_v_heads);
+    c.taps = static_cast<int>(profile_.conv - 1);
     for (std::size_t i = 0; i < commit_layout_.layers.size(); ++i) {
       const std::uint32_t il = commit_layout_.layers[i];
       const std::uint64_t base = commit_.base;
-      a.layer[i] = {.state = static_cast<float*>(Pointer(at(il, K::kRecurrent))),
+      c.layer[i] = {.state = static_cast<float*>(Pointer(at(il, K::kRecurrent))),
                     .history = static_cast<float*>(Pointer(at(il, K::kConv))),
                     .conv = static_cast<const float*>(Pointer(base + commit_layout_.conv_out(i))),
                     .qkv = static_cast<const float*>(Pointer(base + commit_layout_.qkv(i))),
                     .gate = static_cast<const float*>(Pointer(base + commit_layout_.gate(i))),
                     .beta = static_cast<const float*>(Pointer(base + commit_layout_.beta(i)))};
     }
-    a.ple_history = static_cast<float*>(Pointer(at(profile_.ple_layer, K::kPleConv)));
-    a.ple_rows = static_cast<const float*>(Pointer(commit_.base + commit_layout_.ple()));
-    a.ple_width = static_cast<int>(profile_.hc_width());
-    a.ple_taps = static_cast<int>(profile_.ple_history());
+    c.ple_history = static_cast<float*>(Pointer(at(profile_.ple_layer, K::kPleConv)));
+    c.ple_rows = static_cast<const float*>(Pointer(commit_.base + commit_layout_.ple()));
+    c.ple_width = static_cast<int>(profile_.hc_width());
+    c.ple_taps = static_cast<int>(profile_.ple_history());
+    // A verify's kept rows committed after the rejected rows' restore.
+    live_.SetCommit([this](kg::LaunchContext& launch, std::uint32_t keep) {
+      kg::Qwen38CommitArgs args = commit_args_;
+      args.keep = static_cast<int>(keep);
+      return kg::Qwen38Commit(launch, args);
+    });
   }
-  auto launch = kg::LaunchContext::Create(
-      0, node_.execution(), node_.stream(stream_),
-      {.base = node_.pool().base, .size = Bytes(scratch_bytes_)}, cublas_.get());
-  if (!launch) {
-    return Error(launch.error().detail);
+  if (auto r = resources_.BindLaunch(scratch_bytes_); !r) {
+    return r;
   }
-  launch_ = std::move(*launch);
-  auto registry = execution::Registry::Create(kg::Implementations());
-  if (!registry) {
-    return Error(registry.error().detail);
-  }
-  registry_ = std::make_unique<execution::Registry>(std::move(*registry));
+  runs_.SetLaunch(&resources_.launch());
   return {};
 }
 
@@ -699,153 +580,53 @@ Status Qwen38Runner::Scrub(std::uint8_t value, bool slabs, bool dense) {
 }
 
 Status Qwen38Runner::Clear() {
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> regions = {{state_.base, layout_.bytes}};
-  if (speculative()) {
-    regions.emplace_back(mstate_.base, mtp_layout_.bytes);
-  }
-  restore_count_ = 0;
-  commit_keep_ = 0;
-  save_count_ = 0;
-  saved_.clear();
-  verify_rows_ = 0;
   pending_rows_ = 0;
-  // Unusable until zeroed; a quarantine lifts once the clear has run.
-  quarantined_ = true;
-  auto cleared = node_.Job(
-      fence_,
-      [regions](providers::NativeStream stream) {
-        for (const auto& [base, bytes] : regions) {
-          if (!providers::FillAsync(stream, Pointer(base), 0, bytes).ok()) {
-            return sc::JobResult::kUnknown;
-          }
-        }
-        return sc::JobResult::kQueued;
-      },
-      "clearing the Qwen3.8 state", stream_);
-  if (!cleared) {
-    return cleared;
-  }
-  quarantined_ = false;
-  return {};
+  return live_.Clear(node_, fence_, stream_, "clearing the Qwen3.8 state");
 }
 
-std::size_t Qwen38Runner::graphs() const {
-  const auto count = [](const auto& plans) {
-    return static_cast<std::size_t>(
-        std::ranges::count_if(plans, [](const Runs& p) { return p.graph.has_value(); }));
-  };
-  const auto lean = static_cast<std::size_t>(
-      std::ranges::count_if(plans_, [](const ShapePlan& p) { return p.lean.graph.has_value(); }));
-  return count(plans_) + count(mplans_) + lean;
-}
-
-void Qwen38Runner::RoomForGraph() {
-  if (graphs() < kMaxGraphs) {
-    return;
-  }
-  // Graph memory is the driver's, outside the catalog: the oldest decode
-  // graph goes, else the oldest draft's (no job is in flight between
-  // chunks, so nothing replays it).
-  const auto oldest = std::ranges::find_if(
-      plans_, [](const ShapePlan& e) { return e.graph.has_value() || e.lean.graph.has_value(); });
-  Runs* victim = nullptr;
-  if (oldest != plans_.end()) {
-    victim = oldest->graph.has_value() ? static_cast<Runs*>(&*oldest) : &oldest->lean;
-  }
-  if (victim == nullptr) {
-    const auto draft =
-        std::ranges::find_if(mplans_, [](const MtpPlan& e) { return e.graph.has_value(); });
-    victim = draft != mplans_.end() ? static_cast<Runs*>(&*draft) : nullptr;
-  }
-  if (victim != nullptr) {
-    victim->graph.reset();
-    victim->copies.clear();
-    ++graph_stats_.dropped;
-  }
-}
-
-std::expected<Qwen38Runner::ShapePlan*, std::string> Qwen38Runner::Planned(
-    const kg::Qwen38ChunkShape& shape, Qwen38ChunkKind kind) {
-  const auto found = std::ranges::find_if(
-      plans_, [&](const ShapePlan& e) { return e.shape == shape && e.kind == kind; });
-  if (found != plans_.end()) {
-    return &*found;
+std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Planned(
+    const ChunkKey& key) {
+  if (ChunkPlans::Entry* found = plans_.Find(key); found != nullptr) {
+    return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  auto planned = PlanQwen38Chunk(model_, shape, kg::DeviceChoicesOf(*launch_),
-                                 node_.activations().base, node_.activations().bytes, {}, kind);
+  kg::LaunchContext& launch = resources_.launch();
+  auto planned = PlanQwen38Chunk(model_, key.shape, kg::DeviceChoicesOf(launch),
+                                 node_.activations().base, node_.activations().bytes, {}, key.kind);
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  auto scratch = kg::PlanScratch(*launch_, (*planned)->plan);
-  if (!scratch) {
-    return Error(scratch.error().detail);
+  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the plan"); !r) {
+    return std::unexpected(r.error());
   }
-  if (*scratch > launch_->workspace().size.value()) {
-    return Error(std::format("the plan's scratch ({} bytes) exceeds the pool ({} bytes)", *scratch,
-                             launch_->workspace().size.value()));
-  }
-  (*planned)->scratch = *scratch;
-  auto bound = kg::BoundGraph::Bind(*registry_, (*planned)->plan);
-  if (!bound) {
-    return Error(bound.error().detail);
-  }
-  (*planned)->bound.emplace(std::move(*bound));
   Check((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  if (plans_.size() >= 32) {
-    plans_.erase(plans_.begin());  // its graph with it
-  }
-  ShapePlan& entry = plans_.emplace_back();
-  entry.shape = shape;
-  entry.kind = kind;
-  entry.planned = std::move(*planned);
-  return &entry;
+  return &plans_.Add(key, std::move(*planned));
 }
 
-std::expected<Qwen38Runner::MtpPlan*, std::string> Qwen38Runner::PlannedMtp(
+std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
     const kg::Qwen38MtpShape& shape) {
-  const auto found =
-      std::ranges::find_if(mplans_, [&](const MtpPlan& e) { return e.shape == shape; });
-  if (found != mplans_.end()) {
-    return &*found;
+  if (MtpPlans::Entry* found = mplans_.Find(shape); found != nullptr) {
+    return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  auto planned = PlanQwen38Mtp(model_, shape, kg::DeviceChoicesOf(*launch_),
-                               node_.activations().base, node_.activations().bytes);
+  kg::LaunchContext& launch = resources_.launch();
+  auto planned = PlanQwen38Mtp(model_, shape, kg::DeviceChoicesOf(launch), node_.activations().base,
+                               node_.activations().bytes);
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  auto scratch = kg::PlanScratch(*launch_, (*planned)->plan);
-  if (!scratch) {
-    return Error(scratch.error().detail);
+  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the drafter"); !r) {
+    return std::unexpected(r.error());
   }
-  if (*scratch > launch_->workspace().size.value()) {
-    return Error(std::format("the drafter's scratch ({} bytes) exceeds the pool ({} bytes)",
-                             *scratch, launch_->workspace().size.value()));
-  }
-  (*planned)->scratch = *scratch;
-  auto bound = kg::BoundGraph::Bind(*registry_, (*planned)->plan);
-  if (!bound) {
-    return Error(bound.error().detail);
-  }
-  (*planned)->bound.emplace(std::move(*bound));
   CheckMtp((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  if (mplans_.size() >= 32) {
-    mplans_.erase(mplans_.begin());
-  }
-  MtpPlan& entry = mplans_.emplace_back();
-  entry.shape = shape;
-  entry.planned = std::move(*planned);
-  return &entry;
+  return &mplans_.Add(shape, std::move(*planned));
 }
 
-// BP-A1's in-process check, once per planned shape: every tensor the plan
-// binds lies in cataloged, resident extents of device memory of one class,
-// and each has the class it should: weights, the state (live state: the
-// target's, the drafter's caches and streams), the verify's saves
-// (runtime) and the row slots and activations (scratch).
+// BP-A1's check (planned.h): the state is live state (the target's, the
+// drafter's caches and streams), the verify's saves runtime, and the row
+// slots and activations scratch.
 void Qwen38Runner::Check(const kg::Qwen38Graph& graph) {
   std::vector<const ggml_tensor*> state;
   std::vector<const ggml_tensor*> saves;
@@ -866,177 +647,25 @@ void Qwen38Runner::Check(const kg::Qwen38Graph& graph) {
   if (graph.streams != nullptr) {
     state.push_back(graph.streams);
   }
+  const std::array<const ggml_tensor*, 1> slots = {graph.ple_table};
   const auto inputs = graph.inputs();
-  const auto kind_of = [&](const ggml_tensor* t) {
-    const ggml_tensor* base = t->view_src != nullptr ? t->view_src : t;
-    if (std::ranges::find(state, base) != state.end()) {
-      return MemoryClass::kLiveState;
-    }
-    if (std::ranges::find(saves, base) != saves.end()) {
-      return MemoryClass::kRuntime;
-    }
-    if (base == graph.ple_table) {
-      return MemoryClass::kScratch;  // the row slots
-    }
-    return base->op == GGML_OP_NONE && std::ranges::find(inputs, base) == inputs.end()
-               ? MemoryClass::kWeights
-               : MemoryClass::kScratch;
-  };
-  const auto expect = [&](const ggml_tensor* t, const ggml_tensor* consumer) {
-    ++coverage_tensors_;
-    const std::optional<MemoryClass> covered =
-        node_.Covered(Address(t->data), ggml_nbytes(t), owner_);
-    if (covered != kind_of(t) && coverage_violations_++ == 0) {
-      first_violation_ = std::format(
-          "{} ({} {} [{}, {}, {}, {}], {} bytes at {:#x}, read by {} {})", t->name, ggml_op_desc(t),
-          ggml_type_name(t->type), t->ne[0], t->ne[1], t->ne[2], t->ne[3], ggml_nbytes(t),
-          Address(t->data), consumer != nullptr ? ggml_op_desc(consumer) : "-",
-          consumer != nullptr ? consumer->name : "");
-    }
-  };
-  for (const ggml_tensor* node : graph.nodes) {
-    expect(node, nullptr);
-    if (node->op == GGML_OP_FILL) {
-      continue;  // its source only shapes it: a fill reads nothing (QSA's zeros)
-    }
-    for (const ggml_tensor* src : node->src) {
-      if (src != nullptr) {
-        expect(src, node);
-      }
-    }
-  }
+  CheckCoverage(node_, owner_, graph.nodes,
+                {.state = state,
+                 .runtime = saves,
+                 .scratch = slots,
+                 .inputs = inputs,
+                 .fill_reads_nothing = true},
+                coverage_);
 }
 
 void Qwen38Runner::CheckMtp(const kg::Qwen38MtpGraph& graph) {
-  const std::vector<const ggml_tensor*> state = {graph.layer.cache_k, graph.layer.cache_v,
-                                                 graph.layer.cache_idx, graph.streams};
+  const std::array<const ggml_tensor*, 4> state = {graph.layer.cache_k, graph.layer.cache_v,
+                                                   graph.layer.cache_idx, graph.streams};
   const auto inputs = graph.inputs();
-  const auto kind_of = [&](const ggml_tensor* t) {
-    const ggml_tensor* base = t->view_src != nullptr ? t->view_src : t;
-    if (std::ranges::find(state, base) != state.end()) {
-      return MemoryClass::kLiveState;
-    }
-    return base->op == GGML_OP_NONE && std::ranges::find(inputs, base) == inputs.end()
-               ? MemoryClass::kWeights
-               : MemoryClass::kScratch;
-  };
-  const auto expect = [&](const ggml_tensor* t) {
-    ++coverage_tensors_;
-    const std::optional<MemoryClass> covered =
-        node_.Covered(Address(t->data), ggml_nbytes(t), owner_);
-    if (covered != kind_of(t) && coverage_violations_++ == 0) {
-      first_violation_ = std::format("the drafter's {} ({} bytes at {:#x})", t->name,
-                                     ggml_nbytes(t), Address(t->data));
-    }
-  };
-  for (const ggml_tensor* node : graph.nodes) {
-    expect(node);
-    if (node->op == GGML_OP_FILL) {
-      continue;
-    }
-    for (const ggml_tensor* src : node->src) {
-      if (src != nullptr) {
-        expect(src);
-      }
-    }
-  }
-}
-
-std::expected<Qwen38Runner::Copies, std::string> Qwen38Runner::Stage(
-    std::span<const std::pair<ggml_tensor*, const void*>> sources, std::uint64_t base) {
-  Copies copies;
-  copies.reserve(sources.size());
-  std::uint64_t staged = base;
-  for (const auto& [tensor, source] : sources) {
-    const std::uint64_t bytes = ggml_nbytes(tensor);
-    if (staged + bytes > input_bytes_) {
-      return Error("the inputs exceed their staging");
-    }
-    std::memcpy(static_cast<std::byte*>(inputs_) + staged, source, bytes);
-    copies.push_back({Address(tensor->data), bytes, staged});
-    staged += Round(bytes, 256);
-  }
-  return copies;
-}
-
-Qwen38Runner::Queued Qwen38Runner::QueueRuns(Runs& runs, const Copies& copies,
-                                             const std::function<bool(void* stream)>& between,
-                                             kg::BoundGraph& bound, const Copies& outputs,
-                                             bool capture, Dsv4GraphStats& stats,
-                                             providers::NativeStream native) {
-  // The input copies, the gather, the plan and the outputs' copies, as one
-  // run queues them and a capture records them.
-  const auto queue = [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
-    for (const auto& [to, bytes, at] : copies) {
-      if (const providers::DeviceStatus copied =
-              providers::CopyAsync(native, Pointer(to), static_cast<const std::byte*>(inputs_) + at,
-                                   bytes, providers::CopyKind::kHostToDevice);
-          !copied.ok()) {
-        return std::unexpected(Unknown(std::format("an input copy: {}", copied.text())));
-      }
-    }
-    if (between && !between(native.handle)) {
-      return std::unexpected(Unknown("the n-gram rows' gather"));
-    }
-    if (auto r = bound.Run(launch); !r) {
-      return r;
-    }
-    for (const auto& [to, from, bytes] : outputs) {
-      if (const providers::DeviceStatus copied = providers::CopyAsync(
-              native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
-          !copied.ok()) {
-        return std::unexpected(Unknown(std::format("an output's copy: {}", copied.text())));
-      }
-    }
-    return {};
-  };
-  Queued q;
-  if (graphs_ && runs.graph.has_value()) {
-    // What the graph copies must be where the host staged it.
-    if (copies != runs.copies) {
-      q.result = std::unexpected(
-          kg::KernelFailure{.error = kg::KernelError::kRejected,
-                            .detail = "the inputs' staging differs from the captured graph's"});
-      return q;
-    }
-    q.path = Dsv4Path::kReplayed;
-    q.result = launch_->Launch(*runs.graph);
-    return q;
-  }
-  if (capture) {
-    const std::size_t free_before =
-        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
-    auto captured = launch_->Capture(queue);
-    const std::size_t free_after =
-        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
-    (void)providers::TakeLastError();
-    if (captured) {
-      stats.capture_seconds += captured->capture_seconds();
-      stats.instantiate_seconds += captured->instantiate_seconds();
-      stats.nodes += captured->nodes();
-      stats.memory_bytes +=
-          static_cast<std::int64_t>(free_before) - static_cast<std::int64_t>(free_after);
-      runs.graph.emplace(std::move(*captured));
-      runs.copies = copies;
-      q.path = Dsv4Path::kCaptured;
-      q.before = true;  // the upload
-      q.result = launch_->Launch(*runs.graph);
-      return q;
-    }
-    if (captured.error().error == kg::KernelError::kUnknown) {
-      q.result = std::unexpected(captured.error());
-      return q;
-    }
-    // Refused, with nothing queued: this plan runs launch by launch.
-    runs.uncapturable = true;
-    if (stats.refused++ == 0) {
-      stats.first_refusal = captured.error().detail;
-    }
-  }
-  ++runs.eager_runs;
-  q.before = true;  // any input copy before a refusal
-  q.result = queue(*launch_);
-  return q;
+  CheckCoverage(
+      node_, owner_, graph.nodes,
+      {.state = state, .inputs = inputs, .fill_reads_nothing = true, .what = "the drafter's "},
+      coverage_);
 }
 
 std::expected<std::vector<std::int32_t>, std::string> Qwen38Runner::ReadRows(
@@ -1072,48 +701,23 @@ std::expected<std::vector<std::int32_t>, std::string> Qwen38Runner::ReadRows(
   return std::move(rows_plan->slots);
 }
 
-std::expected<void, kg::KernelFailure> Qwen38Runner::QueueCommit() {
-  if (restore_count_ != 0) {
-    // Still owed until the copy is queued.
-    if (auto r = kg::CopyRanges(*launch_, restore_, restore_count_); !r) {
-      return r;
-    }
-    restore_count_ = 0;
-  }
-  if (commit_keep_ != 0) {
-    kg::Qwen38CommitArgs args = commit_args_;
-    args.keep = static_cast<int>(commit_keep_);
-    if (auto r = kg::Qwen38Commit(*launch_, args); !r) {
-      return r;
-    }
-    commit_keep_ = 0;
-  }
-  return {};
+std::function<bool(void* stream)> Qwen38Runner::Gather(std::uint32_t rows) {
+  // The gather's grid: the shape's lookups, a slot each at most.
+  const auto max_count = static_cast<std::uint32_t>(std::uint64_t{rows} * profile_.ple_heads());
+  return [this, max_count](void* stream) {
+    return kernels::paging::GatherPleRows(
+        landing_, sources_, ple_count_, max_count, static_cast<std::uint32_t>(table_.row_bytes),
+        static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
+  };
 }
 
-void Qwen38Runner::Settle(bool verified, bool wrote, bool unknown) {
-  verify_rows_ = 0;
-  if (unknown || launch_->faulted()) {
-    quarantined_ = true;
-    return;
-  }
-  if (verified) {
-    // The whole verify undone: every cell it saved restored before the
-    // next job's own work, nothing committed. It wrote no other target
-    // state, but its streams rows may have overwritten the ones the next
-    // draft would catch up on (rows 1 ..): none is pending until a chunk
-    // with the injection or an accepted verify writes them again.
-    std::uint32_t count = 0;
-    for (const Saved& s : saved_) {
-      restore_[count++] = {.from = s.saved, .to = s.address, .bytes = s.bytes};
-    }
-    restore_count_ = count;
-    commit_keep_ = 0;
+void Qwen38Runner::Settle(bool saved, bool wrote, bool unknown) {
+  // An undone verify wrote no other target state, but its streams rows may
+  // have overwritten the ones the next draft would catch up on (rows 1 ..):
+  // none is pending until a chunk with the injection or an accepted verify
+  // writes them again.
+  if (live_.Settle(saved, wrote, unknown || resources_.launch().faulted())) {
     pending_rows_ = 0;
-    return;
-  }
-  if (wrote) {
-    quarantined_ = true;
   }
 }
 
@@ -1124,12 +728,7 @@ Status Qwen38Runner::Usable() const {
   if (rows_stalled_) {
     return Error("the n-gram rows' reads stalled earlier; their landing may still be written");
   }
-  if (quarantined_) {
-    return Error(
-        "the Qwen3.8 state is quarantined: a job failed after it may have written it "
-        "(Clear first)");
-  }
-  return {};
+  return live_.Usable();
 }
 
 std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
@@ -1169,8 +768,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   if (auto usable = Usable(); !usable) {
     return usable;
   }
-  if (verify_rows_ != 0) {
-    return Error("the last verify awaits its Accept");
+  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+    return waiting;
   }
   if (inject && !speculative()) {
     return Error("an injection needs the drafter");
@@ -1190,11 +789,12 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
     return std::unexpected(slots.error());
   }
   const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
-  auto planned = Planned(kg::Qwen38ShapeOf(layout_, *in, 1), kind);
+  auto planned = Planned({.shape = kg::Qwen38ShapeOf(layout_, *in, 1), .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  ShapePlan& entry = **planned;
+  ChunkPlans::Entry& entry = **planned;
+  PlanRuns& runs = entry.runs[kWithLogits];
   Qwen38Planned* p = entry.planned.get();
   const kg::Qwen38Graph& g = p->graph;
   if (in->qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
@@ -1206,7 +806,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   }
   Qwen38HostInputs host;
   Qwen38Sources(g, *in, 1, *slots, host, 1);
-  auto copies = Stage(host.sources, 0);
+  auto copies = runs_.Stage(host.sources, 0);
   if (!copies) {
     return std::unexpected(copies.error());
   }
@@ -1215,7 +815,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   // the chunk's rows but its last (in rows 1 ..), or at the start of the
   // sequence the chunk's rows but its last; then the last row's streams
   // become the pending row (rows 0 and 1).
-  MtpPlan* mentry = nullptr;
+  MtpPlans::Entry* mentry = nullptr;
   Copies mcopies;
   Qwen38MtpHostInputs mhost;
   std::vector<md::Qwen38ChunkInputs> mins;
@@ -1235,52 +835,44 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       }
       mentry = *mplanned;
       Qwen38MtpSources(mentry->planned->graph, mins, history.subspan(first + 1, mrows), mhost);
-      auto staged = Stage(mhost.sources, mtp_base_);
+      auto staged = runs_.Stage(mhost.sources, mtp_base_);
       if (!staged) {
         return std::unexpected(staged.error());
       }
       mcopies = std::move(*staged);
     }
     const std::uint64_t row = std::uint64_t{profile_.hc_width()} * sizeof(float);
-    const std::uint64_t streams = mstate_.base + mtp_layout_.hidden;
+    const std::uint64_t streams = live_.base(kDrafter) + mtp_layout_.hidden;
     carry_[carries++] = {.from = streams + (rows * row), .to = streams, .bytes = row};
     if (rows != 1) {
       carry_[carries++] = {.from = streams + (rows * row), .to = streams + row, .bytes = row};
     }
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
-  // The gather's grid: the shape's lookups, a slot each at most.
-  const auto max_count = static_cast<std::uint32_t>(std::uint64_t{rows} * profile_.ple_heads());
-  const auto gather = [this, max_count](void* stream) {
-    return kernels::paging::GatherPleRows(
-        landing_, sources_, ple_count_, max_count, static_cast<std::uint32_t>(table_.row_bytes),
-        static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
-  };
+  const std::function<bool(void*)> gather = Gather(rows);
   // Decode graphs (D-090): replay a shape's graph; capture a one-row shape
   // that has run once launch by launch; otherwise launch by launch.
-  const bool replay = graphs_ && entry.graph.has_value();
-  const bool capture =
-      graphs_ && !replay && rows == 1 && !inject && !entry.uncapturable && entry.eager_runs > 0;
+  const bool capture = runs.CaptureDue(runs_.graphs()) && rows == 1 && !inject;
   if (capture) {
-    RoomForGraph();
+    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
   }
-  const Copies outputs = {
-      {Address(logits_), Address(static_cast<const std::byte*>(g.logits->data)), row_bytes}};
-  Dsv4Path path = Dsv4Path::kEager;
+  const Copies outputs = {{Address(logits_), Address(g.logits->data), row_bytes}};
+  kg::LaunchContext& launch = resources_.launch();
+  RunPath path = RunPath::kEager;
   Status ran;
   bool wrote = false;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     // A pending commit or restore queued here is work this job must fence,
     // even if its own run is then refused before anything else.
-    const bool committing = restore_count_ != 0 || commit_keep_ != 0;
-    if (auto r = QueueCommit(); !r) {
+    const bool committing = live_.owed();
+    if (auto r = live_.QueueOwed(launch); !r) {
       ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
     const Queued queued =
-        QueueRuns(entry, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
+        runs_.Queue(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
     path = queued.path;
     wrote = queued.result.has_value() || queued.before;
     if (!queued.result) {
@@ -1292,8 +884,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       return committing || queued.before ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
     }
     if (mentry != nullptr) {
-      const Queued m =
-          QueueRuns(*mentry, mcopies, {}, *mentry->planned->bound, {}, false, draft_stats_, native);
+      const Queued m = runs_.Queue(mentry->runs[0], mcopies, {}, *mentry->planned->bound, {}, false,
+                                   draft_stats_, native);
       if (!m.result) {
         ran = Error(std::format("the drafter's pass at {}: {}", n_past, m.result.error().detail));
         unknown = m.result.error().error == kg::KernelError::kUnknown;
@@ -1302,7 +894,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       Count(draft_stats_, m.path);
     }
     if (carries != 0) {
-      if (auto r = kg::CopyRanges(*launch_, carry_, carries); !r) {
+      if (auto r = kg::CopyRanges(launch, carry_, carries); !r) {
         ran = Error(std::format("the drafter's pending row at {}: {}", n_past, r.error().detail));
         unknown = true;
         return sc::JobResult::kUnknown;
@@ -1311,9 +903,9 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
     return sc::JobResult::kQueued;
   };
   const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 chunk", stream_);
-  if (!posted || !ran || launch_->faulted()) {
+  if (!posted || !ran || launch.faulted()) {
     Settle(false, wrote, unknown);
-    if (launch_->faulted()) {
+    if (launch.faulted()) {
       return Error(std::format("chunk at {}: the launch context faulted", n_past));
     }
     return !ran ? ran : Error(std::format("chunk at {}: {}", n_past, posted.error()));
@@ -1336,8 +928,8 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (auto usable = Usable(); !usable) {
     return usable;
   }
-  if (verify_rows_ != 0) {
-    return Error("the last verify awaits its Accept");
+  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+    return waiting;
   }
   const std::uint32_t rows = pending_rows_;
   if (rows == 0 || history.size() < std::size_t{rows} + 1) {
@@ -1361,11 +953,12 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  MtpPlan& entry = **planned;
+  MtpPlans::Entry& entry = **planned;
+  PlanRuns& runs = entry.runs[0];
   const kg::Qwen38MtpGraph& g = entry.planned->graph;
   Qwen38MtpHostInputs host;
   Qwen38MtpSources(g, shaped->second, history.subspan(n - rows + 1, rows), host);
-  auto copies = Stage(host.sources, 0);
+  auto copies = runs_.Stage(host.sources, 0);
   if (!copies) {
     return std::unexpected(copies.error());
   }
@@ -1378,22 +971,22 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
     outputs.push_back({Address(static_cast<std::int32_t*>(drafts_) + kProbabilityAt + j),
                        Address(g.probabilities[j]->data), sizeof(std::int32_t)});
   }
-  const bool capture =
-      graphs_ && !entry.graph.has_value() && !entry.uncapturable && entry.eager_runs > 0;
+  const bool capture = runs.CaptureDue(runs_.graphs());
   if (capture) {
-    RoomForGraph();
+    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
   }
-  Dsv4Path path = Dsv4Path::kEager;
+  kg::LaunchContext& launch = resources_.launch();
+  RunPath path = RunPath::kEager;
   Status ran;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = QueueCommit(); !r) {
+    if (auto r = live_.QueueOwed(launch); !r) {
       ran = Error(std::format("draft at {}: {}", n, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
-    const Queued queued = QueueRuns(entry, *copies, {}, *entry.planned->bound, outputs, capture,
-                                    draft_stats_, native);
+    const Queued queued = runs_.Queue(runs, *copies, {}, *entry.planned->bound, outputs, capture,
+                                      draft_stats_, native);
     path = queued.path;
     if (!queued.result) {
       ran = Error(std::format("draft at {}: {}", n, queued.result.error().detail));
@@ -1403,11 +996,11 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
     return sc::JobResult::kQueued;
   };
   const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 MTP draft", stream_);
-  if (!posted || !ran || launch_->faulted()) {
+  if (!posted || !ran || launch.faulted()) {
     // A draft writes the drafter's cells alone (the committed ones as the
     // next draft rewrites them); a launch of unknown effect quarantines.
     Settle(false, false, unknown);
-    if (launch_->faulted()) {
+    if (launch.faulted()) {
       return Error(std::format("draft at {}: the launch context faulted", n));
     }
     return !ran ? ran : Error(std::format("draft at {}: {}", n, posted.error()));
@@ -1431,8 +1024,8 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (auto usable = Usable(); !usable) {
     return usable;
   }
-  if (verify_rows_ != 0) {
-    return Error("the last verify awaits its Accept");
+  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+    return waiting;
   }
   if (history.size() <= n_past || history.size() - n_past > std::size_t{o_.draft_rows} + 1) {
     return Error(std::format("a verify of 1 to {} rows", o_.draft_rows + 1));
@@ -1447,11 +1040,11 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
     return std::unexpected(slots.error());
   }
   const Qwen38ChunkKind kind{.verify = true, .export_streams = true};
-  auto planned = Planned(kg::Qwen38ShapeOf(layout_, *in, rows), kind);
+  auto planned = Planned({.shape = kg::Qwen38ShapeOf(layout_, *in, rows), .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
   }
-  ShapePlan& entry = **planned;
+  ChunkPlans::Entry& entry = **planned;
   Qwen38Planned* p = entry.planned.get();
   const kg::Qwen38Graph& g = p->graph;
   if (in->qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
@@ -1462,15 +1055,14 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   }
   Qwen38HostInputs host;
   Qwen38Sources(g, *in, rows, *slots, host, 1);
-  auto copies = Stage(host.sources, 0);
+  auto copies = runs_.Stage(host.sources, 0);
   if (!copies) {
     return std::unexpected(copies.error());
   }
   // The cells it writes (each QSA layer's K, V and indexer rows), saved.
   using K = md::Qwen38StateTensor::Kind;
-  saved_.clear();
-  save_count_ = 0;
-  std::uint64_t at = commit_.base + snapshot_offset_;
+  const std::uint64_t state = live_.base(kTarget);
+  live_.BeginSaves();
   for (std::uint32_t i = 0; i < rows; ++i) {
     const std::uint64_t cell = std::uint64_t{n_past} + i;
     for (const md::Qwen38StateTensor& t : layout_.tensors) {
@@ -1478,27 +1070,17 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         continue;
       }
       const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
-      if (save_count_ == kRangeCapacity || at + bytes > commit_.base + commit_.bytes) {
-        return Error("a verify writes more than its snapshot holds");
+      if (auto added = live_.Save(state + t.offset + (cell * bytes), bytes, i); !added) {
+        return added;
       }
-      const std::uint64_t address = state_.base + t.offset + (cell * bytes);
-      saved_.push_back({.address = address, .saved = at, .bytes = bytes, .row = i});
-      save_[save_count_++] = {.from = address, .to = at, .bytes = bytes};
-      at += Round(bytes, 256);
     }
   }
-  const auto max_count = static_cast<std::uint32_t>(std::uint64_t{rows} * profile_.ple_heads());
-  const auto gather = [this, max_count](void* stream) {
-    return kernels::paging::GatherPleRows(
-        landing_, sources_, ple_count_, max_count, static_cast<std::uint32_t>(table_.row_bytes),
-        static_cast<std::byte*>(Pointer(slot_memory_.base)), stream);
-  };
-  // The argmaxes always; the logits (its own runs, `entry`'s) when asked.
-  Runs& runs = logits != nullptr ? static_cast<Runs&>(entry) : entry.lean;
-  const bool capture =
-      graphs_ && !runs.graph.has_value() && !runs.uncapturable && runs.eager_runs > 0;
+  const std::function<bool(void*)> gather = Gather(rows);
+  // The argmaxes always; the logits (their own runs) when asked.
+  PlanRuns& runs = entry.runs[logits != nullptr ? kWithLogits : kLean];
+  const bool capture = runs.CaptureDue(runs_.graphs());
   if (capture) {
-    RoomForGraph();
+    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
   auto* const argmax_host = static_cast<std::int32_t*>(drafts_) + kArgmaxAt;
@@ -1506,24 +1088,25 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (logits != nullptr) {
     outputs.push_back({Address(logits_), Address(g.logits->data), rows * row_bytes});
   }
-  Dsv4Path path = Dsv4Path::kEager;
+  kg::LaunchContext& launch = resources_.launch();
+  RunPath path = RunPath::kEager;
   Status ran;
   bool saved = false;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = QueueCommit(); !r) {
+    if (auto r = live_.QueueOwed(launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
-    if (auto r = kg::CopyRanges(*launch_, save_, save_count_); !r) {
+    if (auto r = live_.QueueSaves(launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
     saved = true;
     const Queued queued =
-        QueueRuns(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
+        runs_.Queue(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
     path = queued.path;
     if (!queued.result) {
       ran = Error(std::format("verify at {}: {}", n_past, queued.result.error().detail));
@@ -1533,17 +1116,17 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
     return sc::JobResult::kQueued;
   };
   const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 verify", stream_);
-  if (!posted || !ran || launch_->faulted()) {
+  if (!posted || !ran || launch.faulted()) {
     // Never left half-written: the verify is undone before the next job's
     // work, or the state quarantined.
     Settle(saved, false, unknown);
-    if (launch_->faulted()) {
+    if (launch.faulted()) {
       return Error(std::format("verify at {}: the launch context faulted", n_past));
     }
     return !ran ? ran : Error(std::format("verify at {}: {}", n_past, posted.error()));
   }
   Count(graph_stats_, path);
-  verify_rows_ = rows;
+  live_.Verified(rows);
   argmax.assign(argmax_host, argmax_host + rows);
   if (logits != nullptr) {
     const auto* values = static_cast<const float*>(logits_);
@@ -1556,19 +1139,10 @@ Status Qwen38Runner::Accept(std::uint32_t keep) {
   if (auto usable = Usable(); !usable) {
     return usable;
   }
-  if (verify_rows_ == 0 || keep == 0 || keep > verify_rows_) {
-    return Error(std::format("accepting {} rows of a verify of {}", keep, verify_rows_));
+  if (auto accepted = live_.Accept(keep); !accepted) {
+    return accepted;
   }
-  std::uint32_t count = 0;
-  for (const Saved& s : saved_) {
-    if (s.row >= keep) {
-      restore_[count++] = {.from = s.saved, .to = s.address, .bytes = s.bytes};
-    }
-  }
-  restore_count_ = count;
-  commit_keep_ = keep;
   pending_rows_ = keep;
-  verify_rows_ = 0;
   return {};
 }
 
@@ -1576,68 +1150,19 @@ Status Qwen38Runner::Rollback() {
   if (auto usable = Usable(); !usable) {
     return usable;
   }
-  if (restore_count_ == 0 && commit_keep_ == 0) {
-    return {};
-  }
-  std::string failed;
-  auto posted = node_.Job(
-      everything_,
-      [&](providers::NativeStream) {
-        if (auto r = QueueCommit(); !r) {
-          failed = r.error().detail;
-          return sc::JobResult::kUnknown;
-        }
-        return sc::JobResult::kQueued;
-      },
-      "committing a verify's kept rows", stream_);
-  if (!posted || !failed.empty()) {
-    // A commit not queued stays owed; one queued has completed (the job
-    // retired); a launch of unknown effect quarantines.
-    Settle(false, false, !failed.empty());
-    return Error(failed.empty() ? posted.error() : failed);
-  }
-  return {};
+  return live_.Rollback(node_, everything_, stream_, resources_.launch(),
+                        "committing a verify's kept rows");
 }
 
 Status Qwen38Runner::ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {
   if (auto r = Rollback(); !r) {
     return r;
   }
-  if (verify_rows_ != 0) {
+  if (live_.verify_rows() != 0) {
     return Error("reading the state with a verify awaiting its Accept");
   }
-  const std::uint64_t mtp = speculative() ? mtp_layout_.bytes : 0;
-  if (!HavePinned(state_host_, layout_.bytes + mtp)) {
-    return Error("pinned host memory for the state's copy");
-  }
-  const std::uint64_t target_base = state_.base;
-  const std::uint64_t target_bytes = layout_.bytes;
-  const std::uint64_t mtp_base = mstate_.base;
-  void* host = state_host_;
-  auto posted = node_.Job(
-      fence_,
-      [=](providers::NativeStream stream) {
-        if (!providers::CopyAsync(stream, host, Pointer(target_base), target_bytes,
-                                  providers::CopyKind::kDeviceToHost)
-                 .ok()) {
-          return sc::JobResult::kUnknown;
-        }
-        if (mtp != 0 &&
-            !providers::CopyAsync(stream, static_cast<std::byte*>(host) + target_bytes,
-                                  Pointer(mtp_base), mtp, providers::CopyKind::kDeviceToHost)
-                 .ok()) {
-          return sc::JobResult::kUnknown;
-        }
-        return sc::JobResult::kQueued;
-      },
-      "reading the Qwen3.8 state", stream_);
-  if (!posted) {
-    return posted;
-  }
-  const auto* bytes = static_cast<const std::byte*>(state_host_);
-  target.assign(bytes, bytes + target_bytes);
-  drafter.assign(bytes + target_bytes, bytes + target_bytes + mtp);
-  return {};
+  const std::array<std::vector<std::byte>*, 2> out = {&target, &drafter};
+  return live_.Read(node_, fence_, stream_, "reading the Qwen3.8 state", out);
 }
 
 Status Qwen38Runner::Release() {
@@ -1646,60 +1171,28 @@ Status Qwen38Runner::Release() {
   }
   released_ = true;
   std::vector<std::string> problems;
-  plans_.clear();
-  mplans_.clear();
-  launch_.reset();
-  cublas_.reset();
+  // The plans and their graphs first: they name the launch context and
+  // the memory below (D-090).
+  DropPlans();
+  resources_.Release(problems);
   auto& memory = node_.memory();
-  for (Mapped* mapped : {&state_, &mstate_, &slot_memory_, &cublas_workspace_, &commit_}) {
-    if (!mapped->reservation.valid()) {
-      continue;
+  live_.Release(memory, problems);
+  for (PagedWeights* part : {&weights_, &dweights_}) {
+    if (auto r = part->Release(memory); !r) {
+      problems.push_back(std::format("Qwen3.8: {}", r.error()));
     }
-    bool released =
-        mapped->backings.empty() ||
-        memory.Unmap(mapped->reservation, Bytes(0), Bytes(mapped->backings.size() * kExtent))
-            .has_value();
-    for (const auto backing : mapped->backings) {
-      released = memory.Release(backing).has_value() && released;
-    }
-    if (!released || !memory.Free(mapped->reservation)) {
-      problems.push_back(std::format("{} could not be released", mapped->name));
-    }
-  }
-  if (auto r = weights_.Release(memory); !r) {
-    problems.push_back(r.error());
-  }
-  if (speculative()) {
-    if (auto r = dweights_.Release(memory); !r) {
-      problems.push_back(r.error());
-    }
-  }
-  if (state_host_ != nullptr) {
-    providers::FreePinned(state_host_);
-    state_host_ = nullptr;
-  }
-  if (spill_fd_ >= 0) {
-    (void)::close(spill_fd_);  // unnamed: nothing outlives the process
-    spill_fd_ = -1;
   }
   // Reads that stalled may still land: the ring and their landing are left
   // to the process's end, the landing kept from the node's frees at Close.
   // Otherwise every read was harvested (ReadPleRows drains) and the ring
   // goes.
-  std::array<void*, 1> landing = {landing_};
+  const std::array<void*, 1> landing = {landing_};
   if (node_.RetireRing(std::move(ring_), landing)) {
     problems.emplace_back(
         "n-gram row reads were still in flight; their ring and landing are kept to the "
         "process's end");
   }
-  if (problems.empty()) {
-    return {};
-  }
-  std::string all;
-  for (const std::string& problem : problems) {
-    all += (all.empty() ? "" : "; ") + problem;
-  }
-  return Error(all);
+  return support::Joined(problems);
 }
 
 }  // namespace jitllm::engine

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "engine/planned.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
@@ -92,15 +93,7 @@ struct Qwen38ChunkKind {
 };
 
 // One chunk shape's graph, plan, placement and bound implementations.
-struct Qwen38Planned {
-  std::optional<kernels::ggml::TensorArena> arena;
-  kernels::ggml::Qwen38Graph graph;
-  kernels::ggml::GraphPlan plan;
-  kernels::ggml::Placement placement;
-  std::optional<kernels::ggml::BoundGraph> bound;
-  std::uint64_t scratch = 0;
-  std::uint64_t inputs_bytes = 0;
-};
+using Qwen38Planned = PlannedGraph<kernels::ggml::Qwen38Graph>;
 
 // Binds the graph's weights and state at the model's places.
 void BindQwen38Weights(const Qwen38Model& m, kernels::ggml::Qwen38Graph& g);
@@ -134,15 +127,7 @@ void Qwen38Sources(const kernels::ggml::Qwen38Graph& g, const model::Qwen38Chunk
 
 // The MTP drafter's graph (kernels/ggml/qwen38_graph.h BuildQwen38MtpGraph)
 // built, bound at the model's places, planned and placed as a chunk's.
-struct Qwen38MtpPlanned {
-  std::optional<kernels::ggml::TensorArena> arena;
-  kernels::ggml::Qwen38MtpGraph graph;
-  kernels::ggml::GraphPlan plan;
-  kernels::ggml::Placement placement;
-  std::optional<kernels::ggml::BoundGraph> bound;
-  std::uint64_t scratch = 0;
-  std::uint64_t inputs_bytes = 0;
-};
+using Qwen38MtpPlanned = PlannedGraph<kernels::ggml::Qwen38MtpGraph>;
 std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
     const Qwen38Model& m, const kernels::ggml::Qwen38MtpShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,

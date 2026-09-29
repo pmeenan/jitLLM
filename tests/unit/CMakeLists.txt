@@ -179,8 +179,8 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(cuda_graph_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The DeepSeek runner's expert-slab pages (engine/dsv4_runner.h): a
-  # host-only check, in the CUDA build that has the runner.
+  # The engine's expert-slab pages (engine/paged_weights.h): a
+  # host-only check, in the CUDA build that has the engine.
   add_executable(slab_layout_test slab_layout_test.cc)
   target_include_directories(slab_layout_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")

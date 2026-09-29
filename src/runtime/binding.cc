@@ -291,7 +291,7 @@ Listening ResolveListening(const config::ClientConfig& client,
       }
       case Kind::kTailscale: {
         if (tailnet.empty()) {
-          out.notes.push_back(
+          out.notes.emplace_back(
               "Tailscale: no tailnet interface found, so the chat route serves loopback and any "
               "configured address only; restart the runtime once Tailscale is up to serve the "
               "tailnet");

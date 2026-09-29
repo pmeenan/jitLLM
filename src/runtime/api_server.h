@@ -217,7 +217,7 @@ class Server {
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
 
   // Any thread.
-  void Log(std::string_view line);
+  void Log(std::string_view line) const;
   void WakeIo() const;
 
   Backend& backend_;
@@ -237,8 +237,8 @@ class Server {
   std::uint64_t next_id_ = 0;    // connections are numbered from 1
   std::uint64_t activity_ = 0;   // a clock of connection activity, for eviction
   std::size_t body_in_use_ = 0;  // bytes of bodies being received
-  Clock::time_point accept_paused_until_{};
-  Clock::time_point out_of_files_logged_{};
+  Clock::time_point accept_paused_until_;
+  Clock::time_point out_of_files_logged_;
   bool draining_ = false;
   std::atomic<std::size_t> held_bytes_{0};  // written by the I/O thread, read by any
 

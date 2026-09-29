@@ -191,18 +191,19 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
         return Bad(at + " has both reasoning and reasoning_content", where);
       }
       out.reasoning = std::string(v.string());
-    } else if (assistant && key == "annotations" && v.is_array()) {
-      continue;  // response metadata a client echoes back
-    } else if (assistant && (key == "refusal" || key == "audio") && v.is_null()) {
-      continue;  // a response's null fields, echoed back
+    } else if (assistant && ((key == "annotations" && v.is_array()) ||
+                             ((key == "refusal" || key == "audio" || key == "tool_calls" ||
+                               key == "function_call") &&
+                              v.is_null()) ||
+                             (key == "tool_calls" && v.is_array() && v.size() == 0))) {
+      // Response metadata, a response's null fields or an empty tool_calls,
+      // which a client echoes back.
+      continue;
     } else if (assistant && key == "refusal") {
       return Bad(where + ": a refusal cannot be sent back to this route; send it as content",
                  where);
     } else if (assistant && key == "audio") {
       return Bad(where + ": audio is not supported by this route", where);
-    } else if (assistant && (key == "tool_calls" || key == "function_call") &&
-               (v.is_null() || (key == "tool_calls" && v.is_array() && v.size() == 0))) {
-      continue;
     } else if (assistant && (key == "tool_calls" || key == "function_call")) {
       return Bad(where + ": tool calls are not supported by this route yet", where);
     } else {
@@ -253,7 +254,7 @@ std::expected<std::vector<std::string>, Error> ParseStop(const json::Value& v) {
 
 std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::string_view name) {
   const std::optional<std::int64_t> n = v.int64();
-  if (!v.is_integer() || !n || *n < 1 || *n > kMaxTokensCeiling) {
+  if (!v.is_integer() || !n || *n < 1 || std::cmp_greater(*n, kMaxTokensCeiling)) {
     return Bad(std::format("{} must be an integer from 1 to {}", name, kMaxTokensCeiling),
                std::string(name));
   }

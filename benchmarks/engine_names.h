@@ -18,9 +18,9 @@ namespace jitllm::benchmarks {
 
 using engine::Argmax;
 using engine::Dsv4ChunkKind;
-using engine::Dsv4GraphStats;
+using Dsv4GraphStats = engine::GraphStats;  // the harnesses' old name
 using engine::Dsv4Options;
-using engine::Dsv4Path;
+using Dsv4Path = engine::RunPath;  // the harnesses' old name
 using engine::Dsv4Runner;
 using engine::kSlabSlotBytes;
 using engine::PlanQwen38Chunk;

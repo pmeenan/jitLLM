@@ -607,7 +607,7 @@ std::expected<void, KernelFailure> RunQsaSelect(LaunchContext& launch, ggml_tens
 // Byte ranges copied device to device in one kernel, not a graph node: a
 // speculative verify's snapshot of the state rows it will write, and the
 // restore of the rows a rejected draft wrote (D-068's truncation at a
-// snapshot; engine/dsv4_runner.h). Each range is 16-byte aligned at
+// snapshot; engine/live_state.h). Each range is 16-byte aligned at
 // both ends and a multiple of 16 bytes; no destination overlaps another
 // range. `ranges` is memory the device reads (pinned host memory, or
 // device memory), valid until the copy completes; at most kMaxRangeCopies.

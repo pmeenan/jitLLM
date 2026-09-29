@@ -13,6 +13,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace jitllm::execution {
@@ -332,7 +333,7 @@ std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> lo
   const Kept kept = Distribution(logits, p, *scan, scratch);
   double weight = 0;
   if (kept.dense) {
-    if (draft >= 0 && static_cast<std::size_t>(draft) < kept.keep) {
+    if (draft >= 0 && std::cmp_less(draft, kept.keep)) {
       weight = scratch[static_cast<std::size_t>(draft)].value;
     }
   } else {

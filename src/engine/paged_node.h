@@ -145,6 +145,22 @@ struct Mapped {
   std::vector<catalog::ExtentId> extents;
 };
 
+// Unmaps and releases `mapped`'s backing (it holds none once the VMM lane
+// manages it, D-033) and frees its reservation; false if any step failed.
+// A mapped that holds nothing is left as it is.
+bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped);
+
+// A model's places checked still where it registered them and pinned there
+// (D-090), on the scheduler's thread: how many are not, and the first.
+struct PlaceCheck {
+  std::size_t moved = 0;
+  std::string first;
+  void Check(const scheduler::Scheduler& scheduler, catalog::ExtentId extent,
+             const scheduler::PageSource& registered);
+  // Something registered is missing (`what`).
+  void Missing(std::string what);
+};
+
 struct LoadStats {
   std::string what;
   std::uint64_t extents = 0;  // nonresident when it was posted
@@ -166,7 +182,7 @@ struct NodeSettings {
   bool copy_lane = true;
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
-  // dsv4_runner.h). A multiple of 4 KiB.
+  // paged_weights.h kSlabSlotBytes). A multiple of 4 KiB.
   std::uint64_t slot_bytes = kPagedExtent;
   // Told of each page-in's progress, on the scheduler's thread; outlives
   // the node. Optional.
@@ -334,6 +350,10 @@ class PagedNode {
   // extents resident. Its task's failure, if it failed.
   Status EndRequest(std::uint32_t stream);
   bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
+  // `body` run as one request on `stream` over `closure` (BeginRequest,
+  // then EndRequest whatever `body` returned): its failure, else the end's.
+  Status WithRequest(std::uint32_t stream, const catalog::Closure& closure, std::string_view what,
+                     const std::function<Status()>& body);
   // The stream's StepTimes since the last call, which resets them.
   StepTimes TakeTimes(std::uint32_t stream);
   // The scheduler's wake flag and the device lane, for tests of the

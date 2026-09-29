@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "engine/planned.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/executor.h"
@@ -88,15 +89,7 @@ struct Dsv4Speculation {
 };
 
 // One chunk shape's graph, plan, placement and bound implementations.
-struct Dsv4Planned {
-  std::optional<kernels::ggml::TensorArena> arena;
-  kernels::ggml::Dsv4Graph graph;
-  kernels::ggml::GraphPlan plan;
-  kernels::ggml::Placement placement;
-  std::optional<kernels::ggml::BoundGraph> bound;
-  std::uint64_t scratch = 0;
-  std::uint64_t inputs_bytes = 0;
-};
+using Dsv4Planned = PlannedGraph<kernels::ggml::Dsv4Graph>;
 
 // Binds the graph's weights and state at the model's places.
 void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
@@ -117,15 +110,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
 void BindDsparkInjection(const DsparkModel& d, kernels::ggml::Dsv4Graph& g);
 
 // A draft block's graph, plan, placement and bound implementations.
-struct DsparkPlanned {
-  std::optional<kernels::ggml::TensorArena> arena;
-  kernels::ggml::DsparkGraph graph;
-  kernels::ggml::GraphPlan plan;
-  kernels::ggml::Placement placement;
-  std::optional<kernels::ggml::BoundGraph> bound;
-  std::uint64_t scratch = 0;
-  std::uint64_t inputs_bytes = 0;
-};
+using DsparkPlanned = PlannedGraph<kernels::ggml::DsparkGraph>;
 
 // Builds, binds, plans and places a draft block of `rows` rows, as
 // PlanDsv4Chunk does a chunk (activations 0: measure only).

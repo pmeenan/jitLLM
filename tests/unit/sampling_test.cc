@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <vector>
 
 #include "expected_error.h"
@@ -247,7 +248,7 @@ double TotalVariation(const std::vector<std::uint64_t>& counts, const std::vecto
 double TvBound(const std::vector<double>& p, std::uint64_t draws) {
   double expected = 0;
   for (const double x : p) {
-    expected += std::sqrt(2 * x * (1 - x) / (3.141592653589793 * static_cast<double>(draws)));
+    expected += std::sqrt(2 * x * (1 - x) / (std::numbers::pi * static_cast<double>(draws)));
   }
   return (3 * expected / 2) + 0.002;
 }
@@ -257,7 +258,7 @@ double TvBound(const std::vector<double>& p, std::uint64_t draws) {
 std::vector<float> Spread(std::size_t n) {
   std::vector<float> logits(n);
   for (std::size_t i = 0; i < n; ++i) {
-    logits[i] = 4.0F * std::sin(static_cast<float>(i) * 1.7F + 0.3F);
+    logits[i] = 4.0F * std::sin((static_cast<float>(i) * 1.7F) + 0.3F);
   }
   logits[n / 2] = -INFINITY;
   logits[3] = logits[5];  // a tie
