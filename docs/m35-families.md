@@ -809,6 +809,18 @@ Qwen3.8 Flash Next, as a shakedown of the "adding a model family" guide.
 
 ## Open questions for the owner
 
+*Answered by the owner, 2026-09-29:* (1) all 13 approved; (2) Muse Glimmer
+alongside Llama 3.3 70B; (3) the community 2.27 bpw MiMo EXL3 build
+accepted; (4) re-pin ExLlamaV3 in M3.5, keeping the old pin as the anchor;
+(5) concentrate formats as proposed, which gives cleaner performance
+comparisons; (6) no Mistral-native NVFP4 import: use its GGUF or EXL3
+builds; (7) identify the legacy tier's features that are not subsets of
+already-covered ones and judge whether each is worth implementing, noting
+which models and vendors used it and whether it was abandoned or just not
+updated; (8) MiniMax H3 is in scope (generative media, last); (9) no
+optional models for now. Also: bring in the MLX affine import (moved
+from M9) so TensorFold becomes a same-format comparator.
+
 1. **Set size.** Approve the ten-checkpoint core, the three additions
    (Gemma 4 31B, Ornith, GLM-4.7-Flash), or trim: Llama 4 Scout is stale
    and could drop, leaving chunked attention and top-1 routing uncovered.

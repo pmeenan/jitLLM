@@ -1019,7 +1019,9 @@ family" guide, and its long-context scaling work.
 
 **Scope:**
 
-- [ ] **Family selection** (first; for the owner's approval). The goal is
+- [x] **Family selection** (approved by the owner 2026-09-29: all 13
+      checkpoints of [m35-families.md](m35-families.md), with the answers
+      recorded there). The goal is
       capability coverage, not particular models (the owner, 2026-09-29).
       Survey each top-tier open family's current and older widely used
       generations, list every architectural feature they use, and mark
@@ -1074,6 +1076,16 @@ family" guide, and its long-context scaling work.
       - EXL3.
 
       Each is as fast as its same-format reference.
+- [ ] **MLX affine import** (moved from M9 by the owner, 2026-09-29):
+      import and run TensorFold's MLX 4-bit checkpoints (reconcile the
+      group size, 32 or 64), starting with Qwen3.8 Flash Next's, so
+      TensorFold is a same-format oracle and gated comparator (D-085)
+      instead of cross-quantization information.
+- [ ] **Legacy-tier features** (the owner, 2026-09-29): list the older
+      generations' features that are not subsets of the covered ones
+      (Gemma 2, Phi-3.5, Mistral 7B, Command R7B, Llama 3.2 and others),
+      with which models and vendors used them and whether each was
+      abandoned or just not updated. Implement those worth keeping.
 - [ ] **EXL3 optimization** (the owner's particular interest): the
       trellis-encoded quants across their codebooks, bitrates and
       per-layer mixed widths, dense and MoE (grouped mixed-width routed
@@ -1605,7 +1617,8 @@ partial-retention benefit workload are pinned before acceptance runs
 - [ ] **Execution speed:** CUDA graphs beyond M3's decode graphs, further
       kernels and plans (D-053), and target-assisted import tuning as an
       explicit, separately keyed mode.
-- [ ] **TensorFold's format** (owner, 2026-09-28; D-087): import and run
+- [ ] **TensorFold's format** (owner, 2026-09-28; D-087; *moved to M3.5 by the
+      owner, 2026-09-29, as its "MLX affine import"*): import and run
       MLX-style affine 4-bit weights (TensorFold's checkpoints; reconcile
       the group size, 32 or 64) for Qwen3.8 Flash and GLM-5.3 Flash, and
       optimize them. TensorFold is then a same-format oracle and a gated
