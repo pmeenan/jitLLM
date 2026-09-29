@@ -1093,7 +1093,20 @@ family" guide, and its long-context scaling work.
       (Gemma 2, Phi-3.5, Mistral 7B, Command R7B, Llama 3.2 and others),
       with which models and vendors used them and whether each was
       abandoned or just not updated. Implement those worth keeping.
-      Proposal, awaiting the owner: [m35-families.md](m35-families.md#legacy-tier-features).
+      [Study](m35-families.md#legacy-tier-features). *Owner, 2026-09-29:*
+      implement the seven small features:
+      - classic SentencePiece;
+      - linear RoPE scaling;
+      - attention logit soft-capping;
+      - LongRoPE;
+      - LayerNorm with parallel attention and FFN blocks;
+      - the older GGUF block types (Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL).
+
+      Their four GGUF fixtures (Gemma 3 4B QAT Q4_0, Gemma 2 2B, Phi-3.5
+      mini, Command R7B; about 17.9 GB, llama.cpp as reference) join
+      M3.5's set under the same exit criteria. The deferred and dropped
+      features stay as recorded. The optional Bonsai-27B fixture is
+      still open.
 - [ ] **EXL3 optimization** (the owner's particular interest): the
       trellis-encoded quants across their codebooks, bitrates and
       per-layer mixed widths, dense and MoE (grouped mixed-width routed
