@@ -966,10 +966,14 @@ family" guide, and its long-context scaling work.
 
 **Scope:**
 
-- [ ] **Family selection** (first; for the owner's approval). Survey the
-      current top-tier open families as of M3.5's start and pick one MoE
-      and one dense checkpoint per family that fit one Spark, with a
-      same-format reference engine each. Record each pick's architecture
+- [ ] **Family selection** (first; for the owner's approval). The goal is
+      capability coverage, not particular models (the owner, 2026-09-29).
+      Survey each top-tier open family's current and older widely used
+      generations, list every architectural feature they use, and mark
+      which jitLLM already supports in a capability matrix. Then choose
+      the smallest set of checkpoints that fit one Spark, each with a
+      same-format reference engine, that covers every feature still in
+      wide use. A feature only a too-large model uses is flagged. Record each pick's architecture
       class:
       - attention: dense, sliding window with dense global layers,
         compressed and sparse, or linear and recurrent;
