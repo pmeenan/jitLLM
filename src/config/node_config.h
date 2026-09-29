@@ -92,6 +92,13 @@ inline constexpr std::uint32_t kMinContext = 512;
 inline constexpr std::uint32_t kMaxContext = 262144;
 // A prefill chunk's rows, when a model's are configured.
 inline constexpr std::uint32_t kMaxPrefillChunk = kMaxContext;
+// The throughput floors, in tokens a second, that the chat route figures a
+// model's work at (docs/runtime-serving.md#progress-and-deadlines): the
+// defaults, and the bounds of a configured one.
+inline constexpr std::uint32_t kDefaultPrefillFloor = 100;
+inline constexpr std::uint32_t kMaxPrefillFloor = 1'000'000;
+inline constexpr std::uint32_t kDefaultDecodeFloor = 5;
+inline constexpr std::uint32_t kMaxDecodeFloor = 100'000;
 
 // One model: the name the CLI (and later the API) asks for, and what the
 // installed store holds for it. Nothing here has touched the store.
@@ -113,6 +120,12 @@ struct ModelEntry {
   // absent, the runtime's default for the model. Either way at most what
   // the model allows at its context (docs/runtime-serving.md#prefill-chunks).
   std::optional<std::uint32_t> prefill_chunk;
+  // With an artifact: conservative prefill and decode throughputs (tokens
+  // a second, 1 to kMaxPrefillFloor and kMaxDecodeFloor) from which the
+  // chat route figures how long a prefill chunk, and a non-streaming
+  // request, may take (docs/runtime-serving.md#progress-and-deadlines).
+  std::uint32_t prefill_floor_tok_s = kDefaultPrefillFloor;
+  std::uint32_t decode_floor_tok_s = kDefaultDecodeFloor;
   // With an artifact whose kept metadata has no tokenizer or chat template
   // (M3's Qwen3.8 import kept config.json only): the checkpoint's
   // tokenizer.json and chat template, absolute paths the runtime reads
@@ -138,11 +151,23 @@ struct ModelEntry {
 //                    default 1024
 //   max_queued       chat requests waiting behind the running one: 1-1024,
 //                    default 64
+//   stall_seconds    how long the backend may make no progress (no prefill
+//                    chunk, decode step or swap ending) before the request
+//                    fails and the backend is marked unhealthy: 30-3600,
+//                    default 120 (D-097's owner note of 2026-09-29)
+//   deadline_cap_seconds  the most a non-streaming request's scaled
+//                    deadline may be: 60-86400, default 14400 (4 hours)
 inline constexpr std::uint16_t kDefaultClientPort = 8114;
 inline constexpr std::uint32_t kDefaultMaxConnections = 1024;
 inline constexpr std::uint32_t kMaxConnectionsCeiling = 65536;
 inline constexpr std::uint32_t kDefaultMaxQueued = 64;
 inline constexpr std::uint32_t kMaxQueuedCeiling = 1024;
+inline constexpr std::uint32_t kDefaultStallSeconds = 120;
+inline constexpr std::uint32_t kMinStallSeconds = 30;
+inline constexpr std::uint32_t kMaxStallSeconds = 3600;
+inline constexpr std::uint32_t kDefaultDeadlineCapSeconds = 14400;
+inline constexpr std::uint32_t kMinDeadlineCapSeconds = 60;
+inline constexpr std::uint32_t kMaxDeadlineCapSeconds = 86400;
 inline constexpr std::size_t kMaxBindEntries = 16;
 
 struct ClientEndpoint {
@@ -164,6 +189,8 @@ struct ClientConfig {
   std::uint16_t port = kDefaultClientPort;
   std::uint32_t max_connections = kDefaultMaxConnections;
   std::uint32_t max_queued = kDefaultMaxQueued;
+  std::uint32_t stall_seconds = kDefaultStallSeconds;
+  std::uint32_t deadline_cap_seconds = kDefaultDeadlineCapSeconds;
 };
 
 // Parses one bind entry ("loopback", "tailscale", "127.0.0.1:8114",

@@ -114,6 +114,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   allows at its context, so every context the configuration accepts
   starts (at 512, DeepSeek was refused and Qwen3.8 with its MTP drafter
   failed at startup).
+- The chat route no longer ends a request after a fixed 600 s, which
+  failed healthy long prefills: a request fails only when the model
+  backend makes no progress (no swap, prefill chunk or decode step
+  ending) for `[client] stall_seconds` (default 120), with a 504 before
+  the headers or an in-stream error after; the backend is then reported
+  unhealthy (in the log and `systemctl status`) and requests get a 503
+  until it makes progress again. A stream has no deadline; a
+  non-streaming request's is scaled to its work at the model's
+  `prefill_floor_tok_s` and `decode_floor_tok_s` (100 and 5 by default),
+  three times over, at most `[client] deadline_cap_seconds` (4 hours). A
+  stream waiting in the queue no longer runs out of time there. The
+  configuration's schema version stays 2 (new keys).
 - The chat route now ends a request whose client left, whose deadline
   passed or whose runtime is stopping between prefill chunks (and after a
   swap), not only once generation starts; the service keeps serving, and

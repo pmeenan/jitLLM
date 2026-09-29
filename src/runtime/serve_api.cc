@@ -26,6 +26,7 @@
 
 #include "base/report.h"
 #include "chat/chat.h"
+#include "config/node_config.h"
 #include "platform/event_loop.h"
 #include "platform/interfaces.h"
 #include "platform/job.h"
@@ -35,8 +36,10 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/commands.h"
+#include "runtime/prefill.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
+#include "runtime/watchdog.h"
 #include "tokenizer/tokenizer.h"
 
 namespace jitllm::runtime {
@@ -145,19 +148,43 @@ class NodeBackend final : public api::Backend {
       });
       reasoning = marker != tokens.rend() && *marker == *l.think_start();
     }
-    if (!exchange.Admit({.prompt_tokens = prompt})) {
+    // What making the model resident pages in: its weights and its state,
+    // and the resident conversation's state written back (an upper bound;
+    // the watchdog allows the swap for it, watchdog.h).
+    std::uint64_t swap_bytes = 0;
+    if (server_.resident() != m) {
+      swap_bytes = m->weight_read_bytes() + l.state_snapshot_bytes();
+      if (Served* out = server_.resident(); out != nullptr && out->llm()) {
+        swap_bytes += static_cast<Llm&>(*out).state_snapshot_bytes();
+      }
+    }
+    Floors floors;
+    if (const auto entry =
+            std::ranges::find(config_.models, request.model, &config::ModelEntry::name);
+        entry != config_.models.end()) {
+      floors = {.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
+    }
+    if (!exchange.Admit({.prompt_tokens = prompt,
+                         .max_tokens = max_tokens,
+                         .swap_bytes = swap_bytes,
+                         .floors = floors})) {
       return api::Completion{};
     }
 
     swapped_ = server_.resident() != m;
+    if (swapped_ && !exchange.Next(Phase::kSwap, swap_bytes)) {
+      swapped_ = false;
+      return api::Completion{};
+    }
     if (auto r = server_.Activate(*m, parts_); !r) {
       Fail(std::format("making {} resident: {}", m->name(), r.error()));
       swapped_ = false;
       return std::unexpected(Failure(503, "the model could not be made resident"));
     }
-    // A swap is one program (at most ~10 s); whatever ended the request
-    // meanwhile (the client gone, the deadline, the runtime stopping) ends
-    // it here, before any of its model work. The exchange answers for it.
+    // A swap is one program (about 10 s on a Spark), watched as one unit
+    // at its bytes; whatever ended the request meanwhile (the client gone,
+    // the backend stalled, the deadline, the runtime stopping) ends it
+    // here, before any of its model work. The exchange answers for it.
     if (!exchange.Continue()) {
       return api::Completion{};
     }
@@ -215,7 +242,10 @@ class NodeBackend final : public api::Backend {
     Generation generation;
     std::uint32_t reused = 0;
     PrefillRun prefill;
-    const std::function<bool()> go_on = [&exchange] { return exchange.Continue(); };
+    // Each chunk is a unit the watchdog allows for its rows (watchdog.h).
+    const PrefillGoOn go_on = [&exchange](std::uint32_t rows) {
+      return exchange.Next(Phase::kPrefill, rows);
+    };
     auto ran = server_.InRequest(*m, [&]() -> Status {
       const std::vector<std::int32_t>& history = l.history();
       // The state holds a prefix of this request's tokens: only the rest
@@ -229,14 +259,15 @@ class NodeBackend final : public api::Backend {
         reused = static_cast<std::uint32_t>(history.size());
       }
       // Between chunks, whatever ends the request (the client gone, the
-      // deadline, the runtime stopping) stops the prefill: an ordinary end,
-      // the state holding the chunks that ran (serving.h Llm::Prefill).
+      // backend stalled, the deadline, the runtime stopping) stops the
+      // prefill: an ordinary end, the state holding the chunks that ran
+      // (serving.h Llm::Prefill).
       std::vector<float> last;
       if (auto r = l.Prefill(std::span(tokens).subspan(reused), last, go_on, &prefill); !r) {
         return r;
       }
-      if (prefill.stopped) {
-        return {};
+      if (prefill.stopped || !exchange.Next(Phase::kDecode, 0)) {
+        return {};  // the state holds what ran; the exchange answers for why
       }
       return l.Generate(last, options, generation);
     });
@@ -369,6 +400,22 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       const std::string names = HostNames(options.hosts);
       options.max_queued = config.client.max_queued;
       options.max_connections = config.client.max_connections;
+      options.stall = std::chrono::seconds(config.client.stall_seconds);
+      options.deadline_cap = std::chrono::seconds(config.client.deadline_cap_seconds);
+      // The server logs each change of the backend's health; the service
+      // manager's status line says it too (`systemctl status`).
+      const std::size_t served = backend->Models().size();
+      options.on_health = [log, served](const Health& health) {
+        const std::string status =
+            health.healthy ? std::format("STATUS=serving {} models on the chat route", served)
+                           : std::format(
+                                 "STATUS=the model backend is not making progress ({}); refusing "
+                                 "requests until it does",
+                                 PhaseName(health.phase));
+        if (auto notified = platform::NotifyServiceManager(status); !notified) {
+          Say(log, notified.error());
+        }
+      };
       // Each connection is a descriptor; the rest (model files, the
       // node's own) fit in kReservedFiles.
       const std::uint64_t files =

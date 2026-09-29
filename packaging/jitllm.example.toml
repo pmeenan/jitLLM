@@ -57,6 +57,14 @@ schema_version = 2
 # multiple of 8; the runtime logs the chunk it uses. A chunk is how soon a
 # prefill notices a cancellation.
 # prefill_chunk = 2048
+# Throughput floors, in tokens a second, from which the chat route figures
+# how long a prefill chunk may take before the request counts as stalled,
+# and a non-streaming request's deadline (docs/runtime-serving.md,
+# "Progress and deadlines"): below the model's speeds at short context,
+# with a margin of three for depth. Prefill 1 to 1000000, decode 1 to
+# 100000.
+# prefill_floor_tok_s = 100
+# decode_floor_tok_s = 5
 # For an artifact whose metadata keeps no tokenizer or chat template: the
 # checkpoint's, owned by root or the runtime's user and writable by nobody
 # else.
@@ -82,6 +90,15 @@ schema_version = 2
 # requests waiting behind the running one (1 to 1024).
 # max_connections = 1024
 # max_queued = 64
+# A request has no fixed deadline: it fails when the model backend makes
+# no progress (no swap, prefill chunk or decode step ending) for
+# stall_seconds (30 to 3600), each long unit allowed its expected time on
+# top; the backend is then unhealthy and requests get 503 until it moves.
+# A stream runs until it is done; a non-streaming request also ends at a
+# deadline scaled to its work (the floors above, three times over), at
+# most deadline_cap_seconds (60 to 86400).
+# stall_seconds = 120
+# deadline_cap_seconds = 14400
 
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build

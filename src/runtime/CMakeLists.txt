@@ -4,10 +4,10 @@
 # The node runtime process (/usr/libexec/jitllm/jitllm-runtime once
 # packaged, D-063): startup, readiness and stop (runtime.h), the serving
 # commands' arguments (commands.h), a prefill's chunks (prefill.h), and
-# the chat route's HTTP, requests, binding and server (http.h, api.h,
-# binding.h, api_server.h; D-097), all vendor-free.
+# the chat route's HTTP, requests, binding, server and watchdog (http.h,
+# api.h, binding.h, api_server.h, watchdog.h; D-097), all vendor-free.
 add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
-                                  prefill.cc)
+                                  prefill.cc watchdog.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_config jitllm_platform
                       PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json

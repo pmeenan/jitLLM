@@ -89,6 +89,22 @@ Error Refusal(int status, std::string message, std::string code = {}) {
                .code = std::move(code)};
 }
 
+// While the backend is unhealthy (watchdog.h): what is queued, and what
+// arrives, until its next progress.
+Error Unresponsive() {
+  return Refusal(503, "the model backend has stopped making progress; retry later",
+                 "backend_unresponsive");
+}
+
+// The running request's end when its backend stalled, `idle` after its
+// last progress.
+Error Stalled(Clock::duration idle) {
+  return Refusal(504,
+                 std::format("the model backend made no progress for {} s",
+                             std::chrono::duration_cast<std::chrono::seconds>(idle).count()),
+                 "backend_stalled");
+}
+
 bool Readable(int fd) {
   pollfd p{.fd = fd, .events = POLLIN, .revents = 0};
   return ::poll(&p, 1, 0) > 0 && (p.revents & POLLIN) != 0;
@@ -150,6 +166,7 @@ struct Server::Channel {
   bool keep_alive = false;  // the connection serves another request after this
   bool ended = false;       // the response is whole
   bool gone = false;        // the client left or stopped reading: the generation ends
+  bool stalled = false;     // the watchdog answered it: the generation ends
   bool queued = false;      // waiting in Server::queue_
   bool dirty = false;       // on Server::dirty_
   Clock::time_point last_out;
@@ -258,36 +275,53 @@ struct Server::Connection {
 // One admitted request's response as the driver makes it.
 class Server::Stream final : public Exchange {
  public:
-  Stream(Server& server, Pending& pending, int wake_fd, const std::function<bool()>& on_wake)
+  // `started`: when the driver took the request up, which a non-streaming
+  // deadline counts from.
+  Stream(Server& server, Pending& pending, int wake_fd, const std::function<bool()>& on_wake,
+         Clock::time_point started)
       : server_(server),
         pending_(pending),
         channel_(*pending.channel),
         wake_fd_(wake_fd),
         on_wake_(on_wake),
-        deadline_(Clock::now() + server.options_.deadline),
+        started_(started),
         text_(pending.request.stop) {}
 
   bool Admit(const Admission& admission) override {
     usage_.prompt_tokens = admission.prompt_tokens;
+    floors_ = admission.floors;
+    if (!pending_.request.stream) {
+      // A stream has no deadline; a non-streaming request's is its work's.
+      deadline_ = started_ + ScaledDeadline(server_.options_.stall, server_.options_.deadline_cap,
+                                            floors_, admission.swap_bytes, admission.prompt_tokens,
+                                            admission.max_tokens);
+    }
     if (pending_.request.stream) {
       const std::scoped_lock lock(server_.mutex_);
-      if (!channel_.gone && !channel_.head_sent) {
+      if (!channel_.gone && !channel_.stalled && !channel_.head_sent) {
         channel_.PutStart();
         Dirty();
       }
     }
     server_.WakeIo();
-    return Check();
+    return Check(std::nullopt, 0);
+  }
+  bool Next(Phase phase, std::uint64_t size) override {
+    return Check(phase, ExpectedSeconds(phase, size, floors_));
   }
   bool Reasoning(std::string_view text) override {
     Emit(text_.Reasoning(text));
-    return Check();
+    return Check(std::nullopt, 0);
   }
   bool Content(std::string_view text) override {
     Emit(text_.Content(text));
-    return !text_.stopped() && Check();
+    if (text_.stopped()) {
+      Progress(std::nullopt, 0);  // the answer is whole: nothing else to ask
+      return false;
+    }
+    return Check(std::nullopt, 0);
   }
-  bool Continue() override { return Check(); }
+  bool Continue() override { return Check(std::nullopt, 0); }
 
   // Hands the rest of the response to the I/O thread for the backend's
   // result; the status for the log.
@@ -295,8 +329,10 @@ class Server::Stream final : public Exchange {
     int status = 200;
     {
       const std::scoped_lock lock(server_.mutex_);
-      if (channel_.gone) {
-        return 499;  // the client closed the request, or stopped reading (logged only)
+      if (channel_.stalled || channel_.gone) {
+        // The watchdog answered it (a 504), or the client closed the
+        // request or stopped reading (499, logged only).
+        return channel_.stalled ? 504 : 499;
       }
       if (!result) {
         channel_.PutError(result.error());
@@ -307,9 +343,12 @@ class Server::Stream final : public Exchange {
         usage_.cached_tokens = result->cached_tokens;
         if (timed_out_ || stopping_) {
           const Error error =
-              timed_out_ ? Refusal(504, std::format("the request passed its {} s deadline",
-                                                    server_.options_.deadline.count() / 1000))
-                         : Refusal(503, "the runtime is stopping");
+              timed_out_
+                  ? Refusal(504, std::format("the request passed its {} s deadline",
+                                             std::chrono::duration_cast<std::chrono::seconds>(
+                                                 deadline_ - started_)
+                                                 .count()))
+                  : Refusal(503, "the runtime is stopping");
           if (stopping_) {
             channel_.keep_alive = false;
           }
@@ -365,7 +404,7 @@ class Server::Stream final : public Exchange {
       content_ += out.content;
       return;
     }
-    if (channel_.gone || (out.reasoning.empty() && out.content.empty())) {
+    if (channel_.gone || channel_.stalled || (out.reasoning.empty() && out.content.empty())) {
       return;
     }
     if (!channel_.head_sent) {
@@ -400,14 +439,28 @@ class Server::Stream final : public Exchange {
     server_.WakeIo();
   }
 
-  // Whether the generation goes on.
-  bool Check() {
+  // Progress: the watchdog's beat, `next` the unit that follows (none:
+  // the one under way goes on) and its expected seconds at the floors.
+  void Progress(std::optional<Phase> next, double expected) {
+    bool recovered = false;
+    {
+      const std::scoped_lock lock(server_.mutex_);
+      recovered = server_.BeatLocked(next.value_or(server_.watchdog_.health().phase), expected);
+    }
+    if (recovered) {
+      server_.HealthChanged();
+    }
+  }
+
+  // A beat (above), then whether the generation goes on.
+  bool Check(std::optional<Phase> next, double expected) {
+    Progress(next, expected);
     if (timed_out_ || stopping_) {
       return false;
     }
     {
       const std::scoped_lock lock(server_.mutex_);
-      if (channel_.gone) {
+      if (channel_.gone || channel_.stalled) {
         return false;
       }
     }
@@ -429,7 +482,9 @@ class Server::Stream final : public Exchange {
   Channel& channel_;
   int wake_fd_;
   const std::function<bool()>& on_wake_;
-  Clock::time_point deadline_;
+  Clock::time_point started_;
+  Clock::time_point deadline_ = Clock::time_point::max();  // a stream's: none
+  Floors floors_;
   OutputText text_;
   Usage usage_;
   std::string reasoning_;
@@ -449,7 +504,8 @@ Server::Server(Backend& backend, ServerOptions options)
       loop_(platform::EventLoop::Open()),
       stop_(platform::Waker::Open()),
       io_wake_(platform::Waker::Open()),
-      ready_(platform::Waker::Open()) {}
+      ready_(platform::Waker::Open()),
+      watchdog_(options_.stall, Clock::now()) {}
 
 Server::~Server() {
   if (io_.joinable()) {
@@ -490,7 +546,70 @@ void Server::Log(std::string_view line) const {
 
 void Server::WakeIo() const { io_wake_.Signal(); }
 
+Health Server::health() const {
+  const std::scoped_lock lock(mutex_);
+  return watchdog_.health();
+}
+
+void Server::HealthChanged() const {
+  if (!options_.on_health) {
+    return;
+  }
+  // Serialized, each with the health as it is then: the last report is
+  // the current state whichever thread noticed the change last.
+  const std::scoped_lock lock(health_mutex_);
+  options_.on_health(health());
+}
+
+bool Server::BeatLocked(Phase next, double expected) {
+  const auto now = Clock::now();
+  const Health before = watchdog_.health();
+  if (!watchdog_.Beat(next, expected, now)) {
+    return false;
+  }
+  Log(
+      std::format("the model backend made progress again ({}), {:.1f} s after its last; "
+                  "requests are accepted again",
+                  PhaseName(before.phase), Seconds(now - before.last_progress)));
+  return true;
+}
+
 // ---------------------------------------------------------------- I/O thread
+
+void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& ended) {
+  {
+    const std::scoped_lock lock(mutex_);
+    if (!watchdog_.Check(now)) {
+      return;
+    }
+    const Health& health = watchdog_.health();
+    const Clock::duration idle = now - health.last_progress;
+    std::string which = "no request";
+    if (running_ && !running_->ended && !running_->gone) {
+      // Ended as a client that leaves ends it: the generation stops at the
+      // backend's next step, and the lease is released as it returns.
+      Channel& ch = *running_;
+      which = std::format("request {} ends with 504", ch.id);
+      ch.PutError(Stalled(idle));
+      ch.stalled = true;  // not `gone`: the connection stays to carry the error
+      ended.push_back(ch.connection);
+    }
+    Log(
+        std::format("the model backend made no progress for {:.1f} s ({}; stall {}): {}; it is "
+                    "unhealthy, and requests get 503 until it makes progress",
+                    Seconds(idle), PhaseName(health.phase), health.stalls, which));
+    // Nothing queued would run before the backend moves again.
+    for (Pending& p : queue_) {
+      Channel& ch = *p.channel;
+      ch.queued = false;
+      Log(std::format("request {}: 503, the backend is not making progress", ch.id));
+      ch.PutError(Unresponsive());
+      ended.push_back(ch.connection);
+    }
+    queue_.clear();
+  }
+  HealthChanged();
+}
 
 void Server::Watch(Connection& c) {
   if (c.dead) {
@@ -945,15 +1064,24 @@ void Server::OnRequest(Connection& c, http::Request request) {
   channel->stream = parsed->stream;
   channel->queued_at = Clock::now();
   bool stopping = false;
+  bool unhealthy = false;
   {
     const std::scoped_lock lock(mutex_);
     stopping = stopping_;
-    if (!stopping && queue_.size() < options_.max_queued) {
+    unhealthy = !watchdog_.health().healthy;
+    if (!stopping && !unhealthy && queue_.size() < options_.max_queued) {
       channel->queued = true;
       queue_.push_back({.channel = channel, .request = std::move(*parsed)});
       ready_.Signal();
       return;
     }
+  }
+  if (unhealthy && !stopping) {
+    // The backend stalled and has not made progress since: nothing queued
+    // now would run until it does (watchdog.h).
+    Log(std::format("request {}: 503, the backend is not making progress", channel->id));
+    Refuse(c, Unresponsive(), {}, false);
+    return;
   }
   if (stopping) {
     Log(std::format("request {}: 503, the runtime is stopping", channel->id));
@@ -1036,23 +1164,33 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
   using State = Connection::State;
   Clock::time_point next = now + std::chrono::seconds(1);
   const auto soon = [&](Clock::time_point t) { next = std::min(next, t); };
-  // The queue: a request that waited too long gets a 429, or, when its
-  // stream has started, an in-stream error.
+  // The backend: a stall ends the running request and refuses the queue.
   std::vector<std::uint64_t> expired;
+  WatchBackend(now, expired);
+  // The queue: a non-streaming request that waited too long gets a 429; a
+  // stream, held by keepalives, waits as long as the backend makes
+  // progress.
   {
     const std::scoped_lock lock(mutex_);
-    while (!queue_.empty() && now - queue_.front().channel->queued_at >= options_.queue_wait) {
-      const std::shared_ptr<Channel> channel = queue_.front().channel;
-      queue_.pop_front();
-      channel->queued = false;
-      Log(std::format("request {}: 429 after waiting {} s in the queue", channel->id,
+    if (const auto due = watchdog_.due()) {
+      soon(*due);
+    }
+    std::erase_if(queue_, [&](const Pending& p) {
+      Channel& ch = *p.channel;
+      if (ch.stream) {
+        return false;
+      }
+      if (now - ch.queued_at < options_.queue_wait) {
+        soon(ch.queued_at + options_.queue_wait);
+        return false;
+      }
+      ch.queued = false;
+      Log(std::format("request {}: 429 after waiting {} s in the queue", ch.id,
                       options_.queue_wait.count() / 1000));
-      channel->PutError(Refusal(429, "the request waited too long behind others; retry later"));
-      expired.push_back(channel->connection);
-    }
-    if (!queue_.empty()) {
-      soon(queue_.front().channel->queued_at + options_.queue_wait);
-    }
+      ch.PutError(Refusal(429, "the request waited too long behind others; retry later"));
+      expired.push_back(ch.connection);
+      return true;
+    });
   }
   for (const std::uint64_t id : expired) {
     if (auto it = connections_.find(id); it != connections_.end()) {
@@ -1233,19 +1371,38 @@ void Server::Loop() {
 void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake) {
   const auto started = Clock::now();
   Channel& channel = *pending.channel;
+  bool recovered = false;
   {
     const std::scoped_lock lock(mutex_);
     if (channel.gone) {
       Log(std::format("request {}: the client left while it was queued", channel.id));
       return;
     }
+    running_ = pending.channel;
+    recovered = BeatLocked(Phase::kStarting, 0);
   }
-  Stream stream(*this, pending, wake_fd, on_wake);
+  if (recovered) {
+    HealthChanged();
+  }
+  Stream stream(*this, pending, wake_fd, on_wake, started);
   const std::expected<Completion, Error> result = backend_.Complete(pending.request, stream);
   const int status = stream.End(result);
+  bool stalled = false;
+  {
+    const std::scoped_lock lock(mutex_);
+    stalled = channel.stalled;
+    running_.reset();
+    // The backend returned: progress, and what follows the response.
+    recovered = BeatLocked(Phase::kFinishing, 0);
+  }
+  if (recovered) {
+    HealthChanged();
+  }
   const Usage& u = stream.usage();
   std::string_view why;
-  if (status == 499) {
+  if (stalled) {
+    why = " (the backend made no progress)";
+  } else if (status == 499) {
     why = stream.slow() ? " (the client stopped reading)" : " (the client left)";
   }
   Log(std::format(
@@ -1254,6 +1411,13 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
       channel.id, pending.request.model, status, why, u.prompt_tokens, u.cached_tokens,
       u.completion_tokens, Seconds(Clock::now() - started), Seconds(started - channel.queued_at)));
   backend_.AfterResponse();
+  {
+    const std::scoped_lock lock(mutex_);
+    recovered = BeatLocked(Phase::kIdle, 0);  // nothing more to watch
+  }
+  if (recovered) {
+    HealthChanged();
+  }
 }
 
 std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bool()>& on_wake) {

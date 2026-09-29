@@ -21,8 +21,24 @@
 // takes queued requests in arrival order and runs each to its end, one at
 // a time, watching the caller's wake descriptor (the runtime's signals)
 // between requests and between generation steps. At most max_queued wait
-// behind the running one, each at most queue_wait: beyond either, a 429
-// with Retry-After.
+// behind the running one, beyond which a 429 with Retry-After; a
+// non-streaming request waits at most queue_wait (then the same 429), a
+// stream, held by keepalives, as long as the backend makes progress.
+//
+// Progress (watchdog.h). Every call the backend makes on its Exchange is
+// a beat; Next names the unit that follows (a swap, a prefill chunk,
+// decode) and its size, which with the model's floors sets how long it
+// may take: `stall` plus kWorkMargin times its expected time. The I/O
+// thread watches the beats: past that allowance the running request ends
+// (a 504 before the headers, an in-stream error after), its generation is
+// cancelled as when a client leaves, what is queued gets a 503, and the
+// backend is unhealthy (health(), the log, `on_health`): new requests get
+// a 503 until the backend's next beat, which the unit it hung in makes
+// when it returns. A hung unit that never returns is the node's to end
+// (its per-step patience, engine/paged_node.h). A request has no fixed
+// deadline: a stream runs until it is done, its client leaves or the
+// watchdog fires; a non-streaming one also ends at its scaled deadline
+// (watchdog.h ScaledDeadline, capped at `deadline_cap`).
 //
 // Output. The driver never touches a socket: a request's response is a
 // Channel it appends to (whole events, under the server's lock) and the
@@ -41,11 +57,11 @@
 // between requests keeps no large buffer (held_bytes).
 //
 // A request's end. Non-streaming: one JSON body once the outcome is known
-// (a 504 past `deadline`, a 503 when the runtime stops), nothing before
-// but that 102. Streaming: the headers and the role chunk once the backend
-// admits it, or earlier, once it has waited `keepalive` in the queue or
-// its client has half-closed; then a chunk per
-// step's text, the finish chunk, the usage chunk if asked for, and
+// (a 504 past its deadline or on a stall, a 503 when the runtime stops),
+// nothing before but that 102. Streaming: the headers and the role chunk
+// once the backend admits it, or earlier, once it has waited `keepalive`
+// in the queue or its client has half-closed; then a chunk per step's
+// text, the finish chunk, the usage chunk if asked for, and
 // `[DONE]`, with `: keepalive` comment lines whenever nothing was sent for
 // `keepalive` (queued, swapping, prefilling). A failure after the headers
 // is an `error` event and the stream ends without `[DONE]`. A stream is
@@ -77,6 +93,7 @@
 #include "runtime/api.h"
 #include "runtime/binding.h"
 #include "runtime/http.h"
+#include "runtime/watchdog.h"
 
 namespace jitllm::runtime::api {
 
@@ -87,9 +104,10 @@ using Clock = std::chrono::steady_clock;
 // connections hold no body's or response's bytes outside the budgets.
 inline constexpr std::size_t kKeptBufferBytes = std::size_t{16} << 10U;
 
-// One admitted request as the backend sees it. Each call returns whether
-// to go on: false ends the generation (a stop string, the peer gone, the
-// deadline, the runtime stopping).
+// One admitted request as the backend sees it. Each call is progress for
+// the watchdog (watchdog.h) and returns whether to go on: false ends the
+// generation (a stop string, the peer gone, the backend stalled, a
+// non-streaming deadline, the runtime stopping).
 class Exchange {
  public:
   Exchange() = default;
@@ -101,10 +119,19 @@ class Exchange {
 
   struct Admission {
     std::uint32_t prompt_tokens = 0;  // the whole conversation, rendered
+    std::uint32_t max_tokens = 0;     // the completion's limit
+    std::uint64_t swap_bytes = 0;     // what making the model resident pages in (0: it is)
+    Floors floors;                    // the model's (config::ModelEntry)
   };
   // Once, after the model's own checks and before any model work: a
-  // streaming response starts here unless it already has.
+  // streaming response starts here unless it already has, and a
+  // non-streaming one's deadline is set from the admission.
   virtual bool Admit(const Admission& admission) = 0;
+  // Before a unit of work: a swap paging in `size` bytes, a prefill chunk
+  // of `size` rows, decoding (`size` 0: each step is its own beat). The
+  // watchdog allows it the stall time plus its expected time at the
+  // floors times kWorkMargin.
+  virtual bool Next(Phase phase, std::uint64_t size) = 0;
   // Generated text, in order. Reasoning with empty text: the reasoning
   // block ended having said nothing.
   virtual bool Reasoning(std::string_view text) = 0;
@@ -150,13 +177,20 @@ struct ServerOptions {
   std::chrono::milliseconds write_timeout{kWriteTimeoutMs};
   std::chrono::milliseconds idle_timeout{kIdleTimeoutMs};
   std::chrono::milliseconds keepalive{kKeepaliveMs};
-  std::chrono::milliseconds queue_wait{kQueueWaitMs};
-  std::chrono::milliseconds deadline{kDeadlineMs};
+  std::chrono::milliseconds queue_wait{kQueueWaitMs};  // a non-streaming request's
+  // The watchdog's stall time, and a non-streaming deadline's cap
+  // ([client] stall_seconds, deadline_cap_seconds).
+  std::chrono::milliseconds stall{std::chrono::seconds(config::kDefaultStallSeconds)};
+  std::chrono::milliseconds deadline_cap{std::chrono::seconds(config::kDefaultDeadlineCapSeconds)};
   std::size_t max_queued = kMaxQueued;
   std::size_t max_connections = kMaxConnections;
   std::size_t max_unsent = kMaxUnsentBytes;
   std::size_t body_budget = kBodyBudgetBytes;
   std::FILE* log = nullptr;  // one line a request; nullptr: none
+  // Called as the backend turns unhealthy or recovers, on the thread that
+  // noticed (the I/O thread, the driver), one call at a time, with the
+  // health as it is then (not under the server's lock).
+  std::function<void(const Health&)> on_health;
 };
 
 class Server {
@@ -182,6 +216,9 @@ class Server {
   // by capacity), as of the I/O thread's last pass (at least once a
   // second). Between requests a connection keeps at most 16 KiB of each.
   std::size_t held_bytes() const { return held_bytes_.load(std::memory_order_relaxed); }
+  // The backend's health as the watchdog sees it (for M5's management
+  // listener; the log says each change).
+  Health health() const;
 
   struct Channel;
   struct Connection;
@@ -215,10 +252,18 @@ class Server {
 
   // Driver thread.
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
+  // Progress (with mutex_ held): the watchdog's beat, and a recovery's log
+  // line; true when the backend recovered (on_health is then owed).
+  bool BeatLocked(Phase next, double expected);
+
+  // I/O thread: whether the backend stalled; if so the running request
+  // ends and the queue is refused (connections to flush in `ended`).
+  void WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& ended);
 
   // Any thread.
   void Log(std::string_view line) const;
   void WakeIo() const;
+  void HealthChanged() const;  // on_health, if set, with the health as it is
 
   Backend& backend_;
   ServerOptions options_;
@@ -242,11 +287,15 @@ class Server {
   bool draining_ = false;
   std::atomic<std::size_t> held_bytes_{0};  // written by the I/O thread, read by any
 
-  // Under mutex_: the queue, every channel's shared state, stopping_.
-  std::mutex mutex_;
+  // Under mutex_: the queue, every channel's shared state, stopping_,
+  // the watchdog and the running request.
+  mutable std::mutex mutex_;
+  mutable std::mutex health_mutex_;  // on_health's calls, one at a time
   std::deque<Pending> queue_;
   std::vector<std::uint64_t> dirty_;  // connections whose channels have new output
   bool stopping_ = false;
+  Watchdog watchdog_;
+  std::shared_ptr<Channel> running_;  // the request the driver runs
 };
 
 }  // namespace jitllm::runtime::api

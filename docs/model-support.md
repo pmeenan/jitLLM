@@ -101,7 +101,9 @@ not used. The options each renderer supports and refuses are in
   64K; the report's gap 1). The configuration accepts 512 to 262,144;
   262,144 fits one Spark plain (1.3 GiB inside the runtime's guard), and
   143,360 with DSpark; prompts past 64K are not verified through the
-  runtime (the chat route's 600 s deadline stops a 128K prefill). The
+  runtime (a 128,821-token prompt streams through the chat route to its
+  end, 845.8 s, since its 600 s deadline gave way to a progress watchdog
+  on 2026-09-29, runtime-serving.md#progress-and-deadlines). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
   prefill chunk capped at 384 rows by the 128-position window; the
   default chunk is 2,048 rows

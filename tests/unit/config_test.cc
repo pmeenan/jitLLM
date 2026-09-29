@@ -116,6 +116,8 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_EQ(config.client.port, 8114);
   EXPECT_EQ(config.client.max_connections, 1024U);
   EXPECT_EQ(config.client.max_queued, 64U);
+  EXPECT_EQ(config.client.stall_seconds, 120U);
+  EXPECT_EQ(config.client.deadline_cap_seconds, 14400U);
 }
 
 // The chat route's listener (D-097 as amended 2026-09-28): symbolic
@@ -130,7 +132,7 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   const NodeConfig list = Parsed(
       "schema_version = 2\n[client]\nbind = [\"loopback\", \"[::]\", \"0.0.0.0:80\", "
       "\"[FD7A:115C:A1E0::1]:9\", \"192.168.1.5\"]\nport = 9100\nmax_connections = 65536\n"
-      "max_queued = 1\n");
+      "max_queued = 1\nstall_seconds = 30\ndeadline_cap_seconds = 86400\n");
   ASSERT_EQ(list.client.bind.size(), 5U);
   EXPECT_EQ(list.client.bind[0].kind, Kind::kLoopback);
   EXPECT_EQ(list.client.bind[1].endpoint.address, "::");
@@ -143,6 +145,8 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   EXPECT_EQ(list.client.port, 9100);
   EXPECT_EQ(list.client.max_connections, 65536U);
   EXPECT_EQ(list.client.max_queued, 1U);
+  EXPECT_EQ(list.client.stall_seconds, 30U);
+  EXPECT_EQ(list.client.deadline_cap_seconds, 86400U);
   const NodeConfig six = Parsed("schema_version = 2\nclient.bind = \"[::1]:8114\"\n");
   EXPECT_EQ(six.client.bind[0].endpoint.address, "::1");
   for (const std::string_view bad :
@@ -168,6 +172,14 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
               ElementsAre(HasSubstr("client.max_queued must be from 1 to 1024")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_queued = \"4\"\n"),
               ElementsAre(HasSubstr("client.max_queued must be an integer")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 29\n"),
+              ElementsAre(HasSubstr("client.stall_seconds must be from 30 to 3600 seconds")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 3601\n"),
+              ElementsAre(HasSubstr("client.stall_seconds must be from 30 to 3600 seconds")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\ndeadline_cap_seconds = 59\n"),
+              ElementsAre(HasSubstr("client.deadline_cap_seconds must be from 60 to 86400")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 120.0\n"),
+              ElementsAre(HasSubstr("client.stall_seconds must be an integer, not a float")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nhosts = []\n"),
               ElementsAre(HasSubstr("unknown key client.hosts")));
 }
@@ -317,8 +329,8 @@ TEST(NodeConfigTest, ReportsEveryProblemNotJustTheFirst) {
 TEST(NodeConfigTest, UnknownKeysAndTablesAreFatal) {
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nspil = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key storage.spil")));
-  // [client] has bind, port, max_connections and max_queued (D-097); the
-  // front door's other keys arrive in M5.
+  // [client] has bind, port, max_connections, max_queued, stall_seconds and
+  // deadline_cap_seconds (D-097); the front door's other keys arrive in M5.
   EXPECT_THAT(Failures("schema_version = 2\n[client]\ncredential = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key client.credential")));
   EXPECT_THAT(Failures("schema_version = 2\nstorage = \"x\"\n"),
@@ -538,14 +550,17 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("unknown table models.deep.er")));
 }
 
-// A model's context from its minimum, and its prefill chunk: configured,
-// or absent for the runtime's default (docs/runtime-serving.md).
+// A model's context from its minimum, its prefill chunk (configured, or
+// absent for the runtime's default) and its throughput floors
+// (docs/runtime-serving.md).
 TEST(NodeConfigTest, ReadsContextAndPrefillChunk) {
   const NodeConfig config = Parsed(std::format(R"(schema_version = 2
 [models.a]
 artifact = "{0}"
 context = 512
 prefill_chunk = 4096
+prefill_floor_tok_s = 250
+decode_floor_tok_s = 1
 [models.b]
 artifact = "{1}"
 )",
@@ -554,9 +569,13 @@ artifact = "{1}"
   EXPECT_EQ(config.models[0].context, jitllm::config::kMinContext);
   EXPECT_EQ(config.models[0].prefill_chunk, 4096U);
   EXPECT_FALSE(config.models[1].prefill_chunk.has_value());
+  EXPECT_EQ(config.models[0].prefill_floor_tok_s, 250U);
+  EXPECT_EQ(config.models[0].decode_floor_tok_s, 1U);
+  EXPECT_EQ(config.models[1].prefill_floor_tok_s, 100U);
+  EXPECT_EQ(config.models[1].decode_floor_tok_s, 5U);
 
-  const auto failures =
-      Failures(std::format(R"(schema_version = 2
+  const auto failures = Failures(std::format(
+      R"(schema_version = 2
 [models.below]
 artifact = "{0}"
 context = 511
@@ -572,15 +591,33 @@ prefill_chunk = "4096"
 [models.pipeline]
 composition = "{4}"
 prefill_chunk = 512
+[models.slow]
+artifact = "{5}"
+prefill_floor_tok_s = 0
+decode_floor_tok_s = 100001
+[models.fast]
+artifact = "{6}"
+prefill_floor_tok_s = 1000001
+decode_floor_tok_s = 2.5
+[models.picture]
+composition = "{7}"
+decode_floor_tok_s = 5
 )",
-                           std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'),
-                           std::string(64, 'd'), std::string(64, 'e')));
+      std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'), std::string(64, 'd'),
+      std::string(64, 'e'), std::string(64, 'f'), std::string(64, '0'), std::string(64, '1')));
   EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.none.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.over.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.text.prefill_chunk must be an integer")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context, "
                                            "prefill_chunk")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.slow.prefill_floor_tok_s must be from 1 to "
+                                           "1000000 tokens a second, not 0")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.slow.decode_floor_tok_s must be from 1 to "
+                                           "100000 tokens a second")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.fast.prefill_floor_tok_s must be from 1 to")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.fast.decode_floor_tok_s must be an integer")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.picture: drafter, speculation")));
 }
 
 TEST(NodeConfigTest, ModelsAreBoundedAndOwnedOnce) {

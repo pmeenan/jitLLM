@@ -50,6 +50,8 @@ drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
 # context = 8704         # tokens of conversation state, 512 to 262,144
 # prefill_chunk = 2048   # rows of a prefill chunk; default by model (below)
+# prefill_floor_tok_s = 100  # tokens a second: the floors the chat route figures
+# decode_floor_tok_s = 5      #   a request's work at (progress and deadlines, below)
 
 [models."qwen3.8"]
 artifact = "c4fb47a9…"
@@ -62,9 +64,9 @@ composition = "eca21baa…"  # a pipeline (D-089)
 ```
 
 A model names exactly one artifact or composition; the artifact-only keys
-(drafter, speculation, context, prefill chunk, tokenizer, chat template)
-are refused on a composition, an artifact serves one model, and a node
-names at most 16. The runner follows the artifact's architecture
+(drafter, speculation, context, prefill chunk, the floors, tokenizer, chat
+template) are refused on a composition, an artifact serves one model, and
+a node names at most 16. The runner follows the artifact's architecture
 (`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
 refused at registration. Every
 artifact is opened under the store's trust rules (only root and the
@@ -112,10 +114,12 @@ position in the conversation (execution/sampling.h), and when speculating
 each draft accepted by speculative sampling (`VerifyDraft`), so the
 tokens are distributed as plain sampling's; a seed repeats a reply.
 Generation stops at the template's end-of-turn tokens, the token limit, or
-when the route ends it (a stop string, the client gone, the deadline, the
-runtime stopping), always between steps; the same ends a prefill between
-its chunks (below). A model whose chat template has no renderer is
-refused at registration, naming its hash. A job that failed after it may
+when the route ends it (a stop string, the client gone, the backend
+stalled, a non-streaming request's deadline, the runtime stopping;
+[progress and deadlines](#progress-and-deadlines)), always between
+steps; the same ends a prefill between its chunks (below). A model whose
+chat template has no renderer is refused at registration, naming its
+hash. A job that failed after it may
 have run leaves the conversation unknown, so the next turn clears the
 state first.
 
@@ -187,11 +191,12 @@ from run to run at some chunk sizes (on this prompt, 4,096 and 512 rows,
 not 2,048 in 7 runs). The cause is RE-031's tie-breaking in GGML's top-k,
 which its indexer uses, not the chunking.
 
-**Cancellation.** Whatever ends a chat request (the client gone, its
-600 s deadline, the runtime stopping on SIGTERM or SIGINT) is noticed
-before each prefill chunk and each generation step, and after the swap
-that made its model resident (a swap is one program, at most about 10 s,
-and is not interrupted). A stopped prefill is an ordinary end, not a
+**Cancellation.** Whatever ends a chat request (the client gone, the
+backend stalled or a non-streaming request's deadline passed
+([below](#progress-and-deadlines)), the runtime stopping on SIGTERM or
+SIGINT) is noticed before each prefill chunk and each generation step,
+and after the swap that made its model resident (a swap is one program,
+about 10 s, and is not interrupted). A stopped prefill is an ordinary end, not a
 node failure, and the service goes on serving: the conversation's state
 holds exactly the chunks that ran, a prefix of the turn's tokens, so a
 retry of the request continues from it (its chunks at the same places an
@@ -272,6 +277,8 @@ bind = ["loopback", "tailscale"]  # the default; a string or a list of 1 to 16
 port = 8114                       # the port of "loopback", "tailscale" and a bare address
 max_connections = 1024            # open connections, idle ones included: 1 to 65,536
 max_queued = 64                   # requests waiting behind the running one: 1 to 1,024
+stall_seconds = 120               # no progress for this long fails a request: 30 to 3,600
+deadline_cap_seconds = 14400      # a non-streaming request's deadline at most: 60 to 86,400
 ```
 
 **Where it listens.** `"loopback"` is 127.0.0.1 and, where the node has
@@ -352,12 +359,14 @@ queue is admitted then: its headers and role chunk go out, so the client
 sees it accepted. From its headers on, a stream that has sent nothing for
 15 s gets a `: keepalive` comment line, queued, swapping or prefilling,
 well inside the named clients' 300 s stream-idle bounds
-(client-api-baseline.md). A stream admitted early can then only fail in
-the stream: its queue wait running out is an in-stream `rate_limit_error`
-and the model's refusal (the context exceeded) an in-stream
-`invalid_request_error`, both without `[DONE]`; a stream that starts
-within 15 s gets those as 429 and 400 before any header. A non-streaming
-request waits silently until its turn or the queue's wait.
+(client-api-baseline.md). A stream has no fixed queue wait: it waits its
+turn as long as the backend makes progress. A stream admitted early can
+then only fail in the stream: the model's refusal (the context exceeded)
+is an in-stream `invalid_request_error`, and the backend stalling an
+in-stream `server_error`, both without `[DONE]`; a stream that starts
+within 15 s gets the refusal as a 400 before any header. A non-streaming
+request waits silently until its turn or the queue's wait (120 s, then a
+429).
 
 **Intake bounds** (client-api-baseline.md#shared-correctness-and-limits),
 checked before any model work (runtime/api.h):
@@ -382,8 +391,8 @@ checked before any model work (runtime/api.h):
 | Idle connection | 60 s between requests, told to the client (`Keep-Alive: timeout=60`) | closed | An idle connection costs a descriptor and a small buffer (at most 16 KiB each way: a larger one, a body's or a response's, is freed once its request is done); a minute spans a client's pauses between turns |
 | Connections | 1,024 (`[client] max_connections`) | the oldest idle one is closed for the new one; with none idle, 503 | Agents and their subagents keep pools; each is a descriptor, and the open-file limit is raised to fit |
 | Output not taken | 30 s without progress, or 1 MiB of a stream | the connection is dropped; the generation ends at its next step | A reader that stops reading cannot grow a buffer |
-| Queue | 64 waiting behind the running request (`[client] max_queued`), 120 s each | 429, `Retry-After: 10`, `x-should-retry: true` (in-stream once a stream has started) | One user; a subagent's request waits for the main one instead of failing |
-| A request | 600 s from when it starts running | 504 (in-stream error when streaming) | The node's ten-minute rule for a request (D-048's driver) |
+| Queue | 64 waiting behind the running request (`[client] max_queued`); a non-streaming one 120 s, a stream as long as the backend makes progress | 429, `Retry-After: 10`, `x-should-retry: true`; 503 with the same headers (in-stream once a stream has started) when the backend stalls | One user; a subagent's request waits for the main one instead of failing, a stream (held by keepalives) for as long as a long request ahead of it takes |
+| A request | No fixed deadline: 120 s without progress (`[client] stall_seconds`), each unit of work allowed its expected time; a non-streaming one also its work at the model's floors three times over, at most 4 hours (`deadline_cap_seconds`) | 504 (in-stream error when streaming); after a stall, 503 to every request until the backend moves | A long prefill at depth is healthy and a stuck backend is not ([progress and deadlines](#progress-and-deadlines)) |
 
 **Guards and errors.** No credential (D-014 and its owner note); an
 `Authorization` header is ignored. The `Host` must name the node as it
@@ -399,9 +408,12 @@ are not accepted). An `Origin` must name the same, on a listening port,
 and a cross-site or same-site `Sec-Fetch-Site` is refused (403): D-064's
 browser guards, without M5's CORS. A JSON route needs `Content-Type: application/json`
 (415). Errors are OpenAI's `{"error": {message, type, param, code}}`. A
-client that disconnects, the deadline (504) or the runtime stopping
-(SIGTERM or SIGINT, 503) ends the request at its next prefill chunk or
-generation step, and after a swap before any model work; the state keeps
+client that disconnects, a non-streaming request's deadline (504), the
+backend stalling (504, [below](#progress-and-deadlines)) or the runtime
+stopping (SIGTERM or SIGINT, 503) ends the request at its next prefill
+chunk or generation step, and after a swap before any model work (a
+stall answers the client at once, without waiting for that step); the
+state keeps
 what it processed ([cancellation](#prefill-chunks-and-cancellation)), and
 the service goes on. A client that shuts only its sending side after a whole
 request (a half-close) has not disconnected: its response is finished and
@@ -456,6 +468,117 @@ returns, while the buffer
 lives until the driver lets go of it. Parsing a request's JSON (at most 4
 MiB) is the one piece of CPU work on the I/O thread.
 
+## Progress and deadlines
+
+A chat request has no fixed deadline (D-097, the owner's note of
+2026-09-29): the 600 s it had failed healthy long prefills (DeepSeek's
+128K prompt stopped at 108,544 of 128,821 tokens,
+[long-context](experiments/long-context/README.md)), and the
+response time is ours to own, since the runtime can tell a backend that
+is working from one that is not. Instead a request fails when the backend
+stops making progress, and only a non-streaming request, whose client
+hears nothing until the end, also has a deadline, scaled to its work
+(`runtime/watchdog.h`, vendor-free and tested on a synthetic clock and
+with the fake backend). Through the route on `spark` (2026-09-29,
+DeepSeek plain at context 131,072), the 128,821-token prompt the old
+deadline stopped streamed to its end: 836.8 s to the first token,
+`[DONE]` at 845.8 s, 55 keepalive comments 15 s apart, no stall.
+
+**Progress.** Each unit of the backend's work that ends is a beat: the
+request taken up and admitted, the swap, each prefill chunk, each decode
+step (a speculative step's draft and verify together), the response's
+end. Before a unit that may be long the backend names it and its size: a
+swap with the bytes it pages in (the incoming weights and state, and the
+outgoing conversation's state written back), a prefill chunk with its
+rows, decoding. A unit may take `stall_seconds` plus three times its
+expected time at the model's floors: a chunk's rows at
+`prefill_floor_tok_s`, a swap's bytes at 1 GB/s (a Spark pages in at
+about 13 GB/s, [swap.md](experiments/fast-swap/swap.md)); a decode step,
+which is short, the stall time (`decode_floor_tok_s` scales the
+non-streaming deadline, below). So a unit that is long but healthy (a
+configured chunk of many thousand rows, a swap from a slow disk) is not
+cut short by the stall time; a swap, one program without beats inside,
+is allowed for whole.
+
+**A stall.** The I/O thread, which never waits on the model, watches the
+beats. When a unit passes its allowance it acts at once, whether or not
+the backend ever returns:
+
+- the running request ends: a 504 `backend_stalled` before its headers,
+  or after them an in-stream `server_error` event with that code and no
+  `[DONE]`;
+- its generation is cancelled the normal way: marked ended, as when a
+  client leaves, so it stops at the backend's next step and its lease is
+  released as the backend returns;
+- the queued requests get a 503 `backend_unresponsive` (`Retry-After:
+  10`, `x-should-retry: true`; in-stream for a stream that started);
+- the backend is marked unhealthy.
+
+**Unhealthy.** Until the backend's next beat (the unit it hung in
+returning), every new chat request gets that 503 at once rather than
+waiting behind a backend that may never return; `GET /v1/models` still
+answers. The next beat makes it healthy again, and the log says so. A
+unit that never returns does not hang the service: the node's own
+patience for a step (`engine/paged_node.h`) cancels its request after ten
+minutes, the failed step stops the service with status 1 (a node
+failure, as before), and if even the cancellation never drains the
+process aborts ten minutes later; `jitllm.service` restarts it either way
+(`Restart=on-failure`).
+
+**Health.** The watchdog keeps the backend's health: healthy or not, the
+phase (idle, starting, swapping, prefilling, decoding, finishing), the
+last progress, the stalls counted and when the last began. The log has a
+line at each stall and each recovery, the service manager's status line
+(`systemctl status jitllm`) says it, and `api::Server::health()` holds it
+for M5's management listener.
+
+**Deadlines.** A stream has none: keepalive comments hold its client's
+idle timeout, and it runs until it is done, its client leaves (the
+half-close rule above unchanged) or the watchdog fires. A non-streaming
+request's deadline, from when it starts running, is
+
+    min(deadline_cap_seconds,
+        stall_seconds + 3 × (swap bytes / 1 GB/s
+                             + prompt tokens / prefill_floor_tok_s
+                             + max_tokens / decode_floor_tok_s))
+
+counting the whole prompt (cached tokens too) and the request's
+`max_tokens` or, without one, the rest of the context. At the defaults,
+DeepSeek resident with a 131,072-token prompt and `max_tokens` 4,096:
+120 + 3 × (1,310.7 + 819.2) s = 6,510 s, about 1 hour 49 minutes; with
+no `max_tokens` at a 262,144-token context, the 4-hour cap. The watchdog
+applies inside it.
+
+**The queue.** A non-streaming request still waits at most 120 s, then
+gets a 429 with `Retry-After`: it waits in silence, its client's own
+timeout (600 s in OpenAI's SDKs) would otherwise decide, and its deadline
+counts from when it runs. A stream in the queue, started after 15 s and
+held by keepalives, has no fixed wait: it waits as long as the backend
+makes progress, as a running stream runs, within the queue's 64 places.
+A stall refuses the queue (above).
+
+**The defaults.** `stall_seconds` 120 (30 to 3,600): a decode step takes
+well under a second and a default chunk seconds at 8K (the table above),
+so two minutes without either is a stuck backend, not a slow one. The
+floors, 100 prefill and 5 decode tokens a second, are below every speed
+measured here at 8K (DeepSeek's slowest prefill in the table, 220 tok/s
+at 256-row chunks; its plain decode at 8K, 19 tok/s, plan.md), but not
+at DeepSeek's deepest context, where the stall time and the margin of
+three carry it. Extrapolated, not measured: its 2,048-row chunk's device
+time grows about 0.14 s per 1,000 tokens of context (4.7, 7.9 and 12.3 s
+at 8K, 32K and 64K, [long-context](experiments/long-context/README.md);
+the same line gives 794 s of device time for the 128K stream, which
+took 836.8 s to its first token), so about 40 s (52 tok/s) at 262,144,
+inside its 181 s allowance (120 + 3 × 20.48); its decode step about
+0.25 s there (4 tok/s), inside the deadline's 0.6 s a token; its whole
+258,856-token prefill about 45 minutes, inside the deadline's 2 hours 11
+minutes or more. A
+swap's allowance covers a disk that pages in at a third of 1 GB/s or
+more; a slower one (a hard disk, a NAS) needs a larger `stall_seconds`.
+The node's own patience for a step, ten minutes, bounds every unit
+whatever its allowance, so a `stall_seconds` above 600 leaves a hung step
+to it alone. `deadline_cap_seconds` 14,400 (60 to 86,400).
+
 ## Limits
 
 - One process, one model resident at a time: M3's full swap. Partial
@@ -481,5 +604,6 @@ MiB) is the one piece of CPU work on the I/O thread.
 - Per-token prefill and decode cost grows with the context (dense
   attention over every cached cell; the long-context report's gaps 1 and
   2), so a long prompt is slow: DeepSeek prefills about 230 tok/s at 64K,
-  and a 128K prompt outruns the request's 600 s deadline (a resend of the
-  same request resumes from the chunks that ran).
+  and a 128K prompt takes longer than the 600 s deadline the route had
+  until 2026-09-29 (it now runs on while it makes progress,
+  [above](#progress-and-deadlines)).

@@ -256,13 +256,13 @@ class Llm : public Served {
   }
   // Runs `tokens` after the history in chunks of max_rows (with the
   // drafter's injection when speculating): the last row's logits. With
-  // `go_on`, asked before each chunk (runtime/prefill.h): false stops the
-  // prefill there, not an error: the history then holds the chunks that
-  // ran (a prefix of `tokens` after it, which the state processed and a
-  // later prefill continues from), `last` is empty, and `run` (if given)
-  // says so.
+  // `go_on`, asked with each chunk's rows before it (runtime/prefill.h):
+  // false stops the prefill there, not an error: the history then holds
+  // the chunks that ran (a prefix of `tokens` after it, which the state
+  // processed and a later prefill continues from), `last` is empty, and
+  // `run` (if given) says so.
   Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
-                 const std::function<bool()>& go_on = {}, PrefillRun* run = nullptr);
+                 const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
   // Greedy generation from `last` (a whole prefill's logits): the first
   // token is its argmax, the rest from decode steps.
   Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);

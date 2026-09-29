@@ -9,7 +9,7 @@
 // sockets with a fake backend: routes, browser guards, HTTP bounds,
 // timeouts, keep-alive, pipelining, idle connections, the queue,
 // keepalive comments, slow clients, streaming and errors after the
-// headers.
+// headers, and the progress watchdog and scaled deadlines (watchdog.h).
 
 #include "runtime/api.h"
 
@@ -34,6 +34,7 @@
 #include <expected>
 #include <format>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,6 +48,7 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/http.h"
+#include "runtime/watchdog.h"
 
 namespace {
 
@@ -595,10 +597,14 @@ TEST(Binding, OriginsMustBeTheNodeOnItsPort) {
 
 // ---------------------------------------------------------------- the server
 
-// Runs requests as the test directs: "block" waits for release; "fail"
-// fails before admission, "late" after it; "flood" streams until told to
-// stop; "big" answers 16 MiB at once; otherwise reasoning, then the last
-// message's content echoed in two pieces.
+// Runs requests as the test directs: "block" waits for release, making
+// progress; "hang" waits for release making none (a hung unit), then asks
+// to go on; "slow" makes progress every 50 ms for 1.5 s; "wide" runs one
+// prefill chunk of 100 rows (1 s at the default floor) in 1 s without a
+// beat; "fail" fails before admission, "late" after it; "flood" streams
+// until told to stop; "big" answers 16 MiB at once; otherwise, and after
+// "slow" and "wide", reasoning, then the last message's content echoed in
+// two pieces. Each is admitted with `admission`.
 class FakeBackend final : public api::Backend {
  public:
   std::vector<api::ModelInfo> Models() const override {
@@ -615,7 +621,7 @@ class FakeBackend final : public api::Backend {
                                         .param = "messages",
                                         .code = "context_length_exceeded"});
     }
-    if (!exchange.Admit({.prompt_tokens = 10})) {
+    if (!exchange.Admit(admission)) {
       return api::Completion{};
     }
     if (text == "late") {
@@ -631,6 +637,32 @@ class FakeBackend final : public api::Backend {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
+    }
+    if (text == "hang") {
+      started.store(true);
+      while (!release.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      if (!exchange.Continue()) {
+        cancelled.store(true);
+        return api::Completion{.completion_tokens = 1, .cached_tokens = 0, .stopped = false};
+      }
+    }
+    if (text == "slow") {
+      for (int i = 0; i < 30; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 1)) {
+          cancelled.store(true);
+          return api::Completion{};
+        }
+      }
+    }
+    if (text == "wide") {
+      if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 100)) {
+        cancelled.store(true);
+        return api::Completion{};
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     if (text == "flood") {
       started.store(true);
@@ -653,6 +685,9 @@ class FakeBackend final : public api::Backend {
     return api::Completion{.completion_tokens = go ? 4U : 3U, .cached_tokens = 2, .stopped = go};
   }
 
+  // Set before the server starts.
+  api::Exchange::Admission admission{
+      .prompt_tokens = 10, .max_tokens = 1000, .swap_bytes = 0, .floors = {}};
   std::atomic<bool> started{false};
   std::atomic<bool> release{false};
   std::atomic<bool> cancelled{false};
@@ -834,6 +869,15 @@ class ServerTest : public ::testing::Test {
   static std::string BodyOf(const std::string& response) {
     const std::size_t at = response.find("\r\n\r\n");
     return at == std::string::npos ? std::string() : response.substr(at + 4);
+  }
+
+  // The backend's health as the server sees it (a failure without a server).
+  jitllm::runtime::Health BackendHealth() const {
+    if (!server_.has_value()) {
+      ADD_FAILURE() << "no server";
+      return {};
+    }
+    return server_->health();
   }
 
   void WaitStarted() const {
@@ -1168,9 +1212,8 @@ TEST_F(ServerTest, QueuesThenRefusesConcurrentRequests) {
 
 // A stream that waits its turn starts once it has waited a keepalive
 // interval, and then hears `: keepalive` until its tokens come; so does
-// one whose model is busy before its first token. A request whose queue
-// wait runs out gets a 429, or, once its stream started, an in-stream
-// error without [DONE].
+// one whose model is busy before its first token. A non-streaming request
+// whose queue wait runs out gets a 429; a stream waits past it.
 TEST_F(ServerTest, KeepsStreamsAliveWhileTheyWait) {
   Stop();
   backend_.release.store(false);
@@ -1203,7 +1246,8 @@ TEST_F(ServerTest, KeepsStreamsAliveWhileTheyWait) {
   for (const int fd : {running, waiting, busy}) {
     (void)::close(fd);
   }
-  // The queue wait runs out.
+  // The queue wait runs out for a non-streaming request (a 429); a stream,
+  // held by keepalives, waits past it for its turn.
   Stop();
   backend_.started.store(false);
   backend_.release.store(false);
@@ -1215,14 +1259,16 @@ TEST_F(ServerTest, KeepsStreamsAliveWhileTheyWait) {
   const int plain = Connect(Post(Chat("p")));
   std::string s;
   std::string p;
-  const std::string expired = ReadResponse(streamed, s);
-  EXPECT_THAT(expired, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("rate_limit_error"),
-                             Not(HasSubstr("[DONE]"))));
   EXPECT_THAT(ReadResponse(plain, p),
               AllOf(StartsWith("HTTP/1.1 429 "), HasSubstr("Retry-After: 10\r\n")));
+  EXPECT_THAT(ReadUntil(streamed, s, ": keepalive\n\n"), StartsWith("HTTP/1.1 200 OK"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));  // twice the queue's wait
   backend_.release.store(true);
   std::string b;
   EXPECT_THAT(ReadResponse(blocker, b), StartsWith("HTTP/1.1 200 OK"));
+  EXPECT_THAT(ReadUntil(streamed, s, "data: [DONE]\n\n"),
+              AllOf(HasSubstr(R"("delta":{"content":"s"})"), Not(HasSubstr("rate_limit_error")),
+                    HasSubstr("data: [DONE]")));
   for (const int fd : {blocker, streamed, plain}) {
     (void)::close(fd);
   }
@@ -1370,6 +1416,9 @@ TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
   EXPECT_TRUE(backend_.cancelled.load());
   // The server goes on serving.
   EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
+  // A client leaving is not the backend stalling (the watchdog, watchdog.h).
+  EXPECT_TRUE(BackendHealth().healthy);
+  EXPECT_EQ(BackendHealth().stalls, 0U);
 }
 
 // A connection kept alive after its request keeps none of the request's
@@ -1503,6 +1552,8 @@ TEST_F(ServerTest, AStreamsClientThatLeavesCancelsItsGeneration) {
   }
   EXPECT_TRUE(backend_.cancelled.load());
   EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
+  EXPECT_TRUE(BackendHealth().healthy);
+  EXPECT_EQ(BackendHealth().stalls, 0U);
 }
 
 // A queued stream whose client half-closes starts at once (headers and
@@ -1556,19 +1607,155 @@ TEST_F(ServerTest, QueuedRequestsTellAHalfCloseFromALeave) {
   }
 }
 
-// The deadline ends a running request at the backend's next check (the
-// runtime's backend checks between prefill chunks and decode steps) with a
-// 504, and the server goes on serving.
-TEST_F(ServerTest, TheDeadlineEndsARunningRequest) {
+// A request that makes progress runs as long as it needs: here 1.5 s,
+// 7.5 times the stall time (as 15 minutes would be to the default's 120 s,
+// past the old fixed 600 s deadline), streaming or not; and one unit that
+// declares its size (a 100-row chunk: 1 s at the floor, allowed 3.2 s) is
+// not cut short by the stall time alone.
+TEST_F(ServerTest, AProgressingRequestOutlivesTheStallTime) {
+  Stop();
+  api::ServerOptions options;
+  options.stall = std::chrono::milliseconds(200);
+  Start(options);
+  const auto started = std::chrono::steady_clock::now();
+  const std::string plain = Exchange(Post(Chat("slow")));
+  EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(1500));
+  EXPECT_THAT(plain, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr(R"("content":"slow")")));
+  const std::string streamed = Exchange(Post(Chat("slow", R"(,"stream":true)")));
+  EXPECT_THAT(streamed, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("data: [DONE]")));
+  EXPECT_THAT(Exchange(Post(Chat("wide"))),
+              AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr(R"("content":"wide")")));
+  const jitllm::runtime::Health health = BackendHealth();
+  EXPECT_TRUE(health.healthy);
+  EXPECT_EQ(health.stalls, 0U);
+  EXPECT_FALSE(backend_.cancelled.load());
+}
+
+// A backend that makes no progress for the stall time trips the watchdog
+// while it is still hung: the request ends (a 504 before the headers, an
+// in-stream error after, without [DONE]), what is queued and what arrives
+// gets a 503, and the backend is unhealthy until the unit it hung in
+// returns; its generation then ends at that step, as a client's leaving
+// ends it, and the service serves on.
+TEST_F(ServerTest, AStalledBackendTripsTheWatchdog) {
   Stop();
   backend_.release.store(false);
   api::ServerOptions options;
-  options.deadline = std::chrono::milliseconds(300);
+  options.stall = std::chrono::milliseconds(500);
+  struct Reports {
+    std::atomic<int> unhealthy{0};
+    std::atomic<int> healthy{0};
+  };
+  const auto reports = std::make_shared<Reports>();
+  options.on_health = [reports](const jitllm::runtime::Health& health) {
+    (health.healthy ? reports->healthy : reports->unhealthy).fetch_add(1);
+  };
   Start(options);
   const auto started = std::chrono::steady_clock::now();
-  EXPECT_THAT(Exchange(Post(Chat("block"))), StartsWith("HTTP/1.1 504 "));
-  EXPECT_TRUE(backend_.cancelled.load());
+  const int hung = Connect(Post(Chat("hang")));
+  WaitStarted();
+  const int queued = Connect(Post(Chat("queued")));
+  std::string a;
+  std::string b;
+  EXPECT_THAT(ReadResponse(hung, a),
+              AllOf(StartsWith("HTTP/1.1 504 "), HasSubstr("backend_stalled")));
   EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(10));
+  EXPECT_THAT(ReadResponse(queued, b),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("Retry-After: 10\r\n"),
+                    HasSubstr("backend_unresponsive")));
+  const jitllm::runtime::Health health = BackendHealth();
+  EXPECT_FALSE(health.healthy);
+  EXPECT_EQ(health.stalls, 1U);
+  EXPECT_EQ(health.phase, jitllm::runtime::Phase::kStarting);  // where it hung
+  EXPECT_EQ(reports->unhealthy.load(), 1);
+  EXPECT_THAT(Exchange(Post(Chat("refused"))),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("backend_unresponsive")));
+  EXPECT_FALSE(backend_.cancelled.load());  // still hung
+
+  const auto recover = [&] {
+    backend_.release.store(true);
+    for (int i = 0; i < 2000 && !(backend_.cancelled.load() && BackendHealth().healthy); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(backend_.cancelled.load());  // ended at its next step
+    EXPECT_TRUE(BackendHealth().healthy);
+  };
+  recover();
+  EXPECT_GE(reports->healthy.load(), 1);
+  EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
+
+  // A stream that stalls after its headers ends with an in-stream error.
+  backend_.started.store(false);
+  backend_.release.store(false);
+  backend_.cancelled.store(false);
+  const int streamed = Connect(Post(Chat("hang", R"(,"stream":true)")));
+  WaitStarted();
+  std::string s;
+  const std::string heard = ReadResponse(streamed, s);
+  EXPECT_THAT(heard, AllOf(StartsWith("HTTP/1.1 200 OK"),
+                           HasSubstr(R"("delta":{"role":"assistant","content":"")"),
+                           HasSubstr(R"(data: {"error":)"), HasSubstr("backend_stalled"),
+                           Not(HasSubstr("[DONE]"))));
+  EXPECT_EQ(BackendHealth().stalls, 2U);
+  recover();
+  EXPECT_THAT(Exchange(Post(Chat("again"))), StartsWith("HTTP/1.1 200 OK"));
+  for (const int fd : {hung, queued, streamed}) {
+    (void)::close(fd);
+  }
+  Stop();  // before `reports`' last user goes
+}
+
+// A non-streaming request's deadline is its work at the model's floors
+// (watchdog.h ScaledDeadline), capped; a stream has none and runs past it
+// while it makes progress.
+TEST_F(ServerTest, OnlyANonStreamingRequestHasADeadline) {
+  Stop();
+  backend_.release.store(false);
+  // 10 prompt tokens and 100 to generate at 1,000 tokens a second: 0.11 s,
+  // three times over, plus the stall time: 0.53 s.
+  backend_.admission.max_tokens = 100;
+  backend_.admission.floors = {.prefill = 1000, .decode = 1000};
+  api::ServerOptions options;
+  options.stall = std::chrono::milliseconds(200);
+  Start(options);
+  auto started = std::chrono::steady_clock::now();
+  const std::string scaled = Exchange(Post(Chat("block")));
+  auto took = std::chrono::steady_clock::now() - started;
+  EXPECT_THAT(scaled, AllOf(StartsWith("HTTP/1.1 504 "), HasSubstr("deadline")));
+  EXPECT_GE(took, std::chrono::milliseconds(530));
+  EXPECT_LT(took, std::chrono::seconds(5));
+  EXPECT_TRUE(backend_.cancelled.load());
+  EXPECT_TRUE(BackendHealth().healthy);  // a deadline is not a stall
+
+  // The same work as a stream runs until it is done, well past that.
+  backend_.started.store(false);
+  backend_.cancelled.store(false);
+  const int fd = Connect(Post(Chat("block", R"(,"stream":true)")));
+  WaitStarted();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  backend_.release.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadUntil(fd, pending, "data: [DONE]\n\n"),
+              AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("data: [DONE]")));
+  EXPECT_FALSE(backend_.cancelled.load());
+  (void)::close(fd);
+
+  // The cap bounds the scaled deadline.
+  Stop();
+  backend_.started.store(false);
+  backend_.release.store(false);
+  backend_.cancelled.store(false);
+  backend_.admission.max_tokens = 1000;
+  backend_.admission.floors = {};
+  options.stall = std::chrono::seconds(10);
+  options.deadline_cap = std::chrono::milliseconds(300);
+  Start(options);
+  started = std::chrono::steady_clock::now();
+  EXPECT_THAT(Exchange(Post(Chat("block"))), StartsWith("HTTP/1.1 504 "));
+  took = std::chrono::steady_clock::now() - started;
+  EXPECT_GE(took, std::chrono::milliseconds(300));
+  EXPECT_LT(took, std::chrono::seconds(5));
+  EXPECT_TRUE(backend_.cancelled.load());
   EXPECT_THAT(Exchange(Post(Chat("after"))), StartsWith("HTTP/1.1 200 OK"));
 }
 

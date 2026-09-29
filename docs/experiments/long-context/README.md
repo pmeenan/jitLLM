@@ -588,7 +588,9 @@ a rough estimate of agent days, including tests.
    fails (a resend resumes, fix B). To evaluate in phase 2: a deadline
    that scales with the prompt (a floor prefill rate), or none for a
    stream that is sending keepalives and making progress. **Hours, and a
-   D-097 amendment.**
+   D-097 amendment.** *Closed 2026-09-29: both, as a progress watchdog
+   (D-097's owner note,
+   [runtime-serving.md](../../runtime-serving.md#progress-and-deadlines)).*
 4. **DeepSeek's memory and maximum:** 1.21× llama.cpp's peak at 262,144;
    DSpark only to 143,360; 1M impossible as built; the configuration
    refuses more than 262,144. Fix 1.1 is the lever; then the

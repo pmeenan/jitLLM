@@ -883,6 +883,13 @@ it appears.
       - *Defaults:* each model's default context rises from 8,704 to what
         coding clients expect, within the memory budget. The intake bounds
         (D-097) follow.
+      - *Request deadline (done 2026-09-29):* the route's fixed 600 s
+        deadline is gone, so a long prefill no longer fails on the clock: a
+        progress watchdog, scaled non-streaming deadlines and no deadline
+        for streams (D-097's owner note,
+        [runtime-serving.md](runtime-serving.md#progress-and-deadlines)):
+        DeepSeek's 128K prompt, which the deadline stopped at 108,544
+        tokens, now streams to its end (845.8 s on `spark`).
 
 **Exit criteria:**
 

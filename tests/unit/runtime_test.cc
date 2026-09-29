@@ -3,7 +3,8 @@
 
 // The runtime module's startup steps on scratch trees, and the platform
 // module's process services it relies on: the crash policy, lock files and
-// readiness notification; and a prefill's chunks (prefill.h).
+// readiness notification; a prefill's chunks (prefill.h); and the chat
+// route's watchdog and scaled deadlines on a synthetic clock (watchdog.h).
 
 #include "runtime/runtime.h"
 
@@ -17,6 +18,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -38,6 +40,7 @@
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
 #include "runtime/prefill.h"
+#include "runtime/watchdog.h"
 
 namespace {
 
@@ -405,7 +408,8 @@ TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
 }
 
 // The chunks run in order, in rows of at most the chunk, and `go_on` asked
-// before each stops the loop between chunks, never inside one.
+// before each (with its rows) stops the loop between chunks, never inside
+// one.
 TEST(PrefillChunk, RunsChunksUntilToldToStop) {
   using jitllm::runtime::RunPrefillChunks;
   std::vector<std::pair<std::uint32_t, std::uint32_t>> ran;
@@ -425,10 +429,13 @@ TEST(PrefillChunk, RunsChunksUntilToldToStop) {
   // Told to stop before the third chunk: the first two ran, and the end is
   // where they reached (what the state then holds).
   ran.clear();
-  int asked = 0;
-  auto stopped = RunPrefillChunks(0, 1300, 512, chunk, [&] { return ++asked < 3; });
+  std::vector<std::uint32_t> asked;
+  auto stopped = RunPrefillChunks(0, 1300, 512, chunk, [&](std::uint32_t rows) {
+    asked.push_back(rows);
+    return asked.size() < 3;
+  });
   ASSERT_TRUE(stopped.has_value());
-  EXPECT_EQ(asked, 3);
+  EXPECT_EQ(asked, (std::vector<std::uint32_t>{512, 512, 276}));
   EXPECT_EQ(ran.size(), 2U);
   EXPECT_EQ(stopped->end, 1024U);
   EXPECT_EQ(stopped->chunks, 2U);
@@ -436,7 +443,7 @@ TEST(PrefillChunk, RunsChunksUntilToldToStop) {
 
   // Told before the first: nothing runs.
   ran.clear();
-  auto none = RunPrefillChunks(40, 1300, 512, chunk, [] { return false; });
+  auto none = RunPrefillChunks(40, 1300, 512, chunk, [](std::uint32_t) { return false; });
   ASSERT_TRUE(none.has_value());
   EXPECT_TRUE(ran.empty());
   EXPECT_EQ(none->end, 40U);
@@ -445,7 +452,8 @@ TEST(PrefillChunk, RunsChunksUntilToldToStop) {
   // Resumed from where it stopped, the chunks fall where an unstopped
   // prefill's would.
   ran.clear();
-  auto resumed = RunPrefillChunks(stopped->end, 1300, 512, chunk, [] { return true; });
+  auto resumed =
+      RunPrefillChunks(stopped->end, 1300, 512, chunk, [](std::uint32_t) { return true; });
   ASSERT_TRUE(resumed.has_value());
   EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{1024, 276}}));
   EXPECT_FALSE(resumed->stopped);
@@ -463,8 +471,13 @@ TEST(PrefillChunk, WideChunksRunInWholeTiles) {
     ran.emplace_back(at, rows);
     return {};
   };
-  ASSERT_TRUE(RunPrefillChunks(0, 1500, 2048, chunk, {}).has_value());
+  std::vector<std::uint32_t> asked;  // go_on hears the rows each chunk runs
+  ASSERT_TRUE(RunPrefillChunks(0, 1500, 2048, chunk, [&](std::uint32_t rows) {
+                asked.push_back(rows);
+                return true;
+              }).has_value());
   EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{{0, 1496}, {1496, 4}}));
+  EXPECT_EQ(asked, (std::vector<std::uint32_t>{1496, 4}));
   ran.clear();
   ASSERT_TRUE(RunPrefillChunks(3, 4100, 2048, chunk, {}).has_value());
   EXPECT_EQ(ran, (std::vector<std::pair<std::uint32_t, std::uint32_t>>{
@@ -494,6 +507,100 @@ TEST(PrefillChunk, AFailedChunkIsTheError) {
   EXPECT_FALSE(RunPrefillChunks(
                    0, 10, 0, [](auto, auto) -> std::expected<void, std::string> { return {}; }, {})
                    .has_value());
+}
+
+// ---------------------------------------------------------------- the watchdog
+
+using jitllm::runtime::Allowance;
+using jitllm::runtime::ExpectedSeconds;
+using jitllm::runtime::Floors;
+using jitllm::runtime::Phase;
+using jitllm::runtime::ScaledDeadline;
+using jitllm::runtime::WatchClock;
+using jitllm::runtime::Watchdog;
+using std::chrono::milliseconds;
+using std::chrono::minutes;
+using std::chrono::seconds;
+
+// A unit's expected time at the floors, and its allowance: the stall time
+// plus three times that.
+TEST(Watchdog, AllowsEachUnitItsExpectedTime) {
+  const Floors floors{.prefill = 100, .decode = 5};
+  EXPECT_DOUBLE_EQ(ExpectedSeconds(Phase::kPrefill, 2048, floors), 20.48);
+  EXPECT_DOUBLE_EQ(ExpectedSeconds(Phase::kDecode, 10, floors), 2.0);
+  EXPECT_DOUBLE_EQ(ExpectedSeconds(Phase::kSwap, 100'000'000'000ULL, floors), 100.0);
+  EXPECT_DOUBLE_EQ(ExpectedSeconds(Phase::kStarting, 5, floors), 0.0);
+  EXPECT_EQ(Allowance(seconds(120), 0), seconds(120));
+  EXPECT_EQ(Allowance(seconds(120), 20.48), milliseconds(120'000 + 61'440));
+  EXPECT_EQ(Allowance(seconds(120), -1), seconds(120));
+  EXPECT_LE(Allowance(seconds(120), 1e30), std::chrono::hours(24 * 30));  // saturates
+  // A floor of 0 (never configured: the bounds start at 1) counts as 1.
+  EXPECT_DOUBLE_EQ(ExpectedSeconds(Phase::kPrefill, 7, Floors{.prefill = 0, .decode = 0}), 7.0);
+}
+
+// A non-streaming deadline: min(cap, stall + 3 × (swap + prompt + completion
+// at the floors)). DeepSeek's 128K prompt at the default floors fits well
+// inside the default cap; a completion as long as the context is capped.
+TEST(Watchdog, ScalesANonStreamingDeadlineToItsWork) {
+  const Floors floors;  // 100 and 5 tokens a second
+  EXPECT_EQ(ScaledDeadline(seconds(120), seconds(14400), floors, 0, 131072, 4096),
+            milliseconds(120'000 + (3 * (1'310'720 + 819'200))));
+  EXPECT_EQ(ScaledDeadline(seconds(120), seconds(14400), floors, 0, 1000, 262144), seconds(14400));
+  EXPECT_EQ(ScaledDeadline(seconds(120), seconds(14400), floors, 50'000'000'000ULL, 100, 10),
+            milliseconds(120'000 + (3 * (50'000 + 1'000 + 2'000))));
+  EXPECT_EQ(ScaledDeadline(seconds(30), seconds(60), floors, 0, 100'000, 0), seconds(60));
+}
+
+// Beats keep a request alive however long it runs: two hours of synthetic
+// time (twelve times the old fixed 600 s deadline) with a chunk every
+// minute never trips a 120 s stall.
+TEST(Watchdog, ProgressKeepsALongRequestAlive) {
+  auto now = WatchClock::time_point{} + std::chrono::hours(1);
+  Watchdog dog(seconds(120), now);
+  EXPECT_FALSE(dog.Check(now + std::chrono::hours(5)));  // idle: nothing watched
+  EXPECT_FALSE(dog.due().has_value());
+  EXPECT_FALSE(dog.Beat(Phase::kStarting, 0, now));
+  for (int i = 0; i < 120; ++i) {
+    now += minutes(1);
+    EXPECT_FALSE(dog.Check(now)) << i;
+    EXPECT_FALSE(dog.Beat(Phase::kPrefill, 0.5, now));
+  }
+  EXPECT_TRUE(dog.health().healthy);
+  EXPECT_EQ(dog.health().stalls, 0U);
+  EXPECT_EQ(dog.health().phase, Phase::kPrefill);
+  EXPECT_EQ(dog.health().last_progress, now);
+  EXPECT_FALSE(dog.Idle(now));
+  EXPECT_FALSE(dog.due().has_value());
+}
+
+// No beat within the allowance is a stall, noticed once: the backend is
+// unhealthy until its next beat, which recovers it.
+TEST(Watchdog, AStallMarksTheBackendUnhealthyUntilItsNextBeat) {
+  const auto start = WatchClock::time_point{} + std::chrono::hours(1);
+  Watchdog dog(seconds(120), start);
+  (void)dog.Beat(Phase::kDecode, 0, start);
+  EXPECT_EQ(dog.due(), std::optional(start + seconds(120)));
+  EXPECT_FALSE(dog.Check(start + seconds(119)));
+  EXPECT_TRUE(dog.Check(start + seconds(120)));
+  EXPECT_FALSE(dog.health().healthy);
+  EXPECT_EQ(dog.health().stalls, 1U);
+  EXPECT_EQ(dog.health().stalled_at, start + seconds(120));
+  EXPECT_EQ(dog.health().phase, Phase::kDecode);  // where it hung
+  EXPECT_EQ(dog.health().last_progress, start);
+  EXPECT_FALSE(dog.Check(start + seconds(500)));  // once a stall
+  EXPECT_FALSE(dog.due().has_value());
+  EXPECT_TRUE(dog.Beat(Phase::kDecode, 0, start + seconds(600)));  // recovered
+  EXPECT_TRUE(dog.health().healthy);
+  EXPECT_FALSE(dog.Beat(Phase::kDecode, 0, start + seconds(601)));
+  // A unit declared long is allowed its expected time: a 2,048-row chunk
+  // at 100 tokens a second, 120 s + 3 × 20.48 s.
+  const auto at = start + seconds(700);
+  (void)dog.Beat(Phase::kPrefill, ExpectedSeconds(Phase::kPrefill, 2048, Floors{}), at);
+  EXPECT_FALSE(dog.Check(at + seconds(181)));
+  EXPECT_TRUE(dog.Check(at + seconds(182)));
+  EXPECT_EQ(dog.health().stalls, 2U);
+  EXPECT_TRUE(dog.Idle(at + seconds(300)));  // the request ended: recovered, idle
+  EXPECT_FALSE(dog.Check(at + seconds(9000)));
 }
 
 }  // namespace

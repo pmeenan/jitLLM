@@ -65,8 +65,9 @@ inline constexpr std::uint32_t kBodyTimeoutMs = 30'000;    // likewise
 inline constexpr std::uint32_t kWriteTimeoutMs = 30'000;   // output pending without progress
 inline constexpr std::uint32_t kIdleTimeoutMs = 60'000;  // a kept-alive connection between requests
 inline constexpr std::uint32_t kKeepaliveMs = 15'000;    // SSE comment interval
-inline constexpr std::uint32_t kQueueWaitMs = 120'000;
-inline constexpr std::uint32_t kDeadlineMs = 600'000;
+inline constexpr std::uint32_t kQueueWaitMs = 120'000;   // a non-streaming request's
+// A running request has no fixed deadline: the watchdog and a non-streaming
+// request's scaled deadline (watchdog.h) take its place.
 inline constexpr std::size_t kMaxQueued = 64;  // config::kDefaultMaxQueued
 inline constexpr std::size_t kMaxConnections = 1024;
 inline constexpr std::size_t kMaxUnsentBytes = std::size_t{1} << 20U;    // a stream's, per client

@@ -135,9 +135,10 @@ enum class Kind : std::uint8_t {
   kInterfaces,
   kPeerScopes,
   kProfile,
-  kClientBind,   // a bind entry or an array of them (D-097)
-  kClientPort,   // [client] port
-  kClientCount,  // [client] max_connections, max_queued
+  kClientBind,     // a bind entry or an array of them (D-097)
+  kClientPort,     // [client] port
+  kClientCount,    // [client] max_connections, max_queued
+  kClientSeconds,  // [client] stall_seconds, deadline_cap_seconds
 };
 
 struct KeySpec {
@@ -161,6 +162,8 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"client", "port"}, .kind = Kind::kClientPort, .member = false},
       {.path = {"client", "max_connections"}, .kind = Kind::kClientCount, .member = false},
       {.path = {"client", "max_queued"}, .kind = Kind::kClientCount, .member = false},
+      {.path = {"client", "stall_seconds"}, .kind = Kind::kClientSeconds, .member = false},
+      {.path = {"client", "deadline_cap_seconds"}, .kind = Kind::kClientSeconds, .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
       {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
       {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
@@ -189,18 +192,22 @@ enum class ModelKey : std::uint8_t {
   kSpeculation,
   kContext,
   kPrefillChunk,
+  kPrefillFloor,
+  kDecodeFloor,
   kTokenizer,
   kChatTemplate,
 };
 
 std::optional<ModelKey> FindModelKey(std::string_view key) {
-  static constexpr std::array<std::pair<std::string_view, ModelKey>, 8> kKeys = {{
+  static constexpr std::array<std::pair<std::string_view, ModelKey>, 10> kKeys = {{
       {"artifact", ModelKey::kArtifact},
       {"composition", ModelKey::kComposition},
       {"drafter", ModelKey::kDrafter},
       {"speculation", ModelKey::kSpeculation},
       {"context", ModelKey::kContext},
       {"prefill_chunk", ModelKey::kPrefillChunk},
+      {"prefill_floor_tok_s", ModelKey::kPrefillFloor},
+      {"decode_floor_tok_s", ModelKey::kDecodeFloor},
       {"tokenizer", ModelKey::kTokenizer},
       {"chat_template", ModelKey::kChatTemplate},
   }};
@@ -457,6 +464,8 @@ class Validator {
         return "an integer port";
       case Kind::kClientCount:
         return "an integer";
+      case Kind::kClientSeconds:
+        return "an integer of seconds";
     }
     return "";
   }
@@ -588,6 +597,23 @@ class Validator {
           max_connections_ = static_cast<std::uint32_t>(value->get());
         } else {
           max_queued_ = static_cast<std::uint32_t>(value->get());
+        }
+        break;
+      }
+      case Kind::kClientSeconds: {
+        const bool stall = leaf.path.back() == "stall_seconds";
+        const std::int64_t least = stall ? kMinStallSeconds : kMinDeadlineCapSeconds;
+        const std::int64_t most = stall ? kMaxStallSeconds : kMaxDeadlineCapSeconds;
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (value->get() < least || value->get() > most) {
+          out_.At(leaf, std::format("{} must be from {} to {} seconds, not {}", key, least, most,
+                                    value->get()));
+        } else if (stall) {
+          stall_seconds_ = static_cast<std::uint32_t>(value->get());
+        } else {
+          deadline_cap_seconds_ = static_cast<std::uint32_t>(value->get());
         }
         break;
       }
@@ -785,6 +811,23 @@ class Validator {
         }
         break;
       }
+      case ModelKey::kPrefillFloor:
+      case ModelKey::kDecodeFloor: {
+        const bool prefill = *which == ModelKey::kPrefillFloor;
+        const std::uint32_t most = prefill ? kMaxPrefillFloor : kMaxDecodeFloor;
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (std::cmp_less(value->get(), 1) || std::cmp_greater(value->get(), most)) {
+          out_.At(leaf, std::format("{} must be from 1 to {} tokens a second, not {}", key, most,
+                                    value->get()));
+        } else {
+          (prefill ? model.entry.prefill_floor_tok_s : model.entry.decode_floor_tok_s) =
+              static_cast<std::uint32_t>(value->get());
+          model.floors_set = true;
+        }
+        break;
+      }
       case ModelKey::kTokenizer:
       case ModelKey::kChatTemplate: {
         const auto* text = node.as_string();
@@ -824,10 +867,11 @@ class Validator {
         problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
       }
       if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
-                            model.speculation_set || m.prefill_chunk)) {
+                            model.speculation_set || m.prefill_chunk || model.floors_set)) {
         problem(
-            "drafter, speculation, context, prefill_chunk, tokenizer and chat_template are a "
-            "model artifact's keys, not a composition's");
+            "drafter, speculation, context, prefill_chunk, prefill_floor_tok_s, "
+            "decode_floor_tok_s, tokenizer and chat_template are a model artifact's keys, not a "
+            "composition's");
       }
       if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
         problem("an artifact cannot be its own drafter");
@@ -907,6 +951,8 @@ class Validator {
     config.client.port = client_port_.value_or(kDefaultClientPort);
     config.client.max_connections = max_connections_.value_or(kDefaultMaxConnections);
     config.client.max_queued = max_queued_.value_or(kDefaultMaxQueued);
+    config.client.stall_seconds = stall_seconds_.value_or(kDefaultStallSeconds);
+    config.client.deadline_cap_seconds = deadline_cap_seconds_.value_or(kDefaultDeadlineCapSeconds);
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -1010,6 +1056,7 @@ class Validator {
     bool bad_name = false;
     bool context_set = false;
     bool speculation_set = false;
+    bool floors_set = false;
   };
 
   Collector& out_;
@@ -1028,6 +1075,8 @@ class Validator {
   std::optional<std::uint16_t> client_port_;
   std::optional<std::uint32_t> max_connections_;
   std::optional<std::uint32_t> max_queued_;
+  std::optional<std::uint32_t> stall_seconds_;
+  std::optional<std::uint32_t> deadline_cap_seconds_;
 };
 
 }  // namespace

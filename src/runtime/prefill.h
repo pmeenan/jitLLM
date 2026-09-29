@@ -17,8 +17,10 @@
 //   reads the mask in whole 8-row column tiles (kernels/ggml/fattn_mma.cu),
 //   and the models' masks have exactly the chunk's rows (RE-036).
 // - Cancellation: a chunk is the granularity. Before each chunk the loop
-//   asks `go_on` (the client still there, the deadline not passed, the
-//   runtime not stopping); false stops it there, and what ran is exactly
+//   asks `go_on` with the chunk's rows (the client still there, the
+//   backend making progress, a non-streaming deadline not passed, the
+//   runtime not stopping; the rows set the watchdog's allowance for the
+//   chunk, watchdog.h); false stops it there, and what ran is exactly
 //   the chunks before, so the conversation's state holds a prefix of the
 //   turn's tokens and nothing it did not process.
 
@@ -51,16 +53,17 @@ struct PrefillRun {
 };
 
 // Runs positions [from, end) in chunks of at most `rows`, in order (one of
-// kPrefillTiledFrom rows or more in whole tiles, above): before
-// each, `go_on` (if set) is asked, and false stops the loop with
+// kPrefillTiledFrom rows or more in whole tiles, above): before each,
+// `go_on` (if set) is asked with its rows, and false stops the loop with
 // PrefillRun::end the position the chunks reached. A chunk's failure is
 // the error, with its position; the chunks before it ran.
+using PrefillGoOn = std::function<bool(std::uint32_t rows)>;
 using PrefillChunk =
     std::function<std::expected<void, std::string>(std::uint32_t at, std::uint32_t rows)>;
 std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std::uint32_t end,
                                                         std::uint32_t rows,
                                                         const PrefillChunk& chunk,
-                                                        const std::function<bool()>& go_on);
+                                                        const PrefillGoOn& go_on);
 
 }  // namespace jitllm::runtime
 

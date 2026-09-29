@@ -21,20 +21,20 @@ std::uint32_t PrefillChunkRows(std::uint32_t context, std::optional<std::uint32_
 std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std::uint32_t end,
                                                         std::uint32_t rows,
                                                         const PrefillChunk& chunk,
-                                                        const std::function<bool()>& go_on) {
+                                                        const PrefillGoOn& go_on) {
   using Clock = std::chrono::steady_clock;
   PrefillRun run{.end = from, .chunks = 0, .stopped = false, .longest = 0};
   if (rows == 0 && from < end) {
     return std::unexpected("a prefill chunk of 0 rows");
   }
   while (run.end < end) {
-    if (go_on && !go_on()) {
-      run.stopped = true;
-      return run;
-    }
     std::uint32_t n = std::min(rows, end - run.end);
     if (n >= kPrefillTiledFrom) {
       n -= n % kPrefillRowTile;  // the rest is a chunk of its own
+    }
+    if (go_on && !go_on(n)) {
+      run.stopped = true;
+      return run;
     }
     const auto started = Clock::now();
     if (auto r = chunk(run.end, n); !r) {

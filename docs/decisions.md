@@ -110,7 +110,7 @@ Docker's default profile admits io_uring again, or DGX OS stops shipping
 Docker or the container toolkit; a port starts and its package manager is
 chosen; or the primary platform stops being Debian-based (D-027).
 
-## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract)
+## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; amended by the owner on 2026-09-29: a progress watchdog and scaled non-streaming deadlines replace the fixed request deadline, adding two `[client]` keys and two model keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract)
 
 **Decision.** With models configured (D-096), the runtime service serves
 [runtime-serving.md](runtime-serving.md#the-chat-route)'s chat route. The
@@ -185,16 +185,44 @@ amended it to what follows.
   model's usable context less the prompt, temperature 0–2, top_p (0, 1],
   top_k −1 to 2³¹−1, min_p [0, 1]; timeouts of 10 s for the head and 30 s
   for the body (from a request's first byte), 30 s for output that makes
-  no progress, 60 s idle between requests, 120 s in the queue and 600 s a
-  request; 1,024 connections (`[client] max_connections`, 1–65,536) and
-  64 queued requests (`[client] max_queued`, 1–1,024), 64 MiB of bodies
-  arriving at once, 1 MiB of a stream its client has not taken.
+  no progress, 60 s idle between requests, 120 s in the queue (a
+  non-streaming request's, since 2026-09-29) and, until 2026-09-29, 600 s
+  a request (now the watchdog below); 1,024 connections (`[client]
+  max_connections`, 1–65,536) and 64 queued requests (`[client]
+  max_queued`, 1–1,024), 64 MiB of bodies arriving at once, 1 MiB of a
+  stream its client has not taken.
   413/414/408/411/417/501/505 for HTTP bounds, 400 for the body's, 404 for
   an unknown model, 400 for the image pipeline, 403 for the guards, 415
   without `application/json`, 429 with `Retry-After: 10` and
   `x-should-retry: true` beyond the queue or its wait, 503 (the same
-  headers) for too many connections or bodies and while stopping, 504
-  past the deadline.
+  headers) for too many connections or bodies, while stopping and while
+  the backend is unhealthy, 504 past a non-streaming deadline or on a
+  stall.
+- **Progress, not a clock.** *Owner, 2026-09-29: "I'd make both changes
+  to the request deadline, particularly since the response time is ours
+  to own and we can know if the backend is healthy or not." The fixed
+  deadline is replaced by a progress watchdog plus scaled non-streaming
+  deadlines; streams have none.* The 600 s deadline returned a 504 on a
+  healthy long prefill (DeepSeek's 128K prompt, stopped at 108,544 of
+  128,821 tokens). A request now fails
+  only when the backend makes no progress (no request start, swap,
+  prefill chunk, decode step or response end) for `[client]
+  stall_seconds` (default 120, 30–3,600), a unit named in advance (a swap
+  by its bytes, a chunk by its rows) allowed three times its expected time
+  at the model's floors on top. A stall, noticed on the I/O thread whether
+  or not the backend returns, ends the request (504 before the headers,
+  an in-stream error after), cancels its generation as a client's leaving
+  does, refuses the queue with 503, and marks the backend unhealthy: every
+  new request gets a 503 until the backend's next progress (a hung unit
+  that never returns is the node's per-step patience's, which stops the
+  service for a restart). A stream has no deadline. A non-streaming
+  request's is min(`[client] deadline_cap_seconds` (4 h, 60–86,400),
+  stall + 3 × (swap bytes at 1 GB/s + prompt tokens at `[models.<name>]
+  prefill_floor_tok_s` (100) + `max_tokens` at `decode_floor_tok_s` (5))).
+  A queued stream has no fixed wait; a non-streaming one keeps 120 s. The
+  health (healthy, phase, last progress, stalls) is logged, in the
+  service manager's status, and held for M5's management listener
+  ([runtime-serving.md](runtime-serving.md#progress-and-deadlines)).
 - **Connections and threads.** One I/O thread runs an epoll loop over the
   listeners and every connection, all non-blocking, and never waits on the
   model; the driver thread (the node's one) runs requests one at a time,
@@ -221,9 +249,10 @@ amended it to what follows.
   admitted early: its headers and role chunk go out then, and `:
   keepalive` comment lines follow every 15 s without output, queued,
   swapping or prefilling (D-045, well inside the named clients' 300 s
-  bounds); a queue wait that runs out after its headers is an in-stream
-  `rate_limit_error` without `[DONE]`, and a refusal from the model after
-  them (the context exceeded) an in-stream error. A request that starts
+  bounds); a stream waits in the queue as long as the backend makes
+  progress (until 2026-09-29, a queue wait that ran out after its headers
+  was an in-stream `rate_limit_error`), and a refusal from the model after
+  them (the context exceeded) is an in-stream error. A request that starts
   within 15 s is admitted by the model first, so those refusals stay
   400s before any header. Non-streaming requests wait silently, up to the
   queue's wait.
@@ -242,7 +271,9 @@ queue and a swap. One request at a time is M3's single user; batching is
 later. Our own HTTP/1.1 code (no new dependency, bounds we state).
 
 **Consequences.** The configuration gains `[client] bind` (a string or a
-list), `port`, `max_connections` and `max_queued`; schema version stays 2
+list), `port`, `max_connections` and `max_queued`, and (2026-09-29)
+`stall_seconds` and `deadline_cap_seconds`, with `[models.<name>]
+prefill_floor_tok_s` and `decode_floor_tok_s`; schema version stays 2
 (new keys; the loopback-only form still parses). The default listener
 widens from 127.0.0.1 to loopback and the tailnet. The runtime raises its
 open-file limit toward `max_connections` plus 256 and keeps fewer

@@ -780,7 +780,7 @@ Status Llm::Clear() {
 }
 
 Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
-                    const std::function<bool()>& go_on, PrefillRun* run) {
+                    const PrefillGoOn& go_on, PrefillRun* run) {
   if (needs_clear_) {
     if (auto r = Clear(); !r) {
       return r;
