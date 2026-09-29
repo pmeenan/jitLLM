@@ -145,7 +145,7 @@ amended it to what follows.
   or a `: keepalive` comment, and before a non-streaming response's head
   an interim `102 Processing` (HTTP/1.1 only; no 1xx is safe for every
   client, runtime-serving.md). A half-close before the request is whole
-  is a disconnect.
+  is a disconnect. *Owner, 2026-09-29: this hybrid probe accepted.*
 - **Keepalives.** A streamed request that waits in the queue for 15 s is
   admitted early: its headers and role chunk go out then, and `:
   keepalive` comment lines follow every 15 s without output, queued,
