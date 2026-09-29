@@ -382,15 +382,22 @@ std::expected<void, KernelFailure> CheckConcat(const ggml_tensor* node) {
   }
   // The contiguous kernels write the output densely, whatever its strides,
   // and count blocks in an int; the others launch a block per output row,
-  // channel and sample (concat.cu:94-196).
+  // channel and sample (concat.cu:94-196). concat_cuda takes the contiguous
+  // kernel (a one-dimensional grid over each sample's plane) when both
+  // operands are contiguous in their first three dimensions, and two copies
+  // along dimension 3 when both are contiguous (concat.cu:142-162), so only
+  // the per-row kernel meets the grid's row and channel limits (RE-038).
   const std::uint64_t size = ggml_type_size(node->type);
   if (!Packed(node) || !ElementStrides(a) || !ElementStrides(b) || a->nb[0] != size ||
       b->nb[0] != size) {
     return Rejected("concat into a packed output from rows of contiguous elements");
   }
+  const bool dense = dim != 3 ? ggml_is_contiguous_to_3(a) && ggml_is_contiguous_to_3(b)
+                              : ggml_is_contiguous(a) && ggml_is_contiguous(b);
   const auto plane = Product({node->ne[0], node->ne[1], node->ne[2]});
-  if (!plane || *plane / 256 >= kInt32Max || std::cmp_greater(node->ne[1], kInt32Max) ||
-      node->ne[2] > 65535 || node->ne[3] > 65535) {
+  if (!plane || *plane / 256 >= kInt32Max ||
+      (!dense && (std::cmp_greater(node->ne[1], kInt32Max) || node->ne[2] > 65535 ||
+                  node->ne[3] > 65535))) {
     return Rejected("concat beyond the kernels' grid");
   }
   if (!AlignedEverywhere(a, size) || !AlignedEverywhere(b, size) || !Aligned(node, size)) {

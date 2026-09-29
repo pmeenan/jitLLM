@@ -36,7 +36,9 @@
 //   through the K-C launch context. Graphs, plans and bindings are kept per
 //   chunk shape, so decode steps of one shape reuse them.
 // - --prompts: each line `name<TAB>ids...`; each prompt from a cleared state
-//   as one prefill chunk, then --generate tokens one at a time. Without
+//   in prefill chunks of --max-rows (one chunk when it fits; from 1,024
+//   rows whole 8-row tiles, RE-036), then --generate tokens one at a time.
+//   Without
 //   --force the next token is the argmax (greedy); with --force (lines of
 //   the same names) the given tokens are fed instead, and the argmax is
 //   still recorded. Every step's logits are written.
@@ -132,6 +134,17 @@ std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintpt
 std::uint64_t Round(std::uint64_t bytes, std::uint64_t to) { return (bytes + to - 1) / to * to; }
 
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
+
+// A chunk's rows: at most `max_rows`, and from 1,024 rows whole 8-row tiles
+// (RE-036: GGML's mask pre-pass reads whole tiles there), the rest left to
+// the next chunk.
+std::uint32_t ChunkRows(std::size_t remaining, std::uint32_t max_rows) {
+  auto rows = static_cast<std::uint32_t>(std::min<std::size_t>(max_rows, remaining));
+  if (rows >= 1024 && rows % 8 != 0) {
+    rows -= rows % 8;
+  }
+  return rows;
+}
 
 // /proc/meminfo's MemAvailable, in bytes.
 std::uint64_t MemAvailable() {
@@ -1386,12 +1399,20 @@ Status Run(const Options& o) {
       }
       std::map<std::string, std::vector<float>> kept;
       const bool dump = pi == 0 && !o.dump.empty();
+      if (dump && prompt.ids.size() > o.max_rows) {
+        return Error("--dump needs a first prompt of one chunk");
+      }
       const auto t0 = Clock::now();
-      if (auto r = runner.Chunk(0, prompt.ids, logits,
-                                dump ? std::span(o.dump) : std::span<const std::string>{},
-                                dump ? &kept : nullptr);
-          !r) {
-        return Error(std::format("{}: {}", prompt.name, r.error()));
+      // A prompt longer than --max-rows (long context) is prefilled in chunks
+      // of that many rows; the last chunk's last row gives the first token.
+      for (std::size_t at = 0, rows = 0; at < prompt.ids.size(); at += rows) {
+        rows = ChunkRows(prompt.ids.size() - at, o.max_rows);
+        if (auto r = runner.Chunk(
+                static_cast<std::uint32_t>(at), std::span(prompt.ids).subspan(at, rows), logits,
+                dump ? std::span(o.dump) : std::span<const std::string>{}, dump ? &kept : nullptr);
+            !r) {
+          return Error(std::format("{} at {}: {}", prompt.name, at, r.error()));
+        }
       }
       const double prefill = Seconds(Clock::now() - t0);
       if (dump) {
@@ -1457,9 +1478,8 @@ Status Run(const Options& o) {
     std::vector<double> nll;
     std::vector<float> logits;
     const auto t0 = Clock::now();
-    for (std::uint32_t at = 0; at < ids.size(); at += o.max_rows) {
-      const auto rows =
-          static_cast<std::uint32_t>(std::min<std::size_t>(o.max_rows, ids.size() - at));
+    for (std::uint32_t at = 0, rows = 0; at < ids.size(); at += rows) {
+      rows = ChunkRows(ids.size() - at, o.max_rows);
       if (auto r = runner.Chunk(at, std::span(ids).subspan(at, rows), logits); !r) {
         return Error(std::format("perplexity chunk at {}: {}", at, r.error()));
       }

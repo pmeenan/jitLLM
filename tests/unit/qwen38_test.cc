@@ -393,10 +393,12 @@ TEST(Qwen38Test, TheStateIsBoundedAndSized) {
   EXPECT_FALSE(md::Qwen38State(p, 0, 1).has_value());
   EXPECT_FALSE(md::Qwen38State(p, 16, 0).has_value());
   EXPECT_FALSE(md::Qwen38State(p, 16, 32).has_value());
-  // Chunks wider than the bound, or whose masks would pass I32 elements.
+  // Chunks wider than the bound, or whose F32 [n_kv, rows] planes would pass
+  // I32 bytes (RE-037: at the configured maximum, 2,048 rows are one byte over).
   EXPECT_FALSE(md::Qwen38State(p, 65536, md::kQwen38MaxRows + 1).has_value());
-  EXPECT_TRUE(md::Qwen38State(p, 262144, 8191).has_value());
-  EXPECT_FALSE(md::Qwen38State(p, 262400, 8192).has_value());
+  EXPECT_TRUE(md::Qwen38State(p, 262144, 2047).has_value());
+  EXPECT_FALSE(md::Qwen38State(p, 262144, 2048).has_value());
+  EXPECT_FALSE(md::Qwen38State(p, 262400, 2048).has_value());
   EXPECT_FALSE(
       md::Qwen38State(p, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), 1)
           .has_value());
@@ -410,7 +412,8 @@ TEST(Qwen38Test, TheWidestChunkIsBounded) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   for (const auto& [context, most] :
        {std::pair{512U, 512U}, std::pair{511U, 511U}, std::pair{8704U, md::kQwen38MaxRows},
-        std::pair{262144U, 8191U}, std::pair{262400U, 8184U}}) {
+        std::pair{65536U, 8191U}, std::pair{131072U, 4095U}, std::pair{262144U, 2047U},
+        std::pair{262400U, 2046U}}) {
     SCOPED_TRACE(context);
     EXPECT_EQ(md::Qwen38MostRows(context), most);
     EXPECT_TRUE(md::Qwen38State(p, context, most).has_value());

@@ -252,14 +252,15 @@ inline constexpr std::uint32_t kQwen38MaxRows = 8192;
 
 // Refused if the context or chunk bound is zero, the context is past the
 // graph's I32 positions, a chunk is longer than the context or than
-// kQwen38MaxRows, a chunk's masks (padded context x rows) would pass I32
-// elements, or the profile is not Qwen3.8's.
+// kQwen38MaxRows, a chunk's F32 [padded context, rows] tensors (x 4 bytes, a
+// 32-bit stride in GGML's flash attention and ggml_permute: RE-037) would
+// pass I32 bytes, or the profile is not Qwen3.8's.
 std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& profile,
                                                           std::uint32_t context,
                                                           std::uint32_t max_rows);
 
 // The widest chunk Qwen38State admits at `context`: the context,
-// kQwen38MaxRows and the masks' I32 bound (0 when none, or when the context
+// kQwen38MaxRows and the F32 [n_kv, rows] tensors' I32 bytes (0 when none, or when the context
 // is refused whatever the chunk).
 std::uint32_t Qwen38MostRows(std::uint32_t context);
 

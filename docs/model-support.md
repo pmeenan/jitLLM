@@ -92,8 +92,16 @@ not used. The options each renderer supports and refuses are in
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
-  runtime's default (8,192 tokens of conversation in the swap table). The
-  configuration accepts 512 to 262,144; above 8,704 is not verified. The
+  runtime's default (8,192 tokens of conversation in the swap table); since
+  the long-context baseline, through the runtime at `context = 262144`
+  with 32K and 64K prompts, and against llama.cpp b11254 at 32K and 128K
+  ([long-context](experiments/long-context/README.md): greedy within the
+  near-tie bound except one step at 32K, perplexity −0.1% at 32K,
+  retrieval at 32K and 64K). Its speed falls with depth (decode 0.60× llama.cpp's at
+  64K; the report's gap 1). The configuration accepts 512 to 262,144;
+  262,144 fits one Spark plain (1.3 GiB inside the runtime's guard), and
+  143,360 with DSpark; prompts past 64K are not verified through the
+  runtime (the chat route's 600 s deadline stops a 128K prefill). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
   prefill chunk capped at 384 rows by the 128-position window; the
   default chunk is 2,048 rows
@@ -127,6 +135,10 @@ not used. The options each renderer supports and refuses are in
     that passes only under 6.11, diagnosed as kernel noise amplified by
     near-tied routing, not a defect
     ([step 93](experiments/dsv4-decode/README.md#step-93-diagnosed)).
+  - Step 249 of the 32K long-context prompt: the fast plan's argmax
+    differs from llama.cpp b11254's where the oracle prefers its token by
+    2.62 nats (bound 1.24), in two runs; the exact form agrees. Not
+    diagnosed ([long-context](experiments/long-context/README.md#correctness-at-depth)).
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
     2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
     and serves the GGUF's.
@@ -180,8 +192,15 @@ not used. The options each renderer supports and refuses are in
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
-  table's 8K conversation). The configuration accepts 512 to 262,144;
-  above 8,704 is not verified. The minimum, 512, starts and serves
+  table's 8K conversation); since the long-context baseline, through the
+  runtime to its configured maximum, 262,144 (a 258,633-token prompt,
+  prefilled in 2,040-row chunks: RE-037), and against Mia's vLLM at 32K
+  and 128K ([long-context](experiments/long-context/README.md): greedy
+  within the near-tie bound, perplexity −2.1% / −1.4%, retrieval at every
+  rung to 256K). Its speed falls with depth (prefill 0.27× and decode
+  0.29× Mia's at 256K; the report's gap 2), and speculation is refused
+  above a context of 32,768 (the MTP drafter's selection). The minimum,
+  512, starts and serves
   (checked on `spark`, with MTP: 510 tokens usable), its prefill chunk
   504 rows; the default chunk is 4,096 rows
   ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).

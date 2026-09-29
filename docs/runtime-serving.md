@@ -131,8 +131,9 @@ A turn's prefill runs in chunks (`runtime/prefill.h`). The chunk is the
 model's `prefill_chunk` if configured (1 to 262,144 rows), else the
 runtime's default for the model, and in either case at most what the
 model's state layout admits at its context (DeepSeek: the window cache's
-cells less its 128-position window; Qwen3.8: 8,192 rows, and its masks'
-32-bit bound) and below the context, in whole 8-row tiles. So every
+cells less its 128-position window; Qwen3.8: 8,192 rows, and its F32
+[context, rows] tensors under 2^31 bytes, RE-037: 4,095 rows at 131,072,
+2,047 at 262,144) and below the context, in whole 8-row tiles. So every
 context the configuration accepts has a chunk: at the minimum, 512,
 DeepSeek's chunk is 384 rows and Qwen3.8's 504. A chunk of 1,024 rows or
 more runs in whole tiles and its few remaining rows as a chunk of their
@@ -473,3 +474,12 @@ MiB) is the one piece of CPU work on the I/O thread.
 - A conversation is reused only when its re-rendered tokens extend what the
   state holds; a thinking model's re-rendered history usually does not
   (a client rarely sends the reasoning back), and the turn prefills again.
+  Measured at 64K on Qwen3.8: a client that drops the reasoning
+  re-prefills all ~61K tokens every turn (43 s); one that sends it back
+  prefills only the new ones (0.2–0.3 s)
+  ([long-context](experiments/long-context/README.md#turn-to-turn-reuse)).
+- Per-token prefill and decode cost grows with the context (dense
+  attention over every cached cell; the long-context report's gaps 1 and
+  2), so a long prompt is slow: DeepSeek prefills about 230 tok/s at 64K,
+  and a 128K prompt outruns the request's 600 s deadline (a resend of the
+  same request resumes from the chunks that ran).

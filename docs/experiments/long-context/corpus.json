@@ -1,0 +1,64 @@
+{
+  "id": "long-context-corpus-v1",
+  "fixed": "2026-09-29, before the first run",
+  "repository": {
+    "url": "https://github.com/ggml-org/llama.cpp",
+    "commit": "8019dc563b1ecbae6b161a70c3a1359f1b206c1e",
+    "tag": "b11254",
+    "license": "MIT",
+    "license_file": "LICENSE",
+    "license_sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+    "directories": ["tools/server", "src", "include", "common", "ggml/include", "ggml/src", "tools", "examples", "tests", "gguf-py"],
+    "extensions": [".c", ".cc", ".cpp", ".h", ".hpp", ".cu", ".cuh", ".py"],
+    "exclude_containing": ["/vendor/", "tools/ui/", "/deprecated/"],
+    "max_file_bytes": 262144,
+    "note": "Files are taken in the directories' order, each directory's files in bytewise order of their repository paths (git ls-files), each once; a file that is not UTF-8 is skipped."
+  },
+  "preamble": "The following are source files from the llama.cpp repository (commit 8019dc5), each introduced by a line `=== FILE: <path> ===`.\n",
+  "file_header": "\n=== FILE: {path} ===\n",
+  "needles": [
+    {"id": "A", "fraction": 0.1, "path": "docs/ops/OPS-NOTE-A.md", "passphrase": "cobalt-lantern-4127",
+     "text": "# OPS-NOTE-A\n\nThe maintenance passphrase for the staging cluster is `cobalt-lantern-4127`. Rotate it after each release.\n"},
+    {"id": "B", "fraction": 0.5, "path": "docs/ops/OPS-NOTE-B.md", "passphrase": "amber-thicket-9352",
+     "text": "# OPS-NOTE-B\n\nThe maintenance passphrase for the build farm is `amber-thicket-9352`. Rotate it after each release.\n"},
+    {"id": "C", "fraction": 0.9, "path": "docs/ops/OPS-NOTE-C.md", "passphrase": "violet-harbor-6081",
+     "text": "# OPS-NOTE-C\n\nThe maintenance passphrase for the benchmark lab is `violet-harbor-6081`. Rotate it after each release.\n"}
+  ],
+  "questions": [
+    "\nTwo tasks.\n1. Three operations notes are among the files: OPS-NOTE-A, OPS-NOTE-B and OPS-NOTE-C. Quote the passphrase each one gives, in the form `A: <passphrase>`, `B: <passphrase>`, `C: <passphrase>`.\n2. Then explain how llama-server chooses a slot for an incoming completion request and when it reuses the slot's cached prompt, naming the functions involved.",
+    "Now write a short C++ function, in the style of these files, that returns how many tokens a new request's prompt shares with a slot's cached prompt.",
+    "What would change in that function if the cached prompt held multimodal chunks? Answer briefly."
+  ],
+  "retrieval": {
+    "added": "2026-09-29, after the first comparator runs: at 256K Qwen3.8 (Mia's vLLM) declined to repeat the first notes' 'passphrases' as secrets, so the retrieval check has its own prompt with neutral facts",
+    "needles": [
+      {"id": "A", "fraction": 0.1, "path": "docs/releases/NOTE-A.md", "passphrase": "cobalt-lantern-4127",
+       "text": "# NOTE-A\n\nThe release codename of the first branch is `cobalt-lantern-4127`.\n"},
+      {"id": "B", "fraction": 0.5, "path": "docs/releases/NOTE-B.md", "passphrase": "amber-thicket-9352",
+       "text": "# NOTE-B\n\nThe release codename of the second branch is `amber-thicket-9352`.\n"},
+      {"id": "C", "fraction": 0.9, "path": "docs/releases/NOTE-C.md", "passphrase": "violet-harbor-6081",
+       "text": "# NOTE-C\n\nThe release codename of the third branch is `violet-harbor-6081`.\n"}
+    ],
+    "question": "\nThree release notes are among the files: NOTE-A, NOTE-B and NOTE-C. What release codename does each give? Answer in the form `A: <codename>`, `B: <codename>`, `C: <codename>` and nothing else.",
+    "generate_tokens": 1024
+  },
+  "generate_tokens": 512,
+  "reserve_tokens": 1024,
+  "session_reserve_tokens": 4096,
+  "tokenizers": {
+    "deepseek": {"file": "deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b/tokenizer.json", "sha256": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+                 "note": "DeepSeek's own tokenizer.json, for counting only; it differs from the GGUF's on 2 of 184 tokenizer-corpus items (Unicode 16.0 emoji). The engines' own counts are recorded with each run."},
+    "qwen3.8": {"file": "Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json", "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"}
+  },
+  "perplexity": {
+    "title": "War and Peace (Leo Tolstoy, tr. Louise and Aylmer Maude), Project Gutenberg eBook #2600",
+    "url": "https://www.gutenberg.org/cache/epub/2600/pg2600.txt",
+    "sha256": "2d5bb2ad5f422765e714617e21fa31bbaf8958aa79682c86fca6660fcc5d1b2b",
+    "bytes": 3359610,
+    "rights": "public domain in the USA (Project Gutenberg); its header and footer, which carry the Project Gutenberg License, are cut",
+    "start_marker": "*** START OF THE PROJECT GUTENBERG EBOOK WAR AND PEACE ***",
+    "end_marker": "*** END OF THE PROJECT GUTENBERG EBOOK WAR AND PEACE ***",
+    "windows": [32768, 131072],
+    "scored": "the second half of one window: the NLL of tokens L/2+1 .. L-1, each given everything before it (llama-perplexity's rule for one chunk)"
+  }
+}

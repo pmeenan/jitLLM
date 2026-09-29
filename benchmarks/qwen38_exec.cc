@@ -41,8 +41,9 @@
 //   after loading (and after the A/B's and layout proof's GGML side); with
 //   --layout-proof every slab is then converted back and compared with the
 //   loaded bytes. --unfused needs GGML's layout, unconverted.
-// - --prompts: lines `name<TAB>ids...`, each from a cleared state as one
-//   prefill chunk then --generate tokens one at a time: greedy, or with
+// - --prompts: lines `name<TAB>ids...`, each from a cleared state in
+//   prefill chunks of --max-rows (ChunkRows; one chunk when it fits), then
+//   --generate tokens one at a time: greedy, or with
 //   --force the given tokens fed while the argmax is still recorded. Every
 //   step's logits are written (the last row of each chunk only). With
 //   --stepwise the prompt too is fed one token at a time, so every product
@@ -1771,11 +1772,22 @@ Status Run(const Options& o) {
             return Error(std::format("{} (stepwise) at {}: {}", prompt.name, at, r.error()));
           }
         }
-      } else if (auto r = runner.Chunk(history, 0, 1, logits,
-                                       dump ? std::span(o.dump) : std::span<const std::string>{},
-                                       dump ? &kept : nullptr);
-                 !r) {
-        return Error(std::format("{}: {}", prompt.name, r.error()));
+      } else {
+        if (dump && history.size() > o.max_rows) {
+          return Error("--dump needs a first prompt of one chunk");
+        }
+        // A prompt longer than --max-rows (long context) is prefilled in
+        // chunks of ChunkRows; the last chunk's last row gives the first
+        // token.
+        for (std::uint32_t at = 0, rows = 0; at < history.size(); at += rows) {
+          rows = ChunkRows(history.size() - at, o.max_rows);
+          if (auto r = runner.Chunk(std::span(history).first(std::size_t{at} + rows), at, 1, logits,
+                                    dump ? std::span(o.dump) : std::span<const std::string>{},
+                                    dump ? &kept : nullptr);
+              !r) {
+            return Error(std::format("{} at {}: {}", prompt.name, at, r.error()));
+          }
+        }
       }
       const double prefill = Seconds(Clock::now() - t0);
       if (dump) {

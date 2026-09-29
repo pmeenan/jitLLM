@@ -129,3 +129,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   operations run through a plan bound against the implementation
   registry; its pixels differ from the previous build's in the last bits
   of the VAE's convolutions (still within the bounds of diffusers' image).
+
+### Fixed
+
+- Qwen3.8 Flash Next at its configured maximum context (262,144 tokens)
+  was refused at startup, and past about 147K tokens its prefill failed:
+  its prefill chunk is now capped where a chunk's [context, rows] tensors
+  would pass 2^31 bytes (2,040 rows at 262,144; the startup log says so),
+  and a 258,633-token prompt prefills and answers.
+- DeepSeek V4 Flash's prefill failed past about 52K tokens of context (an
+  operation check stricter than the kernel it guards); it no longer does
+  (checked with a 64K prompt, and 128K in the resident harness).

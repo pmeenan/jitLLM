@@ -38,6 +38,9 @@ std::unexpected<std::string> Refused(std::string detail) {
 
 std::uint64_t Pad(std::uint64_t n, std::uint64_t to) { return (n + to - 1) / to * to; }
 
+// The bytes of an element of a chunk's widest [n_kv, rows] tensor (F32).
+constexpr std::uint64_t kMaskBytes = 4;
+
 std::string Shape(std::span<const std::uint64_t> ne) {
   std::string out = "[";
   for (std::size_t i = 0; i < ne.size(); ++i) {
@@ -535,12 +538,15 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
   if (!ProfileIsSane(p)) {
     return Refused("the profile is not a Qwen3.8 model's");
   }
-  // A chunk's host-built masks hold n_kv x rows cells (F16 and F32), so the
-  // chunk bound and the padded context are bounded together, as the rows
-  // the harness has measured (at most 2,048) need.
+  // A chunk's [n_kv, rows] tensors (the host-built masks, F16 and F32, and
+  // past the fast selection the indexer's expanded F32 scores) have planes
+  // of up to n_kv x rows x 4 bytes, a stride GGML's flash attention takes as
+  // a 32-bit int and ggml_permute truncates to one (RE-037): so the chunk
+  // bound and the padded context are bounded together by those bytes.
   if (context == 0 || max_rows == 0 || max_rows > context || max_rows > kQwen38MaxRows ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255 ||
-      Pad(context, 256) * max_rows > std::uint64_t{std::numeric_limits<std::int32_t>::max()}) {
+      Pad(context, 256) * max_rows * kMaskBytes >
+          std::uint64_t{std::numeric_limits<std::int32_t>::max()}) {
     return Refused(std::format("no state for {} positions in chunks of {}", context, max_rows));
   }
   using K = Qwen38StateTensor::Kind;
@@ -583,7 +589,7 @@ std::uint32_t Qwen38MostRows(std::uint32_t context) {
     return 0;
   }
   const std::uint64_t masks =
-      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / Pad(context, 256);
+      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / (Pad(context, 256) * kMaskBytes);
   return static_cast<std::uint32_t>(std::min<std::uint64_t>({context, kQwen38MaxRows, masks}));
 }
 

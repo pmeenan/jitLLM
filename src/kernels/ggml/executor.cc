@@ -27,6 +27,25 @@
 namespace jitllm::kernels::ggml {
 namespace {
 
+// A refused step's last node and its first operand, by name and shape, so
+// a refusal at a shape no test planned names what it refused.
+std::string Describe(std::span<ggml_tensor* const> nodes) {
+  if (nodes.empty() || nodes.back() == nullptr) {
+    return {};
+  }
+  const auto shape = [](const ggml_tensor* t) {
+    return std::format("'{}' {} [{}, {}, {}, {}] nb [{}, {}, {}, {}]", ggml_get_name(t),
+                       ggml_type_name(t->type), t->ne[0], t->ne[1], t->ne[2], t->ne[3], t->nb[0],
+                       t->nb[1], t->nb[2], t->nb[3]);
+  };
+  const ggml_tensor* node = nodes.back();
+  std::string out = " (node " + shape(node);
+  if (node->src[0] != nullptr) {
+    out += ", from " + shape(node->src[0]);
+  }
+  return out + ")";
+}
+
 std::unexpected<KernelFailure> Rejected(std::string detail) {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
@@ -107,7 +126,8 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
         return Rejected(std::format("step {}: RMSNorm-mul takes two nodes", i));
       }
       if (auto checked = kernel->Check(planned.nodes[0], planned.nodes[1]); !checked) {
-        return Rejected(std::format("step {} ({}): {}", i, kernel->name(), checked.error().detail));
+        return Rejected(std::format("step {} ({}): {}{}", i, kernel->name(), checked.error().detail,
+                                    Describe(planned.nodes)));
       }
       steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
       continue;
@@ -117,7 +137,8 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
       return std::unexpected(kernel.error());
     }
     if (auto checked = kernel->Check(view); !checked) {
-      return Rejected(std::format("step {} ({}): {}", i, kernel->name(), checked.error().detail));
+      return Rejected(std::format("step {} ({}): {}{}", i, kernel->name(), checked.error().detail,
+                                  Describe(planned.nodes)));
     }
     steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
   }

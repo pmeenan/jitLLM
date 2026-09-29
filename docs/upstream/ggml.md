@@ -24,6 +24,41 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## 32-bit strides: flash attention's mask and `ggml_permute` (RE-037)
+
+- **Status:** `ggml_permute`: fixed upstream after the pin, in #29227
+  (`c21284cdf`, in master `8019dc563`, b11254); it comes with the pin bump.
+  Flash attention's `int32_t` `nb31` and `nb32`: unchanged at `8019dc563`
+  (`fattn-mma-f16.cuh:1828`); carried, no action (unread while `ne32` is 1).
+- **Found:** 2026-09-29, pin `b29c606e2`, `spark-b`, Qwen3.8 at 147K–262K
+  tokens.
+- **Problem:** `ggml_permute` computes a view's `nb` in `int`, so a
+  permuted F32 tensor of 2^31 bytes or more gets a wrapped plane stride
+  (seen: 18446744071572553728 for Qwen3.8's expanded QSA scores, [3,584,
+  150,528]). `flash_attn_ext_f16`'s launch takes `nb31` and `nb32` as
+  `int32_t`; the MMA kernel reads the mask only through `nb33` (int64)
+  with `ne32` = 1, so nothing reads a truncated value there today.
+  llama.cpp's 512-row micro-batches stay far under both.
+- **jitLLM's workaround:** its operation checks refuse such strides, and
+  Qwen3.8's chunk bound keeps every F32 [n_kv, rows] tensor under 2^31
+  bytes (RE-037).
+- **Proposed action:** take #29227 with the pin bump; then the chunk bound
+  can follow the flash-attention mask (F16) alone.
+
+## Concat's two kernels have different grid limits (RE-038)
+
+- **Status:** no upstream action; a jitLLM-side check, fixed.
+- **Found:** 2026-09-29, pin `b29c606e2`, `spark-b`, DeepSeek V4 past ~52K
+  positions.
+- **What:** `concat_cuda` (`concat.cu:142-196`) runs `concat_cont`, a
+  one-dimensional grid, for operands contiguous in their first three
+  dimensions, and the per-row `concat_non_cont` (a `dim3(ne1, ne2, ne3)`
+  grid, so at most 65,535 channels) otherwise. Upstream is correct;
+  jitLLM's `CheckConcat` applied the per-row kernel's limits to both and
+  refused DeepSeek's CSA concatenation past 65,535 cells. The check now
+  follows the dispatch.
+- **Proposed action:** none.
+
 ## Flash attention's mask pre-pass reads past the mask's last row (RE-036)
 
 - **Status:** open.
@@ -305,7 +340,8 @@ Checked 2026-09-29 at master `8019dc563`.
   ([#24364](https://github.com/ggml-org/llama.cpp/pull/24364)): KLD 0.022
   against 0.045. A quality mode, not a default.
 - **The `ggml_permute` 32-bit truncation fix**
-  ([#29227](https://github.com/ggml-org/llama.cpp/pull/29227)).
+  ([#29227](https://github.com/ggml-org/llama.cpp/pull/29227)): hit by
+  Qwen3.8 past ~147K tokens (RE-037, worked around by a chunk bound).
 
 All speedups are as reported upstream, not measured by jitLLM.
 

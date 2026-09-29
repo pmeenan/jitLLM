@@ -840,6 +840,27 @@ it appears.
         - TensorFold beside them as cross-quantization information.
 
         The gaps found set the optimization work.
+        *Baseline measured 2026-09-29*
+        ([long-context](experiments/long-context/README.md); llama.cpp
+        b11254 built by us, Mia's vLLM, jitLLM through the runtime; a
+        per-kernel profile at 8K, 32K and 64K). The comparators stay
+        nearly flat with depth; jitLLM's per-token cost grows with the
+        whole context: DeepSeek prefill 333 / 230 tok/s at 32K / 64K
+        (1.16× / 0.84× llama.cpp's), decode 14.7 / 10.8 (0.78× / 0.60×),
+        with DSpark 31.3 / 21.4 (1.02× / 0.74×);
+        Qwen3.8 prefill 1.19× Mia's at 32K, 0.70× at 64K, 0.27× at its
+        262,144 maximum, decode 0.89× to 0.29×, and MTP refused past
+        32,768. The cause is dense attention over every cached cell
+        (DeepSeek's full-size window cache concatenated in every layer;
+        Qwen3.8's masked attention and its GGML selection fallback past
+        8,192 blocks), not the architectures' O(n) indexers (about 1% at
+        64K). Maxima: Qwen3.8 262,144 (verified; MTP 32,768), DeepSeek
+        262,144 plain (the configuration's bound, 1.3 GiB inside the
+        guard) and 143,360 with DSpark. Correctness at 32K and 128K
+        passes except one DeepSeek step at 32K (2.62 nats, not
+        diagnosed); DeepSeek does not repeat at 32K (RE-031). Fixed to
+        measure: RE-037, RE-038. The ranked gap list and fix plan are the
+        report's; runs past 64K stopped there (the owner).
       - *Optimization, until every depth is at least the comparator's
         speed* (not only inside D-085's 10%):
         - tiled, deterministic QSA selection past 8,192 blocks

@@ -28,6 +28,65 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-038: GGML's concat has two kernels, and only the per-row one is bound by the grid's 65,535 channels, so a check that bounded both refused DeepSeek V4 past ~52K positions  (2026-09-29, status: fixed)
+
+- **Environment:** `spark-b`, GB10, the `spark-native` build at `6c182c3`;
+  the pinned llama.cpp `b29c606e2`'s `concat.cu`.
+- **Observed:** `jitllm-runtime` with DeepSeek V4 at `context = 262144`
+  failed the 64K prompt's prefill at the chunk at 51,200: "concat beyond
+  the kernels' grid" on the CSA layers' concatenation of the window cells
+  and the compressed rows, F16 [512, 1, 66,560]. `concat_cuda` launches
+  a block per output row, channel and sample (`dim3(ne1, ne2, ne3)`, so at
+  most 65,535 channels) only for strided operands; operands contiguous in
+  their first three dimensions take `concat_cont`, a one-dimensional grid
+  over the plane, and whole copies along dimension 3. jitLLM's operation
+  check (`CheckConcat`) applied the per-row kernel's limits to both, so
+  every CSA layer past about 52K attended cells (the window's cells plus a
+  quarter as many compressed rows) was refused. llama.cpp runs the same
+  concatenation at 256K.
+- **Fixed:** the check follows `concat_cuda`'s dispatch: the grid limits
+  apply only where the per-row kernel runs (unit test at 53,248 + 13,312
+  channels, and a strided operand still refused).
+- **Impact:** a check that is stricter than its kernel's dispatch is a
+  silent context ceiling; the long-context ladder found this one at 64K.
+
+## RE-037: GGML takes [n_kv, rows] strides as 32-bit ints (flash attention's mask, `ggml_permute`), so Qwen3.8 past ~147K tokens in 3,584- or 4,096-row chunks is refused  (2026-09-29, status: worked-around)
+
+- **Environment:** `spark-b`, GB10, the `spark-native` build at `6c182c3`
+  (the prefill-chunk slice); the pinned llama.cpp `b29c606e2`: the
+  `fattn-mma-f16.cuh` launch signature (`nb31`, `nb32` are `int32_t`) and
+  `ggml_permute` in `ggml.c` (its `ne` and `nb` locals are `int`).
+- **Observed, twice:**
+  - `jitllm-runtime` with Qwen3.8 at `context = 262144` refused to start:
+    "flash attention beyond the kernel's 32-bit extents and strides". The
+    chunk's F16 mask is [n_kv, rows]; at 262,144 cells and the default
+    4,096 rows its plane is 2^31 bytes, one past `INT32_MAX`. The MMA
+    kernel reads the mask only through `nb33` (int64, `ne32` is 1), so
+    the truncated value would go unused; jitLLM's launcher check
+    (`validate_ext.cc`) refuses it anyway, as intended.
+  - With the chunk at 3,584 rows the service started, and the 256K
+    prompt's prefill failed at the chunk at 146,944 (n_kv 150,528):
+    "cont on an empty or unmeasurable tensor". The fallback QSA selection
+    (past 32,768 cells, RE-031) permutes the indexer's expanded F32
+    scores [rows, n_kv] (2,157,969,408 bytes); `ggml_permute` computed
+    the view's plane stride in `int` and gave 18446744071572553728
+    (2^64 − 2^31 + …). jitLLM's operation check refused it before any
+    kernel read through it. Upstream fixed the truncation in PR #29227
+    (after the pin).
+- **Worked around:** `model::Qwen38State` and `Qwen38MostRows` bound a
+  chunk so an F32 [padded context, rows] tensor stays under `INT32_MAX`
+  bytes, which covers both: the widest chunk is 2,047 rows at 262,144
+  (the runtime caps `prefill_chunk` at 2,040, whole 8-row tiles, and logs
+  it), 4,095 at 131,072 and 8,191 at 65,536. DeepSeek V4's [n_kv, rows]
+  tensors are F16 masks (2,048 rows × 262,144 cells is 1 GiB), under the
+  bound up to its configured maximum.
+- **Impact:** any context × rows product past 2^29 cells in F32 trips it
+  until the pin includes #29227; a sparse attention path with block
+  tables instead of dense masks and expanded scores removes the tensors
+  ([long-context](experiments/long-context/README.md)). The executor's
+  refusal now names the refused node and its operand, with shapes and
+  strides, which is how the second one was found.
+
 ## RE-036: GGML's flash-attention mask pre-pass reads whole 8-row tiles from 1,024 query rows on, so a chunk of 1,024+ rows that is not a multiple of 8 is refused  (2026-09-29, status: worked-around)
 
 - **Environment:** `spark`, GB10, the `spark-native` build at `c7c1ead`
@@ -51,9 +110,11 @@ Newest first. RE-numbers are never reused.
   mask, and in the runtime a refused chunk is a node failure.
 - **Worked around:** the runtime's prefill (`runtime/prefill.h`) runs a
   chunk of 1,024 rows or more in whole 8-row tiles and its remainder as a
-  chunk of its own, and its chunk sizes are multiples of 8. The harnesses'
-  `--max-rows` runs are not covered: a chunk of 1,024+ rows not a multiple
-  of 8 still fails there.
+  chunk of its own, and its chunk sizes are multiples of 8. Since the
+  long-context baseline the resident harnesses' prompts and perplexity
+  chunks tile the same way (`jitllm_dsv4_exec`; `jitllm_qwen38_exec`'s
+  64-row `ChunkRows`); their other `--max-rows` paths (synthetic prefill
+  benchmarks) are not covered.
 - **Impact:** anything that drives GGML attention with 1,024+ query rows
   must keep them a multiple of 8, or pad the mask's rows (in the models'
   chunk inputs and graphs), or bound the pre-pass's row reads (the

@@ -171,6 +171,19 @@ TEST_F(GgmlExtValidateTest, ConcatTakesOneUnblockedTypeIntoAPackedOutput) {
   Accepted(kg::CheckConcat(Bound(ggml_concat(c(), a, b, 1))));
   Accepted(kg::CheckConcat(
       Bound(ggml_concat(c(), New(GGML_TYPE_F32, 3, 4), New(GGML_TYPE_F32, 5, 4), 0))));
+  // Past 65,535 channels (DeepSeek V4's window cells and compressed rows
+  // from about 52K positions, RE-038): operands contiguous in their first
+  // three dimensions take the contiguous kernel's one-dimensional grid; a
+  // strided operand takes the per-row kernel, whose grid cannot.
+  ggml_tensor* window = New(GGML_TYPE_F16, 512, 1, 53248);
+  ggml_tensor* compressed = New(GGML_TYPE_F16, 512, 1, 13312);
+  Accepted(kg::CheckConcat(Bound(ggml_concat(c(), window, compressed, 2))));
+  ggml_tensor* wide = New(GGML_TYPE_F16, 1024, 1, 53248);
+  ggml_tensor* strided = ggml_view_3d(c(), wide, 512, 1, 53248, wide->nb[1], wide->nb[2], 0);
+  Refused(kg::CheckConcat(Bound(ggml_concat(c(), strided, compressed, 2))));
+  Accepted(kg::CheckConcat(
+      Bound(ggml_concat(c(), ggml_view_3d(c(), wide, 512, 1, 1024, wide->nb[1], wide->nb[2], 0),
+                        New(GGML_TYPE_F16, 512, 1, 256), 2))));
   ggml_tensor* q = New(GGML_TYPE_Q8_0, 512, 4);
   Refused(kg::CheckConcat(Bound(ggml_concat(c(), q, New(GGML_TYPE_Q8_0, 512, 4), 1))));
   // Overlapping the output with an operand.
