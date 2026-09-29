@@ -30,7 +30,8 @@ reference engine that runs on a GB10. Features that only older or
 second-tier checkpoints use (Gemma 2's attention softcap, LongRoPE,
 classic SentencePiece, Cohere's LayerNorm and parallel block, short
 convolutions, grouped routing) have optional carriers
-([below](#optional-checkpoints)).
+([below](#optional-checkpoints)); the older generations' features are
+judged one by one in [Legacy-tier features](#legacy-tier-features).
 
 | # | Checkpoint (family) | Form | Formats, reference | Max context | New for jitLLM |
 | --- | --- | --- | --- | ---: | --- |
@@ -704,7 +705,146 @@ feature the core set covers elsewhere.
 | Nemotron 3.5 Lightning 30B-A3B (above) | NVFP4 W4A16, vLLM | a fast Nemotron with DSpark | covered by 4 except its drafter |
 | `CohereLabs/North-Mini-Code-1.0@d11e61a842617a22dc328552fa5bb86231ee4f37` (30B / 3B; 3:1 window-4,096 with NoPE globals, sigmoid without renormalization) | unsloth UD-Q4_K_XL 19.25 GB, llama.cpp `cohere2moe` | Cohere's template, an EAGLE head | low usage (9.8K; 302K for the GGUF); features covered |
 | Mistral Medium 3.5 128B (above) | NVFP4 + EAGLE, vLLM | dense NVFP4 GEMM | 87 GB with its drafter, slow |
-| Legacy tier: Gemma 2 9B, Phi-3.5-mini, Mistral-7B-Instruct-v0.3, Command R7B, Llama 3.2 1B | GGUF, llama.cpp | attention softcap and (1+w) norms; LongRoPE and classic SentencePiece; SentencePiece v3 control tokens; LayerNorm, parallel block and interleaved RoPE; tied embeddings | older generations still downloaded (Gemma 2 9B 1.1M, Phi-3.5-mini 355K, Mistral 7B v0.3 2.18M); cheap, but no revision pinned here |
+| Legacy tier: Gemma 2 9B, Phi-3.5-mini, Mistral-7B-Instruct-v0.3, Command R7B, Llama 3.2 1B | GGUF, llama.cpp | attention softcap and (1+w) norms; LongRoPE and classic SentencePiece; SentencePiece v3 control tokens; LayerNorm, parallel block and interleaved RoPE; tied embeddings | older generations still downloaded (Gemma 2 9B 1.1M, Phi-3.5-mini 355K, Mistral 7B v0.3 2.18M); superseded by [Legacy-tier features](#legacy-tier-features), which pins fixtures |
+
+## Legacy-tier features
+
+The owner's question 7: which features of older generations still in
+use are not subsets of what the 13 checkpoints and M3's models already
+cover, and is each worth implementing? A feature counts as covered only
+if one of those models runs the same math. Downloads are the Hugging
+Face API's 30-day counts on 2026-09-29 (CI test repos left out). Engine
+status is llama.cpp and vLLM master on that date: llama.cpp's
+[`src/models`](https://github.com/ggml-org/llama.cpp/tree/master/src/models),
+and vLLM's
+[registry](https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/model_executor/models/registry.py),
+whose `_PREVIOUSLY_SUPPORTED_MODELS` list names the removals, plus its
+[quantization methods](https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/quantization).
+Configs are linked from each vendor's repository and were read the same
+day.
+
+Cost is graded in three steps:
+
+- **Small:** a variant of an existing op, or a GGML kernel that
+  jitLLM's pin has but has not registered.
+- **Medium:** a new kernel.
+- **Large:** a new state class.
+
+The vendor column says **abandoned** when the vendor's successors
+dropped the feature, and **not updated** when it is still the vendor's
+current design.
+
+**Already covered, by composition.** None of these needs new math:
+
+- **Mixtral 8x7B and 8x22B.** Mixtral takes a softmax over all experts,
+  keeps the top 2 and renormalises
+  ([modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/mixtral/modeling_mixtral.py)).
+  That equals a softmax over the selected logits, which is gpt-oss's
+  routing (2) without the bias. Its lack of a shared expert matches 3.
+- **Mistral 7B.** v0.1's window of 4,096 on every layer is the ring
+  cache (1, 2) with no global layers. v0.2 and v0.3 have no window
+  ([config](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3/raw/main/config.json)).
+- **Llama.** Llama 2's full multi-head attention is covered, as are
+  Llama 3.x's llama3 scaling (7, 8) and 3.2's tied embeddings (1). Yi
+  is a Llama.
+- **Qwen dense.** Qwen 1.5, 2 and 2.5 are the Qwen2 fixture.
+- **DeepSeek V2.** Its MLA, with or without q-LoRA, is covered by 5, 6
+  and 13, and its YaRN `mscale` by DeepSeek V4.
+- **GPT-J and NeoX partial rotary.** Qwen3.8 covers the NeoX layout at
+  0.25, and DeepSeek V4 the pairs.
+- **Gemma 1 and 2.** `query_pre_attn_scalar` is an attention scale.
+  (1+w) norms are folded at conversion. The 1:1 window and the final
+  softcap are covered by 1 and 9, and GeGLU by 1.
+- **Cohere.** The logit scale is 9's multiplier; the GPT-J pairs,
+  Command R+'s QK norms (built from item 5 below) and R7B's NoPE global
+  layers (9) are covered too.
+- **Non-gated MLPs** (Phi-2, Falcon, StarCoder2, Bloom, Nemotron-4,
+  Jais 2) are Nemotron 3's squared-ReLU MLP (4), with GELU from 1 where
+  used.
+- **Import-time items.** DBRX's renormalised top-4 is 2's routing;
+  Phi-3's fused QKV and gate-up need an importer split; BitNet's
+  sub-norms are ordinary RMSNorms in new places.
+
+**Not covered:**
+
+| Feature (math) | Used by (vendor, first → last use) | Downloads a month | llama.cpp / vLLM | Vendor | Cost | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1. Classic SentencePiece: score-ordered merges on ▁-normalised text, `<0xNN>` byte fallback, dummy prefix | Meta Llama 2 (2023-07); Mistral 7B and Mixtral (2023-09 → 2024-05); Google Gemma 1–3 (2024-02 → 2025-03); Microsoft Phi-3/3.5 (2024); Yi; InternLM2 | Gemma 3 1B 3.24M, 4B 1.45M; Mistral 7B v0.3 2.18M, v0.2 1.65M; Gemma 2 9B 1.13M; Llama 2 7B chat 484K | both | abandoned: Llama 3 moved to tiktoken-style BPE, Mistral to Tekken, Gemma 4 to ▁-BPE in `tokenizer.json`, Phi-4 to 100K/200K BPE | small–medium: a vocabulary mode beside 1's ▁-BPE | **Implement.** The largest legacy use by far; with it, Gemma 1 and Gemma 3 1B, Mistral 7B, Mixtral, Llama 2 and Yi have no other gap, and Gemma 2, Gemma 3 and the dense Phi-3.x each need only one more row |
+| 2. Linear RoPE scaling (positions ÷ 8 on global layers) | Gemma 3 4B, 12B and 27B (2025-03; 1B has none) ([config](https://huggingface.co/unsloth/gemma-3-4b-it/raw/main/config.json)) | Gemma 3 4B 1.45M, 12B 530K, 27B 415K; derivatives MedGemma 4B 1.04M, 27B AWQ 1.15M, 27B GPTQ 710K | both | abandoned: Gemma 4's globals use proportional RoPE | small: GGML rope's `freq_scale` | **Implement:** with row 1 it completes Gemma 3 |
+| 3. Attention logit softcap (`c·tanh(s/c)` on QKᵀ, c = 50) | Gemma 2 (2024-06) ([config](https://huggingface.co/unsloth/gemma-2-9b-it/raw/main/config.json)); xAI Grok-2 (too big) | Gemma 2 9B 1.13M, 2B 617K | llama.cpp FA `logit_softcap`; vLLM FA2, FlashInfer and Triton `logits_soft_cap` (FA2 on sm_12x) | abandoned: Gemma 3 dropped it for QK-norm, Gemma 4 keeps only the final softcap | small: GGML's FA has the variant; jitLLM's sparse-gather path is not taken with it (`fattn_mma.cu`) | **Implement** |
+| 4. LongRoPE: per-dimension short and long divisor sets, a fixed attention factor, the long set once the context exceeds `original_max_position_embeddings` | Microsoft Phi-3-mini/medium-128k (2024-04), Phi-3.5-mini and MoE (2024-08), Phi-4-mini (2025-02, rotary 0.75) ([config](https://huggingface.co/microsoft/Phi-3.5-mini-instruct/raw/main/config.json)) | Phi-4-mini 378K, Phi-3.5-mini 355K, Phi-3-mini-128k 147K, Phi-3.5-MoE 138K | both. vLLM uses the long set for every position when `max_model_len` exceeds the original length ([code](https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/model_executor/layers/rotary_embedding/phi3_long_rope_scaled_rope.py)); llama.cpp does so when the per-sequence context does | not updated: Microsoft's newest Phi (Phi-4-reasoning-vision, 2026-01) has no RoPE scaling | small: per-dimension divisors take llama3 scaling's form (7, 8) and the factor is YaRN's; choosing the set is new | **Implement:** choose the set per context, as both references do |
+| 5. LayerNorm in the LLM path (mean-subtracting; no bias at Cohere, bias elsewhere) | Cohere Command R (2024-03), R7B, A (2025-03), A+ (2026-05), North (2026-06); Inception Jais 2 (2025-12); Phi-2, Falcon, StableLM 2, StarCoder2, GPT-J/NeoX, Bloom (2021–2024) | Command R v01 183K, Command A+ 40K; Phi-2 576K; Pythia-160m 3.37M (research) | both | not updated at Cohere and Jais 2; abandoned elsewhere | small: `ggml_norm` (the DiT has a BF16 LayerNorm) | **Implement,** with row 6 |
+| 6. Parallel attention and FFN from one norm (`x + attn + ffn`) | Cohere as in row 5 (`use_parallel_block` true through Command A+, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/cohere2/modeling_cohere2.py)); Falcon 1/2 (2023–2024), GPT-J/NeoX, Phi-2, StableLM 2 12B | as row 5 | both | not updated at Cohere; abandoned elsewhere (Falcon 3 is a Llama, Falcon-H1 a hybrid) | small: block topology | **Implement:** Cohere still ships it, and rows 5 and 6 together also cover Falcon, Phi-2, StableLM and GPT-J/NeoX |
+| 7. Legacy GGUF blocks Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL | Google's QAT GGUFs (Q4_0: Gemma 3 2025-03 → Gemma 4 2026-06). Any K- or I-quant tensor whose row is not a multiple of 256 falls back: Q4_K→Q5_0, Q5_K→Q5_1, Q6_K→Q8_0, Q2_K/Q3_K→Q4_0, I-quants→IQ4_NL ([`llama-quant.cpp`](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-quant.cpp)) | gemma-4-E2B QAT Q4_0 515K; fallback use not countable | llama.cpp MMVQ and MMQ; vLLM moved GGUF to a plugin ([#39612](https://github.com/vllm-project/vllm/pull/39612), 2026-06) | current | small: the kernels are in jitLLM's GGML pin | **Implement:** checkpoint 1's 704-wide down experts likely carry fallback types |
+| 8. Softmax top-k without renormalisation, beside shared experts | Qwen1.5-MoE (2024-03), Qwen2-57B-A14B (2024-06), DeepSeek V2 and V2-Lite (2024-05) ([config](https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite/raw/main/config.json)) | Coder-V2-Lite 906K, Qwen1.5-MoE-A2.7B 463K, V2-Lite 233K | both | abandoned: Qwen3+ and DeepSeek V3+ renormalise or use sigmoid | small: a router flag | **Defer** until one is wanted; Coder-V2-Lite (MLA covered) would carry it |
+| 9. Sparsemixer routing (two masked softmaxes, weights not renormalised, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/phimoe/modeling_phimoe.py)) | Phi-3.5-MoE (2024-08), Phi-tiny/mini-MoE (2025-06) | 138K, 86K, 31K | both | not updated since 2025-06 | small | **Defer** |
+| 10. Dynamic NTK RoPE | Qwen 1 (2023-08), InternLM2/2.5 (2024), InternLM3 (2025-01) | InternLM3 75K, InternLM2.5 39K | both (llama.cpp's dynamic handling not verified) | abandoned: InternLM now builds on Qwen and GLM | small | **Drop** |
+| 11. logn attention (query × log base L0 of the position, past L0) | Qwen 1 (2023-08) | Qwen-7B-Chat 51K | llama.cpp `qwen`; vLLM removed it after 0.23.0 | abandoned | small: Llama 4's per-position query scale (7) | **Drop** |
+| 12. Dual chunk attention | Qwen2.5-7B/14B-1M (2025-01) | 111K, 30K | vLLM only | superseded by Qwen's linear-attention hybrids | medium | **Defer** |
+| 13. ALiBi | BigScience Bloom (2022), MosaicML MPT (2023), Falcon-RW (2023), Baichuan 2 13B (2023), Jais 1 (2023) | bloomz-560m 1.11M, bloom-560m 519K (research-sized); others under 10K; MPT withdrawn from HF | llama.cpp keeps it; vLLM removed MPT (0.28, [#53608](https://github.com/vllm-project/vllm/pull/53608)), Baichuan and Jais 1 | abandoned: Jais 2 moved to RoPE | small: GGML FA `max_bias` | **Drop** |
+| 14. Learned absolute positions | GPT-2 (2019), OPT, StarCoder 1 | gpt2 15.6M (tests and tokenizer use) | both | abandoned | small | **Drop** |
+| 15. Mamba1 selective scan (per-channel A) | state-spaces Mamba (2023-12), Falcon Mamba (2024-07), AI21 Jamba (2024-03) → Jamba2 (2026-01), Zamba 1, Hymba | mamba-130m 316K; Falcon Mamba 7B 33K; Jamba Reasoning 3B 11K, Jamba2-3B 7K | both | not updated at AI21; abandoned elsewhere | medium: a scan kernel on 4's Mamba2 state class | **Defer** |
+| 16. RWKV-7 (diagonal-plus-low-rank delta rule, token shift) | BlinkDL RWKV-4 (2023) → RWKV-7 G1j (2026-08-31) | rwkv7-g1 23K; RWKV-7 GGUFs about 3K | llama.cpp `rwkv7`; vLLM none | active | large | **Defer** |
+| 17. RG-LRU (RecurrentGemma) | Google (2024-04) | 15K | neither | abandoned | large | **Drop** |
+| 18. Gemma 3n AltUp, LAuReL, activation sparsity | Google (2025-06) | E2B 174K, unsloth E4B 150K | both | abandoned: Gemma 4's E-models keep only per-layer embeddings and KV sharing ([config](https://huggingface.co/google/gemma-4-E2B-it/raw/main/config.json)) | medium | **Defer,** with the E-models (excluded above) |
+| 19. BitNet b1.58 (ternary weights with one scale, int8 activations, ReLU², sub-norms) | Microsoft bitnet-b1.58-2B-4T (2025-04); TII Falcon-E (2025-04 → 2026-04) | 21K, 16K for its GGUF | llama.cpp `bitnet` (TQ types lack CUDA); vLLM none | Microsoft uses it in 2026 non-LLM releases | medium: a W1.58A8 kernel | **Defer** |
+| 20. TQ1_0, TQ2_0 | llama.cpp's ternary types (2024) | — | no CUDA upstream ([#11183](https://github.com/ggml-org/llama.cpp/pull/11183) open) | superseded by Q2_0 | — | **Drop** |
+| 21. GPTQ act-order (`desc_act`, runtime `g_idx` permutation) | AutoGPTQ-era checkpoints (TheBloke, 2023) | top TheBloke GPTQ 23K | vLLM removed it 2026-09-08 ([#54809](https://github.com/vllm-project/vllm/pull/54809)); llm-compressor's default `static` order needs no runtime permutation ([code](https://raw.githubusercontent.com/vllm-project/llm-compressor/main/src/llmcompressor/modifiers/gptq/base.py)) | abandoned | small | **Drop:** GPTQ with static order needs nothing new |
+| 22. AQLM | ISTA-DASLab (2024 → 2025-03) | ≤ 209 | vLLM removed it 2025-08 ([#22943](https://github.com/vllm-project/vllm/pull/22943)) | abandoned | medium | **Drop** |
+| 23. SqueezeLLM | Berkeley (2023) | ≤ 39 | vLLM removed it 2024-09 ([#8220](https://github.com/vllm-project/vllm/pull/8220)) | abandoned | medium | **Drop** |
+| 24. QuIP# (E8 lattice) | Cornell RelaxML (2024) | ≤ 137 | neither | superseded by QTIP, which EXL3 implements | — | **Drop** |
+| 25. Minor: clip QKV (DBRX, withdrawn from HF), NormHead (Baichuan 2), LayerNorm1p (Nemotron-4), fused QKV layouts (Phi-3, InternLM2) | 2023–2024 | low | mixed | abandoned | small | **Drop,** or importer work if their family is wanted |
+
+Notes:
+
+- **Why implement rows 1–7.** Each is small and serves hundreds of
+  thousands of downloads a month, even where the vendor has moved on:
+  the installed base of Gemma 2 and 3, Mistral 7B, Mixtral, Llama 2 and
+  Phi-3.x outlives the vendor's switch. Rows 5 and 6 are also Cohere's
+  current design. The deferred rows are medium or large, or small but
+  with a single low-use carrier. The dropped rows are ones the
+  references have removed, or ones whose use is research or CI.
+- **Fallback types in approved files.** Gemma 4 26B's experts are 704
+  wide, not a multiple of 256, so under llama.cpp's rule the
+  UD-Q4_K_M file's `ffn_down_exps` would be Q5_0, Q5_1 or Q8_0. This
+  is inferred from the rule; the file's tensor types were not read. The
+  importer should list every GGUF's types before choosing kernels.
+- **Found in passing (not legacy): 1- and 2-bit Bonsai.** PrismML's
+  `Q1_0` (±1, one FP16 scale per 128) and `Q2_0` (ternary codes, one
+  scale per 64) have been in upstream GGML since 2026-04 and 2026-07,
+  CUDA included ([#21629](https://github.com/ggml-org/llama.cpp/pull/21629),
+  [#25707](https://github.com/ggml-org/llama.cpp/pull/25707)); jitLLM's
+  GGML pin has both in `mmvq.cu`. They carry Qwen3.6-27B (`qwen35`,
+  checkpoint 10's architecture):
+  - `prism-ml/Bonsai-27B-gguf`: 432K a month.
+  - `Ternary-Bonsai-27B-gguf`: 635K.
+  - `Ternary-Bonsai-2-27B-gguf` (2026-09-16, on Qwen3.8-27B): 3.58M.
+    Its `PQ2_0` and `PTQ1_0` need PrismML's llama.cpp fork, which
+    applies a Hadamard transform to activations; the upstream PR
+    [#29077](https://github.com/ggml-org/llama.cpp/pull/29077) was
+    closed unmerged
+    ([formats](https://docs.prismml.com/download/formats)).
+
+  **Proposed:** add Q1_0 and Q2_0 in M3.5 if the owner accepts a
+  Bonsai fixture (small cost, heavy use, a covered architecture). Defer
+  the fork-only formats until upstream takes them, or until the owner
+  accepts the fork as a reference.
+
+**Proposed fixtures.** Four checkpoints, about 17.9 GB together, cover
+rows 1–6 and Q4_0. Each has a same-format reference in llama.cpp.
+Revisions and sizes come from each repository's API on 2026-09-29.
+
+| Fixture | Size | Reference | Covers |
+| --- | ---: | --- | --- |
+| `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d065076c47042838c0675c602411b0dd4c`, `gemma-3-4b-it-qat-Q4_0.gguf` | 2,526,080,992 B | llama.cpp `gemma3` | SentencePiece 262K, linear RoPE ×8 on globals, Google's QAT Q4_0, the Gemma 3 template |
+| `bartowski/gemma-2-2b-it-GGUF@855f67caed130e1befc571b52bd181be2e858883`, `gemma-2-2b-it-Q8_0.gguf` | 2,784,495,456 B | llama.cpp `gemma2` | attention softcap 50, SentencePiece 256K |
+| `bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3`, `Phi-3.5-mini-instruct-Q8_0.gguf` | 4,061,222,688 B | llama.cpp `phi3` | LongRoPE with both sets non-trivial (Phi-4-mini's short set is all ones); Llama 2's 32K SentencePiece, which Mistral 7B and Mixtral 8x7B also use |
+| `bartowski/c4ai-command-r7b-12-2024-GGUF@bfc7a934c45cb839d84c8ca01d87f1cfa51aaa3f`, `c4ai-command-r7b-12-2024-Q8_0.gguf` | 8,541,100,160 B | llama.cpp `cohere2` | LayerNorm without bias, the parallel block, logit scale 0.25, Cohere's 256K BPE and template |
+| Optional: `prism-ml/Bonsai-27B-gguf@f10afb355f104535e3e3e98cf7ab7795c72bd292`, `Bonsai-27B-Q1_0.gguf` and `Bonsai-27B-dspark-Q4_1.gguf` | ≈3.8 GB + ≈1.8 GB | llama.cpp upstream | Q1_0 and Q4_1 on checkpoint 10's architecture, with a DSpark drafter |
+
+Q5_0, Q5_1 and IQ4_NL come from whichever approved file carries
+fallback tensors. Q2_0 would need a Ternary Bonsai file, not pinned
+here.
 
 ## Generative media: video and image
 
@@ -817,7 +957,8 @@ comparisons; (6) no Mistral-native NVFP4 import: use its GGUF or EXL3
 builds; (7) identify the legacy tier's features that are not subsets of
 already-covered ones and judge whether each is worth implementing, noting
 which models and vendors used it and whether it was abandoned or just not
-updated; (8) MiniMax H3 is in scope (generative media, last); (9) no
+updated (answered in [Legacy-tier features](#legacy-tier-features),
+for the owner); (8) MiniMax H3 is in scope (generative media, last); (9) no
 optional models for now. Also: bring in the MLX affine import (moved
 from M9) so TensorFold becomes a same-format comparator.
 
@@ -859,3 +1000,13 @@ from M9) so TensorFold becomes a same-format comparator.
 - Laguna's NVFP4 size (shard sum ≈99.7 GB, card ≈71 GB).
 - OpenRouter's own ranking tables (read through its collection pages).
 - Whether ExLlamaV3 v1.5.3 includes the aarch64 build guards.
+- Legacy tier:
+  - Which GGUF types the approved files actually hold: Gemma 4 26B's
+    fallback types were inferred, not read.
+  - Whether llama.cpp honours InternLM's dynamic NTK.
+  - Whether Ternary-Bonsai-27B's `Q2_0` file is unrotated and runs on
+    stock llama.cpp. Bonsai 2's card warns that its own rotated weights
+    load there silently and give garbage.
+  - The Bonsai file sizes, which were read as rounded GB.
+  - Command R7B's official config: the repository is gated and the
+    values come from mirrors.
