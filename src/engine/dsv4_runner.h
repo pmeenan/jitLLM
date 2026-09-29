@@ -19,8 +19,10 @@
 //   the host, its chunks read into host VMM directly: the embedding rows
 //   are dequantized on the CPU, as llama.cpp looks them up.
 // - The state (model/dsv4.h: the window cache, the compressed and indexer
-//   caches and the compressor rings, three D-068 representations), and
-//   the DSpark ring beside it, as live state (live_state.h).
+//   caches and the compressor rings, three D-068 representations; the
+//   window cache a ring of the window and a chunk in the fast plan, a cell
+//   per position in the reference mode and with Dsv4Options::full_window),
+//   and the DSpark ring beside it, as live state (live_state.h).
 // - The cuBLAS workspace (the router's BF16 products run there at prefill
 //   widths); the activations and the GGML pool: the node's shared
 //   workspace; the input staging, the logits rows and the hash tables'
@@ -108,6 +110,11 @@ struct Dsv4Options {
   // The reference mode (dsv4_common.h Dsv4Model::exact): llama.cpp's
   // unfused graph and D-092's row-invariant verify; off, the fast plan.
   bool exact = false;
+  // The fast plan keeps its window cache as a ring (model/dsv4.h
+  // Dsv4Window::kRing); with this (or exact) the full-size cache, a cell per
+  // position, which the reference mode needs: a probe that runs both plans
+  // over one state (set_exact) sets it.
+  bool full_window = false;
 };
 
 // What a chunk computes beside its target rows' own work.
@@ -140,6 +147,10 @@ class Dsv4Runner final : public PagedModel {
   Status Setup();
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
+  // The largest chunk's host-built inputs (model/dsv4.h Dsv4ChunkInputs, the
+  // embedding rows), which a chunk allocates on the host beside its staged
+  // copy: the bytes the staging is sized for (a bound, not a measurement).
+  std::uint64_t host_input_bytes() const { return host_input_bytes_; }
   // After Start, before Run: every weight's and the state's source, their
   // places pinned (D-090).
   Status Register();
@@ -201,11 +212,18 @@ class Dsv4Runner final : public PagedModel {
   };
   std::vector<VerifyWrite> last_verify_writes() const;
   // The reference mode on or off for the next chunks (Dsv4Options::exact):
-  // every plan and graph dropped.
-  void set_exact(bool on) {
+  // every plan and graph dropped. The fast plan runs over either window;
+  // the reference mode needs the full one (Dsv4Options::full_window), so
+  // over a ring it is refused.
+  Status set_exact(bool on) {
+    if (on && layout_.window != model::Dsv4Window::kFull) {
+      return std::unexpected(
+          std::string("the reference mode needs the full window cache (Dsv4Options::full_window)"));
+    }
     model_.exact = on;
     dmodel_.exact = on;
     DropPlans();
+    return {};
   }
   // Runs of the drafter's block: how they ran, and its last job's host time.
   const GraphStats& draft_stats() const { return draft_stats_; }
@@ -341,6 +359,7 @@ class Dsv4Runner final : public PagedModel {
   void* hash_tables_ = nullptr;  // pinned: the hash-routed layers' tables, read back
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
+  std::uint64_t host_input_bytes_ = 0;
 
   catalog::Closure everything_;
   catalog::Closure fence_;  // the state: what a clear or a fence leases

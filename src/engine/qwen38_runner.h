@@ -154,6 +154,10 @@ class Qwen38Runner final : public PagedModel {
   Status Setup();
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
+  // The largest chunk's host-built inputs (model/qwen38.h's masks and
+  // indices, the embedding rows), which a chunk allocates on the host
+  // beside its staged copy: the bytes the staging is sized for (a bound).
+  std::uint64_t host_input_bytes() const { return host_input_bytes_; }
   // After Start, before Run: every weight's and the state's source, their
   // places pinned (D-090).
   Status Register();
@@ -327,6 +331,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t* scrub_ = nullptr;  // pinned: Scrub's ranges
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
+  std::uint64_t host_input_bytes_ = 0;
 
   catalog::Closure everything_;
   catalog::Closure fence_;  // the state: what a clear or a fence leases

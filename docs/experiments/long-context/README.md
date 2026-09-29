@@ -8,10 +8,205 @@ This is phase 1 of M3's **Long context** item
 It measures each LLM's one-Spark maximum context and runs the context
 ladder through `jitllm-runtime` and through the same-format comparators on
 the same prompts. The gaps it finds set the optimization slices of
-phase 2. Coarse by design (D-085): one run per depth. Every number here is
+phase 2; [phase 2's DeepSeek slice](#phase-2-deepseek-flat-with-depth-2026-09-29)
+fixed gap 1. Coarse by design (D-085): one run per depth. Every number here is
 **measured** on `spark` or `spark-b` (GB10, driver 580.178.04) unless
 marked **computed**. jitLLM was measured at `6c182c3` plus this change's
 working tree (the fixes below).
+
+## Phase 2: DeepSeek flat with depth (2026-09-29)
+
+Phase 2's first slice fixes gap 1 (below) on DeepSeek V4 Flash's default
+fast plan, in the order that gap proposes:
+
+- **The window cache is a ring** of the window and a prefill chunk, 2,304
+  cells at 2,048-row chunks (`model/dsv4.h` `Dsv4Window::kRing`), not a
+  cell per position; the reference mode (`--exact on`) keeps llama.cpp's
+  full cache. Each compressed layer's compressed cache follows its window
+  cache in the state, so attention reads the two as one K in place: no
+  concatenation.
+- **Attention gathers what a token attends:** its 128 window cells and
+  its layer's compressed rows (CSA: the indexer's 512; HCA: the visible
+  ones), through the pinned MMA kernel's sparse gather, which jitLLM's
+  graph now marks for every layer (`SetFlashAttnSparseAny`; upstream's
+  takes it only past 4,096 cells). The masks are built on the device from
+  each row's visible counts (`jitllm.dsv4.sparse_mask`): no host-built
+  mask grows with the context.
+- **The indexer is jitLLM's** (`jitllm.dsv4.lid_topk`,
+  `kernels/ggml/dsv4_sparse.cu`): scores on tensor cores (a block scores
+  four rows' 64 heads against each key tile, so prefill and a verify's
+  rows share one pass), then a radix select that keeps the lower row
+  among equals (two stages for decode's few rows over many keys).
+  Deterministic: RE-031 is closed for DeepSeek's default plan. The scores
+  of a prefill chunk go through pool scratch of at most 128 MiB, the rows
+  in groups that fit it.
+- **The memory guard** keeps 6 GiB (was 4) and counts each model's
+  host-built chunk inputs beside it (`runtime/memory_guard.h`; gap 7).
+
+Measured on `spark` (GB10, driver 580.178.04) at this change's working
+tree; the comparator numbers are phase 1's (llama.cpp b11254 at 32K–128K,
+b10964 at 8K, M3's earlier runs); one run per depth.
+
+### Speed through the runtime
+
+The runtime at `context = 262144`, plain and with DSpark, 512 greedy
+tokens (the retrieval prompts fewer); the 8K rung is the Qwen3.8 corpus's
+8K prompt (7,671 DeepSeek tokens: the builder cannot fill DeepSeek's own
+8K rung within 1%). Phase 1's jitLLM numbers are "before"; at 128K the
+route stopped phase 1's run, and the watchdog slice's run (plain, context
+131,072, 64 tokens, 2026-09-29) is the "before".
+
+| Depth | Prefill tok/s: before → after (× llama.cpp) | Plain decode tok/s: before → after (×) | DSpark decode tok/s: before → after (×) | Retrieval |
+| --- | --- | --- | --- | --- |
+| 8K | 463 → 438 (1.24× b10964's 352) | 21.9–22.2 → 21.9 (1.10× 19.9) | 31.6 → 37.3 (1.21× 30.8) | pass |
+| 32K | 333 → **471 (1.65×)** | 14.7 → **21.6 (1.15×)** | 31.3 → **37.5 (1.22×)** | pass |
+| 64K | 230 → **466 (1.69×)** | 10.8 → **21.2 (1.18×)** | 21.4 → **32.1 (1.11×)** | pass |
+| 128K | 154 → **445 (1.72×)** | 7.1 → **20.5 (1.22×)** | refused → **36.6 (1.19×)** | pass |
+
+DSpark's rate follows each answer's acceptance (llama.cpp's too: 0.59 at
+64K against 0.62–0.71 elsewhere). Retrieval passed at every depth run, in
+both modes (all three notes). The runs used this slice's first selection
+kernel; the final one (a parallel bin choice and ballot compaction)
+selects the same rows (its unit tests compare with a host reference; the
+32K forced run's logits are the first build's bit for bit) in less time
+(below). Re-measured on the final build (the review, one run each): 32K
+prefill 473 / 470 tok/s and decode 21.7 plain, 37.7 DSpark; 64K 466 /
+465 tok/s and 21.4 plain, 32.4 DSpark: within 1% of the table.
+
+### The slope, per 1K tokens of context
+
+From the rates above (a decode step 1 ÷ rate; prefill per token 1 ÷ rate):
+
+| Cost | Before (8K → 64K) | After (8K → 64K → 128K) | llama.cpp b11254 (32K → 256K) |
+| --- | --- | --- | --- |
+| Decode step | +0.83 ms per 1K (45.4 → 92.7 ms) | **+0.026 ms per 1K** (45.7 → 47.2 → 48.9 ms) | +0.066 ms per 1K (53.1 → 67.9 ms) |
+| Prefill, per token | +0.039 ms per 1K (2.16 → 4.35 ms) | **+0.0013 ms per 1K** (32K 2.12 → 64K 2.15 → 128K 2.25 ms) | +0.0039 ms per 1K (3.50 → 4.37 ms) |
+
+So a decode step at 64K costs 3.2% more than at 8K (was 104%), at 128K
+6.5%; prefill at 128K 5.5% more than at 32K (8K's rate includes a
+larger share of fixed costs). What remains is the architecture's O(n)
+part, measured in the profile:
+
+### Where the time goes, after
+
+`nsys` over the resident harness (the final build), the same prompts and
+method as phase 1's profile (a chunk at 6,144 and 61,440 tokens of
+context; a decode step at 8,195 and 63,491):
+
+| ms | Prefill chunk 8K | 64K | Decode step 8K | 64K |
+| --- | ---: | ---: | ---: | ---: |
+| Flash attention (the sparse gather) | 903.4 | 745.9 | 0.87 | 0.90 |
+| The masks (jitllm.dsv4.sparse_mask) and the gather's compaction | 6.4 | 19.9 | 0.33 | 0.41 |
+| Indexer scoring (LidScoreKernel) | 16.8 | 135.2 | 0.22 | 0.58 |
+| Indexer selection (TopKKernel, and its merge) | 7.7 | 43.8 | 0.16 | 0.45 |
+| Everything else | 3,291.6 | 3,318.2 | 47.21 | 47.87 |
+| **Total** | **4,225.9** | **4,262.9** | **48.79** | **50.21** |
+
+From 8K to 64K the prefill chunk grows 37 ms (0.9%; phase 1: 7.6 s): the
+indexer's scoring +118 ms (at about 81 TFLOP/s on the tensor cores, 11
+TFLOP a chunk at 64K) and selection +36 ms, attention 158 ms less. The
+decode step grows 1.4 ms (2.9%; phase 1: 40.5 ms): the indexer's scoring
++0.37 ms (the keys read, 84 MB at 64K) and selection +0.29 ms, the masks
++0.08; the quantized products (the weights' same bytes) +0.62 ms,
+consistent across three profiles, which the attention does not explain (a
+longer prefill before the step, and so a warmer device, is the likely
+cause; not isolated). Attention itself is flat. The indexer's O(n)
+scoring and selection, 1.4% of the step at 64K, is the architecture's
+part; phase 1 computed about 1% from the keys' bytes alone.
+
+### Correctness
+
+On `spark`, with the resident harness (this change's fast plan) and
+[judge.py](judge.py), phase 1's method:
+
+| Check | Result |
+| --- | --- |
+| Near-tie bound, recorded first: the fast plan against the reference form (`--exact on`), 512 forced steps at 32K | p99 **0.947** (p50 0.173, max 1.243; 500 of 512 argmax equal); phase 1's was 1.24 |
+| Greedy at 32K against llama.cpp b11254 | 493 of 512 equal, 19 near-ties (oracle margin at most 0.725), **0 outside: pass** (phase 1: step 249 outside) |
+| Perplexity at 32K (16,383 tokens scored) | 1.8545 against 1.8528 (+0.09%): **pass** |
+| Retrieval through the runtime | pass at 8K, 32K, 64K and 128K, plain and with DSpark |
+| The same 32K forced run twice, bit for bit | **yes**: 0 of 512 steps differ (RE-031 closed for the fast plan) |
+
+Speculation, with the fast plan's batched verify (`jitllm_spec_runner
+--check forced --max-rows 128 --tokens 320`, so the window ring is 256
+cells and the `capital` prompt's 336 positions wrap it): 164 steps, 140
+with rejected rows (all rejected, one or two accepted, and at rows
+completing a CSA or an HCA block), **0 stale bytes** after the rollbacks
+in 14.9 GB compared; 318 of 320 speculative tokens the plain engine's
+argmax on their prefix, 2 near-ties (verify noise p99 2.61). (The first
+run's 160 tokens, 176 positions, did not wrap the ring.) The review's
+runs, on the final build (`spark`, 2026-09-29):
+
+| Check | Result |
+| --- | --- |
+| Rollback composes with swap (`--check swap --max-rows 128 --tokens 320`, the FP16 fixture as B), over the wrapping ring | A out and back after step 94 (rows rejected): 189 steps compared, **0 states differ**; B's logits its recorded hash |
+| Greedy at short context against llama.cpp's record ([reference-deepseek-v4-flash-0731-llamacpp.json](../fast-swap/reference-deepseek-v4-flash-0731-llamacpp.json), six chat prompts, 32 tokens; `--check greedy`), the first divergence judged | plain: 4 of 6 equal throughout, `sky` from step 27 (oracle lead 0.25), `french` from step 0 (0.29); DSpark: 4 of 6, `sky` from step 20 (1.11, inside its verify noise p99 2.54), `french` from step 0 (0.29); every speculative token the plain engine's argmax or within its near-tie margin: **pass** |
+| The runtime's swap table, DeepSeek (DSpark on, `context = 36864`) holding 32,768 tokens of the book, so its ring has wrapped, against Qwen3.8 (`swap-table --pairs deepseek:qwen3.8 --context-tokens 32768 --cycles 2`) | A→B 7.88 / 7.83 s (first use / prepared; 0.38 GB spilled, phase 1's 3.35 GB at 64K), B→A 9.26 / 9.27 s (restore 0.09 s); **every row exact** (A's state hashing as it left, its 16 continued tokens and logits the unswapped continuation's), the prepared return replaying graphs captured before the swap (18 replays, none captured); lowest `MemAvailable` 7.95 GiB |
+
+Not run: the greedy comparison at 8K (no DeepSeek 8K oracle record), the
+128K teacher-forced comparison, perplexity at 128K, and the image pair
+of the swap table (its reference noise is on `spark-b` only).
+
+### Step 249
+
+Phase 1's fast plan chose token 10386 at step 249 of the 32K prompt, where
+llama.cpp b11254 prefers 82437 by 2.62 nats; the reference form agreed.
+Diagnosed with the dsv4-decode probe's method on the resident harness
+(`jitllm_dsv4_exec --probe-step 249`, a full window so both plans read one
+state; [probe_step.py](probe_step.py)): the step run in both plans from
+the fast plan's state (F/F, E/F) and from the reference's (E/E, F/E).
+
+| Path | Lead of 82437 over 10386, nats |
+| --- | --- |
+| Phase 1 fast plan, two runs | −0.62, −0.84 |
+| Phase 1 reference form | +0.72 |
+| This fast plan (ring), two runs | +0.10, +0.10 |
+| Probe F/F, E/F, E/E, F/E | +0.44, +0.16, +0.78, +0.22 |
+
+- **The token is near-tied in every jitLLM path** (−0.84 to +0.78);
+  llama.cpp's 2.62 is its own arithmetic (another build, fused, with its
+  own sparse attention), 1.8 nats from jitLLM's reference form at this
+  token.
+- **On one state the plans differ continuously**: the fast plan against
+  the reference on the fast state moves the lead by 0.28, the logits by
+  1.8%, with no routing flip; the indexer selections differ in 20 CSA
+  layers by 1 to 5 of 512 rows, at the selection's boundary (the reference
+  keeps GGML's top-k, which breaks ties arbitrarily, over other sums).
+- **Across states the flips are discrete**: the same plan on the two
+  states selects another sixth expert in 7 to 8 layers (the reference's
+  gaps between the sixth and seventh selection scores 0.0016–0.029) and
+  other indexer rows (up to 14 of 512); the residual streams differ by up
+  to 19% and the lead by 0.62.
+- **Nothing points at a defect**: no mask, selection or state differs
+  beyond near-tied choices, and the new plan's selection is exact against
+  a host reference (unit tests).
+
+**Verdict:** noise, carried by discrete flips (the indexer's boundary rows
+and near-tied routing) at a token every jitLLM path holds within 0.9 nats
+of a tie; phase 1's fast plan fell on the other side of it. Not a defect.
+
+### Memory and the maximum
+
+At `context = 262144` the runtime's fixed memory is 3.50 GiB plain
+(phase 1: 20.36) and 3.89 GiB with DSpark, whose guard (weights 100.4 GiB,
+host inputs 0.04, margin 6) now passes with 6.4 GiB to spare where it
+refused above 143,360. Peak `MemAvailable` drop: 98.0 GiB plain (1.02×
+llama.cpp's 95.8) and 109.0 GiB with DSpark (1.02× its 107.1). So the
+one-Spark maximum is the configuration's bound, **262,144, plain and with
+DSpark** (both served a 128K prompt; a 256K prompt was not run). Past the
+bound (computed): the state is 6,880 bytes a position plus 99 MiB (6.8 GiB
+at 1,048,576), and the prefill masks' workspace about 1 KiB a position at
+2,048-row chunks: about 9.5 GiB fixed at a million tokens, which fits
+plain beside the weights and the margin (about 106 of the 116 GiB
+available) and would reach the guard's edge with DSpark.
+The configuration refuses contexts above 262,144 (a configuration change,
+gap 4). Two LLMs registered together are another matter: DeepSeek with
+DSpark and Qwen3.8 both at `context = 65536` map 14.4 GiB fixed and are
+refused (the old 4 GiB guard refused them too); at 36,864 each they
+were refused by 0.1 GiB while the guard summed the models' host inputs,
+which it no longer does (one model runs chunks at a time, so it counts
+the largest; the review's fix).
+The swap table above ran with Qwen3.8 at 8,704 (3.7 GiB fixed).
 
 ## Headline
 
@@ -54,6 +249,8 @@ margin, `kUncountedMargin`; one model registered):
 
 ## Contents
 
+- [Phase 2: DeepSeek flat with depth](#phase-2-deepseek-flat-with-depth-2026-09-29):
+  before and after, the slope, the profile, correctness and the maximum.
 - [The maximum contexts](#the-maximum-contexts): state per token, the
   guard, and the runs at each maximum.
 - [Corpus and harness](#corpus-and-harness): the prompts, the retrieval
@@ -529,7 +726,11 @@ Ranked; the owner's target is per-token cost flat with depth, fixed at
 the comparator's default configuration, not an approximation); effort is
 a rough estimate of agent days, including tests.
 
-1. **DeepSeek's per-token cost grows with the whole context** (prefill 463
+1. **DeepSeek's per-token cost grows with the whole context** (*done in phase
+   2*, [above](#phase-2-deepseek-flat-with-depth-2026-09-29): 1.1-1.3 by the ring,
+   sparse attention and jitLLM's indexer; its scoring is a tensor-core pass per
+   four rows, not a batched GEMM, and the selection is its own kernel after it)
+   (prefill 463
    → 230 tok/s and decode 22 → 10.8 tok/s from 8K to 64K, against
    llama.cpp's nearly flat 286 → 229 and 18.8 → 14.7 from 32K to 256K).
    Cause, from the profile: the full-size window cache, concatenated with
@@ -612,10 +813,10 @@ a rough estimate of agent days, including tests.
    DeepSeek's compressor rings, cannot be rolled back, so they need
    checkpoints where a later turn may diverge: at the end of each
    rendered user message (before the assistant's reasoning). **2–3 days.**
-7. **The guard's margin:** 6 GiB and the host-side inputs counted
+7. **The guard's margin** (*done in phase 2*): 6 GiB and the host-side inputs counted
    ([above](#memory-and-the-guards-margin)). **Hours.**
-8. **Repeatability (RE-031):** DeepSeek at 32K and Qwen3.8 past 32K;
-   closed by 1.3 and 2.1.
+8. **Repeatability (RE-031):** DeepSeek at 32K (*closed in phase 2*) and
+   Qwen3.8 past 32K (2.1).
 9. **The prefill chunk at depth:** [n_kv, rows] tensors force narrower
    chunks at depth (Qwen3.8 2,040 rows at 262,144, RE-037); with
    gathered attention and device selection they go away and the chunk can
@@ -697,6 +898,14 @@ jitllm_dsv4_exec ... --ppl raw/ds-llama-ppl/ppl-32768.ids; judge.py ppl 1.8528 r
 nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite -o prof/ds-64k \
   jitllm_dsv4_exec ... --context 65536 --max-rows 2048 --prompts ds-64k.tsv --generate 3
 python3 profile.py prof/ds-64k.sqlite 129280
+
+# Phase 2: the step probe, in each plan's run (a full window), then the comparison.
+jitllm_dsv4_exec ... --context 33280 --max-rows 2048 --prompts hin/ds/d32k.prompt.tsv \
+  --force hin/ds/d32k.force.tsv --generate 251 --probe-step 249 [--exact on]
+python3 probe_step.py FAST_OUT EXACT_OUT 82437 10386
+# Speculation over a wrapping ring.
+jitllm_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts ../fast-swap/prompts.json \
+  --out DIR --check forced --max-rows 128 --tokens 160 --margin 6.11
 ```
 
 Long runs went through `tools/spark-job` (`start --gpu --steps`), after

@@ -366,13 +366,13 @@ std::int64_t Dsv4StateLayout::Find(std::uint32_t layer, Dsv4StateTensor::Kind ki
 
 std::vector<StateRepresentation> Dsv4StateLayout::Representations(std::uint32_t max_verify) const {
   using K = Dsv4StateTensor::Kind;
-  std::uint64_t window = 0;
+  std::uint64_t cells = 0;
   std::uint64_t caches = 0;
   std::uint64_t rings = 0;
   for (const Dsv4StateTensor& t : tensors) {
     switch (t.kind) {
       case K::kRawK:
-        window += t.bytes;
+        cells += t.bytes;
         break;
       case K::kCsaK:
       case K::kLidK:
@@ -395,12 +395,12 @@ std::vector<StateRepresentation> Dsv4StateLayout::Representations(std::uint32_t 
                                .max_snapshots = 0,
                                .snapshot_bytes = Bytes(0)};
   };
-  return {fixed("dsv4.window", window), fixed("dsv4.compressed", caches),
+  return {fixed("dsv4.window", cells), fixed("dsv4.compressed", caches),
           fixed("dsv4.compressor", rings)};
 }
 
 std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& p, std::uint32_t context,
-                                                      std::uint32_t max_rows) {
+                                                      std::uint32_t max_rows, Dsv4Window window) {
   if (!ProfileIsSane(p)) {
     return Refused("the profile is not a DeepSeek V4 model's");
   }
@@ -414,9 +414,15 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& p, std:
   Dsv4StateLayout s;
   s.context = context;
   s.max_rows = max_rows;
+  s.window = window;
   // The full-size window cache llama.cpp's contexts default to
-  // (swa_full): a cell per position of the context.
+  // (swa_full): a cell per position of the context; or a ring of the
+  // window and a chunk, when that is smaller.
   s.raw_cells = static_cast<std::uint32_t>(Pad(context, 256));
+  if (window == Dsv4Window::kRing) {
+    s.raw_cells = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(s.raw_cells, Pad(std::uint64_t{p.window} + max_rows, 256)));
+  }
   if (max_rows > s.raw_cells - p.window) {
     return Refused(std::format("chunks of {} rows leave the {}-position window no room in {} cells",
                                max_rows, p.window, s.raw_cells));
@@ -580,7 +586,8 @@ std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio,
 
 std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile,
                                                       const Dsv4StateLayout& state,
-                                                      std::uint32_t n_past, std::uint32_t rows) {
+                                                      std::uint32_t n_past, std::uint32_t rows,
+                                                      bool masks) {
   if (rows == 0 || rows > state.max_rows || n_past > state.context ||
       rows > state.context - n_past) {
     return Refused(std::format("{} rows after {} do not fit a {}-position state of {}-row chunks",
@@ -591,8 +598,10 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
   in.rows = rows;
   const std::uint64_t total = std::uint64_t{n_past} + rows;
   const std::uint64_t cells = state.raw_cells;
-  in.raw_n_kv = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-      cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))));
+  const bool ring = state.window == Dsv4Window::kRing;
+  in.raw_n_kv = ring ? state.raw_cells
+                     : static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                           cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))));
   in.positions.resize(rows);
   in.raw_cells.resize(rows);
   in.raw_mask.assign(std::size_t{rows} * in.raw_n_kv, kHalfNegInf);
@@ -631,9 +640,11 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
     }
     return m;
   };
-  in.csa_mask = mask(in.csa);
-  in.hca_mask = mask(in.hca);
-  in.lid_mask = mask(in.lid);
+  if (masks) {
+    in.csa_mask = mask(in.csa);
+    in.hca_mask = mask(in.hca);
+    in.lid_mask = mask(in.lid);
+  }
   return in;
 }
 
@@ -655,8 +666,10 @@ Widths WidthsAt(const Dsv4StateLayout& state, std::uint64_t total) {
   const auto comp = [&](std::uint32_t ratio) {
     return std::max<std::uint64_t>(Pad(total / ratio, 256), 256);
   };
-  return {.raw = std::min<std::uint64_t>(
-              cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))),
+  return {.raw = state.window == Dsv4Window::kRing
+                     ? cells
+                     : std::min<std::uint64_t>(
+                           cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))),
           .csa = comp(kDsv4CsaRatio),
           .hca = comp(kDsv4HcaRatio)};
 }

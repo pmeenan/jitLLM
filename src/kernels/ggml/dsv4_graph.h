@@ -19,6 +19,13 @@
 //     llama.cpp looks them up on the CPU;
 //   - the indexer's Hadamard matrix is an input the transform never reads.
 //
+// That is the reference form. The fast plan (Dsv4GraphOptions::fused)
+// departs from it also in the attention at depth (docs/experiments/
+// long-context, phase 2): no concatenated K, the masks built on the device
+// from each row's visible counts, jitLLM's deterministic indexer, and the
+// MMA kernel's sparse gather, so its host inputs carry no CSA, HCA or
+// indexer mask (Dsv4Graph::csa_visible, hca_visible instead).
+//
 // Speculation (M3; docs/experiments/dspark/) adds, by option: a verify's
 // row-invariant plan (D-092: attention per query row; the planner picks
 // the row-invariant products); the target's features and their injection
@@ -73,7 +80,6 @@ struct Dsv4ChunkShape {
   std::int64_t hca_persist = 0;
   std::int64_t csa_state_rows = 0;
   std::int64_t hca_state_rows = 0;
-
   bool operator==(const Dsv4ChunkShape&) const = default;
 };
 
@@ -88,7 +94,7 @@ struct Dsv4CompInputs {
   ggml_tensor* read_idxs = nullptr;    // I32
   ggml_tensor* write_idxs = nullptr;   // I64 [blocks]
   ggml_tensor* write_pos = nullptr;    // I32 [blocks]
-  ggml_tensor* mask = nullptr;         // F16 [n_kv, rows, 1, 1]
+  ggml_tensor* mask = nullptr;         // F16 [n_kv, rows, 1, 1]; none in the fast plan
 };
 
 // A layer's weights (unbound leaves: bind each at its resource's address)
@@ -130,7 +136,10 @@ struct Dsv4LayerTensors {
   ggml_tensor* gate_shexp = nullptr;
   ggml_tensor* down_shexp = nullptr;
   // State.
-  ggml_tensor* raw_k = nullptr;         // F16 [head, raw_cells, 1]
+  // F16 [head, raw_cells, 1]; in the fast plan a compressed layer's [head,
+  // raw_cells + compressed cells, 1], its compressed cache (csa_k, hca_k) a
+  // view of it (the state lays the two out together, model/dsv4.h).
+  ggml_tensor* raw_k = nullptr;
   ggml_tensor* csa_k = nullptr;         // F16 [head, csa_cells, 1]
   ggml_tensor* csa_state_kv = nullptr;  // F32 [2·head, 8]
   ggml_tensor* csa_state_score = nullptr;
@@ -187,8 +196,18 @@ struct Dsv4GraphOptions {
   // and hc_pre, and each MoE block as the routing, one activation
   // quantization, the routed and shared experts' products with their SwiGLU
   // in the kernel (each distinct expert read once for the chunk) and the
-  // combination. Not llama.cpp's arithmetic: its logits differ in the last
-  // bits and beyond. Off: the graph node for node as llama.cpp builds it.
+  // combination. And for every chunk, sparse attention at depth
+  // (jitllm_ops.h, "DeepSeek V4's sparse attention"): each layer's window
+  // cells and, in a compressed layer, its compressed rows read in place as
+  // one K (no concatenation), masked on the device (the indexer's selection
+  // for CSA, the visible rows for HCA), attended through the MMA kernel's
+  // gather of the unmasked cells; the indexer's scores and selection as
+  // jitllm.dsv4.lid_topk (deterministic, ties to the lower row). A token's
+  // attention and indexer then cost the same at any depth but for the
+  // indexer's scoring and HCA's one row per 128 positions, over a ring
+  // window (model/dsv4.h Dsv4Window::kRing) or the full one. Not llama.cpp's
+  // arithmetic: its logits differ in the last bits and beyond. Off: the
+  // graph node for node as llama.cpp builds it.
   bool fused = false;
 };
 
@@ -200,8 +219,13 @@ struct Dsv4Graph {
   ggml_tensor* raw_mask = nullptr;    // F16 [raw_n_kv, rows, 1, 1]
   ggml_tensor* out_ids = nullptr;     // I32 [rows]: 0 .. rows - 1, every row an output
   Dsv4CompInputs csa, hca, lid;
-  ggml_tensor* lid_rot = nullptr;      // F32 [indexer head, indexer head]: never read
-  ggml_tensor* top_k_zeros = nullptr;  // F16: the zero fill's source, never read
+  ggml_tensor* lid_rot = nullptr;  // F32 [indexer head, indexer head]: never read
+  ggml_tensor* top_k_zeros =
+      nullptr;  // F16: the zero fill's source, never read (not the fast plan's)
+  // The fast plan's: I32 [rows], the compressed rows each row sees (CSA's and
+  // the indexer's; HCA's), from which it masks them on the device.
+  ggml_tensor* csa_visible = nullptr;
+  ggml_tensor* hca_visible = nullptr;
   std::vector<Dsv4LayerTensors> layers;
   ggml_tensor* output_norm = nullptr;
   ggml_tensor* output = nullptr;

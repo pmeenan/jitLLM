@@ -95,6 +95,8 @@ constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
 constinit std::array kTagGdnStep = std::to_array("jitllm.gdn.step");
+constinit std::array kTagDsv4LidTopK = std::to_array("jitllm.dsv4.lid_topk");
+constinit std::array kTagDsv4SparseMask = std::to_array("jitllm.dsv4.sparse_mask");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
 constexpr std::size_t kEpsOffset = 32;
@@ -181,8 +183,10 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 34> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 36> fused = {{
       {kTagGdnStep.data(), JitllmOp::kGdnStep},
+      {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
+      {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
       {kTagQsaSelect.data(), JitllmOp::kQsaSelect},
       {kTagQsaPrep.data(), JitllmOp::kQsaPrep},
       {kTagQsaGateQuantize.data(), JitllmOp::kQsaGateQuantize},
@@ -1959,6 +1963,104 @@ std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
     return Rejected("a jitllm.dsv4.hc_mix of the streams, their scales, bases and norm weight");
   }
   return CheckDense(node, {partials, x, node->src[2], node->src[3], node->src[4]});
+}
+
+// ---------------------------------------------------------------- DeepSeek V4's sparse attention
+
+ggml_tensor* Dsv4LidTopK(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* w,
+                         ggml_tensor* visible, std::int64_t top) {
+  return Custom(context, GGML_TYPE_I32, {top, q->ne[2], 1, 1}, {q, k, w, visible},
+                kTagDsv4LidTopK.data());
+}
+
+ggml_tensor* Dsv4SparseMask(ggml_context* context, ggml_tensor* window, ggml_tensor* top,
+                            ggml_tensor* visible, std::int64_t cells, std::int64_t n_kv) {
+  return WithInts(Custom(context, GGML_TYPE_F16, {cells + n_kv, window->ne[1], 1, 1},
+                         {window, top != nullptr ? top : visible}, kTagDsv4SparseMask.data()),
+                  {cells, top != nullptr ? 0 : 1});
+}
+
+std::expected<void, KernelFailure> CheckDsv4LidTopK(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4LidTopK, 4); !checked) {
+    return checked;
+  }
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* k = node->src[1];
+  const ggml_tensor* w = node->src[2];
+  const ggml_tensor* visible = node->src[3];
+  const std::int64_t rows = q->ne[2];
+  const std::int64_t n_kv = k->ne[1];
+  const std::int64_t top = node->ne[0];
+  std::initializer_list<const ggml_tensor*> operands = {node, q, k, w, visible};
+  if (AnyEmpty(operands) || !AllSane(operands) || !AllCurrent(operands)) {
+    return Rejected("the indexer's selection on an empty, unmeasurable or stale tensor");
+  }
+  // The kernels' layout: 128-wide query heads, 64 of them; F16 keys with
+  // packed rows; the weights and visible counts packed per row.
+  if (!IsF32(q) || q->ne[0] != 128 || q->ne[1] != 64 || q->ne[3] != 1 || q->nb[0] != 4 ||
+      q->nb[1] % 8 != 0 || q->nb[2] % 8 != 0 || !Aligned(q, 8) || k->type != GGML_TYPE_F16 ||
+      k->ne[0] != 128 || k->ne[2] != 1 || k->ne[3] != 1 || k->nb[0] != 2 || k->nb[1] % 16 != 0 ||
+      !Aligned(k, 16) || !IsF32(w) || !Shaped(w, 64, rows, 1) || w->nb[0] != 4 ||
+      visible->type != GGML_TYPE_I32 || !Packed(visible) || !Shaped(visible, rows, 1, 1) ||
+      node->type != GGML_TYPE_I32 || !Packed(node) || !Shaped(node, top, rows, 1) || top < 1 ||
+      top > 65536) {
+    return Rejected(
+        "queries F32 [128, 64, rows], the indexer's F16 keys [128, n_kv], weights F32 [64, rows] "
+        "and visible counts I32 [rows], into I32 [top, rows]");
+  }
+  // 32-bit strides and extents in the kernels; the score scratch's rows.
+  if (std::cmp_greater(q->nb[2] / 4 * static_cast<std::uint64_t>(rows), kInt32Max) ||
+      std::cmp_greater(k->nb[1] / 2 * static_cast<std::uint64_t>(n_kv), kInt32Max) ||
+      std::cmp_greater(w->nb[1] / 4 * static_cast<std::uint64_t>(rows), kInt32Max) ||
+      rows > std::int64_t{65535} * 4 || std::cmp_greater(n_kv, kInt32Max / 4) ||
+      std::cmp_greater(static_cast<std::uint64_t>(top) * static_cast<std::uint64_t>(rows),
+                       kInt32Max)) {
+    return Rejected("the indexer's selection beyond the kernels' 32-bit extents");
+  }
+  for (const ggml_tensor* t : {q, k, w, visible}) {
+    if (!Disjoint(node, t, false)) {
+      return Rejected("an output overlapping an operand");
+    }
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckDsv4SparseMask(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kDsv4SparseMask, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* window = node->src[0];
+  const ggml_tensor* rows_of = node->src[1];
+  const std::int64_t rows = node->ne[1];
+  const std::int64_t cells = JitllmOpInt(node, 0);
+  const std::int64_t by_count = JitllmOpInt(node, 1);
+  std::initializer_list<const ggml_tensor*> operands = {node, window, rows_of};
+  if (AnyEmpty(operands) || !AllSane(operands) || !AllCurrent(operands)) {
+    return Rejected("a sparse mask of an empty, unmeasurable or stale tensor");
+  }
+  const bool selection = by_count == 0 && JitllmOpOf(rows_of) == JitllmOp::kDsv4LidTopK &&
+                         rows_of->ne[1] == rows && Packed(rows_of);
+  const bool counts = by_count == 1 && rows_of->type == GGML_TYPE_I32 && Packed(rows_of) &&
+                      Shaped(rows_of, rows, 1, 1);
+  if (window->type != GGML_TYPE_F16 || window->nb[0] != 2 || window->ne[1] != rows ||
+      window->ne[2] != 1 || window->ne[3] != 1 || (!selection && !counts) ||
+      cells < window->ne[0] || node->type != GGML_TYPE_F16 || !Packed(node) ||
+      node->ne[0] <= cells || node->ne[2] != 1 || node->ne[3] != 1 ||
+      std::cmp_greater(node->ne[0], kInt32Max) ||
+      node->ne[0] > std::int64_t{65535} * 4096 ||  // the kernel's grid: 4,096 columns a block
+      std::cmp_greater(window->nb[1] / 2 * static_cast<std::uint64_t>(rows), kInt32Max) ||
+      std::cmp_greater(static_cast<std::uint64_t>(node->ne[0]) * static_cast<std::uint64_t>(rows),
+                       kInt32Max)) {
+    return Rejected(
+        "a window mask F16 [w, rows] and a jitllm.dsv4.lid_topk selection or visible counts I32 "
+        "[rows], into F16 [cells + n_kv, rows], cells at least w");
+  }
+  for (const ggml_tensor* t : {window, rows_of}) {
+    if (!Disjoint(node, t, false)) {
+      return Rejected("an output overlapping an operand");
+    }
+  }
+  return {};
 }
 
 }  // namespace jitllm::kernels::ggml

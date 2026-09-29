@@ -126,6 +126,9 @@ std::expected<void, KernelFailure> HcPost(LaunchContext& launch, ggml_tensor* no
 // cells per row (D 512 and one column only); stream-k splits the cells over
 // `blocks` blocks, and the fixup buffer and the mask pre-pass's or the
 // sparse indices' buffer come from the pool.
+// A node jitllm_ops.h's SetFlashAttnSparseAny marks takes the sparse gather
+// whenever its n_kv_max cells are at most half of K's, not only past
+// upstream's 4,096.
 struct FlashAttnMmaPlan {
   int head = 0;     // D
   int columns = 0;  // ncols1

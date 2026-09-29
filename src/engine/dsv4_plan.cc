@@ -4,7 +4,6 @@
 #include "engine/dsv4_plan.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <format>
@@ -76,7 +75,9 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
     kg::TensorArena::Bind(l.gate_exps, m.places.array(r.gate_exps.index));
     kg::TensorArena::Bind(l.down_exps, m.places.array(r.down_exps.index));
     const auto state = [&](ggml_tensor* t, K kind) {
-      if (t == nullptr) {
+      // A view (a ring's compressed cache in its window's tensor) is
+      // bound with the tensor it views.
+      if (t == nullptr || t->view_src != nullptr) {
         return;
       }
       const std::int64_t i = m.state->Find(il, kind);
@@ -295,32 +296,50 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
   out.tokens.assign(tokens.begin(), tokens.end());
   out.out_ids.resize(rows);
   std::ranges::iota(out.out_ids, 0);
-  out.zeros.assign(static_cast<std::size_t>(ggml_nelements(g.top_k_zeros)), 0);
-  const auto comp = [](const kg::Dsv4CompInputs& t, const md::Dsv4CompPlan& plan,
-                       const std::vector<std::uint16_t>& mask) {
-    return std::array<std::pair<ggml_tensor*, const void*>, 7>{
-        {{t.state_pos, plan.state_pos.data()},
-         {t.persist_src, plan.persist_src.data()},
-         {t.persist_dst, plan.persist_dst.data()},
-         {t.read_idxs, plan.read_idxs.data()},
-         {t.write_idxs, plan.write_idxs.data()},
-         {t.write_pos, plan.write_pos.data()},
-         {t.mask, mask.data()}}};
+  // A ring's graph masks its compressed rows on the device from the rows'
+  // visible counts (dsv4_graph.h Dsv4ChunkShape::ring): no CSA or indexer
+  // mask, and the counts in the zero fill's place.
+  if (g.top_k_zeros != nullptr) {
+    out.zeros.assign(static_cast<std::size_t>(ggml_nelements(g.top_k_zeros)), 0);
+  } else if (in.csa.n_visible.size() != rows || in.hca.n_visible.size() != rows) {
+    return Error("the chunk's visible counts are not its rows'");
+  }
+  const auto comp =
+      [&](const kg::Dsv4CompInputs& t, const md::Dsv4CompPlan& plan,
+          const std::vector<std::uint16_t>& mask) -> std::expected<void, std::string> {
+    out.sources.insert(out.sources.end(), {{t.state_pos, plan.state_pos.data()},
+                                           {t.persist_src, plan.persist_src.data()},
+                                           {t.persist_dst, plan.persist_dst.data()},
+                                           {t.read_idxs, plan.read_idxs.data()},
+                                           {t.write_idxs, plan.write_idxs.data()},
+                                           {t.write_pos, plan.write_pos.data()}});
+    if (t.mask != nullptr) {
+      if (std::cmp_not_equal(mask.size(), ggml_nelements(t.mask))) {
+        return Error("a compressor's mask is not its graph's");
+      }
+      out.sources.emplace_back(t.mask, mask.data());
+    }
+    return {};
   };
   out.sources = {{g.embd, out.embd.data()},          {g.tokens, out.tokens.data()},
                  {g.positions, in.positions.data()}, {g.raw_k_idxs, in.raw_cells.data()},
                  {g.raw_mask, in.raw_mask.data()},   {g.out_ids, out.out_ids.data()}};
-  for (const auto& s : comp(g.csa, in.csa, in.csa_mask)) {
-    out.sources.push_back(s);
+  if (auto added = comp(g.csa, in.csa, in.csa_mask); !added) {
+    return added;
   }
-  for (const auto& s : comp(g.hca, in.hca, in.hca_mask)) {
-    out.sources.push_back(s);
+  if (auto added = comp(g.hca, in.hca, in.hca_mask); !added) {
+    return added;
   }
-  for (const auto& s : comp(g.lid, in.lid, in.lid_mask)) {
-    out.sources.push_back(s);
+  if (auto added = comp(g.lid, in.lid, in.lid_mask); !added) {
+    return added;
   }
   out.sources.emplace_back(g.lid_rot, m.rot.data());
-  out.sources.emplace_back(g.top_k_zeros, out.zeros.data());
+  if (g.top_k_zeros != nullptr) {
+    out.sources.emplace_back(g.top_k_zeros, out.zeros.data());
+  } else {
+    out.sources.emplace_back(g.csa_visible, in.csa.n_visible.data());
+    out.sources.emplace_back(g.hca_visible, in.hca.n_visible.data());
+  }
   if (g.inject) {
     if (std::cmp_not_equal(inject_cells.size(), g.inject->cells->ne[0])) {
       return Error("the injection's cells are not its rows'");

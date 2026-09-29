@@ -881,7 +881,19 @@ it appears.
         measure: RE-037, RE-038. The ranked gap list and fix plan are the
         report's; runs past 64K stopped there (the owner).
       - *Optimization, until every depth is at least the comparator's
-        speed* (not only inside D-085's 10%):
+        speed* (not only inside D-085's 10%). *DeepSeek done 2026-09-29*
+        ([phase 2](experiments/long-context/README.md#phase-2-deepseek-flat-with-depth-2026-09-29)):
+        its window cache a ring, attention gathering only the window and
+        the selected or visible compressed rows, jitLLM's deterministic
+        indexer (RE-031 closed for it) and the guard at 6 GiB with host
+        inputs counted. Through the runtime, prefill 471 / 466 / 445 tok/s
+        and plain decode 21.6 / 21.2 / 20.5 at 32K / 64K / 128K (1.65–1.72×
+        and 1.15–1.22× llama.cpp b11254), DSpark 1.11–1.22×; the decode
+        step's slope 0.026 ms per 1K tokens (was 0.83), the rest the
+        indexer's O(n) scoring and selection; 262,144 fits with DSpark;
+        swaps exact with a wrapped ring (the swap table with 32K saved,
+        and rollback across a swap).
+        Qwen3.8's items below are the next slice:
         - tiled, deterministic QSA selection past 8,192 blocks
           (TensorFold PR #93's technique), which also closes RE-031's
           long-context nondeterminism;

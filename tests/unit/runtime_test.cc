@@ -3,8 +3,9 @@
 
 // The runtime module's startup steps on scratch trees, and the platform
 // module's process services it relies on: the crash policy, lock files and
-// readiness notification; a prefill's chunks (prefill.h); and the chat
-// route's watchdog and scaled deadlines on a synthetic clock (watchdog.h).
+// readiness notification; a prefill's chunks (prefill.h); the chat route's
+// watchdog and scaled deadlines on a synthetic clock (watchdog.h); and the
+// start's memory guard (memory_guard.h).
 
 #include "runtime/runtime.h"
 
@@ -39,6 +40,7 @@
 #include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
+#include "runtime/memory_guard.h"
 #include "runtime/prefill.h"
 #include "runtime/watchdog.h"
 
@@ -601,6 +603,46 @@ TEST(Watchdog, AStallMarksTheBackendUnhealthyUntilItsNextBeat) {
   EXPECT_EQ(dog.health().stalls, 2U);
   EXPECT_TRUE(dog.Idle(at + seconds(300)));  // the request ended: recovered, idle
   EXPECT_FALSE(dog.Check(at + seconds(9000)));
+}
+
+// The start's memory guard (memory_guard.h): the largest model's weights,
+// the host-built chunk inputs and a 6 GiB margin against what is available.
+TEST(MemoryGuard, CountsTheWeightsTheHostInputsAndTheMargin) {
+  using jitllm::runtime::CheckMemoryGuard;
+  using jitllm::runtime::kUncountedMargin;
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  EXPECT_EQ(kUncountedMargin, 6 * kGiB);
+  // DeepSeek's 90.3 GiB of weights, 1 GiB of host inputs: 97.3 GiB needed.
+  const std::uint64_t weights = (903 * kGiB) / 10;
+  EXPECT_TRUE(CheckMemoryGuard({.largest = weights, .host_inputs = kGiB, .available = 100 * kGiB})
+                  .has_value());
+  // Exactly enough fits; a byte less does not.
+  const std::uint64_t exact = weights + kGiB + kUncountedMargin;
+  EXPECT_TRUE(
+      CheckMemoryGuard({.largest = weights, .host_inputs = kGiB, .available = exact}).has_value());
+  const auto short_by_one = CheckMemoryGuard(
+      {.largest = weights, .host_inputs = kGiB, .available = exact - 1, .fixed = 12 * kGiB});
+  ASSERT_FALSE(short_by_one.has_value());
+  EXPECT_THAT(short_by_one.error(), HasSubstr("host-built chunk inputs (1.0 GiB)"));
+  EXPECT_THAT(short_by_one.error(), HasSubstr("6 GiB margin"));
+  EXPECT_THAT(short_by_one.error(), HasSubstr("fixed memory (12.0 GiB)"));
+  // The host inputs count: what fits without them does not with them.
+  const std::uint64_t without = weights + kUncountedMargin;
+  EXPECT_TRUE(
+      CheckMemoryGuard({.largest = weights, .host_inputs = 0, .available = without}).has_value());
+  EXPECT_FALSE(CheckMemoryGuard({.largest = weights, .host_inputs = 3 * kGiB, .available = without})
+                   .has_value());
+  // The old 4 GiB margin's fit is refused now.
+  EXPECT_FALSE(
+      CheckMemoryGuard({.largest = weights, .available = weights + (4 * kGiB)}).has_value());
+  // Terms past what is available are refused, never wrapped; an unknown
+  // availability (0) passes.
+  EXPECT_FALSE(
+      CheckMemoryGuard(
+          {.largest = ~std::uint64_t{0}, .host_inputs = ~std::uint64_t{0}, .available = 100 * kGiB})
+          .has_value());
+  EXPECT_TRUE(
+      CheckMemoryGuard({.largest = weights, .host_inputs = kGiB, .available = 0}).has_value());
 }
 
 }  // namespace

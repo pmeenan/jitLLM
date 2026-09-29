@@ -551,6 +551,169 @@ TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
   }
 }
 
+// The fast plan's window cache is a ring of the window and a chunk
+// (model/dsv4.h Dsv4Window::kRing): its size no longer follows the
+// context, which leaves the compressed caches' 6,880 bytes a position; each
+// compressed cache follows its layer's window cache, so the graph reads the
+// two as one tensor.
+TEST(Dsv4Test, TheRingHoldsTheWindowAndAChunk) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  auto a = md::Dsv4State(p, 65536, 2048, md::Dsv4Window::kRing);
+  auto b = md::Dsv4State(p, 262144, 2048, md::Dsv4Window::kRing);
+  ASSERT_TRUE(a.has_value()) << Why(a);
+  ASSERT_TRUE(b.has_value()) << Why(b);
+  EXPECT_EQ(a->raw_cells, 2304U);  // pad(128 + 2,048, 256)
+  EXPECT_EQ(b->raw_cells, 2304U);
+  EXPECT_EQ(a->window, md::Dsv4Window::kRing);
+  // 21 CSA layers' rows and indexer keys a 4 positions, 20 HCA layers' a 128.
+  const std::uint64_t per_position = (b->bytes - a->bytes) / (262144 - 65536);
+  EXPECT_EQ(per_position, 6880U);
+  // A ring is never larger than the full cache (at the widest chunk the two
+  // are one size).
+  auto small = md::Dsv4State(p, 512, 128, md::Dsv4Window::kRing);
+  ASSERT_TRUE(small.has_value());
+  EXPECT_EQ(small->raw_cells, 256U);
+  auto widest = md::Dsv4State(p, 1024, 896, md::Dsv4Window::kRing);
+  ASSERT_TRUE(widest.has_value());
+  EXPECT_EQ(widest->raw_cells, 1024U);
+  // Both windows lay each compressed cache out right after its window's.
+  for (const auto* s : {&*a, &*b, &*small}) {
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      const std::int64_t raw = s->Find(il, md::Dsv4StateTensor::Kind::kRawK);
+      ASSERT_GE(raw, 0);
+      for (const auto kind : {md::Dsv4StateTensor::Kind::kCsaK, md::Dsv4StateTensor::Kind::kHcaK}) {
+        const std::int64_t comp = s->Find(il, kind);
+        if (comp >= 0) {
+          const auto& r = s->tensors[static_cast<std::size_t>(raw)];
+          EXPECT_EQ(s->tensors[static_cast<std::size_t>(comp)].offset, r.offset + r.bytes) << il;
+        }
+      }
+    }
+  }
+  // A ring's chunk reads the whole ring; the window wraps: at 5,000 the
+  // window is positions 4,873-5,000, in cells 265-392 (mod 2,304).
+  auto d = md::Dsv4Chunk(p, *a, 5000, 1, /*masks=*/false);
+  ASSERT_TRUE(d.has_value()) << Why(d);
+  EXPECT_EQ(d->raw_n_kv, 2304U);
+  EXPECT_EQ(d->raw_cells, (std::vector<std::int64_t>{5000 % 2304}));
+  std::vector<std::uint32_t> open;
+  for (std::uint32_t j = 0; j < d->raw_n_kv; ++j) {
+    if (d->raw_mask[j] == md::kHalfZero) {
+      open.push_back(j);
+    }
+  }
+  ASSERT_EQ(open.size(), 128U);
+  EXPECT_EQ(open.front(), 4873U % 2304U);
+  EXPECT_EQ(open.back(), 5000U % 2304U);
+  // Without masks the compressed caches' are left out; their counts stay.
+  EXPECT_TRUE(d->csa_mask.empty() && d->hca_mask.empty() && d->lid_mask.empty());
+  EXPECT_EQ(d->csa.n_visible, (std::vector<std::int32_t>{1250}));
+  EXPECT_EQ(d->hca.n_visible, (std::vector<std::int32_t>{39}));
+  // A wrapping chunk: 2,048 rows from 3,000 keep each row's window.
+  auto w = md::Dsv4Chunk(p, *a, 3000, 2048, false);
+  ASSERT_TRUE(w.has_value());
+  for (const std::uint32_t row : {0U, 1000U, 2047U}) {
+    const std::uint64_t pos = 3000 + row;
+    std::uint32_t count = 0;
+    for (std::uint32_t j = 0; j < w->raw_n_kv; ++j) {
+      if (w->raw_mask[(std::size_t{row} * w->raw_n_kv) + j] == md::kHalfZero) {
+        ++count;
+        EXPECT_EQ((pos - j) % 2304 < 128, true) << row << " cell " << j;
+      }
+    }
+    EXPECT_EQ(count, 128U) << row;
+  }
+}
+
+// The fast plan's attention and indexer at depth: the indexer's scores and
+// selection, the device-built masks and the sparse gather, no
+// concatenation, no GGML top-k and no host mask that grows with the
+// context; every chunk's inputs the same size at 64K as at 256K.
+TEST(Dsv4Test, TheFastPlanAttendsSparselyAtAnyDepth) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;
+  kg::DeviceChoices device = ModelDevice();
+  device.fuse_norms = true;
+  device.vector_floats = true;
+  for (const std::uint32_t rows : {1U, 4U, 2048U}) {
+    std::array<std::uint64_t, 2> inputs = {0, 0};
+    for (std::size_t at = 0; at < 2; ++at) {
+      const std::uint32_t context = at == 0 ? 65536 : 262144;
+      auto state = md::Dsv4State(p, context, 2048, md::Dsv4Window::kRing);
+      ASSERT_TRUE(state.has_value());
+      auto chunk = md::Dsv4Chunk(p, *state, context - 4096, rows, false);
+      ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+      auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      ASSERT_TRUE(arena.has_value());
+      auto graph = kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
+                                      {.expert_stride = strides, .fused = true});
+      ASSERT_TRUE(graph.has_value()) << Why(graph);
+      std::uint64_t next = std::uint64_t{1} << 40U;
+      const auto bind_leaf = [&](ggml_tensor* t) {
+        if (t != nullptr && t->data == nullptr && t->view_src == nullptr) {
+          kg::TensorArena::Bind(t, next);
+          next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+        }
+      };
+      for (ggml_tensor* t : graph->inputs()) {
+        bind_leaf(t);
+        inputs[at] += ggml_nbytes(t);
+      }
+      for (ggml_tensor* node : graph->nodes) {
+        for (ggml_tensor* src : node->src) {
+          if (src != nullptr && src->op == GGML_OP_NONE) {
+            bind_leaf(src);
+          }
+        }
+      }
+      kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+      auto plan = kg::PlanGraph(graph->nodes, false, device);
+      ASSERT_TRUE(plan.has_value()) << rows << " rows: " << Why(plan);
+      std::set<std::string_view> used;
+      for (const auto& step : plan->steps) {
+        used.insert(step.implementation);
+      }
+      for (const std::string_view name :
+           {kg::kDsv4LidTopKName, kg::kDsv4SparseMaskName, kg::kFlashAttnMmaName}) {
+        EXPECT_TRUE(used.contains(name)) << name << " at " << rows << " rows";
+      }
+      for (const std::string_view name :
+           {kg::kLightningIndexerName, kg::kTopKName, kg::kConcatName, kg::kFillName}) {
+        EXPECT_FALSE(used.contains(name)) << name << " at " << rows << " rows";
+      }
+      std::size_t attention = 0;
+      for (const ggml_tensor* node : graph->nodes) {
+        if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+          ++attention;
+          EXPECT_EQ(node->op_params[kg::kFlashAttnSparseParam], 1);
+          EXPECT_LE(node->op_params[4], 128 + 2048);  // the window and the selected or HCA's rows
+        }
+      }
+      EXPECT_EQ(attention, p.layers);
+      EXPECT_EQ(graph->csa.mask, nullptr);
+      EXPECT_EQ(graph->hca.mask, nullptr);
+      EXPECT_EQ(graph->lid.mask, nullptr);
+      auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
+      ASSERT_TRUE(placed.has_value()) << Why(placed);
+    }
+    EXPECT_EQ(inputs[0], inputs[1]) << rows << " rows";
+  }
+  // D-092's row-invariant verify is the reference mode's, not the fast plan's.
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value());
+  auto chunk = md::Dsv4Chunk(p, *state, 100, 4, false);
+  ASSERT_TRUE(chunk.has_value());
+  auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+  ASSERT_TRUE(arena.has_value());
+  EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
+                                  {.expert_stride = strides, .row_invariant = true, .fused = true})
+                   .has_value());
+}
+
 TEST(Dsv4Test, ExpertStridesAreWholeBlocks) {
   const md::Dsv4Profile& p = md::Dsv4Flash();
   const std::vector<md::Dsv4Resource> resources = GgufLike(p);

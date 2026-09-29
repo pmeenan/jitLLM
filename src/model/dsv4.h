@@ -182,17 +182,26 @@ std::expected<void, std::string> CheckDsv4HashRouting(const Dsv4Profile& profile
 
 // The state of one sequence for a context of `context` positions and chunks
 // of at most `max_rows` rows: every layer's tensors in one region, each at a
-// 256-byte aligned offset. The sliding-window cache holds a cell per
-// position of the context, raw_cells = pad(context, 256), position p in cell
-// p, as llama.cpp's default full-size SWA cache does (swa_full): attention
-// reads the first pad(positions, 256) cells, the window masking the rest,
-// so the attention length, and with it the kernels' summation order, is
-// llama.cpp's. (Cell p mod raw_cells keeps the arithmetic a ring's; it never
-// wraps within the context.) The compressed caches hold one row per
+// 256-byte aligned offset. With Dsv4Window::kFull (the reference mode's)
+// the sliding-window cache holds a cell per position of the context,
+// raw_cells = pad(context, 256), position p in cell p, as llama.cpp's
+// default full-size SWA cache does (swa_full): attention reads the first
+// pad(positions, 256) cells, the window masking the rest, so the attention
+// length, and with it the kernels' summation order, is llama.cpp's. With
+// Dsv4Window::kRing (the fast plan's, as llama-server runs with swa_full
+// off) it is a ring of the window plus a chunk, raw_cells = pad(window +
+// max_rows, 256) (at most the full size), position p in cell p mod
+// raw_cells: a chunk's rows and the window before each of them are always
+// in it, so its size, and a token's attention, no longer grow with the
+// context. The compressed caches hold one row per
 // completed block, pad(ceil(context / ratio), 256) rows; the compressors'
 // ring state holds each layer's last 2·ratio (CSA, indexer) or ratio (HCA)
-// positions' projections. Everything starts zeroed: attention masks the
-// cells not yet written, and llama.cpp zeroes the compressed caches.
+// positions' projections. Each compressed layer's compressed cache follows
+// its window cache directly in the region (the graph's fast plan reads the
+// two as one tensor: the window's cells, then the compressed rows).
+// Everything starts zeroed: attention masks the cells not yet written, and
+// llama.cpp zeroes the compressed caches.
+enum class Dsv4Window : std::uint8_t { kFull, kRing };
 struct Dsv4StateTensor {
   enum class Kind : std::uint8_t {
     kRawK,        // F16 [head_dim, raw_cells]
@@ -218,6 +227,7 @@ struct Dsv4StateTensor {
 struct Dsv4StateLayout {
   std::uint32_t context = 0;
   std::uint32_t max_rows = 0;
+  Dsv4Window window = Dsv4Window::kFull;
   std::uint32_t raw_cells = 0;
   std::uint32_t csa_cells = 0;  // also the indexer's
   std::uint32_t hca_cells = 0;
@@ -245,12 +255,13 @@ struct Dsv4StateLayout {
 // no room in the ring (max_rows > raw_cells - window), or the profile is not
 // DeepSeek V4's.
 std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& profile,
-                                                      std::uint32_t context,
-                                                      std::uint32_t max_rows);
+                                                      std::uint32_t context, std::uint32_t max_rows,
+                                                      Dsv4Window window = Dsv4Window::kFull);
 
-// The widest chunk Dsv4State admits at `context`: the context, and the
-// window cache's cells less the window (0 when none, or when the context
-// is refused whatever the chunk).
+// The widest chunk Dsv4State admits at `context` (either window: a ring is
+// never larger than the full cache, and holds any chunk the full cache
+// does): the context, and the full cache's cells less the window (0 when
+// none, or when the context is refused whatever the chunk).
 std::uint32_t Dsv4MostRows(const Dsv4Profile& profile, std::uint32_t context);
 
 // ---------------------------------------------------------------- chunk inputs
@@ -287,16 +298,24 @@ struct Dsv4ChunkInputs {
   // F16 bit patterns, 0 where a token attends, -inf elsewhere.
   std::vector<std::uint16_t> raw_mask;  // rows x raw_n_kv
   Dsv4CompPlan csa, hca, lid;
+  // Only with `masks` (the reference mode's graph reads them): the fast
+  // plan's graph masks the compressed rows on the device from each plan's
+  // n_visible, so none of its inputs grows with the context but a full
+  // window's mask.
   std::vector<std::uint16_t> csa_mask;  // rows x csa.n_kv
   std::vector<std::uint16_t> hca_mask;  // rows x hca.n_kv
   std::vector<std::uint16_t> lid_mask;  // rows x lid.n_kv
 };
 
 // Refused if the chunk is empty, runs past the layout's context, or is
-// longer than its chunk bound.
+// longer than its chunk bound. A ring's chunk reads all of the ring's cells
+// (raw_n_kv = raw_cells), so every chunk of a width has one shape until
+// its compressed rows cross a multiple of 256. Without `masks`, the
+// compressed caches' masks are left empty.
 std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile,
                                                       const Dsv4StateLayout& state,
-                                                      std::uint32_t n_past, std::uint32_t rows);
+                                                      std::uint32_t n_past, std::uint32_t rows,
+                                                      bool masks = true);
 
 // One compressor's plan (exposed for tests).
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,

@@ -178,6 +178,8 @@ inline constexpr std::string_view kDsv4CombineName = "jitllm.dsv4.combine";
 inline constexpr std::string_view kDsv4HcMixName = "jitllm.dsv4.hc_mix";
 inline constexpr std::string_view kDsv4HcPreName = "jitllm.dsv4.hc_pre";
 inline constexpr std::string_view kDsv4CompressName = "jitllm.dsv4.compress";
+inline constexpr std::string_view kDsv4LidTopKName = "jitllm.dsv4.lid_topk";
+inline constexpr std::string_view kDsv4SparseMaskName = "jitllm.dsv4.sparse_mask";
 // A speculative verify's row-invariant products (D-092; ops_ext.h).
 inline constexpr std::string_view kMulMatVecQRows = "jitllm.mul_mat.mmvq_rows";
 inline constexpr std::string_view kMulMatIdVecQRows = "jitllm.mul_mat_id.mmvq_rows";

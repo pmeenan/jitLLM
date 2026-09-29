@@ -77,7 +77,11 @@ Status Dsv4Runner::Setup() {
     return std::unexpected(binding.error());
   }
   binding_ = std::move(*binding);
-  auto layout = md::Dsv4State(profile_, o_.context, o_.max_rows);
+  // The fast plan keeps its window as a ring; the reference mode, llama.cpp's
+  // full-size window cache (model/dsv4.h Dsv4Window).
+  auto layout =
+      md::Dsv4State(profile_, o_.context, o_.max_rows,
+                    o_.exact || o_.full_window ? md::Dsv4Window::kFull : md::Dsv4Window::kRing);
   if (!layout) {
     return std::unexpected(layout.error());
   }
@@ -200,7 +204,7 @@ Status Dsv4Runner::Setup() {
       probes.push_back({o_.context - o_.max_verify, o_.max_verify, Dsv4ChunkKind::kVerify});
     }
     for (const Probe& probe : probes) {
-      auto in = md::Dsv4Chunk(profile_, layout_, probe.n_past, probe.rows);
+      auto in = md::Dsv4Chunk(profile_, layout_, probe.n_past, probe.rows, o_.exact);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -235,6 +239,9 @@ Status Dsv4Runner::Setup() {
   activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
   scratch_bytes_ = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
   const std::uint64_t input_bytes = Round((most_inputs * 2) + (1U << 20U), kExtent);
+  // A chunk's host-built inputs (Dsv4ChunkInputs and the embedding rows)
+  // are the staged bytes again, on the host.
+  host_input_bytes_ = Round(most_inputs + (1U << 20U), kExtent);
   // A verify's inputs from the staging's second half, which the largest
   // inputs fit.
   verify_base_ = Round(input_bytes / 2, 256);
@@ -598,7 +605,7 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   if (auto waiting = live_.AwaitingAccept(); !waiting) {
     return waiting;
   }
-  auto in = md::Dsv4Chunk(profile_, layout_, n_past, rows);
+  auto in = md::Dsv4Chunk(profile_, layout_, n_past, rows, model_.exact);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -877,7 +884,7 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
   const bool dcapture = druns.CaptureDue(runs_.graphs());
   // The verify: its tokens the anchor and placeholders the drafts replace
   // on the device.
-  auto in = md::Dsv4Chunk(profile_, layout_, pos, rows);
+  auto in = md::Dsv4Chunk(profile_, layout_, pos, rows, model_.exact);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -1158,7 +1165,7 @@ Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
 
 std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past, std::int32_t token,
                                                            std::uint32_t count) {
-  auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1);
+  auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1, model_.exact);
   if (!in) {
     return std::unexpected(in.error());
   }

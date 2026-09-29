@@ -851,4 +851,230 @@ TEST_F(Dsv4FastTest, TheRegistryDeclaresAndBindsTheFastPlansImplementations) {
   }
 }
 
+// ---------------------------------------------------------------- sparse attention
+
+// The indexer's inputs with small integer values and weights of a few
+// powers of two, so every score is exact in F32 whatever the summation
+// order: the kernels' scores equal the host's, and many of them tie.
+struct LidCase {
+  std::int64_t rows = 0;
+  std::int64_t n_kv = 0;
+  std::vector<float> q;               // [128, 64, rows]
+  std::vector<ggml_fp16_t> k;         // [128, n_kv]
+  std::vector<float> w;               // [64, rows]
+  std::vector<std::int32_t> visible;  // [rows]
+};
+
+LidCase MakeLid(std::int64_t rows, std::int64_t n_kv, std::uint64_t seed) {
+  LidCase c;
+  c.rows = rows;
+  c.n_kv = n_kv;
+  std::mt19937_64 random(seed);
+  std::uniform_int_distribution<int> small(-2, 2);
+  c.q.resize(static_cast<std::size_t>(std::int64_t{128} * 64 * rows));
+  for (float& v : c.q) {
+    v = static_cast<float>(small(random));
+  }
+  c.k.resize(static_cast<std::size_t>(128 * n_kv));
+  for (ggml_fp16_t& v : c.k) {
+    v = ggml_fp32_to_fp16(static_cast<float>(small(random)));
+  }
+  const std::array<float, 5> weights = {-1.0f, -0.5f, 0.5f, 1.0f, 2.0f};
+  c.w.resize(static_cast<std::size_t>(64 * rows));
+  for (float& v : c.w) {
+    v = weights[random() % weights.size()];
+  }
+  c.visible.resize(static_cast<std::size_t>(rows));
+  for (std::int64_t r = 0; r < rows; ++r) {
+    // The whole cache, a few rows, none, fewer than the selection, and
+    // anything between.
+    const std::array<std::int64_t, 5> fixed = {n_kv, 1, 0, 300, n_kv - 3};
+    c.visible[static_cast<std::size_t>(r)] = static_cast<std::int32_t>(
+        r < 5 ? std::min(fixed[static_cast<std::size_t>(r)], n_kv)
+              : static_cast<std::int64_t>(random() % static_cast<std::uint64_t>(n_kv + 1)));
+  }
+  return c;
+}
+
+// The host's selection: each row's `top` best visible rows by score, the
+// lower row first among equals, listed in ascending order, -1 after.
+std::vector<std::int32_t> HostLidTopK(const LidCase& c, std::int64_t top) {
+  std::vector<std::int32_t> out(static_cast<std::size_t>(top * c.rows), -1);
+  for (std::int64_t r = 0; r < c.rows; ++r) {
+    const std::int64_t n = std::min<std::int64_t>(c.visible[static_cast<std::size_t>(r)], c.n_kv);
+    std::vector<std::pair<double, std::int32_t>> scored;
+    for (std::int64_t j = 0; j < n; ++j) {
+      double score = 0.0;
+      for (std::int64_t h = 0; h < 64; ++h) {
+        double dot = 0.0;
+        for (std::int64_t d = 0; d < 128; ++d) {
+          dot +=
+              static_cast<double>(c.q[static_cast<std::size_t>((((r * 64) + h) * 128) + d)]) *
+              static_cast<double>(ggml_fp16_to_fp32(c.k[static_cast<std::size_t>((j * 128) + d)]));
+        }
+        score +=
+            static_cast<double>(c.w[static_cast<std::size_t>((r * 64) + h)]) * std::max(dot, 0.0);
+      }
+      scored.emplace_back(score, static_cast<std::int32_t>(j));
+    }
+    std::ranges::sort(scored, [](const auto& a, const auto& b) {
+      return a.first != b.first ? a.first > b.first : a.second < b.second;
+    });
+    std::vector<std::int32_t> kept;
+    for (std::size_t i = 0; i < std::min<std::size_t>(scored.size(), static_cast<std::size_t>(top));
+         ++i) {
+      kept.push_back(scored[i].second);
+    }
+    std::ranges::sort(kept);
+    std::ranges::copy(kept, out.begin() + (r * top));
+  }
+  return out;
+}
+
+TEST_F(Dsv4FastTest, TheIndexerSelectsItsBestRowsTiesToTheLowerRow) {
+  // A few rows over many keys select in two stages (slices of 2,048).
+  for (const auto& [rows, keys] : {std::pair<std::int64_t, std::int64_t>{1, 1536},
+                                   {2, 1536},
+                                   {3, 1536},
+                                   {4, 1536},
+                                   {9, 1536},
+                                   {37, 1536},
+                                   {1, 20480},
+                                   {3, 20480},
+                                   {9, 5000}}) {
+    const std::string what = std::to_string(rows) + " rows, " + std::to_string(keys) + " keys";
+    const LidCase lc = MakeLid(rows, keys, 60 + static_cast<std::uint64_t>(rows + keys));
+    ggml_tensor* q = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 128, 64, rows), lc.q);
+    ggml_tensor* k = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 128, lc.n_kv), lc.k);
+    ggml_tensor* w = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, rows), lc.w);
+    ggml_tensor* v = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows), lc.visible);
+    ggml_tensor* top = Place(kg::Dsv4LidTopK(c(), q, k, w, v, 512));
+    Launched(kg::RunDsv4LidTopK(launch(), top), what);
+    const std::vector<std::int32_t> got = Download<std::int32_t>(top);
+    EXPECT_EQ(got, HostLidTopK(lc, 512)) << what;
+    // And again, bit for bit.
+    ggml_tensor* again = Place(kg::Dsv4LidTopK(c(), q, k, w, v, 512));
+    Launched(kg::RunDsv4LidTopK(launch(), again), what);
+    EXPECT_EQ(Download<std::int32_t>(again), got) << what << ": a repeat";
+  }
+}
+
+// Past kDsv4LidScratch the rows are scored in groups; each row's selection
+// is its own, the same as a node of that row alone.
+TEST_F(Dsv4FastTest, TheIndexersRowGroupsSelectAsEachRowAlone) {
+  constexpr std::int64_t kRows = 600;
+  constexpr std::int64_t kKeys = 65536;
+  ASSERT_GT(kRows * kKeys * 4, kg::kDsv4LidScratch);
+  const LidCase lc = MakeLid(kRows, kKeys, 77);
+  ggml_tensor* q = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 128, 64, kRows), lc.q);
+  ggml_tensor* k = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 128, kKeys), lc.k);
+  ggml_tensor* w = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, kRows), lc.w);
+  ggml_tensor* v = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, kRows), lc.visible);
+  ggml_tensor* top = Place(kg::Dsv4LidTopK(c(), q, k, w, v, 512));
+  auto scratch = kg::PlanDsv4LidTopK(launch(), top);
+  ASSERT_TRUE(scratch.has_value());
+  EXPECT_LE(*scratch, static_cast<std::uint64_t>(kg::kDsv4LidScratch));
+  Launched(kg::RunDsv4LidTopK(launch(), top), "600 rows");
+  const std::vector<std::int32_t> got = Download<std::int32_t>(top);
+  for (const std::int64_t r : {0, 1, 3, 5, 511, 512, 599}) {
+    ggml_tensor* q1 = ggml_view_3d(c(), q, 128, 64, 1, q->nb[1], q->nb[2],
+                                   static_cast<std::size_t>(r) * q->nb[2]);
+    ggml_tensor* w1 = ggml_view_2d(c(), w, 64, 1, w->nb[1], static_cast<std::size_t>(r) * w->nb[1]);
+    ggml_tensor* v1 = ggml_view_1d(c(), v, 1, static_cast<std::size_t>(r) * sizeof(std::int32_t));
+    for (ggml_tensor* view : {q1, w1, v1}) {
+      TensorArena::Bind(view, Address(view->view_src) + view->view_offs);
+    }
+    ggml_tensor* one = Place(kg::Dsv4LidTopK(c(), q1, k, w1, v1, 512));
+    Launched(kg::RunDsv4LidTopK(launch(), one), "row " + std::to_string(r));
+    const std::vector<std::int32_t> alone = Download<std::int32_t>(one);
+    EXPECT_TRUE(std::equal(alone.begin(), alone.end(), got.begin() + (r * 512))) << "row " << r;
+  }
+  // Two rows against the host's exact selection.
+  LidCase two = lc;
+  two.rows = 2;
+  two.q.resize(static_cast<std::size_t>(128 * 64 * 2));
+  two.w.resize(128);
+  two.visible.resize(2);
+  const std::vector<std::int32_t> want = HostLidTopK(two, 512);
+  EXPECT_TRUE(std::equal(want.begin(), want.end(), got.begin()));
+}
+
+TEST_F(Dsv4FastTest, TheSparseMaskKeepsTheWindowAndTheSelectedOrVisibleRows) {
+  constexpr std::int64_t kRows = 3;
+  constexpr std::int64_t kWidth = 256;  // the window mask's
+  constexpr std::int64_t kCells = 512;  // the compressed rows start here
+  constexpr std::int64_t kKv = 768;
+  std::vector<ggml_fp16_t> window(static_cast<std::size_t>(kWidth * kRows));
+  for (std::size_t i = 0; i < window.size(); ++i) {
+    window[i] = ggml_fp32_to_fp16(i % 3 == 0 ? 0.0f : -INFINITY);
+  }
+  ggml_tensor* wm = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, kWidth, kRows), window);
+  // A selection from the indexer, and visible counts.
+  const LidCase lc = MakeLid(kRows, kKv, 9);
+  ggml_tensor* q = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 128, 64, kRows), lc.q);
+  ggml_tensor* k = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 128, kKv), lc.k);
+  ggml_tensor* w = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 64, kRows), lc.w);
+  ggml_tensor* v = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, kRows), lc.visible);
+  ggml_tensor* top = Place(kg::Dsv4LidTopK(c(), q, k, w, v, 512));
+  Launched(kg::RunDsv4LidTopK(launch(), top), "selection");
+  const std::vector<std::int32_t> selected = Download<std::int32_t>(top);
+  ggml_tensor* by_top = Place(kg::Dsv4SparseMask(c(), wm, top, nullptr, kCells, kKv));
+  ggml_tensor* by_count = Place(kg::Dsv4SparseMask(c(), wm, nullptr, v, kCells, kKv));
+  Launched(kg::RunDsv4SparseMask(launch(), by_top), "by selection");
+  Launched(kg::RunDsv4SparseMask(launch(), by_count), "by count");
+  const std::vector<ggml_fp16_t> got_top = Download<ggml_fp16_t>(by_top);
+  const std::vector<ggml_fp16_t> got_count = Download<ggml_fp16_t>(by_count);
+  const std::uint16_t zero = 0x0000;
+  const std::uint16_t neg = 0xFC00;
+  for (std::int64_t r = 0; r < kRows; ++r) {
+    std::vector<std::uint16_t> want_top(kCells + kKv, neg);
+    std::vector<std::uint16_t> want_count(kCells + kKv, neg);
+    for (std::int64_t c0 = 0; c0 < kWidth; ++c0) {
+      std::uint16_t bits = 0;
+      std::memcpy(&bits, &window[static_cast<std::size_t>((r * kWidth) + c0)], 2);
+      want_top[static_cast<std::size_t>(c0)] = bits;
+      want_count[static_cast<std::size_t>(c0)] = bits;
+    }
+    for (std::int64_t j = 0; j < 512; ++j) {
+      const std::int32_t s = selected[static_cast<std::size_t>((r * 512) + j)];
+      if (s >= 0) {
+        want_top[static_cast<std::size_t>(kCells + s)] = zero;
+      }
+    }
+    for (std::int64_t j = 0;
+         j < std::min<std::int64_t>(lc.visible[static_cast<std::size_t>(r)], kKv); ++j) {
+      want_count[static_cast<std::size_t>(kCells + j)] = zero;
+    }
+    const auto row = [&](const std::vector<ggml_fp16_t>& got) {
+      std::vector<std::uint16_t> bits(static_cast<std::size_t>(kCells + kKv));
+      std::memcpy(bits.data(), got.data() + (r * (kCells + kKv)), bits.size() * 2);
+      return bits;
+    };
+    EXPECT_EQ(row(got_top), want_top) << "row " << r;
+    EXPECT_EQ(row(got_count), want_count) << "row " << r;
+  }
+  // A mask whose compressed rows start inside the window's, or whose
+  // selection is not the indexer's, is refused.
+  EXPECT_FALSE(
+      kg::CheckDsv4SparseMask(Place(kg::Dsv4SparseMask(c(), wm, nullptr, v, kWidth - 1, kKv)))
+          .has_value());
+  EXPECT_FALSE(kg::CheckDsv4SparseMask(Place(kg::Dsv4SparseMask(c(), wm, v, nullptr, kCells, kKv)))
+                   .has_value());
+  // An indexer of other head widths.
+  ggml_tensor* q64 = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 64, 64, kRows));
+  EXPECT_FALSE(kg::CheckDsv4LidTopK(Place(kg::Dsv4LidTopK(c(), q64, k, w, v, 512))).has_value());
+  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  ASSERT_TRUE(registry.has_value());
+  for (const std::string_view name : {kg::kDsv4LidTopKName, kg::kDsv4SparseMaskName}) {
+    bool found = false;
+    for (const jitllm::execution::Implementation& implementation : kg::Implementations()) {
+      if (implementation.name == name) {
+        found = true;
+        EXPECT_TRUE(kg::Kernel::Bind(implementation).has_value()) << name;
+      }
+    }
+    EXPECT_TRUE(found) << name;
+  }
+}
+
 }  // namespace

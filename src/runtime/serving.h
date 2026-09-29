@@ -157,6 +157,9 @@ class Served {
   virtual Status Setup() = 0;
   virtual std::uint64_t activations_needed() const = 0;
   virtual std::uint64_t pool_needed() const = 0;
+  // What a chunk builds on the host before staging it (its inputs), at
+  // most: the node's fixed memory beside what the catalog maps.
+  virtual std::uint64_t host_input_bytes() const { return 0; }
   virtual Status Register() = 0;
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;
@@ -388,6 +391,10 @@ class Server {
   void set_handoff(bool on) { handoff_ = on; }
   std::uint64_t budget() const { return budget_; }
   std::uint64_t fixed_bytes() const { return fixed_; }
+  // The most any model's chunk builds on the host (Served::host_input_bytes;
+  // one model runs at a time), which the start's memory guard counts beside
+  // its margin.
+  std::uint64_t host_input_bytes() const { return host_inputs_; }
   std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
 
  private:
@@ -408,6 +415,7 @@ class Server {
   bool torn_down_ = false;
   std::uint64_t budget_ = 0;
   std::uint64_t fixed_ = 0;
+  std::uint64_t host_inputs_ = 0;
   std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
   scheduler::SchedulerStats swap_before_;  // the counters at the last Activate

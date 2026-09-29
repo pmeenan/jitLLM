@@ -10,8 +10,10 @@
 //
 // - flash_attn_mask_to_sparse_indices, ggml_cuda_flash_attn_ext_compact_mask
 //   and ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse (fattn.cu:8-128),
-//   unchanged but for formatting: the sparse gather DeepSeek V4's compressed
-//   attention takes, which the D=512 one-column case calls;
+//   unchanged but for formatting and one jitLLM condition (a node its graph
+//   marks, jitllm_ops.h SetFlashAttnSparseAny, gathers below 4,096 cells
+//   too): the sparse gather DeepSeek V4's attention takes, which the D=512
+//   one-column case calls;
 // - the column choice of ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1 for
 //   groups of 8 query heads (fattn.cu:131-164).
 //
@@ -30,6 +32,7 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "kernels/ggml/fattn_mma.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
 
@@ -145,10 +148,13 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ggml_backend_cuda_context
   memcpy(&logit_softcap, (const float*)dst->op_params + 2, sizeof(float));
 
   const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
+  // jitLLM: a node its graph marks takes the gather below upstream's 4,096
+  // cells too (ops_ext.h kFlashAttnSparseParam).
+  const bool any = ggml_get_op_params_i32(dst, jitllm::kernels::ggml::kFlashAttnSparseParam) == 1;
   return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && mask != nullptr &&
          n_kv_max > 0 && max_bias == 0.0f && logit_softcap == 0.0f && mask->ne[0] == K->ne[1] &&
          mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
-         K->ne[1] >= std::max<int64_t>(4096, 2LL * n_kv_max);
+         K->ne[1] >= std::max<int64_t>(any ? 0 : 4096, 2LL * n_kv_max);
 }
 
 // ---- jitLLM ----
@@ -187,9 +193,10 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
   // switch_ncols1 for ncols2 = 8 (fattn.cu:131-164); the sparse kernel only
   // at D = 512, with one column.
   const std::int32_t n_kv_max = node->op_params[4];
+  const bool any = node->op_params[kFlashAttnSparseParam] == 1;
   const bool sparse_eligible = plan.head == 512 && n_kv_max > 0 && mask->ne[0] == k->ne[1] &&
                                mask->ne[1] >= q->ne[1] &&
-                               k->ne[1] >= std::max<std::int64_t>(4096, 2LL * n_kv_max);
+                               k->ne[1] >= std::max<std::int64_t>(any ? 0 : 4096, 2LL * n_kv_max);
   if (sparse_eligible) {
     plan.columns = 1;
     plan.sparse = true;

@@ -294,6 +294,8 @@ Status Qwen38Runner::Setup() {
   activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
   scratch_bytes_ = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
   const std::uint64_t input_bytes = Round((most_inputs * 2) + (1U << 20U), kExtent);
+  // A chunk's host-built inputs are the staged bytes again, on the host.
+  host_input_bytes_ = Round(most_inputs + (1U << 20U), kExtent);
   // A drafter pass's inputs from the staging's second half, which the
   // largest inputs fit, so one job stages a chunk's and its pass's.
   mtp_base_ = Round(input_bytes / 2, 256);

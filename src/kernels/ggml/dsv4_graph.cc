@@ -88,9 +88,11 @@ constexpr int kRopeMode = 0;
 
 class Builder {
  public:
+  // `sparse`: a target chunk's fast plan (Dsv4GraphOptions::fused), its
+  // attention at depth sparse; never a draft block's.
   Builder(ggml_context* c, const model::Dsv4Profile& p, const model::Dsv4Binding& b,
-          const Dsv4ChunkShape& s, Dsv4Graph& g, const Dsv4GraphOptions& options)
-      : c_(c), p_(p), b_(b), s_(s), g_(g), o_(options) {}
+          const Dsv4ChunkShape& s, Dsv4Graph& g, const Dsv4GraphOptions& options, bool sparse)
+      : c_(c), p_(p), b_(b), s_(s), g_(g), o_(options), sparse_(sparse) {}
 
   // A target chunk's inputs.
   void Inputs();
@@ -146,7 +148,11 @@ class Builder {
   ggml_tensor* AttnMha(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask, ggml_tensor* sinks,
                        std::int64_t n_kv_max);
   ggml_tensor* AttnMhaRow(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask, ggml_tensor* sinks,
-                          std::int64_t n_kv_max);
+                          std::int64_t n_kv_max, bool sparse_any = false);
+  // The fast plan's sparse attention and indexer (sparse_).
+  ggml_tensor* AttentionSparse(std::uint32_t il, ggml_tensor* q, ggml_tensor* kv, ggml_tensor* qr,
+                               ggml_tensor* cur);
+  ggml_tensor* LidTopKSparse(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_tensor* cur, int il);
   // dsv4_hc_mean (deepseek4.cpp:270-278): the mean of x's streams.
   ggml_tensor* HcMean(ggml_tensor* x);
   void Inject(const DsparkInjectTensors& t, const Dsv4Injection& inject);
@@ -176,6 +182,7 @@ class Builder {
   const Dsv4ChunkShape& s_;
   Dsv4Graph& g_;
   const Dsv4GraphOptions& o_;
+  bool sparse_;
   std::vector<ggml_tensor*> expanded_;
   // The fast plan's activations quantized once (Q8Of), by input.
   std::unordered_map<const ggml_tensor*, ggml_tensor*> q8_;
@@ -242,13 +249,22 @@ void Builder::Inputs() {
     in.read_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I32, reads);
     in.write_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, blocks);
     in.write_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, blocks);
-    in.mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, n_kv, n, 1, 1);
+    // The fast plan masks the compressed rows on the device from each
+    // row's count.
+    if (!sparse_) {
+      in.mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, n_kv, n, 1, 1);
+    }
   };
   const std::int64_t csa_reads = 2 * std::int64_t{model::kDsv4CsaRatio} * s_.csa_blocks;
   comp(g_.csa, s_.csa_blocks, s_.csa_persist, csa_reads, s_.csa_n_kv);
   comp(g_.hca, s_.hca_blocks, s_.hca_persist, model::kDsv4HcaRatio * s_.hca_blocks, s_.hca_n_kv);
   comp(g_.lid, s_.csa_blocks, s_.csa_persist, csa_reads, s_.csa_n_kv);
   g_.lid_rot = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.indexer_head_dim, p_.indexer_head_dim);
+  if (sparse_) {
+    g_.csa_visible = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+    g_.hca_visible = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+    return;
+  }
   const std::int64_t top_k = std::min<std::int64_t>(s_.csa_n_kv, p_.indexer_top_k);
   g_.top_k_zeros = ggml_new_tensor_4d(c_, GGML_TYPE_F16, 1, top_k, n, 1);
 }
@@ -358,11 +374,25 @@ std::expected<void, KernelFailure> Builder::Weights() {
     if (auto e = experts(l.down_exps, w.down_exps); !e) {
       return e;
     }
-    // State.
+    // State. In the fast plan a compressed layer reads its window cells and
+    // its compressed rows as one tensor: the compressed cache follows the
+    // window's in the state (model/dsv4.h), a view of the whole.
     const std::int64_t head = p_.head_dim;
-    l.raw_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.raw_cells, 1);
+    std::int64_t joined = 0;
+    if (sparse_ && w.ratio == model::kDsv4CsaRatio) {
+      joined = s_.csa_cells;
+    } else if (sparse_ && w.ratio == model::kDsv4HcaRatio) {
+      joined = s_.hca_cells;
+    }
+    l.raw_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.raw_cells + joined, 1);
+    const auto after_window = [&](std::int64_t cells) {
+      return ggml_view_3d(c_, l.raw_k, head, cells, 1, l.raw_k->nb[1],
+                          l.raw_k->nb[1] * static_cast<std::size_t>(cells),
+                          l.raw_k->nb[1] * static_cast<std::size_t>(s_.raw_cells));
+    };
     if (w.ratio == model::kDsv4CsaRatio) {
-      l.csa_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.csa_cells, 1);
+      l.csa_k = joined != 0 ? after_window(s_.csa_cells)
+                            : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.csa_cells, 1);
       l.csa_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s_.csa_state_rows);
       l.csa_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s_.csa_state_rows);
       l.lid_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, p_.indexer_head_dim, s_.csa_cells, 1);
@@ -370,7 +400,8 @@ std::expected<void, KernelFailure> Builder::Weights() {
       l.lid_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s_.csa_state_rows);
       l.lid_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s_.csa_state_rows);
     } else if (w.ratio == model::kDsv4HcaRatio) {
-      l.hca_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.hca_cells, 1);
+      l.hca_k = joined != 0 ? after_window(s_.hca_cells)
+                            : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.hca_cells, 1);
       l.hca_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s_.hca_state_rows);
       l.hca_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s_.hca_state_rows);
     }
@@ -582,7 +613,7 @@ ggml_tensor* Builder::AttnMha(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_ma
 
 // build_attn_mha with flash attention, one stream (llama-graph.cpp:2591-2650).
 ggml_tensor* Builder::AttnMhaRow(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq_mask,
-                                 ggml_tensor* sinks, std::int64_t n_kv_max) {
+                                 ggml_tensor* sinks, std::int64_t n_kv_max, bool sparse_any) {
   ggml_tensor* v = k;
   q = ggml_view_4d(c_, q, q->ne[0], q->ne[1], q->ne[2], 1, q->nb[1], q->nb[2], q->nb[3], 0);
   q = ggml_permute(c_, q, 0, 2, 1, 3);
@@ -592,6 +623,9 @@ ggml_tensor* Builder::AttnMhaRow(ggml_tensor* q, ggml_tensor* k, ggml_tensor* kq
   ggml_tensor* cur = ggml_flash_attn_ext(c_, q, k, v, kq_mask, scale, 0.0f, 0.0f);
   ggml_flash_attn_ext_add_sinks(cur, sinks);
   ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<std::int32_t>(n_kv_max));
+  if (sparse_any) {
+    SetFlashAttnSparseAny(cur);
+  }
   ggml_prec_set_acc(cur, GGML_PREC_F32);
   return ggml_reshape_2d(c_, cur, cur->ne[0] * cur->ne[1], cur->ne[2] * cur->ne[3]);
 }
@@ -618,6 +652,75 @@ ggml_tensor* Builder::LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_t
   Name(score, "lid_score_masked", il);
   const std::int64_t top = std::min<std::int64_t>(score->ne[0], p_.indexer_top_k);
   ggml_tensor* top_k = ggml_cont(c_, ggml_top_k(c_, score, static_cast<int>(top)));
+  Name(top_k, "lid_topk", il);
+  return top_k;
+}
+
+// The fast plan's attention: each layer's window cells and, in a
+// compressed layer, its compressed rows read in place as one K (the state
+// lays them out together; no concatenation), under one mask built on the
+// device (jitllm.dsv4.sparse_mask: the window's cells, then the indexer's
+// selection for CSA or the visible rows for HCA), through the MMA kernel's
+// sparse gather of the unmasked cells. So a row's work is its window's 128
+// cells and its compressed layer's selected (CSA: the indexer's top 512)
+// or visible (HCA: one per 128 positions) rows, however long the context
+// (the window a ring, model/dsv4.h Dsv4Window::kRing; over the full window
+// only the masks grow). The cells a row attends are llama.cpp's; only the
+// order the kernel reduces them in differs.
+ggml_tensor* Builder::AttentionSparse(std::uint32_t il_u, ggml_tensor* q, ggml_tensor* kv,
+                                      ggml_tensor* qr, ggml_tensor* cur) {
+  const int il = static_cast<int>(il_u);
+  const Dsv4LayerTensors& l = g_.layers[il_u];
+  const std::uint32_t ratio = p_.compress_ratios[il_u];
+  const std::int64_t window = std::min<std::int64_t>(s_.raw_n_kv, p_.window);
+  ggml_tensor* top_k = nullptr;
+  if (ratio == model::kDsv4CsaRatio) {
+    top_k = LidTopKSparse(l, qr, cur, il);
+  }
+  Expand(q);
+  Expand(kv);
+  Expand(CpyK(l.raw_k, kv, g_.raw_k_idxs));
+  ggml_tensor* out = nullptr;
+  if (ratio == model::kDsv4CsaRatio) {
+    ggml_tensor* k = GetK(l.raw_k, s_.raw_cells + s_.csa_n_kv);
+    ggml_tensor* kq_mask =
+        Dsv4SparseMask(c_, g_.raw_mask, top_k, nullptr, s_.raw_cells, s_.csa_n_kv);
+    Name(kq_mask, "kq_mask", il);
+    out = AttnMhaRow(q, k, kq_mask, l.attn_sinks, window + top_k->ne[0], true);
+    Name(out, "attn_csa_lid", il);
+  } else if (ratio == model::kDsv4HcaRatio) {
+    ggml_tensor* k = GetK(l.raw_k, s_.raw_cells + s_.hca_n_kv);
+    ggml_tensor* kq_mask =
+        Dsv4SparseMask(c_, g_.raw_mask, nullptr, g_.hca_visible, s_.raw_cells, s_.hca_n_kv);
+    out = AttnMhaRow(q, k, kq_mask, l.attn_sinks, window + s_.hca_n_kv, true);
+    Name(out, "attn_hca", il);
+  } else {
+    ggml_tensor* k = GetK(l.raw_k, s_.raw_n_kv);
+    out = AttnMhaRow(q, k, g_.raw_mask, l.attn_sinks, window, true);
+    Name(out, "attn_raw", il);
+  }
+  return out;
+}
+
+// The fast plan's lightning indexer: build_lid_top_k's query, rotation and
+// weights, then jitllm.dsv4.lid_topk's scores and selection over the rows
+// each row sees.
+ggml_tensor* Builder::LidTopKSparse(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_tensor* cur,
+                                    int il) {
+  const std::int64_t ih = p_.indexer_head_dim;
+  const std::int64_t heads = p_.indexer_heads;
+  const std::int64_t nt = cur->ne[1];
+  ggml_tensor* q = Mm(l.idx_q_b, qr);
+  q = ggml_reshape_3d(c_, q, ih, heads, nt);
+  const Rope r = CompressedRope(p_);
+  q = RopeExt(q, g_.positions, r, r.n_ctx_orig);
+  q = ggml_rope_set_offset(q, static_cast<int>(ih - p_.rope_dims));
+  q = Hadamard(q, g_.lid_rot);
+  ggml_tensor* weights = Mm(l.idx_proj, cur);
+  weights = ggml_scale(c_, weights, 1.0f / sqrtf(static_cast<float>(ih * heads)));
+  ggml_tensor* k = ggml_view_2d(c_, l.lid_k, ih, s_.csa_n_kv, l.lid_k->nb[1], 0);
+  const std::int64_t top = std::min<std::int64_t>(s_.csa_n_kv, p_.indexer_top_k);
+  ggml_tensor* top_k = Dsv4LidTopK(c_, q, k, weights, g_.csa_visible, top);
   Name(top_k, "lid_topk", il);
   return top_k;
 }
@@ -751,7 +854,9 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   }
 
   ggml_tensor* out = nullptr;
-  if (ratio == model::kDsv4CsaRatio) {
+  if (sparse_) {
+    out = AttentionSparse(il_u, q, kv, qr, cur);
+  } else if (ratio == model::kDsv4CsaRatio) {
     // build_csa_lid_attention.
     ggml_tensor* top_k = LidTopK(l, qr, cur, il);
     Expand(q);
@@ -1200,10 +1305,18 @@ std::vector<ggml_tensor*> Dsv4Graph::inputs() const {
   std::vector<ggml_tensor*> all = {embd, tokens, positions, raw_k_idxs, raw_mask, out_ids};
   for (const Dsv4CompInputs* in : {&csa, &hca, &lid}) {
     all.insert(all.end(), {in->state_pos, in->persist_src, in->persist_dst, in->read_idxs,
-                           in->write_idxs, in->write_pos, in->mask});
+                           in->write_idxs, in->write_pos});
+    if (in->mask != nullptr) {
+      all.push_back(in->mask);
+    }
   }
   all.push_back(lid_rot);
-  all.push_back(top_k_zeros);
+  if (top_k_zeros != nullptr) {
+    all.push_back(top_k_zeros);
+  } else {
+    all.push_back(csa_visible);
+    all.push_back(hca_visible);
+  }
   if (inject) {
     all.push_back(inject->cells);
   }
@@ -1298,6 +1411,9 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
   if (options.inject && options.features.empty()) {
     return Rejected("a DSpark injection reads the chunk's features");
   }
+  if (options.fused && options.row_invariant) {
+    return Rejected("the fast plan's sparse attention has no row-invariant form (D-092)");
+  }
   for (const std::uint32_t layer : options.features) {
     if (layer > profile.layers) {
       return Rejected("a feature layer past the stream leaving the last layer");
@@ -1307,7 +1423,7 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
     return std::unexpected(room.error());
   }
   Dsv4Graph g;
-  Builder builder(arena.context(), profile, binding, shape, g, options);
+  Builder builder(arena.context(), profile, binding, shape, g, options, options.fused);
   builder.Inputs();
   if (auto weights = builder.Weights(); !weights) {
     return std::unexpected(weights.error());
@@ -1339,7 +1455,7 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
   // The blocks' attention reads the whole ring, window only.
   const Dsv4ChunkShape shape{.rows = rows, .raw_n_kv = ring, .raw_cells = ring};
   DsparkGraph d;
-  Builder builder(arena.context(), p, binding.blocks, shape, d.core, options);
+  Builder builder(arena.context(), p, binding.blocks, shape, d.core, options, false);
   if (auto inputs = builder.DraftInputs(d, binding); !inputs) {
     return std::unexpected(inputs.error());
   }

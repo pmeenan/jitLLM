@@ -30,6 +30,7 @@
 #include "platform/files.h"
 #include "platform/host_probe.h"
 #include "platform/path_trust.h"
+#include "runtime/memory_guard.h"
 #include "runtime/prefill.h"
 #include "scheduler/programs.h"
 #include "tokenizer/gguf.h"
@@ -44,9 +45,6 @@ namespace ja = jitllm::artifact;
 constexpr std::uint64_t kExtent = engine::kPagedExtent;
 // The most a tokenizer or template file may be.
 constexpr std::size_t kMaxTokenizerBytes = std::size_t{64} << 20U;
-// Room kept beyond the budget for what the catalog does not count: decode
-// graphs, the driver's and cuBLAS's own allocations.
-constexpr std::uint64_t kUncountedMargin = std::uint64_t{4} << 30U;
 // Extents the page-in observer tracks (the M3 models use about 100,000).
 constexpr std::size_t kObservedExtents = std::size_t{1} << 18U;
 // Each model's prefill chunk when its prefill_chunk is not configured
@@ -234,6 +232,7 @@ class Dsv4 final : public Llm {
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
+  std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -444,6 +443,7 @@ class Qwen38 final : public Llm {
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
+  std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -1074,12 +1074,14 @@ Status Server::Start(bool snapshot) {
   std::uint64_t pool = 0;
   std::uint64_t largest = 0;
   std::uint64_t state = 0;
+  std::uint64_t host_inputs = 0;
   for (const auto& m : models_) {
     const auto started = Clock::now();
     if (auto r = m->Setup(); !r) {
       return Error(std::format("model {}: {}", m->name(), r.error()));
     }
     activations = std::max(activations, m->activations_needed());
+    host_inputs = std::max(host_inputs, m->host_input_bytes());
     pool = std::max(pool, m->pool_needed());
     largest = std::max<std::uint64_t>(largest, m->weights().size() * kExtent);
     std::string chunks;
@@ -1115,15 +1117,18 @@ Status Server::Start(bool snapshot) {
   // model's weights, so a full swap is the only way in.
   fixed_ = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   budget_ = fixed_ + largest;
+  // A chunk's host-built inputs are the node's memory too, though allocated
+  // per chunk and outside the catalog: counted here beside the margin, not
+  // in the budget the catalog enforces. One model runs chunks at a time, so
+  // the most any model's chunk builds, not their sum.
+  host_inputs_ = host_inputs;
   const std::uint64_t available = MemorySampler::Available();
-  if (available != 0 && largest + kUncountedMargin > available) {
-    return Error(std::format(
-        "the largest model's weights ({:.1f} GiB) and a {:.0f} GiB margin do not fit the {:.1f} "
-        "GiB available beside this node's fixed memory ({:.1f} GiB)",
-        static_cast<double>(largest) / (1ULL << 30U),
-        static_cast<double>(kUncountedMargin) / (1ULL << 30U),
-        static_cast<double>(available) / (1ULL << 30U),
-        static_cast<double>(fixed_) / (1ULL << 30U)));
+  if (auto guard = CheckMemoryGuard({.largest = largest,
+                                     .host_inputs = host_inputs,
+                                     .available = available,
+                                     .fixed = fixed_});
+      !guard) {
+    return std::unexpected(guard.error());
   }
   if (auto r = node_.Start(base::Bytes(budget_)); !r) {
     return r;
@@ -1140,10 +1145,11 @@ Status Server::Start(bool snapshot) {
   }
   node_.Run();
   Log(std::format(
-      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}); "
-      "{:.2f} GiB available",
+      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}; host-built "
+      "chunk inputs {:.2f} GiB beside it); {:.2f} GiB available",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
+      static_cast<double>(host_inputs_) / (1ULL << 30U),
       static_cast<double>(available) / (1ULL << 30U)));
   return {};
 }

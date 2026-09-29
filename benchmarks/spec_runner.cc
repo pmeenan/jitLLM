@@ -11,7 +11,7 @@
 //
 //   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
 //                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe
-//                      [--tokens N] [--context N] [--graphs on|off] [--draft N]
+//                      [--tokens N] [--context N] [--max-rows N] [--graphs on|off] [--draft N]
 //                      [--probe-step N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //                      [--seeds N] [--sampled FILE] [--poll-us N]
@@ -1352,7 +1352,9 @@ Status Harness::Probe() {
   };
   // P and E: each plan's one-row decoding teacher-forced from the prompt.
   for (const bool exact : {false, true}) {
-    dsv4_.set_exact(exact);
+    if (auto e = dsv4_.set_exact(exact); !e) {
+      return e;
+    }
     std::vector<float> row;
     if (auto p = Prefill(prompt, false, row); !p) {
       return p;
@@ -1374,7 +1376,9 @@ Status Harness::Probe() {
       return rec;
     }
     dsv4_.set_dump({});
-    dsv4_.set_exact(false);
+    if (auto e = dsv4_.set_exact(false); !e) {
+      return e;
+    }
     dsv4_.set_graphs(o_.dsv4.graphs);
   }
   const std::uint32_t vocab = dsv4_.vocab();
@@ -1392,7 +1396,9 @@ Status Harness::Probe() {
       }
     }
     dsv4_.set_graphs(false);
-    dsv4_.set_exact(exact);
+    if (auto e = dsv4_.set_exact(exact); !e) {
+      return e;
+    }
     dsv4_.set_dump({"*"});
     std::vector<float> logits;
     if (auto c = dsv4_.Chunk(step.pos, input, logits, {}, jb::Dsv4ChunkKind::kVerify); !c) {
@@ -1412,7 +1418,9 @@ Status Harness::Probe() {
       return rb;
     }
     dsv4_.set_dump({});
-    dsv4_.set_exact(false);
+    if (auto e = dsv4_.set_exact(false); !e) {
+      return e;
+    }
     dsv4_.set_graphs(o_.dsv4.graphs);
   }
   // D and XD: one-row decoding of the verify's rows from the state.
@@ -1420,7 +1428,9 @@ Status Harness::Probe() {
     if (auto s = restore(); !s) {
       return s;
     }
-    dsv4_.set_exact(exact);
+    if (auto e = dsv4_.set_exact(exact); !e) {
+      return e;
+    }
     std::vector<float> row;
     for (std::uint32_t i = 0; i <= r; ++i) {
       if (i == r) {
@@ -1435,7 +1445,9 @@ Status Harness::Probe() {
       return rec;
     }
     dsv4_.set_dump({});
-    dsv4_.set_exact(false);
+    if (auto e = dsv4_.set_exact(false); !e) {
+      return e;
+    }
     dsv4_.set_graphs(o_.dsv4.graphs);
   }
   return {};
@@ -1841,6 +1853,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.tokens) && o.tokens >= 2;
     } else if (a == "--context") {
       ok = number(o.dsv4.context);
+    } else if (a == "--max-rows") {
+      ok = number(o.dsv4.max_rows) && o.dsv4.max_rows >= 1;
     } else if (a == "--graphs") {
       o.dsv4.graphs = v == "on";
       ok = v == "on" || v == "off";
@@ -1883,10 +1897,14 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
         "--check greedy|forced|swap|sampled-plain|sampled-spec|probe [--tokens N] [--context N] "
+        "[--max-rows N] "
         "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N]");
   }
+  // The probe runs the fast plan and the reference mode over one state,
+  // which needs the full window cache (engine/dsv4_runner.h set_exact).
+  o.dsv4.full_window = o.check == "probe";
   std::filesystem::create_directories(o.out);
   o.dsv4.out = o.out / "dsv4";
   o.fp16.out = o.out / "fp16";

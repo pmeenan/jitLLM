@@ -60,7 +60,7 @@ if(JITLLM_CUDA)
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
-                                         jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu
+                                         jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
@@ -128,7 +128,7 @@ if(JITLLM_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc
+  set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
                    dsv4_graph.h
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
@@ -182,6 +182,6 @@ if(JITLLM_CUDA)
   # compiles as the nodes' does.
   set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                               mul_mat_q.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
-                              dsv4_fast.cu PROPERTIES COMPILE_OPTIONS
+                              dsv4_fast.cu dsv4_sparse.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

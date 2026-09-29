@@ -94,6 +94,23 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek V4 Flash's per-token cost no longer grows with the
+  conversation: its window cache is a ring of the window and a prefill
+  chunk, its attention reads only each token's window and the indexer's
+  selected (or HCA's visible) compressed rows, and its indexer scores on
+  tensor cores and selects deterministically. Through the runtime on a
+  GB10, prefill runs at 471 / 466 / 445 tokens a second and plain decode
+  at 21.6 / 21.2 / 20.5 at 32K / 64K / 128K tokens of context (before:
+  333 / 230 / 154 and 14.7 / 10.8 / 7.1); a long prompt now repeats bit
+  for bit, and its greedy tokens may differ from the previous build's at
+  near-ties. At `context = 262144` it maps 3.5 GiB beside its weights
+  (was 20.4), and with its DSpark drafter it now starts there (it was
+  refused above 143,360).
+- The runtime's start keeps 6 GiB (was 4) beside the largest model's
+  weights for memory the node does not count, and also counts the
+  largest chunk inputs a model builds on the host; a configuration that
+  started within 2 GiB of the old limit may now be refused, with a
+  message naming both.
 - Sampling (temperature above 0, the chat route's default) no longer sorts
   the vocabulary for each token: a draw takes 0.45 ms instead of 5.9 ms at
   DeepSeek V4 Flash's vocabulary and 0.87 ms instead of 11.9 ms at

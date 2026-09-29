@@ -84,8 +84,11 @@ stream, its tokenizer and renderer found, the shared workspace mapped at the
 largest model's need, and the scheduler started with the budget of
 everything fixed (the zone, each model's own memory, the workspace, the
 staging) plus the largest model's weights, which must fit what the host has
-available with a 4 GiB margin for what the catalog does not count (decode
-graphs, the driver's and cuBLAS's own memory). No weights are paged yet.
+available with the largest chunk inputs a model builds on the host (one
+model runs at a time; bounded by the staging they are sized for) and a
+6 GiB margin for what else the catalog does not count (decode graphs, the driver's and
+cuBLAS's own memory; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
+No weights are paged yet.
 
 One model is resident at a time (M3's full swap). Activating another
 (`Server::Activate`) is one `SwapProgram`: the resident LLM's conversation
@@ -186,10 +189,12 @@ from 3287 by 0.38 to 304 by 1.16 across 512, 2,048 and 4,096 rows,
 speculative or plain. The largest move from the oracle's margin is 1.47,
 inside the fast plan's near-tie bound of about 2.5
 ([dsv4-decode](experiments/dsv4-decode/README.md#the-bound-going-forward)).
-DeepSeek's prefill past 4,096 positions also does not repeat bit for bit
-from run to run at some chunk sizes (on this prompt, 4,096 and 512 rows,
-not 2,048 in 7 runs). The cause is RE-031's tie-breaking in GGML's top-k,
-which its indexer uses, not the chunking.
+DeepSeek's prefill past 4,096 positions did not repeat bit for bit from
+run to run at some chunk sizes (on this prompt, 4,096 and 512 rows, not
+2,048 in 7 runs): RE-031's tie-breaking in GGML's top-k, which its
+indexer used, not the chunking. The fast plan's own indexer
+(long-context phase 2) breaks ties by row and repeats; the reference
+mode (`--exact on`) still does not.
 
 **Cancellation.** Whatever ends a chat request (the client gone, the
 backend stalled or a non-streaming request's deadline passed

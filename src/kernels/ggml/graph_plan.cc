@@ -460,6 +460,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kDsv4Compress:
             add(Operation::kSoftMax, kDsv4CompressName, i, {node}, 1);
             break;
+          case JitllmOp::kDsv4LidTopK:
+            add(Operation::kLightningIndexer, kDsv4LidTopKName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4SparseMask:
+            add(Operation::kFill, kDsv4SparseMaskName, i, {node}, 1);
+            break;
           case JitllmOp::kNone:
             return Rejected(
                 std::format("{}: a custom operation jitLLM does not name", Where(graph, i)));

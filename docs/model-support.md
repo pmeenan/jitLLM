@@ -94,16 +94,17 @@ not used. The options each renderer supports and refuses are in
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
   runtime's default (8,192 tokens of conversation in the swap table); since
   the long-context baseline, through the runtime at `context = 262144`
-  with 32K and 64K prompts, and against llama.cpp b11254 at 32K and 128K
-  ([long-context](experiments/long-context/README.md): greedy within the
-  near-tie bound except one step at 32K, perplexity −0.1% at 32K,
-  retrieval at 32K and 64K). Its speed falls with depth (decode 0.60× llama.cpp's at
-  64K; the report's gap 1). The configuration accepts 512 to 262,144;
-  262,144 fits one Spark plain (1.3 GiB inside the runtime's guard), and
-  143,360 with DSpark; prompts past 64K are not verified through the
-  runtime (a 128,821-token prompt streams through the chat route to its
-  end, 845.8 s, since its 600 s deadline gave way to a progress watchdog
-  on 2026-09-29, runtime-serving.md#progress-and-deadlines). The
+  with 8K to 128K prompts, and against llama.cpp b11254 at 32K
+  ([long-context](experiments/long-context/README.md#phase-2-deepseek-flat-with-depth-2026-09-29):
+  greedy within the near-tie bound, perplexity +0.1%, retrieval at 8K to
+  128K, a long run repeating bit for bit). Its per-token cost is flat with
+  depth but for the indexer (decode 21.9 / 21.2 / 20.5 tok/s at 8K / 64K /
+  128K, 1.18–1.22× llama.cpp's; the fast plan's window cache a ring).
+  The configuration accepts 512 to 262,144; 262,144 fits one Spark plain
+  and with DSpark (3.5 and 3.9 GiB fixed, the guard's 6 GiB margin
+  kept); a 256K prompt is not verified through the runtime, whose chat
+  route no longer has a fixed deadline to stop one (a progress watchdog,
+  runtime-serving.md#progress-and-deadlines). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
   prefill chunk capped at 384 rows by the 128-position window; the
   default chunk is 2,048 rows
@@ -137,10 +138,12 @@ not used. The options each renderer supports and refuses are in
     that passes only under 6.11, diagnosed as kernel noise amplified by
     near-tied routing, not a defect
     ([step 93](experiments/dsv4-decode/README.md#step-93-diagnosed)).
-  - Step 249 of the 32K long-context prompt: the fast plan's argmax
-    differs from llama.cpp b11254's where the oracle prefers its token by
-    2.62 nats (bound 1.24), in two runs; the exact form agrees. Not
-    diagnosed ([long-context](experiments/long-context/README.md#correctness-at-depth)).
+  - Step 249 of the 32K long-context prompt: phase 1's fast plan chose
+    another token where the oracle prefers its own by 2.62 nats; every
+    jitLLM path has the two within 0.9 nats there, and the phase 2 fast
+    plan agrees with the oracle ([step 249](experiments/long-context/README.md#step-249)).
+  - The reference mode (`--exact on`) keeps GGML's top-k and does not
+    repeat past 4,096 positions (RE-031).
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
     2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
     and serves the GGUF's.

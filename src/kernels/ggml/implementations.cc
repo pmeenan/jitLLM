@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 88> kKernels = {{
+constexpr std::array<Kernel::Entry, 90> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -716,6 +716,20 @@ constexpr std::array<Kernel::Entry, 88> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4Compress(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Compress(launch, n[0]); }},
+    {.name = "jitllm.dsv4.lid_topk",
+     .operation = execution::Operation::kLightningIndexer,
+     .variant = "LidScoreKernel<R>: R rows' 64 heads a block on mma.sync F16 (F32 sums), 64 keys "
+                "a step; TopKKernel: a block a row, a radix select, ties to the lower row",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4LidTopK(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4LidTopK(launch, n[0]); }},
+    {.name = "jitllm.dsv4.sparse_mask",
+     .operation = execution::Operation::kFill,
+     .variant = "SparseMaskKernel: a block a row, the window's mask copied, -inf, then the "
+                "selected rows 0",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4SparseMask(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4SparseMask(launch, n[0]); }},
 }};
 
 execution::Implementation Declare(std::string_view name, execution::Operation operation,

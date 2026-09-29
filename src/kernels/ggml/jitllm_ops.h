@@ -129,6 +129,8 @@ enum class JitllmOp : std::uint8_t {
   kDsv4HcPre,
   kDsv4Compress,
   kGdnStep,
+  kDsv4LidTopK,
+  kDsv4SparseMask,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
@@ -721,6 +723,59 @@ std::expected<void, KernelFailure> CheckDsv4Compress(const ggml_tensor* node);
 std::int64_t Q8Bytes(std::int64_t k, std::int64_t rows);
 // Whether jitllm.vecq has a kernel for a weight type.
 bool VecQType(ggml_type type);
+
+// DeepSeek V4's sparse attention at depth (the fast plan over a ring
+// window, model/dsv4.h Dsv4Window::kRing; dsv4_sparse.cu), deterministic,
+// so a run repeats bit for bit (RE-031):
+//
+//   jitllm.dsv4.lid_topk     the lightning indexer and its selection: each
+//                            row's scores over the compressed rows it sees
+//                            (its visible count), Σ_h w[h] · relu(q_h · k)
+//                            on tensor cores (q rounded to F16 as GGML's
+//                            WMMA indexer rounds it, F32 sums), and the
+//                            `top` best of them, ties to the lower row,
+//                            listed in ascending order and padded with -1
+//                            (all it sees when that is fewer). Rows share
+//                            each key read four at a time (a verify's rows
+//                            one pass); their scores go to pool scratch of
+//                            at most kDsv4LidScratch bytes, the rows taken
+//                            in groups that fit it.
+//   jitllm.dsv4.sparse_mask  the attention mask of a compressed layer over
+//                            [window cells | compressed rows]: the window's
+//                            mask copied (-inf past it to the compressed
+//                            rows' start), then 0 at the rows the indexer
+//                            selected (CSA: build_top_k_mask's result) or
+//                            at the rows each row sees (HCA), -inf
+//                            elsewhere; the concatenation's result, in one
+//                            pass, with no host-built compressed mask.
+inline constexpr std::int64_t kDsv4LidScratch = std::int64_t{128} << 20;
+// And its attention: a flash_attn_ext node marked here (op_params[5] = 1,
+// a slot GGML leaves free) takes the MMA kernel's sparse gather of its
+// unmasked cells (ops_ext.h FlashAttnMma) whenever its n_kv_max cells are
+// at most half of K's, not only past upstream's 4,096 cells; the cells
+// gathered are the mask's either way.
+inline constexpr int kFlashAttnSparseParam = 5;
+inline void SetFlashAttnSparseAny(ggml_tensor* node) { node->op_params[kFlashAttnSparseParam] = 1; }
+// `q` F32 [128, 64, rows] (rows and heads 8-byte aligned), `k` F16 [128,
+// n_kv] (the indexer's cache, rows 16-byte aligned), `w` F32 [64, rows],
+// `visible` I32 [rows]: I32 [top, rows].
+ggml_tensor* Dsv4LidTopK(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* w,
+                         ggml_tensor* visible, std::int64_t top);
+// `window` F16 [w, rows] (packed rows), and either `top` a
+// jitllm.dsv4.lid_topk node or `visible` I32 [rows]; `cells` (at least w)
+// the compressed rows' start: F16 [cells + n_kv, rows, 1, 1].
+ggml_tensor* Dsv4SparseMask(ggml_context* context, ggml_tensor* window, ggml_tensor* top,
+                            ggml_tensor* visible, std::int64_t cells, std::int64_t n_kv);
+// The checks: operands bound, typed and shaped as above, within the
+// kernels' 32-bit extents, the output disjoint from every operand. The
+// visible counts are clamped to [0, n_kv] on the device; the selection's
+// entries are rows below n_kv or -1, which the mask kernel also bounds.
+std::expected<void, KernelFailure> CheckDsv4LidTopK(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckDsv4SparseMask(const ggml_tensor* node);
+std::expected<std::uint64_t, KernelFailure> PlanDsv4LidTopK(const LaunchContext& launch,
+                                                            const ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4LidTopK(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4SparseMask(LaunchContext& launch, ggml_tensor* node);
 
 std::expected<void, KernelFailure> RunQuantizeQ8(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* node);

@@ -10,11 +10,19 @@
 //                    [--prompts FILE --generate N [--force FILE]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
+//                    [--probe-step N]
 //
 // - --exact on: the reference mode, the graph node for node as llama.cpp
 //   builds it and planned unfused (its logits llama.cpp's with fusion off,
 //   bit for bit); off (the default), jitLLM's fast plan (dsv4_graph.h
-//   Dsv4GraphOptions::fused), judged coarsely against llama.cpp.
+//   Dsv4GraphOptions::fused), judged coarsely against llama.cpp; its window
+//   cache a ring (model/dsv4.h Dsv4Window::kRing), the reference mode's the
+//   full cache.
+// - --probe-step N (with --force): the first prompt's step N (the argmax at
+//   index N) run from the state before it in both plans, the state put back
+//   after each, every named tensor and the logits written under
+//   OUT/probe/{fast,exact}/ (docs/experiments/dsv4-decode's probe method,
+//   resident); the state a full window, which both plans read.
 // - Weights: the artifact is opened as untrusted input (artifact.h), its
 //   resources and expert arrays bound to the compiled-in DeepSeek V4 profile
 //   (model/dsv4.h), and every chunk read with direct I/O, one coalesced read
@@ -578,7 +586,8 @@ void BindWeights(const Model& m, kg::Dsv4Graph& g) {
     kg::TensorArena::Bind(l.gate_exps, ArrayAddress(a, w, r.gate_exps.index));
     kg::TensorArena::Bind(l.down_exps, ArrayAddress(a, w, r.down_exps.index));
     const auto state = [&](ggml_tensor* t, K kind) {
-      if (t == nullptr) {
+      // A view (a ring's compressed cache) is bound with its window's tensor.
+      if (t == nullptr || t->view_src != nullptr) {
         return;
       }
       const std::int64_t i = m.state->Find(il, kind);
@@ -623,7 +632,11 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
   for (const std::string& name : keep_names) {
-    if (ggml_tensor* t = g.Named(name); t != nullptr) {
+    if (name == "*") {
+      for (const auto& [n, t] : g.named) {
+        keep.push_back(t);
+      }
+    } else if (ggml_tensor* t = g.Named(name); t != nullptr) {
       keep.push_back(t);
     } else {
       return Error(std::format("the graph names no {}", name));
@@ -706,7 +719,7 @@ class Runner {
                std::vector<float>& logits, std::span<const std::string> keep = {},
                std::map<std::string, std::vector<float>>* kept = nullptr) {
     const auto rows = static_cast<std::uint32_t>(tokens.size());
-    auto in = md::Dsv4Chunk(*m_.profile, *m_.state, n_past, rows);
+    auto in = md::Dsv4Chunk(*m_.profile, *m_.state, n_past, rows, m_.exact);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -758,36 +771,39 @@ class Runner {
     std::vector<std::int32_t> out_ids(rows);
     std::ranges::iota(out_ids, 0);
     const std::vector<float>& rot = m_.rot;
-    std::vector<std::uint16_t> zeros(static_cast<std::size_t>(ggml_nelements(g.top_k_zeros)), 0);
-    const auto comp = [](const kg::Dsv4CompInputs& t, const md::Dsv4CompPlan& plan,
-                         const std::vector<std::uint16_t>& mask) {
-      return std::array<std::pair<ggml_tensor*, const void*>, 7>{
-          {{t.state_pos, plan.state_pos.data()},
-           {t.persist_src, plan.persist_src.data()},
-           {t.persist_dst, plan.persist_dst.data()},
-           {t.read_idxs, plan.read_idxs.data()},
-           {t.write_idxs, plan.write_idxs.data()},
-           {t.write_pos, plan.write_pos.data()},
-           {t.mask, mask.data()}}};
+    // A ring's graph has no CSA or indexer mask, and reads the rows' visible
+    // counts where the zero fill's source was (engine/dsv4_plan.cc).
+    std::vector<std::uint16_t> zeros(
+        g.top_k_zeros != nullptr ? static_cast<std::size_t>(ggml_nelements(g.top_k_zeros)) : 0, 0);
+    std::vector<std::pair<ggml_tensor*, const void*>> sources;
+    const auto comp = [&](const kg::Dsv4CompInputs& t, const md::Dsv4CompPlan& plan,
+                          const std::vector<std::uint16_t>& mask) {
+      sources.insert(sources.end(), {{t.state_pos, plan.state_pos.data()},
+                                     {t.persist_src, plan.persist_src.data()},
+                                     {t.persist_dst, plan.persist_dst.data()},
+                                     {t.read_idxs, plan.read_idxs.data()},
+                                     {t.write_idxs, plan.write_idxs.data()},
+                                     {t.write_pos, plan.write_pos.data()}});
+      if (t.mask != nullptr) {
+        sources.emplace_back(t.mask, mask.data());
+      }
     };
-    std::vector<std::pair<ggml_tensor*, const void*>> sources = {
-        {g.embd, embd.data()},
-        {g.tokens, tokens.data()},
-        {g.positions, in->positions.data()},
-        {g.raw_k_idxs, in->raw_cells.data()},
-        {g.raw_mask, in->raw_mask.data()},
-        {g.out_ids, out_ids.data()}};
-    for (const auto& s : comp(g.csa, in->csa, in->csa_mask)) {
-      sources.push_back(s);
-    }
-    for (const auto& s : comp(g.hca, in->hca, in->hca_mask)) {
-      sources.push_back(s);
-    }
-    for (const auto& s : comp(g.lid, in->lid, in->lid_mask)) {
-      sources.push_back(s);
-    }
+    sources = {{g.embd, embd.data()},
+               {g.tokens, tokens.data()},
+               {g.positions, in->positions.data()},
+               {g.raw_k_idxs, in->raw_cells.data()},
+               {g.raw_mask, in->raw_mask.data()},
+               {g.out_ids, out_ids.data()}};
+    comp(g.csa, in->csa, in->csa_mask);
+    comp(g.hca, in->hca, in->hca_mask);
+    comp(g.lid, in->lid, in->lid_mask);
     sources.emplace_back(g.lid_rot, rot.data());
-    sources.emplace_back(g.top_k_zeros, zeros.data());
+    if (g.top_k_zeros != nullptr) {
+      sources.emplace_back(g.top_k_zeros, zeros.data());
+    } else {
+      sources.emplace_back(g.csa_visible, in->csa.n_visible.data());
+      sources.emplace_back(g.hca_visible, in->hca.n_visible.data());
+    }
     auto stream = d_.Stream();
     if (!stream) {
       return std::unexpected(stream.error());
@@ -822,7 +838,14 @@ class Runner {
       return r;
     }
     if (kept != nullptr) {
-      for (const std::string& name : keep) {
+      std::vector<std::string> names(keep.begin(), keep.end());
+      if (std::ranges::find(keep, std::string("*")) != keep.end()) {
+        names.clear();
+        for (const auto& [n, t] : g.named) {
+          names.push_back(n);
+        }
+      }
+      for (const std::string& name : names) {
         const ggml_tensor* t = g.Named(name);
         std::vector<float>& to = (*kept)[name];
         const auto n = static_cast<std::size_t>(ggml_nelements(t));
@@ -856,6 +879,12 @@ class Runner {
     return {};
   }
 
+  // The reference mode on or off for the next chunks, every plan dropped
+  // (--probe-step: both plans over one full-window state).
+  void SetExact(bool on) {
+    m_.exact = on;
+    cache_.clear();
+  }
   int plans_made() const { return plans_made_; }
   std::uint64_t most_scratch() const { return most_scratch_; }
   std::uint64_t most_activations() const { return most_activations_; }
@@ -1116,6 +1145,10 @@ struct Options {
   std::uint32_t bench_prefill = 0;
   std::uint32_t bench_decode = 0;
   bool exact = false;  // --exact on: the reference mode (Model::exact)
+  // --probe-step N: the first prompt's forced step N run twice from the
+  // state before it, in the fast plan and in the reference mode, every
+  // named tensor dumped (a full window, which both plans read).
+  std::uint32_t probe_step = 0;
 };
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
@@ -1178,6 +1211,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.bench_prefill);
     } else if (a == "--bench-decode") {
       ok = number(o.bench_decode);
+    } else if (a == "--probe-step") {
+      ok = number(o.probe_step);
     } else if (a == "--layout-proof") {
       o.layout_proof = true;
     } else if (a == "--exact") {
@@ -1196,7 +1231,62 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (o.artifact.empty() || o.out.empty()) {
     return Error("--artifact and --out are required");
   }
+  if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
+    return Error("--probe-step needs --force and a step below --generate");
+  }
   return o;
+}
+
+// --probe-step: the step at n_past (token `next`) from the state before it,
+// once in the fast plan and once in the reference mode, the state put back
+// after each; every named tensor and the logits under OUT/probe/{fast,exact}/
+// (the dsv4-decode probe's method on the resident harness).
+Status Probe(const Options& o, Runner& runner, void* state, std::uint64_t bytes,
+             std::uint32_t n_past, std::int32_t next) {
+  void* saved = nullptr;
+  if (auto r = Cuda(cudaMalloc(&saved, bytes), "the probe's saved state"); !r) {
+    return r;
+  }
+  Status result;
+  if (auto r = Cuda(cudaMemcpy(saved, state, bytes, cudaMemcpyDeviceToDevice), "saving the state");
+      !r) {
+    result = r;
+  }
+  const std::array<std::string, 1> all = {"*"};
+  for (const bool exact : {false, true}) {
+    if (!result) {
+      break;
+    }
+    runner.SetExact(exact);
+    std::vector<float> logits;
+    std::map<std::string, std::vector<float>> kept;
+    if (auto r = runner.Chunk(n_past, std::span(&next, 1), logits, all, &kept); !r) {
+      result = r;
+      break;
+    }
+    const std::filesystem::path dir = o.out / "probe" / (exact ? "exact" : "fast");
+    std::filesystem::create_directories(dir);
+    std::string index = "{";
+    for (const auto& [name, values] : kept) {
+      if (auto r = WriteFloats(dir / (name + ".f32"), values); !r) {
+        result = r;
+      }
+      index += std::format(R"({}"{}":{})", index.size() == 1 ? "" : ",", name, values.size());
+    }
+    std::ofstream(dir / "index.json") << index << "}\n";
+    if (auto r = WriteFloats(dir / "logits.f32", logits); !r) {
+      result = r;
+    }
+    if (auto r =
+            Cuda(cudaMemcpy(state, saved, bytes, cudaMemcpyDeviceToDevice), "restoring the state");
+        !r) {
+      result = r;
+    }
+  }
+  runner.SetExact(o.exact);
+  (void)cudaFree(saved);
+  std::println("probe: position {} (token {}) run in both plans from one state", n_past, next);
+  return result;
 }
 
 Status Run(const Options& o) {
@@ -1216,7 +1306,11 @@ Status Run(const Options& o) {
   if (!binding) {
     return std::unexpected(binding.error());
   }
-  auto state = md::Dsv4State(profile, o.context, o.max_rows);
+  // The fast plan's window is a ring; the reference mode's, llama.cpp's full
+  // cache (model/dsv4.h Dsv4Window).
+  auto state =
+      md::Dsv4State(profile, o.context, o.max_rows,
+                    o.exact || o.probe_step != 0 ? md::Dsv4Window::kFull : md::Dsv4Window::kRing);
   if (!state) {
     return std::unexpected(state.error());
   }
@@ -1300,7 +1394,7 @@ Status Run(const Options& o) {
          {o.context - 1, 1},
          {o.max_rows, 1}}};
     for (const auto& [n_past, rows] : probes) {
-      auto in = md::Dsv4Chunk(profile, *state, n_past, rows);
+      auto in = md::Dsv4Chunk(profile, *state, n_past, rows, o.exact);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -1437,6 +1531,11 @@ Status Run(const Options& o) {
       double decode = 0;
       for (std::uint32_t k = 1; k < o.generate; ++k) {
         const std::int32_t next = forced.empty() ? argmax.back() : forced[pi].ids[k - 1];
+        if (pi == 0 && k == o.probe_step) {
+          if (auto r = Probe(o, runner, state_region, state->bytes, n_past, next); !r) {
+            return r;
+          }
+        }
         const auto t1 = Clock::now();
         if (auto r = runner.Chunk(n_past, std::span(&next, 1), logits); !r) {
           return Error(std::format("{} step {}: {}", prompt.name, k, r.error()));

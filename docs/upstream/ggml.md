@@ -183,9 +183,11 @@ sinks bound (RE-030).
   22.639 or 22.914) across 7 runs, and with the radix gather replaced by an
   index-ordered one (one thread a row, scanning the columns in order) 6 of
   6 runs repeated exactly.
-- **jitLLM's workaround:** none for DeepSeek V4: its prefill and decode past
-  4,096 positions are not repeatable. For Qwen3.8, the default fast graph
-  selects with jitLLM's
+- **jitLLM's workaround:** DeepSeek V4's fast plan (the default) scores and
+  selects with jitLLM's `jitllm.dsv4.lid_topk`
+  (`src/kernels/ggml/dsv4_sparse.cu`), ties to the lower row: its 32K run
+  repeats bit for bit (long-context phase 2); `--exact on` does not. For
+  Qwen3.8, the default fast graph selects with jitLLM's
   `jitllm.qsa.select` (`src/kernels/ggml/jitllm_ops.h`), which keeps the lower
   cell among equals. It holds the block scores in 32 KiB of shared memory,
   so past `kQsaSelectMaxBlocks` = 8,192 blocks (32,768 cells) the graph
@@ -205,9 +207,8 @@ sinks bound (RE-030).
   selection past 32K cells, selecting over the block scores with ties
   broken by index. TensorFold's tiled select is a model
   ([tensorfold.md](tensorfold.md#upstream-techniques-to-adopt), PR #93).
-  DeepSeek V4's indexer needs the same: a top-k that breaks ties by index
-  (a jitLLM selection, or a patched radix gather). Upstream, optionally a
-  short comment on #28497 by the owner.
+  DeepSeek V4's is done (above). Upstream, optionally a short comment on
+  #28497 by the owner.
 - **Links:** RE-031 in [rough-edges.md](../rough-edges.md);
   [qwen38-native](../experiments/qwen38-native/README.md#results-second-pass).
 
@@ -329,7 +330,11 @@ Checked 2026-09-29 at master `8019dc563`.
 
 - **Sparse flash attention for DeepSeek V4 prefill**
   ([#29298](https://github.com/ggml-org/llama.cpp/pull/29298)): pp2048 on a
-  DGX Spark 1.23× at 64K depth and 1.42× at 128K.
+  DGX Spark 1.23× at 64K depth and 1.42× at 128K. jitLLM's DeepSeek fast plan now
+  gathers every layer's cells with the pinned kernel's one-row sparse case
+  (its own condition in `fattn_mma.cu`, long-context phase 2), flat with
+  depth; #29298's wide tiles, which gather a tile's union once, may still
+  cut its prefill attention (746 ms of a 2,048-row chunk at 64K).
 - **Sparse flash attention for Qwen3.8**
   ([#28770](https://github.com/ggml-org/llama.cpp/pull/28770)): 1.08–1.26×
   prefill and 1.03–1.18× decode at 10K–100K.

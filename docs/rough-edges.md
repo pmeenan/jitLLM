@@ -211,7 +211,7 @@ their outputs (the others are the same bit for bit); the fused test builds
 its unfused reference the same way, with no slack. Fix upstream: bound the
 load by the window's columns.
 
-## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in Qwen3.8's fast graph; open for its reference and unfused graphs and for DeepSeek V4)
+## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in Qwen3.8's fast graph below 32,768 cells and in DeepSeek V4's fast plan at any depth; open for both reference (and unfused) graphs and Qwen3.8 past 32,768 cells)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
 `top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
@@ -265,6 +265,15 @@ turn's state leaks into a cleared one.
 Impact and fix as above: DeepSeek's prefill past 4,096 positions is not
 repeatable either; a top-k that breaks ties by index would fix both
 models.
+
+**Worked around for DeepSeek V4's fast plan** (`spark`, 2026-09-29, the
+long-context phase 2 slice): its indexer now scores and selects with
+jitLLM's own `jitllm.dsv4.lid_topk` (`src/kernels/ggml/dsv4_sparse.cu`), a
+radix select that keeps the lower row among equals, and two runs of the
+32K forced prompt (31,705 tokens, 512 steps) gave the same logits bit for
+bit (`judge.py repeat`: 0 of 512 steps differ), where before they differed
+from the first step. The reference mode (`--exact on`) keeps GGML's top-k,
+as llama.cpp runs it, and does not repeat.
 
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 
