@@ -1105,8 +1105,18 @@ family" guide, and its long-context scaling work.
       Their four GGUF fixtures (Gemma 3 4B QAT Q4_0, Gemma 2 2B, Phi-3.5
       mini, Command R7B; about 17.9 GB, llama.cpp as reference) join
       M3.5's set under the same exit criteria. The deferred and dropped
-      features stay as recorded. The optional Bonsai-27B fixture is
-      still open.
+      features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
+      join too, both 1-bit and 2-bit, because they are hugely popular:
+      - Bonsai-27B Q1_0 (with its Q4_1 drafter);
+      - a 2-bit Ternary Bonsai.
+
+      Which 2-bit build is settled at M3.5's start. Ternary-Bonsai-27B's
+      Q2_0 on stock llama.cpp is unconfirmed, and Ternary-Bonsai-2-27B
+      (on Qwen3.8-27B) needs PrismML's llama.cpp fork, so its reference
+      is that fork, pinned and license-audited like any baseline. The
+      stock-llama.cpp Q2_0 is preferred if it works; the Bonsai-2 card
+      warns that rotated weights load silently and give garbage, so
+      correctness is checked against its reference, not assumed.
 - [ ] **EXL3 optimization** (the owner's particular interest): the
       trellis-encoded quants across their codebooks, bitrates and
       per-layer mixed widths, dense and MoE (grouped mixed-width routed
