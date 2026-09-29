@@ -766,6 +766,45 @@ it appears.
       keepalive comments and all finished (the last in 52.8 s); greedy
       replies still equal `jitllm-runtime chat`'s (DeepSeek 52 tokens,
       Qwen3.8 37, streamed).
+- [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
+      context by default, so M3 measures and fully optimizes it, not only
+      8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
+      its maximum on one Spark: Qwen3.8 to its configured 262,144, and
+      DeepSeek V4 Flash toward its trained 1,048,576 (YaRN, 16× over
+      65,536). The largest that fits beside its weights and drafter is
+      measured and becomes the documented and configurable ceiling.
+      - *Baseline first:* prefill throughput and decode speed at each
+        depth, speculative and plain, through the runtime and against the
+        same-format comparators at the same depths:
+        - llama.cpp for DeepSeek, at a pin that includes upstream's sparse
+          flash-attention prefill (#29298), so we are judged against
+          upstream's best long-context path;
+        - Mia's vLLM for Qwen3.8;
+        - TensorFold beside them as cross-quantization information.
+
+        The gaps found set the optimization work.
+      - *Optimization, until every depth is at least the comparator's
+        speed* (not only inside D-085's 10%):
+        - tiled, deterministic QSA selection past 8,192 blocks
+          (TensorFold PR #93's technique), which also closes RE-031's
+          long-context nondeterminism;
+        - sparse flash-attention prefill for both models (llama.cpp
+          #29298 and #28770);
+        - DeepSeek's compressed attention and indexer at depth;
+        - decode at depth (KV read bandwidth, graphs at long shapes);
+        - the prefill chunk policy at depth.
+      - *State that grows with the conversation*, not reserved at the
+        ceiling, so a long ceiling costs memory only when used. Spill and
+        restore move only the used state.
+      - *Turn-to-turn reuse at long context:* a coding agent resends the
+        whole conversation each turn. The runtime reuses the longest common
+        prefix of the previous turn's state, including when a client drops
+        or rewrites earlier reasoning, rather than re-prefilling. The
+        recurrent and indexer state keep checkpoints at turn boundaries
+        where rollback to a prefix needs them.
+      - *Defaults:* each model's default context rises from 8,704 to what
+        coding clients expect, within the memory budget. The intake bounds
+        (D-097) follow.
 
 **Exit criteria:**
 
@@ -837,6 +876,29 @@ it appears.
   comparators are reported beside them for speed and memory, not gated.
   Each comparison names the comparator, its format and whether both sides
   speculated.
+- **Long context** (the owner, 2026-09-29):
+  - **Speed:** at 32K, 64K, 128K and each model's measured one-Spark
+    maximum, prefill and decode (plain and speculative) are at least the
+    same-format comparator's speed at the same depth, where the
+    comparator can run that depth. Where it can't, the result is reported
+    alone.
+  - **Correctness at depth:**
+    - greedy tokens match the oracle except near-ties on long real
+      prompts (code: a repository's files as context) at 32K and 128K;
+    - perplexity on a long document is within a few percent of the
+      oracle's;
+    - a retrieval check (a fact placed at several depths, then asked for)
+      passes at every rung up to the maximum;
+    - the same long run repeats bit for bit in the same engine (RE-031
+      closed).
+  - **Swap with long saved context:** an LLM A holding 128K, and its
+    maximum, is swapped out and back. Spill and restore time and bytes
+    are reported, and the continuation is exact. The ~10 s swap goal stays
+    defined at 8K; the long-context swap's target is restore at the SSD's
+    measured rate.
+  - **Turn reuse:** a multi-turn coding session at 64K+ re-prefills only
+    each turn's new tokens, including with a reasoning model whose client
+    drops earlier reasoning.
 - A standard OpenAI-compatible client completes a chat with each LLM
   through the minimal route, swapping between them.
 - The source-lock widening, the swap path and the chat route's request
