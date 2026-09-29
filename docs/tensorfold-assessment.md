@@ -257,6 +257,10 @@ Of the load study's four cold-start patches, one is upstream: JIT kernels
 built for the GPU present (`34bae79`, 0.3.6.1). The O_DIRECT reader, the
 int32 nibble shuffle and the RUNBOOK's cache volumes still apply as they
 were. The owner is taking those upstream.
+2026-09-29: the owner opened
+[TensorFold#82](https://github.com/ashhart/TensorFold/pull/82), which builds
+on the reader and the repack; status in
+[upstream/tensorfold.md](upstream/tensorfold.md).
 
 What the commits offer jitLLM, read from the code. Every TensorFold number
 here is creator-reported, on one GB10 unless stated:

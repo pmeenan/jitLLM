@@ -1,0 +1,80 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# Other projects
+
+Projects with a single finding each. None has been reported, and none of
+their current versions was checked.
+
+## Docker: a multi-arch index digest can run the wrong architecture from the local store (RE-015)
+
+- **Status:** open.
+- **Project:** Docker Engine ([moby/moby](https://github.com/moby/moby)) with
+  the containerd image store.
+- **Found:** 2026-09-23, the workstation (x86-64), Docker 29.8.1, qemu binfmt
+  registered.
+- **Problem:** `docker run ubuntu:24.04@sha256:008173c2…` (the multi-platform
+  index digest) ran the **arm64** image under qemu-user, with only a
+  platform-mismatch warning, because an arm64 `ubuntu:24.04` pulled earlier
+  was the local content for that digest. With binfmt registered nothing
+  fails, so builds silently run emulated. Repro: pull the arm64 variant by
+  index digest with `--platform linux/arm64`, then `docker run` the same
+  digest without `--platform` on an amd64 host with binfmt registered.
+- **jitLLM's workaround:** every `FROM`, `docker run` and `docker build` of
+  the reference container names `--platform linux/amd64`, and `doctor`
+  reports the architecture inside the container. No cost.
+- **Proposed action:** check a current Docker; if it still happens, an issue
+  asking that an index digest resolve to the host's platform, or fail,
+  rather than to whatever the store holds. Small.
+- **Links:** RE-015 in [rough-edges.md](../rough-edges.md).
+
+## SGLang: a failed processor import reports "No processor registered" (RE-012)
+
+- **Status:** open.
+- **Project:** [sgl-project/sglang](https://github.com/sgl-project/sglang).
+- **Found:** 2026-09-22, `lmsysorg/sglang` nightly `0f6761b5` (arm64 digest
+  `9e1fb4c3…`), both Sparks, MiMo-V2.6-Flash-RL.
+- **Problem:** startup aborted with `No processor registered for
+  architecture: ['MiMoV2ForCausalLM']`, even for text-only use. The real
+  cause was that `multimodal/processors/mimo_v2.py` imports `torchcodec`,
+  which the image lacks; processor discovery logs and skips modules that
+  fail to import, so the root cause is lost.
+- **jitLLM's workaround:** a derived image that adds hash-pinned `torchcodec`
+  0.16.0 ([mimo-reference](../experiments/mimo-reference/README.md)).
+- **Proposed action:** an issue or small PR: carry the import error into the
+  "not registered" message, or add `torchcodec` to the image. Small.
+- **Links:** RE-012 in [rough-edges.md](../rough-edges.md).
+
+## LeakSanitizer aborts AArch64 programs under qemu-user (RE-014)
+
+- **Status:** open (a limitation to track).
+- **Project:** LLVM compiler-rt's LeakSanitizer, or qemu-user
+  ([qemu/qemu](https://gitlab.com/qemu-project/qemu)); which side is at fault
+  was not established.
+- **Found:** 2026-09-23, the workstation, Ubuntu `qemu-user-static`
+  1:8.2.2+ds-0ubuntu1.18, Clang 22.1.8 with `-fsanitize=address,undefined`,
+  arm64 compiler-rt from the SDK.
+- **Problem:** every test passes, then at exit LeakSanitizer reports "has
+  encountered a fatal error" and the process exits 1.
+  `ASAN_OPTIONS=detect_leaks=0` makes it exit 0, and ASan still works.
+- **jitLLM's workaround:** leak detection is off for emulated AArch64 runs
+  (D-061); LSan runs natively on x86-64 and on the Sparks.
+- **Proposed action:** none unless it starts to matter; then search both
+  trackers for an existing report before filing one.
+- **Links:** RE-014 in [rough-edges.md](../rough-edges.md).
+
+## Ubuntu's snapshot service has no ports archive (RE-016)
+
+- **Status:** open (a limitation to track).
+- **Project:** Canonical's `snapshot.ubuntu.com`.
+- **Found:** 2026-09-24.
+- **Problem:** `https://snapshot.ubuntu.com/ubuntu-ports/<timestamp>/` answers
+  HTTP 401, so arm64 packages cannot be pinned by date; with
+  `APT::Snapshot` set, `apt-get update` in an arm64 container still fetches
+  the live ports indexes.
+- **jitLLM's workaround:** the arm64 install-test image takes systemd from
+  the live ports archive and prints the version. The SDK pins its arm64
+  `.deb`s by URL and SHA-256 (D-070), so it is unaffected.
+- **Proposed action:** check whether ports snapshots exist now; if not,
+  optionally ask Canonical (Launchpad or Discourse). Low priority.
+- **Links:** RE-016 in [rough-edges.md](../rough-edges.md).

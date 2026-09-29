@@ -128,6 +128,10 @@ downgrade a heavy-path change to the light loop on their own.
   affected doc, support matrix) in the same change. Docs that describe
   capability are release artifacts; overclaiming is a defect the reviewer
   flags.
+- **Keep the upstream log current.** A change that logs a rough edge in a
+  third-party component, or adds or changes a patch under
+  `third_party/patches/`, adds or updates that project's
+  [upstream](upstream/README.md) entry in the same change.
 - **Public surfaces are decisions.** Changing an on-disk format, the
   management API, the CLI, or configuration semantics gets a
   [decisions.md](decisions.md) entry and a version bump per D-062.

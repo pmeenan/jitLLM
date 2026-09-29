@@ -1,0 +1,299 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# GGML and llama.cpp
+
+- **Repository:** [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp).
+  GGML is developed there and synced with
+  [ggml-org/ggml](https://github.com/ggml-org/ggml). MIT.
+- **jitLLM's pin:** tag `b10964`, commit
+  `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` (2026-09-14)
+  ([sources.lock.json](../../third_party/sources.lock.json)). jitLLM compiles
+  only GGML's tensor code and the CUDA kernels it launches, with its own
+  dispatch (D-053, D-077). Its changes are in
+  [third_party/patches/ggml/](../../third_party/patches/ggml/).
+- **Last upstream check:** 2026-09-29, master `8019dc563` (tag `b11254`),
+  290 commits and 15 days ahead of the pin.
+- **Before sending anything, read the contribution rules** in
+  [README.md](README.md#contributing-to-llamacpp). In short: the owner
+  writes issue and PR text himself (no AI-written descriptions), AI-written
+  code is disclosed, and a new contributor may have one PR open at a time.
+  So the entries below give facts, a repro and a diff pointer, not prose.
+
+Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
+then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
+sinks bound (RE-030).
+
+## Flash attention's mask pre-pass reads past the mask's last row (RE-036)
+
+- **Status:** open.
+- **Found:** M3, pin `b29c606e2`, `spark-b` (GB10); the RE entry has the
+  date and the observation.
+- **Problem:** from 1,024 query rows, `launch_fattn` runs
+  `flash_attn_mask_to_KV_max<ncols1>` (`ggml/src/ggml-cuda/fattn-common.cuh`,
+  about lines 666–706 at the pin). Each block reads whole tiles of `ncols1`
+  mask rows (up to 8) with no bound on the query row count. When the row
+  count is not a multiple of `ncols1`, the last tile reads up to
+  `ncols1 − 1` rows past the mask. llama.cpp never shows it: its default
+  micro-batch is 512 rows, below the pre-pass threshold, and a larger batch
+  over-reads into its compute buffer. It does not pad the mask.
+  Repro: attention with, for example, 1,025 query rows and a mask of exactly
+  1,025 rows, run under `compute-sanitizer --tool memcheck`, or with the mask
+  ending at an unmapped page.
+- **jitLLM's workaround:** the kernel checks refuse such shapes
+  (`src/kernels/ggml/validate.cc`, "the mask row the pre-pass reads"), and the
+  runtime splits a prompt's leftover rows into their own chunk. Cost: small.
+- **Upstream master:** unchanged on CUDA at `8019dc563` (2026-09-29).
+- **Upstream refs:** Metal fixed the same bug in
+  [#29220](https://github.com/ggml-org/llama.cpp/pull/29220) (merged
+  2026-09-21). Nothing open for CUDA.
+- **Proposed action:** a small PR that passes the query row count to the
+  pre-pass and bounds its row index. Cite #29220 as precedent. About an
+  hour, plus a test in `test-backend-ops` at 1,025 rows.
+- **Links:** RE-036 in [rough-edges.md](../rough-edges.md).
+
+## ssm_conv reads up to 31 floats past its window (RE-032)
+
+- **Status:** open.
+- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`.
+- **Problem:** in `ggml/src/ggml-cuda/ssm-conv.cu`, past 32 tokens the
+  launcher splits the tokens into 32-token blocks, and
+  `ssm_conv_long_token_f32` loads `d_conv − 1 + 32` columns of each channel
+  into shared memory whatever the block's real token count (`local_n_t`).
+  The last block of the last channel reads up to `(32 − n_t % 32) % 32`
+  floats past the window. Only the loads are unbounded: the outputs use
+  loaded columns below `local_n_t + d_conv − 1`, so results are right.
+  Repro: `ssm_conv` with 40 tokens (d_conv 4, 128 channels) under
+  `compute-sanitizer --tool memcheck`: 25 invalid global reads, 13–17 bytes
+  past the allocation.
+- **jitLLM's workaround:** `CheckSsmConv`
+  (`src/kernels/ggml/validate_ext.cc`) refuses more than 32 tokens that are
+  not whole 32-token blocks. The unfused Qwen3.8 graph pads such windows to
+  whole blocks (`src/kernels/ggml/qwen38_graph.cc`). The default fused graph
+  uses `jitllm.gdn.conv`, which does not over-read, so only `--unfused`
+  pays for the padding.
+- **Upstream master:** unchanged at `8019dc563`.
+- **Upstream refs:** none found.
+- **Proposed action:** a PR bounding the shared-memory load by the window's
+  columns, about a one-line condition. Under an hour.
+- **Links:** RE-032 in [rough-edges.md](../rough-edges.md);
+  [qwen38-native](../experiments/qwen38-native/README.md).
+
+## Weights without a backend buffer assert in the MMQ and MMVQ padding clear
+
+- **Status:** open (jitLLM carries the guard in its patch).
+- **Found:** 2026-09 (M2), pin `b29c606e2`.
+- **Problem:** `ggml_cuda_mul_mat_q` (`ggml/src/ggml-cuda/mmq.cu`) and
+  `ggml_cuda_mul_mat_vec_q` (`mmvq.cu`, about line 1471 at the pin) call
+  `ggml_backend_buffer_get_usage(src0->buffer)` to decide whether to clear
+  padding, with no null check. A tensor whose `buffer` is null (valid for
+  tensors that point at memory GGML does not own) trips the assert inside
+  that call.
+- **jitLLM's workaround:** `third_party/patches/ggml/0001-jitllm-adaptations.patch`
+  adds `src0->buffer != nullptr &&` under `GGML_JITLLM`. No cost.
+- **Upstream master:** still no null check at `8019dc563`.
+- **Upstream refs:** none found.
+- **Proposed action:** a tiny PR adding `src0->buffer &&` to both
+  conditions. It lets jitLLM drop two hunks. Minutes of work, but it spends
+  the one open PR slot, so send it after the two above.
+- **Links:** the patch above.
+
+## Tensor-core flash attention reads sinks past the last head (RE-030)
+
+- **Status:** open.
+- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`.
+- **Problem:** `ggml/src/ggml-cuda/fattn-mma-f16.cuh` groups 8 query heads
+  per tile (`ncols2`) and reads `sinks_f[jc % ncols2]` from each group's
+  first head (lines 1402 and 1889 at the pin) with no bound. When query heads
+  per KV head are not a multiple of 8, the last group reads past the sinks
+  tensor. Repro: sinks, 24 query heads over 2 KV heads, D = 256, and a
+  24-float sinks tensor ending flush against an unmapped page: an illegal
+  address (jitLLM's probe in `tests/unit/ggml_ext_ops_test.cc`). In
+  llama.cpp the sinks sit inside a larger weight buffer and feed only
+  discarded heads, so nothing shows.
+- **jitLLM's workaround:** `CheckFlashAttnMma`
+  (`src/kernels/ggml/validate_ext.cc`) refuses sinks unless the ratio is a
+  multiple of 8. DeepSeek V4 (64) passes, and Qwen3.8 has no sinks, so there
+  is no cost for current models.
+- **Upstream master:** unchanged at `8019dc563` (`sinks_f[jc % ncols2]`).
+- **Upstream refs:** none found.
+- **Proposed action:** a small issue and PR bounding the read by the head
+  count. Low priority.
+- **Links:** RE-030 in [rough-edges.md](../rough-edges.md).
+
+## Radix top-k breaks ties nondeterministically (RE-031)
+
+- **Status:** carry (jitLLM uses its own selection).
+- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`.
+- **Problem:** for rows over 1,024 columns, the radix select in
+  `ggml/src/ggml-cuda/top-k.cu` (lines 170–173 at the pin; jitLLM builds it
+  without CUB, as HIP does) compacts elements equal to the threshold with
+  `atomicAdd`, so which of several tied values land in the top k depends on
+  timing. Qwen3.8's QSA indexer scores blocks of 4 cells, so every score
+  appears four times, and many are zero after ReLU. The selection, and so
+  the attention, changes run to run past 2,051 cells: in 7 of 12 reruns of
+  one 8,192-token prefill, logits differed from position 5,120 on.
+- **jitLLM's workaround:** the default fast graph selects with jitLLM's
+  `jitllm.qsa.select` (`src/kernels/ggml/jitllm_ops.h`), which keeps the lower
+  cell among equals. It holds the block scores in 32 KiB of shared memory,
+  so past `kQsaSelectMaxBlocks` = 8,192 blocks (32,768 cells) the graph
+  falls back to GGML's top-k (`src/kernels/ggml/qwen38_graph.cc`). So
+  long-context Qwen3.8 is not repeatable by default, and neither are the
+  `--exact` and `--unfused` graphs.
+- **Upstream master:** unchanged at `8019dc563`. The CUDA path with CUB uses
+  CUB's top-k with `determinism::not_guaranteed`.
+- **Upstream refs:** issue
+  [#28497](https://github.com/ggml-org/llama.cpp/issues/28497) (Qwen3.8 QSA
+  over 2,051 cells). A maintainer says it is within `ggml_top_k`'s
+  contract. The reporter proposes top-k over the block scores, then
+  expanding. A deterministic radix PR,
+  [#28871](https://github.com/ggml-org/llama.cpp/pull/28871), was closed
+  unmerged under the AI-text policy.
+- **Proposed action:** in jitLLM, a long-context slice extends its own
+  selection past 32K cells, selecting over the block scores with ties
+  broken by index. TensorFold's tiled select is a model
+  ([tensorfold.md](tensorfold.md#upstream-techniques-to-adopt), PR #93).
+  Upstream, optionally a short comment on #28497 by the owner.
+- **Links:** RE-031 in [rough-edges.md](../rough-edges.md);
+  [qwen38-native](../experiments/qwen38-native/README.md#results-second-pass).
+
+## The graph object trips UBSan on creation (RE-021)
+
+- **Status:** fixed upstream at
+  [ggml-org/ggml#1644](https://github.com/ggml-org/ggml/pull/1644), synced
+  to llama.cpp in [#29396](https://github.com/ggml-org/llama.cpp/pull/29396)
+  (`bced4595b`, 2026-09-24).
+- **Found:** 2026-09-27, pin `b29c606e2`, `spark-b`, the `cross-asan` build.
+- **Problem:** `ggml_graph_nbytes` advanced a null pointer (`ggml.c:7424`),
+  so `ggml_new_graph_custom` ended the process under UBSan.
+- **jitLLM's workaround:** jitLLM builds no `ggml_cgraph`. Its fusion gates
+  take a node list (`src/kernels/ggml/fusion.h`). No cost now.
+- **Proposed action:** none. At the next pin bump, mark RE-021 fixed.
+- **Links:** RE-021 in [rough-edges.md](../rough-edges.md).
+
+## Broadcast ops abort on strides above 2^32 elements (RE-011)
+
+- **Status:** won't fix (the 32-bit limit is deliberate).
+- **Found:** 2026-09-22, stable-diffusion.cpp `c92d73c` on GGML `8846b79`,
+  `spark-b`, a 2048² Qwen-Image VAE decode.
+- **Problem:** `GGML_ASSERT(s02 <= UINT32_MAX)` in
+  `ggml/src/ggml-cuda/binbcast.cu` (line 270 then).
+- **jitLLM's workaround:** none needed: jitLLM's image path uses its own
+  kernels (`src/kernels/image/`).
+- **Upstream master:** unchanged at `8019dc563`; the asserts are intended
+  ([#24706](https://github.com/ggml-org/llama.cpp/issues/24706)).
+- **Proposed action:** none.
+- **Links:** RE-011 in [rough-edges.md](../rough-edges.md).
+
+## MMVQ's launch depends on the column count, so batched rows differ from single rows (RE-033)
+
+- **Status:** won't fix (by design upstream).
+- **Found:** 2026-09-28, pin `b29c606e2`, `spark-b`.
+- **Problem:** `calc_nwarps` and `calc_rows_per_block` in `mmvq.cu` depend on
+  `ncols_dst`, so a column of a multi-column product is reduced in a
+  different order than the same column alone. A speculative verify of k + 1
+  rows is not bit-identical to k + 1 decode steps.
+- **jitLLM's workaround:** only under `--exact on`, the row-invariant plan
+  (`src/kernels/ggml/mmvq_rows.cu`, D-092). Its verify ran at 28.75 and
+  29.70 tok/s against 29.85 and 34.05 batched. The default plan batches.
+- **Upstream master:** unchanged at `8019dc563`.
+- **Upstream refs:** open issues
+  [#25618](https://github.com/ggml-org/llama.cpp/issues/25618) and
+  [#28111](https://github.com/ggml-org/llama.cpp/issues/28111).
+- **Proposed action:** none.
+- **Links:** RE-033 in [rough-edges.md](../rough-edges.md);
+  [dspark](../experiments/dspark/README.md).
+
+## Extra graph outputs or eval callbacks change the CUDA plan (RE-010, RE-006)
+
+- **Status:** won't fix (fusion and CUDA-graph behaviour, not a kernel bug).
+- **Found:** 2026-09-21/22, pin `b29c606e2`, GB10, Gemma 4 26B A4B.
+- **Problem:** adding graph outputs, or an eval callback at a fused node,
+  changes which fusions qualify and the compute-buffer layout, and with them
+  the logits.
+- **jitLLM's workaround:** none needed in jitLLM, which owns its plans.
+  Reference captures read routes at a fusion boundary
+  ([fused-routes](../experiments/fused-routes/README.md)).
+- **Proposed action:** none.
+- **Links:** RE-006 and RE-010 in [rough-edges.md](../rough-edges.md).
+
+## SWA sequence state saves "successfully" but cannot be reused (RE-004, RE-007)
+
+- **Status:** open (upstream master not checked).
+- **Found:** 2026-09-21, pin `b29c606e2`, GB10, Gemma 4 26B A4B, llama.cpp
+  server.
+- **Problem:** with default (windowed) SWA, a slot save and a fresh-process
+  restore both report 627 tokens, yet the next request re-processes all
+  639 prompt tokens (RE-004). Serializing one sequence drops cells outside
+  the final SWA window (`src/llama-kv-cache.cpp:2080` at the pin), so a
+  restored snapshot lacks positions a rolled-back prompt needs: 770 of them
+  in the four-turn probe, which changed 58 of 3,072 predictions (RE-007).
+  `--swa-full` avoids both, at 1,760 MiB of KV against 460 at 8K context.
+- **jitLLM's workaround:** the reference harnesses run full-SWA and check
+  the retained window before reuse. jitLLM's own spill does not use this code.
+- **Upstream master:** not checked.
+- **Proposed action:** check master; if unchanged, possibly an issue by the
+  owner asking the restore API to report reusable tokens, not saved ones.
+  Low priority: it affects only llama.cpp reference runs.
+- **Links:** RE-004 and RE-007 in [rough-edges.md](../rough-edges.md);
+  [reference-aba](../experiments/reference-aba/README.md).
+
+## jitLLM's carried adaptations (patches 0001 and 0002)
+
+- **Status:** carry.
+- **What:** `third_party/patches/ggml/0001-jitllm-adaptations.patch`, all
+  under `GGML_JITLLM`:
+  - `ggml.c`: `ggml_print_backtrace` does nothing, so a served process never
+    forks a debugger;
+  - `common.cuh`: `ggml_cuda_error` is not `[[noreturn]]`, so jitLLM's
+    definition returns the error instead of aborting;
+  - `common.cuh`: PDL is not read from `GGML_CUDA_PDL`;
+  - `mmq.cu`: the type switch names only the compiled MMQ instances;
+  - the null-buffer guard (its own entry above) and building without CUB
+    (below).
+  `0002-jitllm-build.patch` adds jitLLM's CMake for the files it compiles.
+- **Upstream master:** all still needed at `8019dc563`. At master, the
+  `common.cuh` and `mmq.cu` switch hunks no longer apply; 0002 applies.
+- **Proposed action:** none upstream, apart from the null-buffer guard.
+  Rebase the hunks at the pin bump.
+
+## CUB stays off
+
+- **Status:** carry.
+- **Why:** upstream's CUB top-k is nondeterministic (it would bring RE-031
+  back) and runs once per row. CCCL's segmented top-k request
+  [NVIDIA/cccl#6391](https://github.com/NVIDIA/cccl/issues/6391) is still
+  open. The pin's CUB argsort also has an in-place-keys corruption bug,
+  fixed upstream in [#28389](https://github.com/ggml-org/llama.cpp/pull/28389)
+  (`b23701f77`).
+- **Proposed action:** none; revisit if CCCL's segmented top-k lands with a
+  determinism option.
+
+## Upstream changes to adopt
+
+Checked 2026-09-29 at master `8019dc563`.
+
+- **Sparse flash attention for DeepSeek V4 prefill**
+  ([#29298](https://github.com/ggml-org/llama.cpp/pull/29298)): pp2048 on a
+  DGX Spark 1.23× at 64K depth and 1.42× at 128K.
+- **Sparse flash attention for Qwen3.8**
+  ([#28770](https://github.com/ggml-org/llama.cpp/pull/28770)): 1.08–1.26×
+  prefill and 1.03–1.18× decode at 10K–100K.
+- **The D 256/512 MMA retune**
+  ([#29152](https://github.com/ggml-org/llama.cpp/pull/29152)): 1.00–1.02×
+  on the Spark.
+- **Optional 8-bit activations for FP4 weights on Blackwell**
+  ([#24364](https://github.com/ggml-org/llama.cpp/pull/24364)): KLD 0.022
+  against 0.045. A quality mode, not a default.
+- **The `ggml_permute` 32-bit truncation fix**
+  ([#29227](https://github.com/ggml-org/llama.cpp/pull/29227)).
+
+All speedups are as reported upstream, not measured by jitLLM.
+
+**Cost of bumping the whole pin:** two hunks of 0001 no longer apply
+(`common.cuh` and the `mmq.cu` switch); `launch_fattn`'s host arithmetic,
+which jitLLM's plans record, needs a re-audit; and the D 512 retune changes
+attention numerics, so the DeepSeek llama.cpp baselines must be re-run.
+
+**Recommendation:** port sparse prefill attention as its own slice when
+long context matters. Bump the whole pin at the M3→M4 boundary.

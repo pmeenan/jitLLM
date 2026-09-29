@@ -185,6 +185,7 @@ the commit gate.
 | [docs/environment.md](docs/environment.md) | Workstation and Spark inventories, links, NAS and certificates, and the M0 platform measurements behind D-032–D-034 |
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
+| [docs/upstream/](docs/upstream/README.md) | Per upstream project, what to send upstream: fixes, limitations and jitLLM's patches, each entry a standalone handoff |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
 | [docs/runtime-serving.md](docs/runtime-serving.md) | How `jitllm-runtime` serves models (D-096): the engine module, `[models]` in the configuration, registration, the full swap, turns, the `chat` and `swap-table` commands, and the chat route with its listeners, intake bounds and connections (D-097) |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
@@ -205,7 +206,9 @@ the commit gate.
    [docs/rough-edges.md](docs/rough-edges.md) entry is warranted when a CUDA,
    driver, Spark platform, toolchain, or library quirk burned real debugging
    time and will bite again. Skip the formal reproduction unless it's cheap to
-   capture.
+   capture. A rough edge in, or a patch to, a third-party component also
+   adds or updates that project's [docs/upstream/](docs/upstream/README.md)
+   entry.
 3. **Measure what a decision hangs on.** When a design choice depends on a
    performance number or a current platform capability (VMM granularity,
    map/unmap cost, I/O path behaviour, driver or toolkit support), get a real
