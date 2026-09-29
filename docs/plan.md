@@ -906,6 +906,16 @@ it appears.
     same-format comparator's speed at the same depth, where the
     comparator can run that depth. Where it can't, the result is reported
     alone.
+  - **Scaling** (the owner, 2026-09-29: "I'd love for our baseline result
+    to be that it doesn't degrade at all as the context size
+    increases"): per-token prefill and decode cost stays flat with depth.
+    It is fixed at 64K first, then shown to extrapolate to 128K and the
+    maximum. Any remaining slope is only what the architecture requires
+    (e.g. the indexer's O(n) scoring), measured and named. The phase-1
+    baseline (2026-09-29) found DeepSeek halving from 8K to 64K (prefill
+    463 → ~230 tok/s, decode 22 → 10.8), while llama.cpp's sparse path
+    stays nearly flat (prefill 286 → 229, decode 18.8 → 14.7 from 32K to
+    256K).
   - **Correctness at depth:**
     - greedy tokens match the oracle except near-ties on long real
       prompts (code: a repository's files as context) at 32K and 128K;
