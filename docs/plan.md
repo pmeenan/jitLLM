@@ -1021,6 +1021,7 @@ family" guide, and its long-context scaling work.
       Flash stays in M4 (two Sparks). Agents propose; the owner approves
       the list (AGENTS.md: agents never invent supported model
       combinations). Weight licenses are informational (D-087).
+      Proposal, awaiting the owner: [m35-families.md](m35-families.md).
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - import to a v0 artifact;
