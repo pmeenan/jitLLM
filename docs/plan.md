@@ -1080,6 +1080,21 @@ family" guide, and its long-context scaling work.
       - swaps in and out beside the M3 models;
       - speculation where the family ships MTP layers or drafters;
       - the D-053 rule: a primitive fallback for every fused operation.
+- [ ] **Concurrent requests with continuous batching** (the owner,
+      2026-09-29). The primary workload includes an agent plus
+      subagents, which is several concurrent requests on the same
+      resident model. The engine supports:
+      - per-request state side by side;
+      - decode steps that batch rows from different requests (plain and
+        speculative);
+      - chunked prefill interleaved with decode;
+      - shared-prefix state with copy-on-fork for parallel agent
+        branches;
+      - admission within the memory budget.
+
+      The chat route's one-request-at-a-time queue (D-097) becomes a
+      batch scheduler. Batching applies to requests for the same model;
+      different models still time-slice by swapping (D-019).
 - [ ] **Skeleton gaps the M3 cleanup's review named**
       ([engine.md](engine.md)):
       - planning, capture and launch binding are GGML-only, so a family
@@ -1159,6 +1174,13 @@ family" guide, and its long-context scaling work.
   named. Dense global attention's per-token KV read is such a floor.
 - **Swap:** each family swaps A→B→A with an M3 model within M3's swap
   goals, exact on return.
+- **Concurrency:** with batching on, single-stream prefill and decode stay
+  within noise of M3's. Aggregate decode throughput rises with the
+  number of concurrent requests (reported at 1, 2, 4, 8 and 12, against
+  ds4's batched serving and vLLM where they run the same model and
+  format). Each request's greedy output equals its output when run
+  alone, except near-ties. Forked branches share their prefix state
+  without copying it until they diverge.
 - **Formats:** every format in the approved covering set runs with the
   same correctness and speed criteria against its same-format reference.
   EXL3 decode and prefill are faster than ExLlamaV3's on the GB10, dense
