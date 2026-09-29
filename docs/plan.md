@@ -1001,6 +1001,23 @@ family" guide, and its long-context scaling work.
 - [ ] **Kernels:** operations new to a family come from GGML first, with
       our own kernels on measured need (D-053). Upstream findings go to
       docs/upstream/.
+- [ ] **Quantization formats** (the owner, 2026-09-29), especially the
+      variable-bit ones. A format coverage matrix sits beside the
+      capability matrix. The covering set runs every format still in wide
+      use:
+      - GGUF K-quants, I-quants and dynamic per-tensor mixes;
+      - MXFP4, NVFP4, MXFP8 and FP8;
+      - AWQ and GPTQ;
+      - MLX affine;
+      - EXL3.
+
+      Each is as fast as its same-format reference.
+- [ ] **EXL3 optimization** (the owner's particular interest): the
+      trellis-encoded quants across their codebooks, bitrates and
+      per-layer mixed widths, dense and MoE (grouped mixed-width routed
+      experts). The target is faster than ExLlamaV3 on the GB10, with
+      TensorFold's EXL3 path reported beside it, at decode and prefill.
+      It builds on M2's native EXL3 linear (D-080).
 - [ ] **Resident only.** Demand-paged experts stay M7's; M7 keeps its
       daily-driver usability work and builds on the families brought up
       here.
@@ -1018,6 +1035,10 @@ family" guide, and its long-context scaling work.
   named. Dense global attention's per-token KV read is such a floor.
 - **Swap:** each family swaps A→B→A with an M3 model within M3's swap
   goals, exact on return.
+- **Formats:** every format in the approved covering set runs with the
+  same correctness and speed criteria against its same-format reference.
+  EXL3 decode and prefill are faster than ExLlamaV3's on the GB10, dense
+  and MoE, at the covering set's bitrates, including mixed widths.
 - The support matrix lists every approved family with its evidence.
 
 ## M4 — Two-Spark fast full swap  `pending`
