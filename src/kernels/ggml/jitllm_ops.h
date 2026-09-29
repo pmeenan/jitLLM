@@ -693,7 +693,8 @@ ggml_tensor* QsaTopK(ggml_context* context, ggml_tensor* q, ggml_tensor* blocks,
                      ggml_tensor* positions, ggml_tensor* pool, std::int64_t n_blocks,
                      std::int64_t width, std::int64_t ratio);
 // `q` F32 [256, heads, t] (jitllm.qsa.prep's), `k` and `v` F16 [256 ·
-// kv_heads, cells] (the caches, as their set_rows nodes), `cells` a
+// kv_heads, cells] (the caches, as their set_rows nodes, with equal
+// 16-byte-aligned row strides), `cells` a
 // jitllm.qsa.topk node: F32 [256 · heads, t]. At most 16 query heads per KV
 // head. Draws scratch past one share per token's head (PlanQsaAttn).
 ggml_tensor* QsaAttn(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,

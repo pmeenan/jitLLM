@@ -1109,6 +1109,14 @@ jitllm_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts ../fast-swap
   --out DIR --check forced --max-rows 128 --tokens 160 --margin 6.11
 ```
 
+The judge requires complete, nonempty captures: every oracle step for
+greedy, equal row counts for repeatability and the noise bound, and exactly
+`context - 1` NLL values on each side of a perplexity comparison. It refuses
+partial values, partial rows and non-finite logits or NLL values.
+Repeatability mismatches return a failing exit status. Run its synthetic
+regression tests in the same NumPy image with `python3 -B test_judge.py`
+from this directory.
+
 Long runs went through `tools/spark-job` (`start --gpu --steps`), after
 checking free memory and that no other model process was on the Spark.
 Raw outputs (every request's record, server logs, traces) stay on the

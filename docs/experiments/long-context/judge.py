@@ -26,7 +26,11 @@
         HARNESS the jitLLM harness's ppl.nll.f64. Within F (default 0.03).
 
 Runs on a Spark in a container whose Python has NumPy (the pinned PyTorch
-image). Prints one JSON document; exits 1 when a bound fails.
+image). Comparisons require complete, nonempty captures: matching row
+counts for noise/repeat, every oracle step for greedy, and L-1 NLL values
+for a perplexity window. Prints one JSON document; exits 1 when a bound or
+repeatability check fails, or a capture is incomplete or has non-finite
+logits or NLL values.
 """
 import json
 import math
@@ -36,12 +40,27 @@ from pathlib import Path
 import numpy as np
 
 
+def load_floats(path, dtype):
+    path = Path(path)
+    if path.stat().st_size % np.dtype(dtype).itemsize:
+        raise SystemExit(f"{path}: incomplete floating-point value")
+    a = np.fromfile(path, dtype=dtype)
+    if not a.size or not np.all(np.isfinite(a)):
+        raise SystemExit(f"{path}: empty or non-finite capture")
+    return a
+
+
+def require_count(actual, expected, label):
+    if expected < 1 or actual != expected:
+        raise SystemExit(f"{label}: expected {expected} nonempty entries, got {actual}")
+
+
 def load_logits(directory, name, vocab):
-    a = np.fromfile(Path(directory) / f"{name}.logits.f32", dtype=np.float32)
+    if vocab < 1:
+        raise SystemExit("--vocab must be positive")
+    a = load_floats(Path(directory) / f"{name}.logits.f32", np.float32)
     if a.size % vocab:
         raise SystemExit(f"{directory}/{name}: {a.size} logits are not whole rows of {vocab}")
-    if not np.all(np.isfinite(a)):
-        raise SystemExit(f"{directory}/{name}: non-finite logits")
     return a.reshape(-1, vocab).astype(np.float64)
 
 
@@ -60,8 +79,11 @@ def inputs(oracle_path, outdir, name):
 
 
 def noise(a_dir, b_dir, name, vocab):
+    if vocab < 2:
+        raise SystemExit("noise requires a vocabulary of at least two tokens")
     a, b = load_logits(a_dir, name, vocab), load_logits(b_dir, name, vocab)
-    steps = min(len(a), len(b))
+    require_count(len(b), len(a), "noise rows")
+    steps = len(a)
     moves = []
     for k in range(steps):
         top = np.argsort(a[k])[-2:][::-1]
@@ -77,7 +99,8 @@ def noise(a_dir, b_dir, name, vocab):
 def greedy(oracle_path, harness, name, vocab, bound):
     record = json.loads(Path(oracle_path).read_text())
     logits = load_logits(harness, name, vocab)
-    steps = min(len(logits), len(record["steps"]))
+    steps = len(record["steps"])
+    require_count(len(logits), steps, "greedy rows")
     agree, near, violations = 0, [], []
     for k in range(steps):
         step = record["steps"][k]
@@ -96,22 +119,31 @@ def greedy(oracle_path, harness, name, vocab, bound):
 
 def repeat(a_dir, b_dir, name, vocab):
     a, b = load_logits(a_dir, name, vocab), load_logits(b_dir, name, vocab)
-    steps = min(len(a), len(b))
+    require_count(len(b), len(a), "repeat rows")
+    steps = len(a)
     differ = [k for k in range(steps) if not np.array_equal(a[k], b[k])]
-    return {"steps": steps, "identical": not differ, "first_differing_step":
+    return {"steps": steps, "identical": not differ, "pass": not differ, "first_differing_step":
             differ[0] if differ else None, "steps_differing": len(differ),
             "max_abs_difference": float(np.abs(a[:steps] - b[:steps]).max())}
 
 
 def ppl(oracle, harness, ctx, within):
-    mine = np.fromfile(harness, dtype=np.float64)
+    if ctx < 3:
+        raise SystemExit("--ctx must leave at least one token in the scored half (at least 3)")
+    mine = load_floats(harness, np.float64)
+    require_count(len(mine), ctx - 1, "harness NLL values")
     half = mine[ctx // 2:ctx - 1]
     ours = math.exp(float(half.mean()))
     if Path(oracle).exists():
-        theirs_nll = np.array(json.loads(Path(oracle).read_text()))[ctx // 2:ctx - 1]
-        theirs = math.exp(float(theirs_nll.mean()))
+        theirs_nll = np.array(json.loads(Path(oracle).read_text()), dtype=np.float64)
+        if theirs_nll.ndim != 1 or not np.all(np.isfinite(theirs_nll)):
+            raise SystemExit(f"{oracle}: expected a finite NLL vector")
+        require_count(len(theirs_nll), ctx - 1, "oracle NLL values")
+        theirs = math.exp(float(theirs_nll[ctx // 2:ctx - 1].mean()))
     else:
         theirs = float(oracle)
+    if not math.isfinite(theirs) or theirs <= 0:
+        raise SystemExit("oracle perplexity must be finite and positive")
     ratio = ours / theirs
     return {"window": ctx, "scored": int(half.size), "jitllm_ppl": ours, "oracle_ppl": theirs,
             "ratio": ratio, "within": within, "pass": abs(ratio - 1) <= within}

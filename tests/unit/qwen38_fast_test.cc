@@ -1273,6 +1273,44 @@ TEST_F(Qwen38FastTest, QsaAttnReadsTheKeptCellsAlone) {
   }
 }
 
+TEST_F(Qwen38FastTest, QsaAttnRequiresMatchingCacheRowStrides) {
+  constexpr std::int64_t d = kg::kQsaAttnHead;
+  constexpr std::int64_t cells = 2;
+  ggml_tensor* q = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, d, 1, 1),
+                        std::vector<float>(static_cast<std::size_t>(d), 0.0f));
+  std::vector<std::int32_t> selected(16, -1);
+  selected[0] = cells - 1;
+  ggml_tensor* idx = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 16, 1), selected);
+  std::array<ggml_tensor*, 2> keys{};
+  std::array<ggml_tensor*, 2> values{};
+  for (std::size_t layout = 0; layout < keys.size(); ++layout) {
+    const std::int64_t stride = d + (layout == 0 ? 0 : 8);
+    ggml_tensor* k = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F16, stride, cells),
+                          std::vector<std::uint16_t>(static_cast<std::size_t>(stride * cells), 0));
+    std::vector<std::uint16_t> v_h(static_cast<std::size_t>(stride * cells), 0);
+    std::fill_n(v_h.begin() + stride, d, ggml_fp32_to_fp16(7.0f));
+    ggml_tensor* v = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F16, stride, cells), v_h);
+    const auto row_bytes = static_cast<std::size_t>(stride) * sizeof(std::uint16_t);
+    keys[layout] = ggml_view_2d(c(), k, d, cells, row_bytes, 0);
+    values[layout] = ggml_view_2d(c(), v, d, cells, row_bytes, 0);
+    // Packed and equally padded caches must both still execute correctly.
+    ggml_tensor* out = kg::QsaAttn(c(), q, keys[layout], values[layout], idx, 1.0f);
+    Run({out});
+    for (const float value : Download(out)) {
+      EXPECT_FLOAT_EQ(value, 7.0f);
+    }
+  }
+  // Both mismatch directions must be refused before a launch: one reads
+  // padding as values; the other can read beyond the value cache's end.
+  for (std::size_t layout = 0; layout < keys.size(); ++layout) {
+    ggml_tensor* out = kg::QsaAttn(c(), q, keys[layout], values[1 - layout], idx, 1.0f);
+    TensorArena::Bind(out, Allocate(ggml_nbytes(out)));
+    const auto checked = kg::CheckQsaAttn(out);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_EQ(checked.error().detail, "F16 key and value caches with equal row strides");
+  }
+}
+
 TEST_F(Qwen38FastTest, TheChecksRefuseWhatTheKernelsCannotRun) {
   auto reason = [](const auto& checked) {
     return checked.has_value() ? std::string("accepted") : checked.error().detail;

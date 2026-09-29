@@ -1737,6 +1737,9 @@ std::expected<void, KernelFailure> CheckQsaAttn(const ggml_tensor* node) {
       return Rejected("F16 caches [256 · kv heads, cells], rows 16-byte aligned");
     }
   }
+  if (k->nb[1] != v->nb[1]) {
+    return Rejected("F16 key and value caches with equal row strides");
+  }
   if (k->ne[1] != v->ne[1] || cells->type != GGML_TYPE_I32 || !Shaped(cells, row, t, 1) ||
       !Packed(cells) || !Aligned(cells, 16) || !IsF32(node) || !Shaped(node, d * heads, t, 1) ||
       !Aligned(node, 8)) {

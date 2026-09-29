@@ -173,6 +173,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Qwen3.8's sparse attention rejects unequal key/value cache row strides
+  before launch, preventing incorrect reads of padded caches.
+- The long-context correctness judge refuses incomplete or non-finite
+  captures instead of passing shortened comparisons; a repeatability
+  mismatch now also returns a failing exit status.
 - Qwen3.8 Flash Next at its configured maximum context (262,144 tokens)
   was refused at startup, and past about 147K tokens its prefill failed:
   its prefill chunk is now capped where a chunk's [context, rows] tensors
