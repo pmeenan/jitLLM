@@ -138,3 +138,32 @@ downgrade a heavy-path change to the light loop on their own.
 - **External pull requests never run locally** (D-061). Agents may read an
   external PR's diff but never check it out, build or test it on the
   workstation or the Sparks; its checks wait for hosted CI.
+
+## Long runs on the Sparks
+
+Anything run detached on a Spark for more than a minute (a baseline, a
+ladder of rungs, a timing batch) runs under `tools/spark-job`, from the
+tree's copy on that Spark, and is waited on with it. Its supervisor records
+how every job ended (exit code, signal, timeout, kill) and `status` reports
+a supervisor that died without a record as `lost`, so a crash ends a wait
+instead of hanging it. No `nohup bash q.sh &`, and no loops that wait for a
+marker line in a log or for a process name to disappear: a crashed step
+never writes the marker.
+
+    ssh spark-b 'cd ~/src/X && tools/spark-job start --name ctx-ladder --gpu --timeout 7200 --steps rungs.txt'
+    ssh spark-b '~/src/X/tools/spark-job wait ctx-ladder'    # as a background task
+
+- **Start** with `--timeout` (the process group gets SIGTERM, then SIGKILL)
+  and `--gpu` when the job touches the GPU. A queue is a `--steps` file,
+  one command per line; a failed step is recorded and the queue moves on
+  (`--stop-on-fail` to stop, `--step-timeout` for a stalled rung).
+- **Wait** with `spark-job wait NAME` run as a background task; it exits 0
+  only for success and prints the failed steps and the log's tail
+  otherwise. `status`, `tail` and `kill` cover the rest.
+- **Harnesses that loop over cases** (context rungs, prompts, model pairs)
+  catch each case's error, record it with the case, and continue, so one
+  bad case (an HTTP 400, an out-of-memory) costs one row, not the run.
+- **Hand a Spark over by checking `spark-job busy`** (exit 1 while a `--gpu`
+  job or any GPU compute process runs), not by messages alone.
+- **Clean up when finishing:** kill your own jobs that are still running,
+  and run `spark-job gc` to remove old finished ones.
