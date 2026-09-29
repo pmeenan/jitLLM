@@ -311,8 +311,14 @@ fixed first, greedy replies equal to `chat`'s); and the engine cleanup:
 one runner skeleton ([engine.md](docs/engine.md)), behaviour bit for bit
 as before, main clang-tidy clean.
 D-087 moved the
-later milestones back two places (the old M3 is M5). Long context (32K to each model's one-Spark maximum, owner 2026-09-29)
-is now part of M3, and M3.5 (model families: Gemma, Llama, MiMo and
-other top-tier families, MoE and dense) follows it before M4: measured against the comparators and optimized
-before the gate. Keep this paragraph
+later milestones back two places (the old M3 is M5). Long context is
+part of M3 (owner, 2026-09-29): both LLMs now run flat with depth to
+128K and fit 262,144 on one Spark (DeepSeek: a window ring, sparse
+attention, a deterministic indexer top-k, 1.65–1.72× llama.cpp prefill
+and 1.15–1.22× decode; Qwen3.8: device selection, sparse QSA attention,
+cached block keys, 1.21–1.37× Mia prefill), with the progress
+watchdog replacing the route's fixed deadline. Remaining before the gate:
+growing state, turn reuse and the ds4 study. M3.5 (model families, the
+owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
+in focus, concurrent batching) follows M3, before M4. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).
