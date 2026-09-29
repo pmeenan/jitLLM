@@ -1128,6 +1128,15 @@ pinned and audited as in M3.
 
 **Models, in this order:**
 
+*Note, 2026-09-29:* the recipe moves fast; re-pin it at M4 entry. Its
+2026-09-28 changes (#281 FP8 on most of the path with KDA in BF16:
+decode 3.9–5.2% and 16K/64K prefill TTFT 11.5–12.6% faster; #292
+`GLM53_MODEL_PRESET=dense-h3`: dense EXL3 "H3" targets with matched
+6-bpw DFlash2 drafts, up to 16% decode, estimated; all
+creator-reported, @plotarmordev on X) are techniques to study: whether
+the FP8 split is a default or a quality mode under D-085's note, and
+quantized drafters matched to EXL3 targets (M3.5's EXL3 work).
+
 1. **GLM-5.3 Flash** (`MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks@c1b7d4c`;
    EXL3 at about 4 bpw, TP2, about 80 GiB of weights per node,
    creator-reported): KDA linear attention, DSA sparse MLA with an indexer,
