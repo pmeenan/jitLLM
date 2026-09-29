@@ -115,26 +115,60 @@ struct ModelEntry {
   std::optional<std::filesystem::path> chat_template;
 };
 
-// The chat route's listener (M3's minimal /v1/chat/completions, D-097):
-// `[client] bind`, "<address>:<port>" with a loopback address, IPv4 in
-// 127.0.0.0/8 or IPv6 "[::1]". A non-loopback address needs the front
-// door's authentication and transport protection (D-014, D-045; M5).
-inline constexpr std::string_view kDefaultClientBind = "127.0.0.1:8114";
+// The chat route's listener (M3's minimal /v1/chat/completions; D-097 as
+// the owner amended it on 2026-09-28): `[client]`.
+//   bind             a string or an array of 1 to 16 strings, each
+//                    "loopback" (127.0.0.1 and [::1]), "tailscale" (the
+//                    node's tailnet addresses, found at startup) or an
+//                    address with an optional port: "192.168.1.5",
+//                    "0.0.0.0:8114", "[::]", "[fd00::5]:9000". Default
+//                    ["loopback", "tailscale"]. Any address is accepted;
+//                    none needs authentication (D-014's owner note), and
+//                    one that is neither loopback nor the tailnet is named
+//                    at startup as served without it.
+//   port             the port of "loopback", "tailscale" and an address
+//                    written without one: 1-65535, default 8114
+//   max_connections  open connections, idle ones included: 1-65536,
+//                    default 1024
+//   max_queued       chat requests waiting behind the running one: 1-1024,
+//                    default 64
+inline constexpr std::uint16_t kDefaultClientPort = 8114;
+inline constexpr std::uint32_t kDefaultMaxConnections = 1024;
+inline constexpr std::uint32_t kMaxConnectionsCeiling = 65536;
+inline constexpr std::uint32_t kDefaultMaxQueued = 64;
+inline constexpr std::uint32_t kMaxQueuedCeiling = 1024;
+inline constexpr std::size_t kMaxBindEntries = 16;
 
 struct ClientEndpoint {
-  std::string address;  // "127.0.0.1" or "::1": what inet_pton reads
+  std::string address;  // canonical text, as inet_ntop writes it ("127.0.0.1", "::1")
   bool ipv6 = false;
   std::uint16_t port = 0;
 };
 
-// Parses a loopback bind ("127.0.0.1:8114", "[::1]:8114"); the error says
-// what is wrong. The port is 1-65535.
-std::expected<ClientEndpoint, std::string> ParseLoopbackBind(std::string_view text);
+struct BindEntry {
+  enum class Kind : std::uint8_t { kLoopback, kTailscale, kAddress };
+  Kind kind = Kind::kLoopback;
+  // kAddress: the address, and its port (0: [client] port).
+  ClientEndpoint endpoint;
+};
+
+struct ClientConfig {
+  std::vector<BindEntry> bind = {{.kind = BindEntry::Kind::kLoopback, .endpoint = {}},
+                                 {.kind = BindEntry::Kind::kTailscale, .endpoint = {}}};
+  std::uint16_t port = kDefaultClientPort;
+  std::uint32_t max_connections = kDefaultMaxConnections;
+  std::uint32_t max_queued = kDefaultMaxQueued;
+};
+
+// Parses one bind entry ("loopback", "tailscale", "127.0.0.1:8114",
+// "[::]", ...); the error says what is wrong. A port is 1-65535, in
+// decimal; an IPv6 address is bracketed; IPv4-mapped IPv6 is refused.
+std::expected<BindEntry, std::string> ParseBindEntry(std::string_view text);
 
 struct NodeConfig {
   std::optional<Membership> membership;
-  // Where the service listens for the chat route (the default unless set).
-  ClientEndpoint client{.address = "127.0.0.1", .ipv6 = false, .port = 8114};
+  // Where and how the service listens for the chat route.
+  ClientConfig client;
   std::string limits_profile{kLimitsProfile};
   Storage storage;
   // Sorted by name.

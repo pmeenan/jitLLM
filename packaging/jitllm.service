@@ -9,6 +9,9 @@
 Description=jitLLM node runtime
 Documentation=https://github.com/pmeenan/jitLLM
 After=local-fs.target network.target nvidia-persistenced.service
+# Ordering only: the chat route finds the tailnet's addresses at startup
+# (D-097), so it starts after Tailscale where Tailscale is installed.
+After=tailscaled.service
 # A host that stays unready (exit 75) is given up on after ten tries in five
 # minutes.
 StartLimitIntervalSec=300

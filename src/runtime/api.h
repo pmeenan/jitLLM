@@ -9,15 +9,18 @@
 //
 // What a request may hold. `model`, `messages` (system, developer, user and
 // assistant text; a string or an array of text parts), `max_tokens` or
-// `max_completion_tokens`, `temperature`, `top_p`, `seed`, `stop`,
-// `stream` and `stream_options.include_usage` are honored. A documented
-// set is accepted only at the value that means "off" (n = 1, zero
-// penalties, no logprobs, no tools, text responses), and a documented set
-// of metadata is ignored (user, metadata, prompt_cache_key,
-// safety_identifier, service_tier, parallel_tool_calls, store = false):
-// client-api-baseline.md's "harmless metadata may be ignored only under a
-// documented rule". Anything else is refused with a 400 naming the field,
-// never silently dropped.
+// `max_completion_tokens`, `temperature`, `top_p`, `top_k`, `min_p`,
+// `seed`, `stop`, `stream` and `stream_options.include_usage` are honored.
+// Fields this route knows but does not implement are accepted only at the
+// value that means "off" (n = 1, zero penalties, no logprobs, no tools,
+// text responses, no audio) and refused otherwise, since ignoring them
+// would silently answer a different question; OpenRouter's `transforms` and
+// `plugins` are always refused (D-046). A documented set of metadata is
+// ignored (user, metadata, prompt_cache_key, safety_identifier,
+// service_tier, parallel_tool_calls, store = false). Any other field, at
+// the top, in a message, a text part or stream_options, is unknown: it is
+// ignored (the owner's 2026-09-28 amendment of D-097), and its name, never
+// its value, is counted in IgnoredFields.
 
 #ifndef JITLLM_RUNTIME_API_H_
 #define JITLLM_RUNTIME_API_H_
@@ -25,6 +28,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,13 +55,22 @@ inline constexpr std::size_t kMaxStops = 4;
 inline constexpr std::size_t kMaxStopBytes = 128;
 inline constexpr std::uint32_t kMaxTokensCeiling = 262144;  // config::kMaxContext
 inline constexpr double kMaxTemperature = 2.0;
-// Timeouts and the queue, in the server (api_server.h).
-inline constexpr std::uint32_t kHeaderTimeoutMs = 10'000;
-inline constexpr std::uint32_t kBodyTimeoutMs = 30'000;
-inline constexpr std::uint32_t kWriteTimeoutMs = 30'000;
+inline constexpr std::int64_t kMaxTopK = std::int64_t{1} << 31U;
+// Unknown fields: names recorded per request, and a name's recorded bytes.
+inline constexpr std::size_t kMaxIgnoredPerRequest = 64;
+inline constexpr std::size_t kMaxIgnoredNameBytes = 64;
+// Timeouts, connections and the queue, in the server (api_server.h).
+inline constexpr std::uint32_t kHeaderTimeoutMs = 10'000;  // from a request's first byte
+inline constexpr std::uint32_t kBodyTimeoutMs = 30'000;    // likewise
+inline constexpr std::uint32_t kWriteTimeoutMs = 30'000;   // output pending without progress
+inline constexpr std::uint32_t kIdleTimeoutMs = 60'000;  // a kept-alive connection between requests
+inline constexpr std::uint32_t kKeepaliveMs = 15'000;    // SSE comment interval
 inline constexpr std::uint32_t kQueueWaitMs = 120'000;
 inline constexpr std::uint32_t kDeadlineMs = 600'000;
-inline constexpr std::size_t kMaxQueued = 4;
+inline constexpr std::size_t kMaxQueued = 64;  // config::kDefaultMaxQueued
+inline constexpr std::size_t kMaxConnections = 1024;
+inline constexpr std::size_t kMaxUnsentBytes = std::size_t{1} << 20U;    // a stream's, per client
+inline constexpr std::size_t kBodyBudgetBytes = std::size_t{64} << 20U;  // bodies arriving at once
 inline constexpr std::uint32_t kRetryAfterSeconds = 10;
 
 // An OpenAI-shaped error: the HTTP status and the body's error object.
@@ -82,14 +96,45 @@ struct ChatRequest {
   std::optional<std::uint32_t> max_tokens;
   double temperature = 1.0;  // [0, 2]; 0 is greedy (OpenAI's default is 1)
   double top_p = 1.0;        // (0, 1]
+  std::uint32_t top_k = 0;   // 0 (or -1 sent): off
+  double min_p = 0.0;        // [0, 1]; 0: off
   std::optional<std::uint64_t> seed;
   std::vector<std::string> stop;  // matched against the answer's text
   bool stream = false;
   bool include_usage = false;
+  // The unknown fields' names, each once, at most kMaxIgnoredPerRequest:
+  // "x" at the top, "messages[].x", "messages[].content[].x",
+  // "stream_options.x"; a name cut to kMaxIgnoredNameBytes at a character.
+  std::vector<std::string> ignored;
 };
 
 // Parses and checks a request body (JSON), before any model work.
 std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body);
+
+// The unknown fields requests have carried, by name (never a value;
+// D-014): how often, and when first and last (Unix seconds). At most
+// kMaxNames names; later new names are only counted. Thread-safe.
+class IgnoredFields {
+ public:
+  static constexpr std::size_t kMaxNames = 256;
+
+  // Counts a request's names; returns those never seen before (to log
+  // once each).
+  std::vector<std::string> Record(const std::vector<std::string>& names, std::int64_t now);
+  // {"object":"list","data":[{"name","count","first_seen","last_seen"}],
+  //  "unrecorded":N}, names in order.
+  std::string Json() const;
+
+ private:
+  struct Entry {
+    std::uint64_t count = 0;
+    std::int64_t first = 0;
+    std::int64_t last = 0;
+  };
+  mutable std::mutex mutex_;
+  std::map<std::string, Entry> names_;
+  std::uint64_t unrecorded_ = 0;  // occurrences of names past kMaxNames
+};
 
 // ---------------------------------------------------------------- output
 

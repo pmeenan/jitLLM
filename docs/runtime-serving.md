@@ -151,14 +151,40 @@ SIGINT or SIGTERM at once; the kernel frees its memory and spill files.
 ## The chat route
 
 With models configured, the service (no command) registers them as the
-commands do, then listens on `[client] bind` (a loopback address and port,
-default `127.0.0.1:8114`; D-097) and reports readiness. Without models it
+commands do, then listens where `[client]` says (D-097, as the owner
+amended it on 2026-09-28) and reports readiness. Without models it
 starts, checks and waits as before; a CPU-only build refuses to start with
 models configured.
 
-    POST /v1/chat/completions   one conversation turn, JSON or SSE
-    GET  /v1/models             the configured models (the image among them)
+```toml
+[client]
+bind = ["loopback", "tailscale"]  # the default; a string or a list of 1 to 16
+# bind = ["loopback", "192.168.1.5:9000", "[::]"]   # any address, with a port or not
+port = 8114                       # the port of "loopback", "tailscale" and a bare address
+max_connections = 1024            # open connections, idle ones included: 1 to 65,536
+max_queued = 64                   # requests waiting behind the running one: 1 to 1,024
+```
+
+**Where it listens.** `"loopback"` is 127.0.0.1 and, where the node has
+it, ::1. `"tailscale"` is the node's tailnet addresses, found at startup
+from its interfaces (getifaddrs; the tailscale CLI is not run): an
+interface named `tailscale*` or holding an address in Tailscale's
+fd7a:115c:a1e0::/48, and its addresses in that range or 100.64.0.0/10.
+The same /10 on any other interface is a carrier's shared address space
+and is not served as the tailnet. Without Tailscale the route serves
+loopback (and any explicit address) and logs so; a restart picks up a
+tailnet that came up later. An explicit address may be anything, a
+wildcard (`0.0.0.0`, `[::]`, which cover their family's other entries on
+the same port) included. No binding needs authentication, as with
+Ollama, llama-server, SGLang and LM Studio (D-014's owner note): the
+start log names every address and port, the host names accepted, and,
+as information, each listener beyond loopback and the tailnet as served
+without authentication. An optional API key is M5's.
+
+    POST /v1/chat/completions      one conversation turn, JSON or SSE
+    GET  /v1/models                the configured models (the image among them)
     GET  /v1/models/{id}
+    GET  /jitllm/v1/ignored-fields the unknown fields seen (loopback peers only)
 
 It is a strict subset of client-api-baseline.md's Chat Completions profile,
 not M5's front door. A request is stateless, as OpenAI's are: the whole
@@ -174,18 +200,30 @@ developer, read as system; user; assistant, whose `reasoning` or
 `reasoning_content` goes back to the template; content as a string or text
 parts; the last message the user's), `max_tokens` or
 `max_completion_tokens` (default: the rest of the context), `temperature`
-(default 1, OpenAI's; 0 is greedy), `top_p`, `seed` (default: random),
-`stop` (matched in the answer, not in the reasoning), `stream`,
-`stream_options.include_usage`. Accepted only at their "off" value: `n` 1,
-`presence_penalty` and `frequency_penalty` 0, `logprobs` false,
+(default 1, OpenAI's; 0 is greedy), `top_p`, `top_k` (0 or −1: off),
+`min_p`, `seed` (default: random), `stop` (matched in the answer, not in
+the reasoning), `stream`, `stream_options.include_usage`. Known fields
+that would change the answer are accepted only at their "off" value, and
+otherwise refused with a 400 naming them: `n` 1, `presence_penalty` and
+`frequency_penalty` 0, `repetition_penalty` 1, `logprobs` false,
 `top_logprobs` 0, `tools` and `functions` empty, `tool_choice` and
 `function_call` "none" or "auto", `response_format` text, `logit_bias`
-empty, `modalities` ["text"]. Ignored metadata: `user`,
-`safety_identifier`, `prompt_cache_key`, `metadata`, `service_tier`,
-`parallel_tool_calls`, `store` false, a message's `name`, a text part's
-`cache_control`, an assistant's null `refusal` and `annotations`. Anything
-else is a 400 naming it, whatever its value, OpenRouter's `transforms` and
-`plugins` among them (D-046).
+empty, `modalities` ["text"], `audio` null, `store` false; OpenRouter's
+`transforms` and `plugins` are refused whatever their value (D-046).
+Known metadata is ignored: `user`, `safety_identifier`,
+`prompt_cache_key`, `metadata`, `service_tier`, `parallel_tool_calls`, a
+message's `name`, a text part's `cache_control`, and an assistant's null
+`refusal`, `audio` and `function_call`, empty `tool_calls` and
+`annotations` (echoes of a response). **Any other field is ignored with a
+200**, at the top, in a message, a text part or `stream_options`; its
+name, never its value, is counted (`x`, `messages[].x`,
+`messages[].content[].x`, `stream_options.x`; at most 64 names a request,
+cut to 64 bytes) in a table of at most 256 names with each one's count
+and first and last time seen, and logged once, when first seen. `GET
+/jitllm/v1/ignored-fields` returns the table
+(`{"object":"list","data":[{"name","count","first_seen","last_seen"}],"unrecorded":N}`,
+Unix seconds; `unrecorded` counts names past the 256th) to loopback peers
+only (a 404 to others); M5's management listener takes it over.
 
 **Output.** The reasoning a thinking template opens (its prompt ends
 inside `<think>`) goes out as `reasoning`, up to the `</think>` token; the
@@ -193,12 +231,24 @@ answer, less its leading whitespace, as `content`. `finish_reason` is
 `stop` at the template's stop token or a stop string, else `length`.
 `usage` counts the whole rendered prompt, the generated tokens (a stop
 token included) and, as `prompt_tokens_details.cached_tokens`, the
-prompt's tokens the state already held. Streaming sends the headers and
-the role chunk once the request is admitted (its tokens counted against
-the context, before the swap), a chunk per step's text, the finish chunk,
-the usage chunk if asked for, and `data: [DONE]`; a failure after the
-headers is a `data: {"error":...}` event, and the stream ends without
-`[DONE]`.
+prompt's tokens the state already held. A non-streaming response is one
+JSON body once the outcome is known. Streaming sends the headers and the
+role chunk once the request is admitted (its tokens counted against the
+context, before the swap), a chunk per step's text, the finish chunk, the
+usage chunk if asked for, and `data: [DONE]`; a failure after the headers
+is a `data: {"error":...}` event, and the stream ends without `[DONE]`.
+
+**Keepalives** (D-045). A streamed request that has waited 15 s in the
+queue is admitted then: its headers and role chunk go out, so the client
+sees it accepted. From its headers on, a stream that has sent nothing for
+15 s gets a `: keepalive` comment line, queued, swapping or prefilling,
+well inside the named clients' 300 s stream-idle bounds
+(client-api-baseline.md). A stream admitted early can then only fail in
+the stream: its queue wait running out is an in-stream `rate_limit_error`
+and the model's refusal (the context exceeded) an in-stream
+`invalid_request_error`, both without `[DONE]`; a stream that starts
+within 15 s gets those as 429 and 400 before any header. A non-streaming
+request waits silently until its turn or the queue's wait.
 
 **Intake bounds** (client-api-baseline.md#shared-correctness-and-limits),
 checked before any model work (runtime/api.h):
@@ -208,48 +258,85 @@ checked before any model work (runtime/api.h):
 | Request line and headers | 16 KiB, 64 headers | 413 | Clients send a few hundred bytes; a bounded buffer per connection |
 | Target | 2 KiB | 414 | Routes and a short query |
 | Body | 4 MiB, by Content-Length only | 413 before it is read (chunked: 501; none on a POST: 411) | A 262,144-token context at ~4 bytes a token with JSON escaping, and a bounded buffer |
+| Bodies arriving at once | 64 MiB | 503, `Retry-After: 10` | Sixteen largest bodies; what 1,024 connections could otherwise hold (4 GiB) comes out of the Spark's one memory budget |
 | JSON | depth 16, 262,144 values | 400 | The request's own nesting is 5 deep; the parser's allocation stays under ~4 MiB of nodes |
 | Messages | 1 to 1,024 | 400 | Several times any conversation that fits the default 8,704-token context |
 | A message's text | 1 MiB, from at most 64 parts | 400 | Bounded by the body anyway; stops one field taking it all |
 | `model` | 1 to 64 bytes | 400 | A configured name's limit (D-096) |
 | `max_tokens` | 1 to 262,144 at parse; prompt + it ≤ the model's usable context | 400 `context_length_exceeded` | The context the model's state holds (`context`, less Qwen3.8's MTP draft rows when it speculates) |
 | Prompt | under the usable context | 400 `context_length_exceeded` | As above; counted by the model's own tokenizer and template |
-| `temperature`, `top_p` | [0, 2], (0, 1] (`top_p` not rounding to 0 as a float) | 400 | OpenAI's ranges; sampling.h's, which takes floats |
+| `temperature`, `top_p`, `top_k`, `min_p` | [0, 2], (0, 1] (`top_p` not rounding to 0 as a float), −1 to 2³¹−1, [0, 1] | 400 | OpenAI's ranges and vLLM's for `top_k` and `min_p`; sampling.h's, which takes floats |
 | `seed` | a 64-bit signed integer | 400 | OpenAI's type |
 | `stop` | at most 4 strings of 1 to 128 bytes | 400 | OpenAI's count; the held-back text stays short |
-| Head, body arrival | 10 s, 30 s from accept | 408 (none if nothing arrived) | A local client sends at once; a stalled one holds the acceptor at most this long |
-| A stalled write | 30 s (SO_SNDTIMEO) | the generation ends | A reader that stops reading cannot grow a buffer: output goes straight to the socket |
-| Queue | 4 waiting behind the running request, 120 s each | 429, `Retry-After: 10`, `x-should-retry: true` | One user; a subagent's request waits for the main one instead of failing |
+| Unknown fields | 64 names a request, 64 bytes a name; 256 names kept | ignored | The table stays small whatever a client sends |
+| Head, body arrival | 10 s, 30 s from the request's first byte | 408, then the connection closes | A local client sends at once; a stalled one holds only its own connection |
+| Idle connection | 60 s between requests, told to the client (`Keep-Alive: timeout=60`) | closed | An idle connection costs a descriptor and a small buffer; a minute spans a client's pauses between turns |
+| Connections | 1,024 (`[client] max_connections`) | the oldest idle one is closed for the new one; with none idle, 503 | Agents and their subagents keep pools; each is a descriptor, and the open-file limit is raised to fit |
+| Output not taken | 30 s without progress, or 1 MiB of a stream | the connection is dropped; the generation ends at its next step | A reader that stops reading cannot grow a buffer |
+| Queue | 64 waiting behind the running request (`[client] max_queued`), 120 s each | 429, `Retry-After: 10`, `x-should-retry: true` (in-stream once a stream has started) | One user; a subagent's request waits for the main one instead of failing |
 | A request | 600 s from when it starts running | 504 (in-stream error when streaming) | The node's ten-minute rule for a request (D-048's driver) |
 
-**Guards and errors.** No credential (loopback, D-014); an
-`Authorization` header is ignored. The `Host` must name a loopback address
-or `localhost` (a second `Host` is a 400), and a request with an `Origin` or a cross-site
-`Sec-Fetch-Site` is refused (403): D-064's browser guards, without M5's
-loopback-origin CORS. A JSON route needs `Content-Type: application/json`
+**Guards and errors.** No credential (D-014 and its owner note); an
+`Authorization` header is ignored. The `Host` must name the node as it
+listens, and a second `Host` is a 400: loopback addresses and `localhost`
+always; the node's host name; with the tailnet, its addresses, its
+MagicDNS name (the name the node's resolver gives a tailnet address,
+under ts.net) and that name's first label; an explicit address and the
+name its resolver gives it (for an address in Tailscale's ranges, only a
+name under ts.net); with a wildcard, every non-link-local address of its
+family and their names (at most 16 lookups, within 5 s together at
+startup: a resolver that does not answer costs no more, and its names
+are not accepted). An `Origin` must name the same, on a listening port,
+and a cross-site or same-site `Sec-Fetch-Site` is refused (403): D-064's
+browser guards, without M5's CORS. A JSON route needs `Content-Type: application/json`
 (415). Errors are OpenAI's `{"error": {message, type, param, code}}`. A
 client that disconnects, or the runtime stopping (SIGTERM or SIGINT, 503),
 ends the generation after its current step; the state keeps what it
 accepted. A failure of the node itself (a swap or a job that failed) ends
 the request with a 500 or 503 and stops the service with status 1.
 
-**Logging.** One line a request: an opaque ID, the model, the status, the
-token counts and times; one a swap, with its parts. Never a prompt,
-completion, stop string or field value (D-014).
+**Connections.** HTTP/1.1 connections persist: a response carries
+`Connection: keep-alive` unless the client asked to close, an HTTP/1.0
+client did not ask to keep it, the request was refused before it was
+whole, or the runtime is stopping; a stream's body is chunked (on
+HTTP/1.0, it ends with the connection). A request sent before the
+previous response ended (pipelining) is not read: that response carries
+`Connection: close` and the connection closes after it, so the client
+retries the request on a new one (RFC 9112's rule for unanswered
+requests). `Expect: 100-continue` is answered before the body.
 
-**Threads.** An acceptor thread reads each connection's request (one at a
-time), answers the model list and every refusal itself, and queues valid
-chat requests; the node's driver thread (the main thread) runs them in
-order and watches the runtime's signals (a signalfd) between requests and
-between generation steps. Every response closes its connection.
+**Logging.** One line a request: an opaque ID, the model, the status, the
+token counts and times; one a swap, with its parts; once per unknown field
+name. Never a prompt, completion, stop string or field value (D-014).
+
+**Threads.** An I/O thread runs one epoll loop over the listeners and
+every connection, all non-blocking: it reads requests, answers the model
+list, the table and every refusal itself, and queues valid chat requests;
+it never waits on the model, and no client's pace (a stalled head, a
+reader that stops) holds up another's. The node's driver thread (the main
+thread) takes the queue first come, first served, and runs one request at
+a time, watching the runtime's signals (a signalfd) between requests and
+between generation steps. It never touches a socket: it appends each
+response's bytes to a buffer, whole events at a time, which the I/O
+thread writes out as the client takes them. A connection that closes
+marks its request gone; the generation ends at its next step and the
+request's lease is released as the backend returns, while the buffer
+lives until the driver lets go of it. Parsing a request's JSON (at most 4
+MiB) is the one piece of CPU work on the I/O thread.
 
 ## Limits
 
 - One process, one model resident at a time: M3's full swap. Partial
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
-  no keepalives, no credentials or remote binding, no Responses or
-  Messages routes, one request at a time. The front door is M5's.
+  no credentials (the optional API key is M5's), no CORS, no Responses or Messages routes, one request
+  at a time. The front door is M5's.
+- The tailnet is found at startup; a node whose Tailscale comes up later
+  serves it after a restart. `jitllm.service` is ordered after
+  `tailscaled.service` (ordering only, no dependency) for that reason.
+- A name the Host check does not derive (a LAN DNS name without a reverse
+  record) cannot reach the route; a `[client] host_names` key could name
+  such names later.
 - The image serves one prompt a process, from a latents file (above), and
   only through the commands.
 - A conversation is reused only when its re-rendered tokens extend what the

@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,8 +49,38 @@ bool NumberIs(const json::Value& v, double value) {
   return x && *x == value;
 }
 
+// The unknown fields' names a request carries (ChatRequest::ignored).
+class Ignored {
+ public:
+  explicit Ignored(std::vector<std::string>& names) : names_(names) {}
+
+  void Add(std::string_view prefix, std::string_view key) {
+    if (names_.size() >= kMaxIgnoredPerRequest) {
+      return;
+    }
+    std::string name(prefix);
+    name += key;
+    if (name.size() > kMaxIgnoredNameBytes) {
+      // Cut at a character: never inside a UTF-8 sequence (the parser
+      // checked the key's encoding).
+      std::size_t cut = kMaxIgnoredNameBytes;
+      while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0U) == 0x80U) {
+        --cut;
+      }
+      name.resize(cut);
+    }
+    if (std::ranges::find(names_, name) == names_.end()) {
+      names_.push_back(std::move(name));
+    }
+  }
+
+ private:
+  std::vector<std::string>& names_;
+};
+
 // A message's content: a string, or text parts joined.
-std::expected<std::string, Error> Content(const json::Value& content, const std::string& at) {
+std::expected<std::string, Error> Content(const json::Value& content, const std::string& at,
+                                          Ignored& ignored) {
   if (content.is_string()) {
     return std::string(content.string());
   }
@@ -79,14 +111,10 @@ std::expected<std::string, Error> Content(const json::Value& content, const std:
     }
     for (std::size_t k = 0; k < part.size(); ++k) {
       const std::string_view key = part.key(k);
-      if (key == "type" || key == "text") {
-        continue;
+      if (key == "type" || key == "text" || key == "cache_control") {
+        continue;  // cache_control: an advisory retention hint (D-045), ignored
       }
-      if (key == "cache_control") {
-        continue;  // an advisory retention hint (D-045), ignored
-      }
-      return Bad(std::format("Unrecognized request argument supplied: {}.{}", where, key),
-                 std::format("{}.{}", where, key));
+      ignored.Add("messages[].content[].", key);
     }
     auto piece = part.find("text");
     if (!piece || !piece->is_string()) {
@@ -100,7 +128,8 @@ std::expected<std::string, Error> Content(const json::Value& content, const std:
   return text;
 }
 
-std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t index) {
+std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t index,
+                                           Ignored& ignored) {
   const std::string at = std::format("messages[{}]", index);
   if (!m.is_object()) {
     return Bad(at + " must be an object", at);
@@ -140,7 +169,7 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
         has_content = true;
         continue;
       }
-      auto text = Content(v, at);
+      auto text = Content(v, at, ignored);
       if (!text) {
         return std::unexpected(text.error());
       }
@@ -162,17 +191,22 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
         return Bad(at + " has both reasoning and reasoning_content", where);
       }
       out.reasoning = std::string(v.string());
-    } else if (assistant && key == "refusal" && v.is_null()) {
-      continue;
     } else if (assistant && key == "annotations" && v.is_array()) {
       continue;  // response metadata a client echoes back
-    } else if (assistant && key == "tool_calls" &&
-               (v.is_null() || (v.is_array() && v.size() == 0))) {
+    } else if (assistant && (key == "refusal" || key == "audio") && v.is_null()) {
+      continue;  // a response's null fields, echoed back
+    } else if (assistant && key == "refusal") {
+      return Bad(where + ": a refusal cannot be sent back to this route; send it as content",
+                 where);
+    } else if (assistant && key == "audio") {
+      return Bad(where + ": audio is not supported by this route", where);
+    } else if (assistant && (key == "tool_calls" || key == "function_call") &&
+               (v.is_null() || (key == "tool_calls" && v.is_array() && v.size() == 0))) {
       continue;
-    } else if (assistant && key == "tool_calls") {
+    } else if (assistant && (key == "tool_calls" || key == "function_call")) {
       return Bad(where + ": tool calls are not supported by this route yet", where);
     } else {
-      return Bad(std::format("Unrecognized request argument supplied: {}", where), where);
+      ignored.Add("messages[].", key);
     }
   }
   if (!has_content) {
@@ -226,6 +260,39 @@ std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::st
   return static_cast<std::uint32_t>(*n);
 }
 
+// The fields this route knows, whose null means their default.
+constexpr std::array<std::string_view, 31> kKnown = {"max_tokens",
+                                                     "max_completion_tokens",
+                                                     "temperature",
+                                                     "top_p",
+                                                     "top_k",
+                                                     "min_p",
+                                                     "seed",
+                                                     "stop",
+                                                     "stream",
+                                                     "stream_options",
+                                                     "n",
+                                                     "presence_penalty",
+                                                     "frequency_penalty",
+                                                     "repetition_penalty",
+                                                     "logprobs",
+                                                     "top_logprobs",
+                                                     "tools",
+                                                     "tool_choice",
+                                                     "functions",
+                                                     "function_call",
+                                                     "response_format",
+                                                     "logit_bias",
+                                                     "modalities",
+                                                     "audio",
+                                                     "user",
+                                                     "safety_identifier",
+                                                     "prompt_cache_key",
+                                                     "metadata",
+                                                     "service_tier",
+                                                     "parallel_tool_calls",
+                                                     "store"};
+
 }  // namespace
 
 std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
@@ -242,6 +309,7 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
     return Bad("the body must be a JSON object");
   }
   ChatRequest request;
+  Ignored ignored(request.ignored);
   bool has_model = false;
   bool has_messages = false;
   std::optional<std::uint32_t> max_tokens;
@@ -250,6 +318,10 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
     const std::string_view key = root.key(k);
     const json::Value v = root.member(k);
     const std::string name(key);
+    if (key == "transforms" || key == "plugins") {
+      // OpenRouter's, refused at the wire whatever their value (D-046).
+      return Bad(std::format("{} is not supported: this is not a routing service", key), name);
+    }
     if (key == "model") {
       if (!v.is_string() || v.string().empty() || v.string().size() > kMaxModelBytes) {
         return Bad(std::format("model must be a string of 1 to {} bytes", kMaxModelBytes), "model");
@@ -265,46 +337,17 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
                    "messages");
       }
       for (std::size_t i = 0; i < v.size(); ++i) {
-        auto m = ParseMessage(v.at(i), i);
+        auto m = ParseMessage(v.at(i), i, ignored);
         if (!m) {
           return std::unexpected(m.error());
         }
         request.messages.push_back(std::move(*m));
       }
       has_messages = true;
+    } else if (std::ranges::find(kKnown, key) == kKnown.end()) {
+      ignored.Add({}, key);  // unknown: ignored, its name counted
     } else if (v.is_null()) {
-      // null is the default of every optional field below; an unknown key
-      // is refused whatever its value.
-      static constexpr std::array<std::string_view, 27> kOptional = {"max_tokens",
-                                                                     "max_completion_tokens",
-                                                                     "temperature",
-                                                                     "top_p",
-                                                                     "seed",
-                                                                     "stop",
-                                                                     "stream",
-                                                                     "stream_options",
-                                                                     "n",
-                                                                     "presence_penalty",
-                                                                     "frequency_penalty",
-                                                                     "logprobs",
-                                                                     "top_logprobs",
-                                                                     "tools",
-                                                                     "tool_choice",
-                                                                     "functions",
-                                                                     "function_call",
-                                                                     "response_format",
-                                                                     "logit_bias",
-                                                                     "modalities",
-                                                                     "user",
-                                                                     "safety_identifier",
-                                                                     "prompt_cache_key",
-                                                                     "metadata",
-                                                                     "service_tier",
-                                                                     "parallel_tool_calls",
-                                                                     "store"};
-      if (std::ranges::find(kOptional, key) == kOptional.end()) {
-        return Bad(std::format("Unrecognized request argument supplied: {}", key), name);
-      }
+      continue;  // a known field's default
     } else if (key == "max_tokens") {
       auto n = ParseMaxTokens(v, key);
       if (!n) {
@@ -331,6 +374,19 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
         return Bad("top_p must be a number greater than 0 and at most 1", name);
       }
       request.top_p = *p;
+    } else if (key == "top_k") {
+      const std::optional<std::int64_t> n = v.int64();
+      if (!v.is_integer() || !n || *n < -1 || *n >= kMaxTopK) {
+        return Bad(std::format("top_k must be an integer from -1 (or 0: off) to {}", kMaxTopK - 1),
+                   name);
+      }
+      request.top_k = *n < 0 ? 0U : static_cast<std::uint32_t>(*n);
+    } else if (key == "min_p") {
+      const std::optional<double> p = v.is_number() ? v.float64() : std::nullopt;
+      if (!p || !std::isfinite(*p) || *p < 0 || *p > 1) {
+        return Bad("min_p must be a number from 0 to 1", name);
+      }
+      request.min_p = *p;
     } else if (key == "seed") {
       const std::optional<std::int64_t> s = v.int64();
       if (!v.is_integer() || !s) {
@@ -354,14 +410,17 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
       }
       for (std::size_t j = 0; j < v.size(); ++j) {
         const std::string where = std::format("stream_options.{}", v.key(j));
+        const bool usage = v.key(j) == "include_usage";
+        if (!usage && v.key(j) != "include_obfuscation") {
+          ignored.Add("stream_options.", v.key(j));
+          continue;
+        }
         if (!v.member(j).is_bool()) {
           return Bad(where + " must be a boolean", where);
         }
-        if (v.key(j) == "include_usage") {
+        if (usage) {
           request.include_usage = v.member(j).boolean();
-        } else if (v.key(j) != "include_obfuscation") {  // no obfuscation is sent on loopback
-          return Bad(std::format("Unrecognized request argument supplied: {}", where), where);
-        }
+        }  // include_obfuscation: none is sent on this route
       }
     } else if (key == "n") {
       if (!NumberIs(v, 1)) {
@@ -370,6 +429,11 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
     } else if (key == "presence_penalty" || key == "frequency_penalty") {
       if (!NumberIs(v, 0)) {
         return Bad(std::format("{} is not supported by this route yet; only 0 is accepted", key),
+                   name);
+      }
+    } else if (key == "repetition_penalty") {
+      if (!NumberIs(v, 1)) {
+        return Bad("repetition_penalty is not supported by this route yet; only 1 is accepted",
                    name);
       }
     } else if (key == "logprobs") {
@@ -404,6 +468,8 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
       if (!v.is_array() || v.size() != 1 || !v.at(0).is_string() || v.at(0).string() != "text") {
         return Bad("modalities must be [\"text\"]", name);
       }
+    } else if (key == "audio") {
+      return Bad("audio output is not supported by this route", name);
     } else if (key == "user" || key == "safety_identifier" || key == "prompt_cache_key" ||
                key == "service_tier") {
       if (!v.is_string()) {
@@ -421,8 +487,6 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
       if (!v.is_bool() || v.boolean()) {
         return Bad("store must be false: nothing is stored", name);
       }
-    } else {
-      return Bad(std::format("Unrecognized request argument supplied: {}", key), name);
     }
   }
   if (!has_model) {
@@ -439,6 +503,39 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
     return Bad("the last message must be the user's", "messages");
   }
   return request;
+}
+
+// ---------------------------------------------------------------- IgnoredFields
+
+std::vector<std::string> IgnoredFields::Record(const std::vector<std::string>& names,
+                                               std::int64_t now) {
+  std::vector<std::string> fresh;
+  const std::scoped_lock lock(mutex_);
+  for (const std::string& name : names) {
+    auto it = names_.find(name);
+    if (it == names_.end()) {
+      if (names_.size() >= kMaxNames) {
+        ++unrecorded_;
+        continue;
+      }
+      it = names_.emplace(name, Entry{.count = 0, .first = now, .last = now}).first;
+      fresh.push_back(name);
+    }
+    ++it->second.count;
+    it->second.last = now;
+  }
+  return fresh;
+}
+
+std::string IgnoredFields::Json() const {
+  const std::scoped_lock lock(mutex_);
+  std::string data;
+  for (const auto& [name, entry] : names_) {
+    data +=
+        std::format(R"({}{{"name":{},"count":{},"first_seen":{},"last_seen":{}}})",
+                    data.empty() ? "" : ",", Quoted(name), entry.count, entry.first, entry.last);
+  }
+  return std::format(R"({{"object":"list","data":[{}],"unrecorded":{}}})", data, unrecorded_);
 }
 
 // ---------------------------------------------------------------- output

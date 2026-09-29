@@ -109,34 +109,67 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_FALSE(config.membership.has_value());
   EXPECT_EQ(config.storage.installed, "/var/lib/jitllm/models");
   EXPECT_THAT(config.files, ElementsAre("a.toml"));
-  EXPECT_EQ(config.client.address, "127.0.0.1");
-  EXPECT_FALSE(config.client.ipv6);
+  using Kind = jitllm::config::BindEntry::Kind;
+  ASSERT_EQ(config.client.bind.size(), 2U);
+  EXPECT_EQ(config.client.bind[0].kind, Kind::kLoopback);
+  EXPECT_EQ(config.client.bind[1].kind, Kind::kTailscale);
   EXPECT_EQ(config.client.port, 8114);
+  EXPECT_EQ(config.client.max_connections, 1024U);
+  EXPECT_EQ(config.client.max_queued, 64U);
 }
 
-// The chat route's listener (D-097): loopback only, in this build.
-TEST(NodeConfigTest, TheClientBindsLoopbackOnly) {
+// The chat route's listener (D-097 as amended 2026-09-28): symbolic
+// entries and any address, one or a list, with the port and the limits.
+TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
+  using Kind = jitllm::config::BindEntry::Kind;
   const NodeConfig four = Parsed("schema_version = 2\n[client]\nbind = \"127.0.0.2:9000\"\n");
-  EXPECT_EQ(four.client.address, "127.0.0.2");
-  EXPECT_EQ(four.client.port, 9000);
+  ASSERT_EQ(four.client.bind.size(), 1U);
+  EXPECT_EQ(four.client.bind[0].kind, Kind::kAddress);
+  EXPECT_EQ(four.client.bind[0].endpoint.address, "127.0.0.2");
+  EXPECT_EQ(four.client.bind[0].endpoint.port, 9000);
+  const NodeConfig list = Parsed(
+      "schema_version = 2\n[client]\nbind = [\"loopback\", \"[::]\", \"0.0.0.0:80\", "
+      "\"[FD7A:115C:A1E0::1]:9\", \"192.168.1.5\"]\nport = 9100\nmax_connections = 65536\n"
+      "max_queued = 1\n");
+  ASSERT_EQ(list.client.bind.size(), 5U);
+  EXPECT_EQ(list.client.bind[0].kind, Kind::kLoopback);
+  EXPECT_EQ(list.client.bind[1].endpoint.address, "::");
+  EXPECT_TRUE(list.client.bind[1].endpoint.ipv6);
+  EXPECT_EQ(list.client.bind[1].endpoint.port, 0);  // [client] port's
+  EXPECT_EQ(list.client.bind[2].endpoint.address, "0.0.0.0");
+  EXPECT_EQ(list.client.bind[2].endpoint.port, 80);
+  EXPECT_EQ(list.client.bind[3].endpoint.address, "fd7a:115c:a1e0::1");
+  EXPECT_EQ(list.client.bind[4].endpoint.address, "192.168.1.5");
+  EXPECT_EQ(list.client.port, 9100);
+  EXPECT_EQ(list.client.max_connections, 65536U);
+  EXPECT_EQ(list.client.max_queued, 1U);
   const NodeConfig six = Parsed("schema_version = 2\nclient.bind = \"[::1]:8114\"\n");
-  EXPECT_EQ(six.client.address, "::1");
-  EXPECT_TRUE(six.client.ipv6);
+  EXPECT_EQ(six.client.bind[0].endpoint.address, "::1");
   for (const std::string_view bad :
-       {"0.0.0.0:8114", "192.168.1.2:8114", "[::]:8114", "[::ffff:127.0.0.1]:8114"}) {
+       {"127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:08114", "localhost:8114", "::1:8114", "::1",
+        "127.0.0.1:+80", "[::1]8114", "[::1", "", "Loopback", "tailnet", "1.2.3", "0.0.0.0:"}) {
     EXPECT_THAT(Failures(std::format("schema_version = 2\n[client]\nbind = \"{}\"\n", bad)),
-                ElementsAre(HasSubstr("client.bind must be a loopback address")))
+                ElementsAre(HasSubstr("client.bind must be \"loopback\", \"tailscale\" or an")))
         << bad;
   }
-  for (const std::string_view bad :
-       {"127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:08114", "localhost:8114",
-        "::1:8114", "127.0.0.1:+80", "[::1]8114", ""}) {
-    EXPECT_THAT(Failures(std::format("schema_version = 2\n[client]\nbind = \"{}\"\n", bad)),
-                ElementsAre(HasSubstr("client.bind must be \"<loopback address>:<port>\"")))
-        << bad;
-  }
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = \"[::ffff:127.0.0.1]:8114\"\n"),
+              ElementsAre(HasSubstr("IPv4-mapped")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = [\"loopback\", 8114]\n"),
+              ElementsAre(HasSubstr("client.bind[1] must be a string, not an integer")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = []\n"),
+              ElementsAre(HasSubstr("client.bind must hold 1 to 16 entries, not 0")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nbind = 8114\n"),
-              ElementsAre(HasSubstr("client.bind must be a string, not an integer")));
+              ElementsAre(HasSubstr("client.bind must be a string or an array of strings")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nport = 0\n"),
+              ElementsAre(HasSubstr("client.port must be from 1 to 65535, not 0")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_connections = 65537\n"),
+              ElementsAre(HasSubstr("client.max_connections must be from 1 to 65536")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_queued = 0\n"),
+              ElementsAre(HasSubstr("client.max_queued must be from 1 to 1024")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_queued = \"4\"\n"),
+              ElementsAre(HasSubstr("client.max_queued must be an integer")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nhosts = []\n"),
+              ElementsAre(HasSubstr("unknown key client.hosts")));
 }
 
 TEST(NodeConfigTest, ReadsTheMemberExample) {
@@ -284,9 +317,10 @@ TEST(NodeConfigTest, ReportsEveryProblemNotJustTheFirst) {
 TEST(NodeConfigTest, UnknownKeysAndTablesAreFatal) {
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nspil = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key storage.spil")));
-  // [client] has bind (D-097); the front door's other keys arrive in M5.
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\nport = 8114\n"),
-              ElementsAre(HasSubstr("unknown key client.port")));
+  // [client] has bind, port, max_connections and max_queued (D-097); the
+  // front door's other keys arrive in M5.
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\ncredential = \"x\"\n"),
+              ElementsAre(HasSubstr("unknown key client.credential")));
   EXPECT_THAT(Failures("schema_version = 2\nstorage = \"x\"\n"),
               ElementsAre(HasSubstr("storage must be a table")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage.spill]\n"),

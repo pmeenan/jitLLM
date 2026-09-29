@@ -728,8 +728,33 @@ it appears.
       runtime now samples too (seeded, speculative sampling where there
       is a drafter); DeepSeek, like Qwen3.8, is refused at registration
       when its template has no renderer. Open: M5's front door
-      (credentials, loopback-origin CORS, keepalives, tools, reasoning
+      (an optional API key, loopback-origin CORS, tools, reasoning
       controls, the other routes, client validation).
+      *Amended by the owner 2026-09-28* (D-097 accepted as amended, and
+      an owner note on D-014): it listens on loopback and the tailnet by
+      default and on any configured address, authentication optional on
+      each (unauthenticated listeners named at startup),
+      ignores unknown fields by name with a table at
+      `/jitllm/v1/ignored-fields`, honors `top_k` and `min_p`, and serves
+      persistent connections from an epoll I/O thread (1,024 connections,
+      64 queued, pipelining refused, slow clients isolated) with SSE
+      keepalives through the queue, swaps and prefill. Unit tests cover
+      the bind resolution over fake interface lists, the Host and Origin
+      guard, unknown fields and their table, keep-alive, pipelining,
+      idle connections and eviction, the queue, keepalive comments,
+      early starts and slow clients. On `spark-b` (2026-09-28) with
+      DeepSeek and Qwen3.8: it listened on 127.0.0.1, ::1 and both
+      tailnet addresses, naming `spark-b.coati-puffin.ts.net`; two
+      requests shared one connection; a request with unknown fields was a
+      200 and both names appeared in the table (logged once, values
+      never); through the tailnet address the MagicDNS name and short
+      name passed the Host check while `evil.example` and a trailing-dot
+      name got 403 and the table route 404; 8 concurrent streams all
+      ended in `[DONE]` in 17.1 s (one swap); 6 streams alternating the
+      two models (a swap each) started at 15.0 s in the queue, heard
+      keepalive comments and all finished (the last in 52.8 s); greedy
+      replies still equal `jitllm-runtime chat`'s (DeepSeek 52 tokens,
+      Qwen3.8 37, streamed).
 
 **Exit criteria:**
 
@@ -1148,8 +1173,9 @@ cluster's placement layer; sharding under pressure and failure is M8.
 - Stale capacity reports, node loss and cancellation end in bounded failure
   or unwind, never in unsafe admission or silent replay of a started
   stream.
-- Remote access requires authentication and transport protection (D-014,
-  D-065). A replicated or archived artifact is published only after
+- Remote management and cluster access require authentication and
+  transport protection (D-014, D-065); inference authentication stays
+  optional (D-014's owner note). A replicated or archived artifact is published only after
   verification against an identity held outside its source.
 
 ## M7 — Demand-paged MoE and the first daily drivers  `pending`

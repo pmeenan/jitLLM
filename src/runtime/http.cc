@@ -5,16 +5,11 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -48,40 +43,6 @@ bool IsTokenChar(char c) {
          std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos;
 }
 
-// Waits until fd is readable or `by` passes; false on timeout.
-bool WaitReadable(int fd, Clock::time_point by) {
-  for (;;) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(by - Clock::now());
-    if (left.count() <= 0) {
-      return false;
-    }
-    pollfd p{.fd = fd, .events = POLLIN, .revents = 0};
-    const int n = ::poll(&p, 1, static_cast<int>(std::min<std::int64_t>(left.count(), 1000)));
-    if (n > 0) {
-      return true;  // readable, closed or failed: recv tells which
-    }
-    if (n < 0 && errno != EINTR) {
-      return true;
-    }
-  }
-}
-
-// One recv into out (appending up to `most` bytes): the count, 0 at the
-// peer's end, -1 on error.
-ssize_t ReadSome(int fd, std::string& out, std::size_t most) {
-  std::array<char, 16384> chunk{};
-  for (;;) {
-    const ssize_t n = ::recv(fd, chunk.data(), std::min(most, chunk.size()), 0);
-    if (n < 0 && errno == EINTR) {
-      continue;
-    }
-    if (n > 0) {
-      out.append(chunk.data(), static_cast<std::size_t>(n));
-    }
-    return n;
-  }
-}
-
 // A decimal Content-Length, or -1.
 std::int64_t ParseLength(std::string_view text) {
   if (text.empty() || text.size() > 18 ||
@@ -93,6 +54,28 @@ std::int64_t ParseLength(std::string_view text) {
     n = (n * 10) + (c - '0');
   }
   return n;
+}
+
+// Whether a comma-separated header value holds `token` (without case).
+bool HasToken(std::string_view value, std::string_view token) {
+  while (!value.empty()) {
+    const std::size_t comma = value.find(',');
+    std::string_view item = value.substr(0, comma);
+    while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+      item.remove_prefix(1);
+    }
+    while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+      item.remove_suffix(1);
+    }
+    if (EqualsIgnoringCase(item, token)) {
+      return true;
+    }
+    if (comma == std::string_view::npos) {
+      break;
+    }
+    value.remove_prefix(comma + 1);
+  }
+  return false;
 }
 
 }  // namespace
@@ -122,30 +105,33 @@ const std::string* Request::Find(std::string_view lowercase) const {
   return nullptr;
 }
 
-std::expected<Request, Failure> ReadRequest(int fd, const Limits& limits, Clock::time_point head_by,
-                                            Clock::time_point body_by) {
-  std::string buf;
-  std::size_t head_end = std::string::npos;
-  while (head_end == std::string::npos) {
-    if (!WaitReadable(fd, head_by)) {
-      return buf.empty() ? Fail(0, "no request") : Fail(408, "the request head took too long");
-    }
-    const ssize_t n = ReadSome(
-        fd, buf, limits.max_header_bytes + 4 - std::min(buf.size(), limits.max_header_bytes));
-    if (n <= 0) {
-      return Fail(0, "the peer closed the connection");
-    }
-    head_end = buf.find("\r\n\r\n");
-    if (head_end == std::string::npos && buf.size() >= limits.max_header_bytes) {
+bool Request::KeepAlive() const {
+  const std::string* connection = Find("connection");
+  if (http10) {
+    return connection != nullptr && HasToken(*connection, "keep-alive");
+  }
+  return connection == nullptr || !HasToken(*connection, "close");
+}
+
+std::expected<std::optional<std::size_t>, Failure> FindHeadEnd(std::string_view buffer,
+                                                               const Limits& limits) {
+  const std::size_t at = buffer.substr(0, limits.max_header_bytes + 4).find("\r\n\r\n");
+  if (at == std::string_view::npos) {
+    if (buffer.size() >= limits.max_header_bytes) {
       return Fail(413,
                   std::format("the request head is longer than {} bytes", limits.max_header_bytes));
     }
+    return std::nullopt;
   }
-  if (head_end + 4 > limits.max_header_bytes + 4) {
+  return at + 4;
+}
+
+std::expected<Request, Failure> ParseHead(std::string_view full, const Limits& limits) {
+  if (full.size() > limits.max_header_bytes + 4 || !full.ends_with("\r\n\r\n")) {
     return Fail(413,
                 std::format("the request head is longer than {} bytes", limits.max_header_bytes));
   }
-  const std::string_view head = std::string_view(buf).substr(0, head_end + 2);  // last CRLF kept
+  const std::string_view head = full.substr(0, full.size() - 2);  // the last CRLF kept
   // Every line ends in CRLF: no bare CR or LF.
   for (std::size_t i = 0; i < head.size(); ++i) {
     if ((head[i] == '\r' && (i + 1 >= head.size() || head[i + 1] != '\n')) ||
@@ -181,6 +167,7 @@ std::expected<Request, Failure> ReadRequest(int fd, const Limits& limits, Clock:
     request.method = std::string(method);
     request.target = std::string(target);
     request.path = std::string(target.substr(0, target.find('?')));
+    request.http10 = version == "HTTP/1.0";
   }
   std::int64_t length = -1;
   while (at + 2 < head.size()) {
@@ -232,26 +219,15 @@ std::expected<Request, Failure> ReadRequest(int fd, const Limits& limits, Clock:
   if (length < 0 && request.method == "POST") {
     return Fail(411, "a POST needs Content-Length");
   }
-  const auto body_bytes = static_cast<std::size_t>(std::max<std::int64_t>(length, 0));
-  if (body_bytes > limits.max_body_bytes) {
+  request.body_bytes = static_cast<std::size_t>(std::max<std::int64_t>(length, 0));
+  if (request.body_bytes > limits.max_body_bytes) {
     return Fail(413, std::format("the body is longer than {} bytes", limits.max_body_bytes));
   }
-  request.body = buf.substr(head_end + 4, body_bytes);
   if (const std::string* expect = request.Find("expect")) {
     if (!EqualsIgnoringCase(*expect, "100-continue")) {
       return Fail(417, "only Expect: 100-continue is understood");
     }
-    if (request.body.size() < body_bytes && !WriteAll(fd, "HTTP/1.1 100 Continue\r\n\r\n")) {
-      return Fail(0, "the peer is gone");
-    }
-  }
-  while (request.body.size() < body_bytes) {
-    if (!WaitReadable(fd, body_by)) {
-      return Fail(408, "the request body took too long");
-    }
-    if (ReadSome(fd, request.body, body_bytes - request.body.size()) <= 0) {
-      return Fail(0, "the peer closed the connection");
-    }
+    request.expect_continue = true;
   }
   return request;
 }
@@ -299,19 +275,33 @@ std::string_view Reason(int status) {
   }
 }
 
-std::string Head(int status, std::string_view content_type, std::optional<std::size_t> length,
-                 const std::vector<std::string>& extra) {
-  std::string head =
-      std::format("HTTP/1.1 {} {}\r\nContent-Type: {}\r\n", status, Reason(status), content_type);
-  if (length) {
-    head += std::format("Content-Length: {}\r\n", *length);
+std::string Head(const HeadOptions& options) {
+  std::string head = std::format("HTTP/1.1 {} {}\r\nContent-Type: {}\r\n", options.status,
+                                 Reason(options.status), options.content_type);
+  if (options.length) {
+    head += std::format("Content-Length: {}\r\n", *options.length);
+  } else if (options.chunked) {
+    head += "Transfer-Encoding: chunked\r\n";
   }
-  head += "Cache-Control: no-store\r\nConnection: close\r\n";
-  for (const std::string& line : extra) {
+  head += "Cache-Control: no-store\r\n";
+  if (options.keep_alive) {
+    head += std::format("Connection: keep-alive\r\nKeep-Alive: timeout={}\r\n",
+                        options.idle_timeout.count());
+  } else {
+    head += "Connection: close\r\n";
+  }
+  for (const std::string& line : options.extra) {
     head += line + "\r\n";
   }
   head += "\r\n";
   return head;
+}
+
+std::string Chunk(std::string_view data) {
+  if (data.empty()) {
+    return "0\r\n\r\n";
+  }
+  return std::format("{:x}\r\n{}\r\n", data.size(), data);
 }
 
 bool WriteAll(int fd, std::string_view data) {
@@ -321,45 +311,14 @@ bool WriteAll(int fd, std::string_view data) {
       continue;
     }
     if (n <= 0) {
-      return false;  // gone, or stalled past SO_SNDTIMEO (EAGAIN)
+      return false;
     }
     data.remove_prefix(static_cast<std::size_t>(n));
   }
   return true;
 }
 
-bool PeerGone(int fd) {
-  pollfd p{.fd = fd, .events = POLLRDHUP, .revents = 0};
-  return ::poll(&p, 1, 0) > 0 && (p.revents & (POLLRDHUP | POLLHUP | POLLERR)) != 0;
-}
-
-void Finish(Fd fd) {
-  if (!fd.valid()) {
-    return;
-  }
-  (void)::shutdown(fd.get(), SHUT_WR);
-  const auto by = Clock::now() + std::chrono::milliseconds(200);
-  std::size_t discarded = 0;
-  std::string sink;
-  while (discarded < (std::size_t{1} << 20U)) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(by - Clock::now());
-    if (left.count() <= 0) {
-      break;
-    }
-    pollfd p{.fd = fd.get(), .events = POLLIN, .revents = 0};
-    if (::poll(&p, 1, static_cast<int>(left.count())) <= 0) {
-      break;
-    }
-    sink.clear();
-    const ssize_t n = ReadSome(fd.get(), sink, 16384);
-    if (n <= 0) {
-      break;
-    }
-    discarded += static_cast<std::size_t>(n);
-  }
-}
-
-std::expected<Listener, std::string> ListenLoopback(const config::ClientEndpoint& endpoint) {
+std::expected<Listener, std::string> Listen(const config::ClientEndpoint& endpoint) {
   const int family = endpoint.ipv6 ? AF_INET6 : AF_INET;
   Fd fd(::socket(family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
   if (!fd.valid()) {
@@ -391,10 +350,11 @@ std::expected<Listener, std::string> ListenLoopback(const config::ClientEndpoint
   }
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API
   if (::bind(fd.get(), reinterpret_cast<const sockaddr*>(&storage), size) != 0) {
-    return std::unexpected(
-        std::format("bind {}:{}: {}", endpoint.address, endpoint.port, Errno(errno)));
+    return std::unexpected(std::format("bind {}{}{}:{}: {}", endpoint.ipv6 ? "[" : "",
+                                       endpoint.address, endpoint.ipv6 ? "]" : "", endpoint.port,
+                                       Errno(errno)));
   }
-  if (::listen(fd.get(), 16) != 0) {
+  if (::listen(fd.get(), SOMAXCONN) != 0) {
     return std::unexpected("listen: " + Errno(errno));
   }
   sockaddr_storage bound{};
@@ -414,26 +374,6 @@ std::expected<Listener, std::string> ListenLoopback(const config::ClientEndpoint
     port = ntohs(four.sin_port);
   }
   return Listener{.fd = std::move(fd), .port = port};
-}
-
-Fd Accept(int listener, std::chrono::milliseconds write_timeout) {
-  for (;;) {
-    const int fd = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
-    if (fd < 0 && errno == EINTR) {
-      continue;
-    }
-    if (fd < 0) {
-      return Fd();
-    }
-    Fd accepted(fd);
-    timeval tv{};
-    tv.tv_sec = static_cast<time_t>(write_timeout.count() / 1000);
-    tv.tv_usec = static_cast<suseconds_t>((write_timeout.count() % 1000) * 1000);
-    (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    const int on = 1;
-    (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
-    return accepted;
-  }
 }
 
 }  // namespace jitllm::runtime::http

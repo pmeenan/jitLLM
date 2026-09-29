@@ -1449,12 +1449,15 @@ reclaimed.
 
 ### Listeners and protocols
 
-The conductor, or a standalone node, serves one inference front door
-(`127.0.0.1:8114` by default) and the management listener (`127.0.0.1:8115`)
-(D-037, D-045, D-063). Cluster-wide management goes through the conductor
-(D-038); whether a worker also serves a loopback listener for node-local
-operations is settled in M6a. Any non-loopback binding requires credentials
-and TLS. TLS comes from certificate files that external tools keep current,
+The conductor, or a standalone node, serves one inference front door (port
+8114 on loopback and the tailnet by default, D-097) and the management
+listener (`127.0.0.1:8115`) (D-037, D-045, D-063). Cluster-wide management
+goes through the conductor (D-038); whether a worker also serves a loopback
+listener for node-local operations is settled in M6a. A non-loopback
+management binding requires credentials and TLS (D-064); no inference
+binding requires credentials, an inference credential being optional (an
+API key, as llama-server and vLLM offer; D-014's owner note, D-097). TLS
+comes from certificate files that external tools keep current,
 selected by SNI and reloaded on change, with the local CA as the fallback
 (D-065). The proposed baseline is HTTP/1.1 with keep-alive and SSE streaming,
 adding HTTP/2 only if a named client's tests require it. The HTTP and JSON
@@ -1909,8 +1912,9 @@ extended with `[storage]`; a standalone node omits its cluster keys, including
 `[credentials]`. Logs go to the journal. The package depends on glibc and
 the versioned `libcuda.so.1` virtual package; the C++ and CUDA runtimes are
 static (D-060). The process that uses a role creates it when missing. The
-front door (conductor or standalone node) defaults to `127.0.0.1:8114` and
-the management API to `127.0.0.1:8115`.
+front door (conductor or standalone node) defaults to port 8114 on
+loopback and the tailnet (M3's chat route, D-097) and the management API to
+`127.0.0.1:8115`.
 
 ## Open architecture questions
 

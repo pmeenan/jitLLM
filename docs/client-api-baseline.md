@@ -9,9 +9,13 @@ keepalive contract, standard-client signals, alias echo), with D-047's
 reasoning, storage and non-streaming corrections, following D-022/D-030.
 This is the M5 implementation contract and test plan for the
 inference front door, not a claim that jitLLM serves these clients. M3
-serves only a minimal loopback `/v1/chat/completions`
+serves only a minimal `/v1/chat/completions` on loopback and the tailnet
 ([runtime-serving.md](runtime-serving.md#the-chat-route), D-097), checked
-with curl, not with these clients; the surface here arrives in M5 (D-087). Sources are live official documentation, not
+with curl, not with these clients; the surface here arrives in M5 (D-087).
+M3's route already does three things this document assigns to M5:
+persistent HTTP/1.1 connections, SSE keepalive comment lines on Chat
+Completions (below), and ignoring unknown fields by name under a
+documented rule (the last section). Sources are live official documentation, not
 pinned client binaries; recheck and record exact client versions and
 configurations when running acceptance.
 
@@ -48,9 +52,10 @@ Sources: [OpenCode providers](https://opencode.ai/docs/providers/),
 
 Cursor's server-mediated path implies that a workstation loopback address is
 not a sufficient deployment route. Keep D-014's local default; any reachable
-remote deployment requires explicit configuration, authentication and protected
-transport. This check does not authorize publishing a server or sending prompts
-to Cursor. Cursor remains a named target with an M5 validation gap, not a
+remote deployment requires explicit configuration and protected transport,
+with authentication optional there too (D-014's owner note, 2026-09-28).
+This check does not authorize publishing a server or sending prompts to
+Cursor. Cursor remains a named target with an M5 validation gap, not a
 reason to claim all four clients already work.
 
 ## M5 surface
@@ -208,8 +213,10 @@ configurable port; management is a separate listener, local-only by default
 (D-014). A loopback-bound front door accepts requests without a credential
 until an inference credential is configured, because Ollama-native clients
 send none, and while anonymous access is on a presented credential is ignored
-rather than checked, because OpenAI SDK clients send a placeholder; any
-non-loopback binding requires credentials and transport protection. Once a
+rather than checked, because OpenAI SDK clients send a placeholder. No
+binding requires a credential (D-014's owner note, 2026-09-28, amending
+D-045): an inference credential is an optional feature, as llama-server's
+and vLLM's API keys are, never a precondition for a binding. Once a
 credential is required, a request carrying both `Authorization` and
 `x-api-key` must validate on each. Authorization is decided per operation,
 never by path prefix, and an inference credential never carries management
@@ -221,7 +228,10 @@ release with a no-preflight request, and on a loopback binding the `Host`
 header must name a loopback address, the machine's hostname or a configured
 name, the DNS-rebinding guard Ollama applies. A wildcard origin is accepted
 only on a loopback binding with a credential configured; anonymous plus
-any-origin would let any web page drive local inference.
+any-origin would let any web page drive local inference. M3's chat route
+listens on loopback and the tailnet by default, without a credential, its
+Host guard accepting the node's tailnet addresses and MagicDNS names, and
+on any address configured explicitly, also without one (D-097).
 
 **Time to first byte and keepalives.** A model switch can take many seconds
 (D-036), so for requests selecting SSE streaming the front door sends response
@@ -232,6 +242,14 @@ lines on Chat Completions and Responses. Ollama's NDJSON has no keepalive
 frame; that profile's clients tolerate load time by design and the tested
 profile records the bound. Long switches are never signalled through
 `retry-after`.
+
+M3's chat route does this for Chat Completions now (D-097): `: keepalive`
+comment lines every 15 s without output, from the headers on, through the
+queue, a swap and prefill. A stream that waits 15 s in the queue is
+admitted then, with its headers and role chunk, so the queue counts as
+admission for it; its queue expiry afterwards is an in-stream
+`rate_limit_error`, not the 429 below, and a stream admitted within 15 s
+keeps the 400s and 429s before headers.
 
 Non-streaming requests, including `stream: false`, receive one JSON result
 or protocol-shaped JSON error; hold headers until the outcome is known and
@@ -319,6 +337,9 @@ malformed JSON, invalid tool links, unsupported modalities and unavailable
 models. No prompt/tool payload logging by default. Usage and cache accounting
 must reflect actual work; cache hints do not grant retention or identify a
 conversation. Harmless metadata may be ignored only under a documented rule.
+M3's route documents one (D-097): a field it does not know is ignored and
+its name counted, never its value; a field it knows but does not
+implement is refused whenever honoring it would change the answer.
 
 Use protocol-shaped non-success errors before streaming; after streaming has
 started use its error/failure mechanism and terminate without a success marker.

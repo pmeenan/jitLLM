@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The loopback chat route (D-097; runtime/api.h, http.h, api_server.h):
-// request parsing and every intake bound, the output's stop strings and
-// reasoning split, the JSON shapes, and the server end to end over a real
-// loopback socket with a fake backend: routes, browser guards, HTTP
-// bounds, timeouts, the queue, streaming and errors after the headers.
+// The chat route (D-097 as amended 2026-09-28; runtime/api.h, http.h,
+// binding.h, api_server.h): request parsing and every intake bound, the
+// unknown fields' names, the output's stop strings and reasoning split,
+// the JSON shapes, the bind resolution over fake interface lists and the
+// Host and Origin guard, and the server end to end over real loopback
+// sockets with a fake backend: routes, browser guards, HTTP bounds,
+// timeouts, keep-alive, pipelining, idle connections, the queue,
+// keepalive comments, slow clients, streaming and errors after the
+// headers.
 
 #include "runtime/api.h"
 
@@ -19,21 +23,28 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <expected>
 #include <format>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "base/json.h"
 #include "config/node_config.h"
+#include "platform/interfaces.h"
 #include "runtime/api_server.h"
+#include "runtime/binding.h"
 #include "runtime/http.h"
 
 namespace {
@@ -41,7 +52,9 @@ namespace {
 namespace api = jitllm::runtime::api;
 namespace json = jitllm::base::json;
 using ::testing::AllOf;
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
+using ::testing::IsEmpty;
 using ::testing::Not;
 using ::testing::StartsWith;
 
@@ -109,22 +122,34 @@ TEST(ChatRequest, RefusesWhatItDoesNotHonor) {
   EXPECT_THAT(ErrorOf("[]"), StartsWith("400 the body must be a JSON object"));
   EXPECT_THAT(ErrorOf(R"({"messages":[{"role":"user","content":"x"}]})"), HasSubstr("[model]"));
   EXPECT_THAT(ErrorOf(R"({"model":"m"})"), HasSubstr("[messages]"));
-  EXPECT_THAT(ErrorOf(WithField(R"("frobnicate":1)")),
-              HasSubstr("Unrecognized request argument supplied: frobnicate [frobnicate]"));
-  EXPECT_THAT(ErrorOf(WithField(R"("frobnicate":null)")), HasSubstr("[frobnicate]"));
+  // Known fields that ask for what the route does not do are refused, and
+  // OpenRouter's transforms and plugins whatever their value (D-046).
   EXPECT_THAT(ErrorOf(WithField(R"("transforms":["middle-out"])")), HasSubstr("[transforms]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("transforms":null)")), HasSubstr("[transforms]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("plugins":[])")), HasSubstr("[plugins]"));
   EXPECT_THAT(ErrorOf(WithField(R"("n":2)")), HasSubstr("[n]"));
   EXPECT_THAT(ErrorOf(WithField(R"("logprobs":true)")), HasSubstr("[logprobs]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("top_logprobs":2)")), HasSubstr("[top_logprobs]"));
   EXPECT_THAT(ErrorOf(WithField(R"("presence_penalty":0.5)")), HasSubstr("[presence_penalty]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("repetition_penalty":1.1)")), HasSubstr("[repetition_penalty]"));
   EXPECT_THAT(ErrorOf(WithField(R"("tools":[{"type":"function"}])")), HasSubstr("[tools]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("tool_choice":"required")")), HasSubstr("[tool_choice]"));
   EXPECT_THAT(ErrorOf(WithField(R"("response_format":{"type":"json_object"})")),
               HasSubstr("[response_format]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("logit_bias":{"1":2})")), HasSubstr("[logit_bias]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("modalities":["text","audio"])")), HasSubstr("[modalities]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("audio":{"voice":"x"})")), HasSubstr("[audio]"));
   EXPECT_THAT(ErrorOf(WithField(R"("store":true)")), HasSubstr("[store]"));
   EXPECT_THAT(ErrorOf(WithField(R"("stream":"yes")")), HasSubstr("[stream]"));
-  EXPECT_THAT(ErrorOf(WithField(R"("stream_options":{"chunk":1})")),
-              HasSubstr("[stream_options.chunk]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("stream_options":{"include_usage":1})")),
+              HasSubstr("[stream_options.include_usage]"));
   EXPECT_THAT(ErrorOf(WithField(R"("max_tokens":4,"max_completion_tokens":5)")),
               HasSubstr("[max_completion_tokens]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("top_k":-2)")), HasSubstr("[top_k]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("top_k":2147483648)")), HasSubstr("[top_k]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("top_k":1.5)")), HasSubstr("[top_k]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("min_p":1.01)")), HasSubstr("[min_p]"));
+  EXPECT_THAT(ErrorOf(WithField(R"("min_p":-0.1)")), HasSubstr("[min_p]"));
   // Messages.
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[]})"), HasSubstr("[messages]"));
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"tool","content":"x"}]})"),
@@ -136,14 +161,82 @@ TEST(ChatRequest, RefusesWhatItDoesNotHonor) {
       HasSubstr("[messages[0].content[0].type]"));
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"user"}]})"),
               HasSubstr("[messages[0].content]"));
-  EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"user","content":"x","x":1}]})"),
-              HasSubstr("[messages[0].x]"));
   EXPECT_THAT(
       ErrorOf(R"({"model":"m","messages":[{"role":"assistant","content":"x","tool_calls":[{}]}]})"),
       HasSubstr("tool calls are not supported"));
+  EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[
+                 {"role":"assistant","content":"x","function_call":{"name":"f"}},
+                 {"role":"user","content":"y"}]})"),
+              HasSubstr("[messages[0].function_call]"));
+  EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[
+                 {"role":"assistant","content":"x","audio":{"id":"a"}},
+                 {"role":"user","content":"y"}]})"),
+              HasSubstr("[messages[0].audio]"));
+  EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[
+                 {"role":"assistant","content":null,"refusal":"no"},
+                 {"role":"user","content":"y"}]})"),
+              HasSubstr("[messages[0].refusal]"));
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"user","content":"a"},
                                                   {"role":"assistant","content":"b"}]})"),
               HasSubstr("the last message must be the user's"));
+}
+
+// Unknown fields are ignored and their names (never their values) kept,
+// each once, with their place; known ones are not.
+TEST(ChatRequest, IgnoresUnknownFieldsByName) {
+  auto r = Parse(R"({"model":"m","frobnicate":{"deep":[1,2]},"zeta":null,"reasoning_effort":"low",
+      "messages":[
+        {"role":"system","content":"s","x_note":1},
+        {"role":"assistant","content":"a","function_call":null,"audio":null,"refusal":null,
+         "tool_calls":[],"annotations":[],"x_note":2},
+        {"role":"user","content":[{"type":"text","text":"u","x_part":true}],"x_note":3}],
+      "stream_options":{"include_usage":true,"x_opt":"v"},
+      "top_k":40,"min_p":0.05,"repetition_penalty":1,"user":"u","frobnicate2":1})");
+  ASSERT_TRUE(r.has_value()) << r.error().message;
+  EXPECT_THAT(r->ignored,
+              ::testing::UnorderedElementsAre("frobnicate", "zeta", "reasoning_effort",
+                                              "messages[].x_note", "messages[].content[].x_part",
+                                              "stream_options.x_opt", "frobnicate2"));
+  EXPECT_EQ(r->top_k, 40U);
+  EXPECT_FLOAT_EQ(static_cast<float>(r->min_p), 0.05F);
+  EXPECT_TRUE(r->include_usage);
+  auto off = Parse(WithField(R"("top_k":-1,"min_p":0)"));
+  ASSERT_TRUE(off.has_value());
+  EXPECT_EQ(off->top_k, 0U);
+  EXPECT_TRUE(Parse(kMinimal)->ignored.empty());
+  // A long name is cut at a character; a request's names are bounded.
+  const std::string long_name = std::string(62, 'a') + "\xC3\xA9\xC3\xA9";
+  auto cut = Parse(WithField(std::format(R"("{}":1)", long_name)));
+  ASSERT_TRUE(cut.has_value());
+  EXPECT_THAT(cut->ignored, ElementsAre(std::string(62, 'a') + "\xC3\xA9"));
+  std::string many;
+  for (std::size_t i = 0; i < api::kMaxIgnoredPerRequest + 10; ++i) {
+    many += std::format(R"({}"u{}":0)", i == 0 ? "" : ",", i);
+  }
+  auto bounded = Parse(WithField(many));
+  ASSERT_TRUE(bounded.has_value());
+  EXPECT_EQ(bounded->ignored.size(), api::kMaxIgnoredPerRequest);
+}
+
+TEST(IgnoredFields, CountsNamesUpToItsSize) {
+  api::IgnoredFields table;
+  EXPECT_THAT(table.Record({"a", "b"}, 100), ElementsAre("a", "b"));
+  EXPECT_THAT(table.Record({"a", "c"}, 200), ElementsAre("c"));
+  auto doc = json::Parse(table.Json());
+  ASSERT_TRUE(doc.has_value()) << table.Json();
+  const json::Value a = doc->root().find("data")->at(0);
+  EXPECT_EQ(a.find("name")->string(), "a");
+  EXPECT_EQ(a.find("count")->int64(), 2);
+  EXPECT_EQ(a.find("first_seen")->int64(), 100);
+  EXPECT_EQ(a.find("last_seen")->int64(), 200);
+  for (std::size_t i = 0; i < api::IgnoredFields::kMaxNames + 5; ++i) {
+    (void)table.Record({std::format("n{}", i)}, 300);
+  }
+  auto full = json::Parse(table.Json());
+  ASSERT_TRUE(full.has_value());
+  EXPECT_EQ(full->root().find("data")->size(), api::IgnoredFields::kMaxNames);
+  EXPECT_EQ(full->root().find("unrecorded")->int64(), 8);  // 3 names were in before
+  EXPECT_THAT(table.Record({"a"}, 400), IsEmpty());        // a known name is still counted
 }
 
 // Every numeric bound, at its edge and one past it.
@@ -292,17 +385,205 @@ TEST(ApiHost, OnlyLoopbackNames) {
                                     "127.9.9.9:1", "[::1]", "[::1]:8114", "LocalHost:8114"}) {
     EXPECT_TRUE(api::IsLoopbackHost(ok)) << ok;
   }
-  for (const std::string_view bad : {"", "example.com", "evil.localhost", "10.0.0.1:8114",
-                                     "[::2]:8114", "[::1", "[::1]x", "localhost.:80"}) {
+  for (const std::string_view bad :
+       {"", "example.com", "evil.localhost", "10.0.0.1:8114", "[::2]:8114", "[::1", "[::1]x",
+        "localhost.:80", "localhost:", "localhost:80:80"}) {
     EXPECT_FALSE(api::IsLoopbackHost(bad)) << bad;
   }
+}
+
+// ---------------------------------------------------------------- binding
+
+jitllm::platform::InterfaceAddress Address(std::string_view interface, std::string_view text,
+                                           bool loopback = false) {
+  jitllm::platform::InterfaceAddress a;
+  a.interface = std::string(interface);
+  a.ipv6 = text.find(':') != std::string_view::npos;
+  const std::string owned(text);
+  EXPECT_EQ(::inet_pton(a.ipv6 ? AF_INET6 : AF_INET, owned.c_str(), a.bytes.data()), 1) << text;
+  a.up = true;
+  a.loopback = loopback;
+  return a;
+}
+
+// spark-b's interfaces as `ip addr` showed them on 2026-09-28, shortened.
+std::vector<jitllm::platform::InterfaceAddress> SparkAddresses(bool tailscale = true) {
+  std::vector<jitllm::platform::InterfaceAddress> list = {
+      Address("lo", "127.0.0.1", true),
+      Address("lo", "::1", true),
+      Address("enP7s7", "192.168.0.101"),
+      Address("enP7s7", "fdd0:5b0c:6852:482c::1"),
+      Address("enP7s7", "fe80::1864:c1f4:4501:7925"),
+      Address("docker0", "172.17.0.1")};
+  if (tailscale) {
+    list.push_back(Address("tailscale0", "100.114.118.63"));
+    list.push_back(Address("tailscale0", "fd7a:115c:a1e0::2e31:7640"));
+    list.push_back(Address("tailscale0", "fe80::a007:23ed:e98f:b08e"));
+  }
+  return list;
+}
+
+// A resolver that knows the tailnet's names, as MagicDNS answers them.
+std::optional<std::string> SparkReverse(const jitllm::platform::InterfaceAddress& a) {
+  const std::string text = a.Text();
+  if (text == "100.114.118.63" || text == "fd7a:115c:a1e0::2e31:7640") {
+    return "spark-b.coati-puffin.ts.net";
+  }
+  if (text == "192.168.0.101") {
+    return "spark-56f5.lan";
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> Endpoints(const api::Listening& l) {
+  std::vector<std::string> out;
+  for (const auto& e : l.endpoints) {
+    out.push_back(e.ipv6 ? std::format("[{}]:{}", e.address, e.port)
+                         : std::format("{}:{}", e.address, e.port));
+  }
+  return out;
+}
+
+jitllm::config::ClientConfig Bind(std::vector<std::string_view> entries) {
+  jitllm::config::ClientConfig client;
+  client.bind.clear();
+  for (const std::string_view e : entries) {
+    auto entry = jitllm::config::ParseBindEntry(e);
+    EXPECT_TRUE(entry.has_value()) << e;
+    client.bind.push_back(entry.value_or(jitllm::config::BindEntry{}));
+  }
+  return client;
+}
+
+TEST(Binding, TheDefaultServesLoopbackAndTheTailnet) {
+  const api::Listening l = api::ResolveListening(jitllm::config::ClientConfig{}, SparkAddresses(),
+                                                 "spark-56f5", SparkReverse);
+  EXPECT_THAT(Endpoints(l), ElementsAre("127.0.0.1:8114", "[::1]:8114", "100.114.118.63:8114",
+                                        "[fd7a:115c:a1e0::2e31:7640]:8114"));
+  EXPECT_THAT(l.unauthenticated, IsEmpty());
+  EXPECT_THAT(l.notes, ElementsAre(HasSubstr("spark-b.coati-puffin.ts.net")));
+  api::HostGuard hosts = l.hosts;
+  for (const std::string_view ok :
+       {"spark-b.coati-puffin.ts.net", "spark-b.coati-puffin.ts.net:8114", "Spark-B:8114",
+        "spark-56f5", "100.114.118.63:8114", "[fd7a:115c:a1e0::2e31:7640]:8114", "localhost"}) {
+    EXPECT_TRUE(hosts.AllowsHost(ok)) << ok;
+  }
+  for (const std::string_view bad :
+       {"evil.coati-puffin.ts.net", "spark-b.coati-puffin.ts.net.", "coati-puffin.ts.net",
+        "192.168.0.101:8114", "spark-56f5.lan", "100.114.118.64", "evil.example", "[fe80::1]"}) {
+    EXPECT_FALSE(hosts.AllowsHost(bad)) << bad;
+  }
+}
+
+TEST(Binding, WithoutTailscaleItServesLoopbackOnly) {
+  auto addresses = SparkAddresses(false);
+  // No ::1 either: an IPv6-less host.
+  std::erase_if(addresses, [](const auto& a) { return a.ipv6; });
+  const api::Listening l =
+      api::ResolveListening(jitllm::config::ClientConfig{}, addresses, "spark-56f5", SparkReverse);
+  EXPECT_THAT(Endpoints(l), ElementsAre("127.0.0.1:8114"));
+  EXPECT_THAT(l.notes, ElementsAre(HasSubstr("no tailnet interface found")));
+  EXPECT_THAT(l.unauthenticated, IsEmpty());
+}
+
+// 100.64.0.0/10 is also carriers' shared address space: only Tailscale's
+// interface makes it the tailnet.
+TEST(Binding, ACarriersSharedAddressIsNotTheTailnet) {
+  std::vector<jitllm::platform::InterfaceAddress> addresses = {Address("lo", "127.0.0.1", true),
+                                                               Address("wwan0", "100.72.1.2")};
+  api::Listening l = api::ResolveListening(Bind({"tailscale"}), addresses, "h", nullptr);
+  EXPECT_THAT(Endpoints(l), IsEmpty());
+  // Tailscale's IPv6 range marks a renamed tunnel as the tailnet.
+  addresses.push_back(Address("ts9", "100.100.1.2"));
+  addresses.push_back(Address("ts9", "fd7a:115c:a1e0::9"));
+  l = api::ResolveListening(Bind({"tailscale"}), addresses, "h", nullptr);
+  EXPECT_THAT(Endpoints(l), ElementsAre("100.100.1.2:8114", "[fd7a:115c:a1e0::9]:8114"));
+  EXPECT_THAT(l.notes, ElementsAre(HasSubstr("MagicDNS name is unknown")));
+}
+
+TEST(Binding, ExplicitAddressesAreUnauthenticatedUnlessLoopbackOrTailnet) {
+  // A wildcard: every address of its family passes the Host check, it
+  // covers loopback's on the same port, and the start log says it is
+  // served without authentication.
+  api::Listening l = api::ResolveListening(Bind({"loopback", "0.0.0.0", "tailscale"}),
+                                           SparkAddresses(), "spark-56f5", SparkReverse);
+  EXPECT_THAT(Endpoints(l),
+              ElementsAre("[::1]:8114", "0.0.0.0:8114", "[fd7a:115c:a1e0::2e31:7640]:8114"));
+  ASSERT_THAT(l.unauthenticated, ElementsAre(HasSubstr("serving without authentication")));
+  EXPECT_THAT(l.unauthenticated[0], HasSubstr("0.0.0.0:8114"));
+  EXPECT_TRUE(l.hosts.AllowsHost("192.168.0.101:8114"));
+  EXPECT_TRUE(l.hosts.AllowsHost("172.17.0.1"));
+  EXPECT_TRUE(l.hosts.AllowsHost("spark-56f5.lan"));
+  EXPECT_TRUE(l.hosts.AllowsHost("spark-b"));
+  EXPECT_FALSE(l.hosts.AllowsHost("[fdd0:5b0c:6852:482c::1]"));  // IPv6 is not wildcarded
+  // A LAN address is said to be unauthenticated; a tailnet or loopback
+  // address is not; a port of its own is kept, and [client] port fills in
+  // the rest.
+  jitllm::config::ClientConfig client =
+      Bind({"192.168.0.101:9000", "100.114.118.63", "127.0.0.2:9001", "[::]:9002"});
+  client.port = 9100;
+  l = api::ResolveListening(client, SparkAddresses(), "spark-56f5", SparkReverse);
+  EXPECT_THAT(Endpoints(l), ElementsAre("192.168.0.101:9000", "100.114.118.63:9100",
+                                        "127.0.0.2:9001", "[::]:9002"));
+  EXPECT_THAT(
+      l.unauthenticated,
+      ElementsAre(HasSubstr("on 192.168.0.101:9000, which is neither loopback nor the tailnet"),
+                  HasSubstr("on [::]:9002 (every IPv6 interface)")));
+  EXPECT_TRUE(l.hosts.AllowsHost("spark-56f5.lan:9000"));
+  EXPECT_TRUE(l.hosts.AllowsHost("[fdd0:5b0c:6852:482c::1]:9002"));
+  EXPECT_FALSE(l.hosts.AllowsHost("[fe80::1864:c1f4:4501:7925]"));  // link-local
+  EXPECT_TRUE(l.hosts.AllowsHost("spark-b.coati-puffin.ts.net"));   // the tailnet address's
+  // A tailnet address is named only under ts.net, bound by "tailscale" or
+  // by its address: a resolver's other name for it is not trusted.
+  const auto spoofed = [](const jitllm::platform::InterfaceAddress& a) {
+    return api::InTailnetRange(a) ? std::optional<std::string>("evil.example") : SparkReverse(a);
+  };
+  for (const std::string_view entry : {"100.114.118.63", "tailscale"}) {
+    l = api::ResolveListening(Bind({entry}), SparkAddresses(), "spark-56f5", spoofed);
+    EXPECT_FALSE(l.hosts.AllowsHost("evil.example")) << entry;
+    EXPECT_FALSE(l.hosts.AllowsHost("evil")) << entry;
+    EXPECT_TRUE(l.hosts.AllowsHost("100.114.118.63:8114")) << entry;
+  }
+  // Reverse lookups are bounded.
+  std::size_t lookups = 0;
+  std::vector<jitllm::platform::InterfaceAddress> many = {Address("lo", "127.0.0.1", true)};
+  for (int i = 1; i <= 40; ++i) {
+    many.push_back(Address("eth0", std::format("10.0.0.{}", i)));
+  }
+  (void)api::ResolveListening(Bind({"0.0.0.0"}), many, "h",
+                              [&](const jitllm::platform::InterfaceAddress&) {
+                                ++lookups;
+                                return std::optional<std::string>();
+                              });
+  EXPECT_EQ(lookups, api::kMaxReverseLookups);
+}
+
+TEST(Binding, OriginsMustBeTheNodeOnItsPort) {
+  api::HostGuard hosts;
+  hosts.AddName("spark-b.coati-puffin.ts.net");
+  hosts.AddPort(8114);
+  EXPECT_TRUE(hosts.AllowsOrigin("http://spark-b.coati-puffin.ts.net:8114"));
+  EXPECT_TRUE(hosts.AllowsOrigin("HTTP://localhost:8114"));
+  EXPECT_TRUE(hosts.AllowsOrigin("http://[::1]:8114"));
+  // A scheme alone ("http", "https") once read past its end: the process
+  // aborted.
+  for (const std::string_view bad :
+       {"http://spark-b.coati-puffin.ts.net", "https://spark-b.coati-puffin.ts.net:3000",
+        "http://evil.example:8114", "null", "file://", "http://localhost:8114/",
+        "ftp://localhost:8114", "http://127.0.0.1:3000", "http", "https", "HTTP", "http:", "http:/",
+        "http://", "", "://localhost:8114"}) {
+    EXPECT_FALSE(hosts.AllowsOrigin(bad)) << bad;
+  }
+  hosts.AddPort(443);
+  EXPECT_TRUE(hosts.AllowsOrigin("https://spark-b.coati-puffin.ts.net"));
 }
 
 // ---------------------------------------------------------------- the server
 
 // Runs requests as the test directs: "block" waits for release; "fail"
-// fails before admission, "late" after it; otherwise reasoning, then the
-// last message's content echoed in two pieces.
+// fails before admission, "late" after it; "flood" streams until told to
+// stop; "big" answers 16 MiB at once; otherwise reasoning, then the last
+// message's content echoed in two pieces.
 class FakeBackend final : public api::Backend {
  public:
   std::vector<api::ModelInfo> Models() const override {
@@ -336,6 +617,21 @@ class FakeBackend final : public api::Backend {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
     }
+    if (text == "flood") {
+      started.store(true);
+      const std::string piece(1024, 'x');
+      for (int i = 0; i < 200000; ++i) {
+        if (!exchange.Content(piece)) {
+          flooded.store(true);
+          break;
+        }
+      }
+      return api::Completion{.completion_tokens = 1, .cached_tokens = 0, .stopped = false};
+    }
+    if (text == "big") {
+      (void)exchange.Content(std::string(std::size_t{16} << 20U, 'y'));
+      return api::Completion{.completion_tokens = 1, .cached_tokens = 0, .stopped = true};
+    }
     (void)exchange.Reasoning("hmm");
     const std::size_t half = text.size() / 2;
     const bool go = exchange.Content(text.substr(0, half)) && exchange.Content(text.substr(half));
@@ -345,7 +641,97 @@ class FakeBackend final : public api::Backend {
   std::atomic<bool> started{false};
   std::atomic<bool> release{false};
   std::atomic<bool> cancelled{false};
+  std::atomic<bool> flooded{false};
 };
+
+// A client socket's reads, with a timeout: false at the end or on none.
+bool Recv(int fd, std::string& into) {
+  std::array<char, 16384> buf{};
+  const ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
+  if (n <= 0) {
+    return false;
+  }
+  into.append(buf.data(), static_cast<std::size_t>(n));
+  return true;
+}
+
+std::size_t Number(std::string_view text, int base) {
+  std::size_t n = 0;
+  (void)std::from_chars(text.data(), text.data() + text.size(), n, base);
+  return n;
+}
+
+// One response from a connection that may persist: its head and its body,
+// decoded (by Content-Length, chunks, or to the close); what follows stays
+// in `pending`. What a connection sent before closing, if no head.
+std::string ReadResponse(int fd, std::string& pending) {
+  std::size_t head_end = 0;
+  while ((head_end = pending.find("\r\n\r\n")) == std::string::npos) {
+    if (!Recv(fd, pending)) {
+      return std::exchange(pending, {});
+    }
+  }
+  head_end += 4;
+  const std::string head = pending.substr(0, head_end);
+  std::string body;
+  std::size_t used = 0;
+  if (const std::size_t field = head.find("Content-Length: "); field != std::string::npos) {
+    const std::size_t length = Number(std::string_view(head).substr(field + 16), 10);
+    while (pending.size() < head_end + length && Recv(fd, pending)) {
+    }
+    body = pending.substr(head_end, length);
+    used = std::min(pending.size(), head_end + length);
+  } else if (head.find("Transfer-Encoding: chunked\r\n") != std::string::npos) {
+    std::size_t at = head_end;
+    for (;;) {
+      std::size_t eol = 0;
+      while ((eol = pending.find("\r\n", at)) == std::string::npos) {
+        if (!Recv(fd, pending)) {
+          pending.clear();
+          return head + body;
+        }
+      }
+      const std::size_t size = Number(std::string_view(pending).substr(at, eol - at), 16);
+      if (size == 0) {
+        while (pending.size() < eol + 4 && Recv(fd, pending)) {
+        }
+        used = std::min(pending.size(), eol + 4);
+        break;
+      }
+      while (pending.size() < eol + 2 + size + 2 && Recv(fd, pending)) {
+      }
+      body += pending.substr(eol + 2, size);
+      at = eol + 2 + size + 2;
+      if (pending.size() < at) {
+        pending.clear();
+        return head + body;
+      }
+    }
+  } else {
+    while (Recv(fd, pending)) {
+    }
+    body = pending.substr(head_end);
+    used = pending.size();
+  }
+  pending.erase(0, used);
+  return head + body;
+}
+
+// Reads until `needle` has arrived (or the connection ends); all of it.
+std::string ReadUntil(int fd, std::string& pending, std::string_view needle) {
+  while (pending.find(needle) == std::string::npos && Recv(fd, pending)) {
+  }
+  return pending;
+}
+
+// Whether the server has closed the connection (after what it sent).
+bool Closed(int fd) {
+  std::string ignored;
+  while (Recv(fd, ignored)) {
+  }
+  const ssize_t n = ::recv(fd, ignored.data(), 0, MSG_DONTWAIT);
+  return n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+}
 
 class ServerTest : public ::testing::Test {
  protected:
@@ -353,11 +739,11 @@ class ServerTest : public ::testing::Test {
 
   void Start(const api::ServerOptions& overrides) {
     api::ServerOptions options = overrides;
-    options.bind = {.address = "127.0.0.1", .ipv6 = false, .port = 0};
+    options.bind = {{.address = "127.0.0.1", .ipv6 = false, .port = 0}};
     server_.emplace(backend_, options);
-    auto port = server_->Listen();
-    ASSERT_TRUE(port.has_value()) << port.error();
-    port_ = *port;
+    auto ports = server_->Listen();
+    ASSERT_TRUE(ports.has_value()) << ports.error();
+    port_ = ports->front();
     wake_ = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     thread_ = std::jthread([this] {
       result_ = server_->Run(wake_, [this] {
@@ -380,9 +766,12 @@ class ServerTest : public ::testing::Test {
     }
   }
 
-  // A connection that has sent `bytes`.
-  int Connect(std::string_view bytes) const {
+  // A connection, with a receive timeout.
+  int Open(int receive_buffer = 0) const {
     const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (receive_buffer > 0) {
+      (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof receive_buffer);
+    }
     sockaddr_in to{};
     to.sin_family = AF_INET;
     to.sin_port = htons(port_);
@@ -391,26 +780,24 @@ class ServerTest : public ::testing::Test {
     EXPECT_EQ(::connect(fd, reinterpret_cast<const sockaddr*>(&to), sizeof to), 0);
     timeval tv{.tv_sec = 20, .tv_usec = 0};
     (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    return fd;
+  }
+
+  // A connection that has sent `bytes`.
+  int Connect(std::string_view bytes) const {
+    const int fd = Open();
     EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, bytes));
     return fd;
   }
 
-  // Everything the server sends until it closes.
-  static std::string ReadAll(int fd) {
-    std::string out;
-    std::array<char, 4096> buf{};
-    for (;;) {
-      const ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
-      if (n <= 0) {
-        break;
-      }
-      out.append(buf.data(), static_cast<std::size_t>(n));
-    }
+  // One request's response on a connection of its own.
+  std::string Exchange(std::string_view bytes) const {
+    const int fd = Connect(bytes);
+    std::string pending;
+    std::string response = ReadResponse(fd, pending);
     (void)::close(fd);
-    return out;
+    return response;
   }
-
-  std::string Exchange(std::string_view bytes) const { return ReadAll(Connect(bytes)); }
 
   static std::string Post(std::string_view body, std::string_view extra = "") {
     return std::format(
@@ -430,6 +817,13 @@ class ServerTest : public ::testing::Test {
     return at == std::string::npos ? std::string() : response.substr(at + 4);
   }
 
+  void WaitStarted() {
+    for (int i = 0; i < 2000 && !backend_.started.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(backend_.started.load());
+  }
+
   FakeBackend backend_;
   std::optional<api::Server> server_;
   std::uint16_t port_ = 0;
@@ -442,7 +836,7 @@ TEST_F(ServerTest, AnswersAChatCompletion) {
   const std::string response = Exchange(Post(Chat("Hello world")));
   EXPECT_THAT(response, StartsWith("HTTP/1.1 200 OK\r\n"));
   EXPECT_THAT(response, HasSubstr("Content-Type: application/json\r\n"));
-  EXPECT_THAT(response, HasSubstr("Connection: close\r\n"));
+  EXPECT_THAT(response, HasSubstr("Connection: keep-alive\r\nKeep-Alive: timeout=60\r\n"));
   auto doc = json::Parse(BodyOf(response));
   ASSERT_TRUE(doc.has_value()) << response;
   const json::Value root = doc->root();
@@ -461,6 +855,7 @@ TEST_F(ServerTest, StreamsChunksThenDone) {
       Post(Chat("Hello world", R"(,"stream":true,"stream_options":{"include_usage":true})")));
   EXPECT_THAT(response, StartsWith("HTTP/1.1 200 OK\r\n"));
   EXPECT_THAT(response, HasSubstr("Content-Type: text/event-stream\r\n"));
+  EXPECT_THAT(response, HasSubstr("Transfer-Encoding: chunked\r\n"));
   const std::string body = BodyOf(response);
   EXPECT_THAT(body, StartsWith("data: {"));
   EXPECT_THAT(body, HasSubstr(R"("delta":{"role":"assistant","content":""})"));
@@ -470,6 +865,13 @@ TEST_F(ServerTest, StreamsChunksThenDone) {
   EXPECT_THAT(body, HasSubstr(R"("finish_reason":"stop")"));
   EXPECT_THAT(body, HasSubstr(R"("choices":[],"usage":{"prompt_tokens":10)"));
   EXPECT_TRUE(body.ends_with("data: [DONE]\n\n")) << body;
+  // HTTP/1.0 has no chunks: the stream ends with the connection.
+  const std::string old = Exchange(
+      std::format("POST /v1/chat/completions HTTP/1.0\r\nHost: localhost\r\nContent-Type: "
+                  "application/json\r\nContent-Length: {}\r\n\r\n{}",
+                  Chat("Hi", R"(,"stream":true)").size(), Chat("Hi", R"(,"stream":true)")));
+  EXPECT_THAT(old, AllOf(HasSubstr("Connection: close\r\n"), Not(HasSubstr("chunked"))));
+  EXPECT_TRUE(BodyOf(old).ends_with("data: [DONE]\n\n")) << old;
 }
 
 TEST_F(ServerTest, StopStringsEndTheAnswer) {
@@ -513,12 +915,18 @@ TEST_F(ServerTest, RefusesBeforeAnyWork) {
   EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\n\r\n"), StartsWith("HTTP/1.1 403 "));
   EXPECT_THAT(Exchange(Post(Chat("x"), "Origin: http://127.0.0.1:3000\r\n")),
               StartsWith("HTTP/1.1 403 "));
+  EXPECT_THAT(Exchange(Post(Chat("x"), "Origin: null\r\n")), StartsWith("HTTP/1.1 403 "));
   EXPECT_THAT(Exchange(Post(Chat("x"), "Sec-Fetch-Site: cross-site\r\n")),
+              StartsWith("HTTP/1.1 403 "));
+  EXPECT_THAT(Exchange(Post(Chat("x"), "Sec-Fetch-Site: same-site\r\n")),
               StartsWith("HTTP/1.1 403 "));
   EXPECT_THAT(Exchange(std::format("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
                                    "Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
                                    Chat("x").size(), Chat("x"))),
               StartsWith("HTTP/1.1 415 "));
+  // The same origin (a page this listener served) passes.
+  EXPECT_THAT(Exchange(Post(Chat("x"), std::format("Origin: http://127.0.0.1:{}\r\n", port_))),
+              StartsWith("HTTP/1.1 200 "));
 }
 
 TEST_F(ServerTest, BoundsTheHttpRequest) {
@@ -574,13 +982,10 @@ TEST_F(ServerTest, BoundsTheHttpRequest) {
   using namespace std::string_view_literals;
   EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX: a\0b\r\n\r\n"sv),
               StartsWith("HTTP/1.1 400 "));
-  // Bytes after the body (a pipelined request) are not served: one
-  // response, then the connection closes.
-  const std::string first = Chat("One");
-  const std::string two = Exchange(Post(first) + Post(Chat("Two")));
-  EXPECT_THAT(two, StartsWith("HTTP/1.1 200 OK"));
-  EXPECT_THAT(two, HasSubstr("One"));
-  EXPECT_THAT(two, Not(HasSubstr("Two")));
+  // A refusal of the head closes the connection: where the next request
+  // would begin is unknown.
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/2.0\r\nHost: localhost\r\n\r\n"),
+              HasSubstr("Connection: close\r\n"));
   // Expect: 100-continue is answered before the body.
   const std::string body = Chat("Hi there");
   const int fd = Connect(std::format(
@@ -593,7 +998,71 @@ TEST_F(ServerTest, BoundsTheHttpRequest) {
   EXPECT_EQ(std::string_view(interim.data(), static_cast<std::size_t>(got)),
             "HTTP/1.1 100 Continue\r\n\r\n");
   EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, body));
-  EXPECT_THAT(ReadAll(fd), StartsWith("HTTP/1.1 200 OK"));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 OK"));
+  (void)::close(fd);
+}
+
+// Several requests on one connection, refusals included; Connection:
+// close and HTTP/1.0 end it.
+TEST_F(ServerTest, KeepsAConnectionAlive) {
+  const int fd = Open();
+  std::string pending;
+  const auto send = [&](const std::string& bytes) {
+    EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, bytes));
+    return ReadResponse(fd, pending);
+  };
+  EXPECT_THAT(send(Post(Chat("One"))), AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("One")));
+  const std::string stream = send(Post(Chat("Two", R"(,"stream":true)")));
+  EXPECT_THAT(stream, AllOf(HasSubstr(R"("content":"wo")"), HasSubstr("Connection: keep-alive")));
+  EXPECT_TRUE(stream.ends_with("data: [DONE]\n\n")) << stream;
+  EXPECT_THAT(send("GET /v1/nothing HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+              AllOf(StartsWith("HTTP/1.1 404 "), HasSubstr("Connection: keep-alive")));
+  EXPECT_THAT(send(Post(Chat("x", R"(,"n":3)"))), StartsWith("HTTP/1.1 400 "));
+  EXPECT_THAT(send("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  EXPECT_THAT(send(Post(Chat("Three"))), HasSubstr("Three"));
+  EXPECT_THAT(send("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("Connection: close\r\n")));
+  EXPECT_TRUE(Closed(fd));
+  (void)::close(fd);
+  const int old = Open();
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
+      old, "GET /v1/models HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"));
+  std::string old_pending;
+  EXPECT_THAT(ReadResponse(old, old_pending), HasSubstr("Connection: keep-alive\r\n"));
+  EXPECT_TRUE(
+      jitllm::runtime::http::WriteAll(old, "GET /v1/models HTTP/1.0\r\nHost: localhost\r\n\r\n"));
+  EXPECT_THAT(ReadResponse(old, old_pending), HasSubstr("Connection: close\r\n"));
+  EXPECT_TRUE(Closed(old));
+  (void)::close(old);
+}
+
+// A request sent before the previous response ended is not served: that
+// response says Connection: close, and the connection closes after it.
+TEST_F(ServerTest, RefusesPipelinedRequests) {
+  const int both = Connect(Post(Chat("One")) + Post(Chat("Two")));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(both, pending), AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("One"),
+                                                 HasSubstr("Connection: close\r\n")));
+  EXPECT_TRUE(Closed(both));
+  EXPECT_THAT(pending, Not(HasSubstr("Two")));
+  (void)::close(both);
+  // The second arrives while the first runs.
+  Stop();
+  backend_.release.store(false);
+  Start({});
+  const int later = Connect(Post(Chat("block")));
+  WaitStarted();
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(later, Post(Chat("Two"))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  backend_.release.store(true);
+  std::string rest;
+  EXPECT_THAT(ReadResponse(later, rest),
+              AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("Connection: close\r\n")));
+  EXPECT_TRUE(Closed(later));
+  EXPECT_THAT(rest, Not(HasSubstr("Two")));
+  (void)::close(later);
 }
 
 TEST_F(ServerTest, TimesOutASlowHead) {
@@ -601,15 +1070,56 @@ TEST_F(ServerTest, TimesOutASlowHead) {
   api::ServerOptions options;
   options.head_timeout = std::chrono::milliseconds(200);
   options.body_timeout = std::chrono::milliseconds(400);
+  options.idle_timeout = std::chrono::milliseconds(300);
   Start(options);
   EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n"),
-              StartsWith("HTTP/1.1 408 "));
+              AllOf(StartsWith("HTTP/1.1 408 "), HasSubstr("Connection: close")));
   EXPECT_THAT(
       Exchange(std::format("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
                            "Content-Type: application/json\r\nContent-Length: 50\r\n\r\n{{")),
       StartsWith("HTTP/1.1 408 "));
-  // A connection that sends nothing is closed without a response.
+  // A connection that sends nothing is closed, once idle, without a
+  // response; so is one kept alive after a response.
   EXPECT_EQ(Exchange(""), "");
+  const int kept = Connect("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  std::string pending;
+  EXPECT_THAT(ReadResponse(kept, pending), StartsWith("HTTP/1.1 200 "));
+  EXPECT_TRUE(Closed(kept));
+  (void)::close(kept);
+}
+
+// Many idle connections are held; at the limit the oldest idle one makes
+// room for a new one.
+TEST_F(ServerTest, HoldsManyIdleConnections) {
+  std::vector<int> idle;
+  for (int i = 0; i < 200; ++i) {
+    idle.push_back(Open());
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_THAT(Exchange(Post(Chat("still here"))), HasSubstr("still here"));
+  // Each idle one still works.
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
+      idle[150], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(idle[150], pending), StartsWith("HTTP/1.1 200 "));
+  for (const int fd : idle) {
+    (void)::close(fd);
+  }
+  Stop();
+  api::ServerOptions options;
+  options.max_connections = 8;
+  Start(options);
+  idle.clear();
+  for (int i = 0; i < 8; ++i) {
+    idle.push_back(Open());
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  EXPECT_TRUE(Closed(idle[0]));
+  for (const int fd : idle) {
+    (void)::close(fd);
+  }
 }
 
 TEST_F(ServerTest, QueuesThenRefusesConcurrentRequests) {
@@ -619,18 +1129,197 @@ TEST_F(ServerTest, QueuesThenRefusesConcurrentRequests) {
   options.max_queued = 1;
   Start(options);
   const int running = Connect(Post(Chat("block")));
-  while (!backend_.started.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  WaitStarted();
   const int queued = Connect(Post(Chat("second")));
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // the acceptor queues it
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // the I/O thread queues it
   const std::string refused = Exchange(Post(Chat("third")));
   EXPECT_THAT(refused, StartsWith("HTTP/1.1 429 "));
   EXPECT_THAT(refused, HasSubstr("Retry-After: 10\r\n"));
+  EXPECT_THAT(refused, HasSubstr("x-should-retry: true\r\n"));
   EXPECT_THAT(refused, HasSubstr("rate_limit_error"));
   backend_.release.store(true);
-  EXPECT_THAT(ReadAll(running), StartsWith("HTTP/1.1 200 OK"));
-  EXPECT_THAT(ReadAll(queued), AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("second")));
+  std::string a;
+  std::string b;
+  EXPECT_THAT(ReadResponse(running, a), StartsWith("HTTP/1.1 200 OK"));
+  EXPECT_THAT(ReadResponse(queued, b), AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("second")));
+  (void)::close(running);
+  (void)::close(queued);
+}
+
+// A stream that waits its turn starts once it has waited a keepalive
+// interval, and then hears `: keepalive` until its tokens come; so does
+// one whose model is busy before its first token. A request whose queue
+// wait runs out gets a 429, or, once its stream started, an in-stream
+// error without [DONE].
+TEST_F(ServerTest, KeepsStreamsAliveWhileTheyWait) {
+  Stop();
+  backend_.release.store(false);
+  api::ServerOptions options;
+  options.keepalive = std::chrono::milliseconds(100);
+  Start(options);
+  const int running = Connect(Post(Chat("block")));
+  WaitStarted();
+  const int waiting = Connect(Post(Chat("second", R"(,"stream":true)")));
+  std::string early;
+  const std::string heard = ReadUntil(waiting, early, ": keepalive\n\n");
+  EXPECT_THAT(heard, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("text/event-stream"),
+                           HasSubstr(R"("delta":{"role":"assistant","content":""})"),
+                           HasSubstr(": keepalive\n\n"), Not(HasSubstr("second"))));
+  backend_.release.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(running, pending), StartsWith("HTTP/1.1 200 OK"));
+  const std::string rest = ReadUntil(waiting, early, "data: [DONE]\n\n");
+  EXPECT_THAT(rest, AllOf(HasSubstr(R"("delta":{"content":"sec"})"),
+                          HasSubstr(R"("delta":{"content":"ond"})")));
+  EXPECT_EQ(rest.find("\"role\":\"assistant\""), rest.rfind("\"role\":\"assistant\""));  // once
+  // A running stream hears keepalives before its first token.
+  backend_.started.store(false);
+  backend_.release.store(false);
+  const int busy = Connect(Post(Chat("block", R"(,"stream":true)")));
+  std::string busy_pending;
+  EXPECT_THAT(ReadUntil(busy, busy_pending, ": keepalive\n\n"), HasSubstr(": keepalive\n\n"));
+  backend_.release.store(true);
+  EXPECT_THAT(ReadUntil(busy, busy_pending, "data: [DONE]\n\n"), HasSubstr("data: [DONE]"));
+  for (const int fd : {running, waiting, busy}) {
+    (void)::close(fd);
+  }
+  // The queue wait runs out.
+  Stop();
+  backend_.started.store(false);
+  backend_.release.store(false);
+  options.queue_wait = std::chrono::milliseconds(400);
+  Start(options);
+  const int blocker = Connect(Post(Chat("block")));
+  WaitStarted();
+  const int streamed = Connect(Post(Chat("s", R"(,"stream":true)")));
+  const int plain = Connect(Post(Chat("p")));
+  std::string s;
+  std::string p;
+  const std::string expired = ReadResponse(streamed, s);
+  EXPECT_THAT(expired, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("rate_limit_error"),
+                             Not(HasSubstr("[DONE]"))));
+  EXPECT_THAT(ReadResponse(plain, p),
+              AllOf(StartsWith("HTTP/1.1 429 "), HasSubstr("Retry-After: 10\r\n")));
+  backend_.release.store(true);
+  std::string b;
+  EXPECT_THAT(ReadResponse(blocker, b), StartsWith("HTTP/1.1 200 OK"));
+  for (const int fd : {blocker, streamed, plain}) {
+    (void)::close(fd);
+  }
+}
+
+// A client that stalls mid-request, or stops reading its response, holds
+// up nobody else; one that stops reading a stream ends its generation.
+TEST_F(ServerTest, SlowClientsDoNotHoldUpOthers) {
+  Stop();
+  api::ServerOptions options;
+  options.max_unsent = std::size_t{64} << 10U;
+  options.write_timeout = std::chrono::milliseconds(300);
+  Start(options);
+  const int stalled = Connect("POST /v1/chat/completions HTTP/1.1\r\nHost: loc");
+  const auto t0 = std::chrono::steady_clock::now();
+  EXPECT_THAT(Exchange(Post(Chat("quick"))), HasSubstr("quick"));
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::seconds(2));
+  // A stream nobody reads.
+  const int flood = Open(4096);
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(flood, Post(Chat("flood", R"(,"stream":true)"))));
+  WaitStarted();
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  for (int i = 0; i < 2000 && !backend_.flooded.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(backend_.flooded.load());
+  EXPECT_THAT(Exchange(Post(Chat("after"))), HasSubstr("after"));
+  // A whole response nobody reads: the connection is dropped once its
+  // writes stall, and the rest is never buffered further.
+  const int big = Open(4096);
+  EXPECT_TRUE(jitllm::runtime::http::WriteAll(big, Post(Chat("big"))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  EXPECT_THAT(Exchange(Post(Chat("still"))), HasSubstr("still"));
+  std::string got;
+  while (Recv(big, got)) {
+  }
+  EXPECT_LT(got.size(), std::size_t{16} << 20U);
+  for (const int fd : {stalled, flood, big}) {
+    (void)::close(fd);
+  }
+}
+
+// An unknown field is ignored and counted by name on a loopback-only
+// route; its name is logged once, its value never.
+TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
+  Stop();
+  std::FILE* log = std::tmpfile();
+  ASSERT_NE(log, nullptr);
+  api::ServerOptions options;
+  options.log = log;
+  Start(options);
+  EXPECT_THAT(Exchange(Post(Chat("one", R"(,"frobnicate":"secret-value-1")"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("one")));
+  EXPECT_THAT(Exchange(Post(Chat("two", R"(,"frobnicate":{"a":"secret-value-2"})"))),
+              StartsWith("HTTP/1.1 200 "));
+  const std::string table =
+      BodyOf(Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  auto doc = json::Parse(table);
+  ASSERT_TRUE(doc.has_value()) << table;
+  ASSERT_EQ(doc->root().find("data")->size(), 1U);
+  EXPECT_EQ(doc->root().find("data")->at(0).find("name")->string(), "frobnicate");
+  EXPECT_EQ(doc->root().find("data")->at(0).find("count")->int64(), 2);
+  EXPECT_THAT(Exchange("POST /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n"
+                       "Content-Length: 0\r\n\r\n"),
+              StartsWith("HTTP/1.1 405 "));
+  Stop();
+  (void)std::fflush(log);
+  std::rewind(log);
+  std::string text;
+  std::array<char, 4096> buf{};
+  for (std::size_t n = 0; (n = std::fread(buf.data(), 1, buf.size(), log)) > 0;) {
+    text.append(buf.data(), n);
+  }
+  (void)std::fclose(log);
+  const std::string line = "an unknown request field is ignored: frobnicate";
+  EXPECT_NE(text.find(line), std::string::npos) << text;
+  EXPECT_EQ(text.find(line), text.rfind(line));
+  EXPECT_THAT(text, Not(HasSubstr("secret-value")));
+}
+
+// The node's other names, as the resolution gives them (the tailnet's
+// here), pass the Host and Origin guards; others do not.
+TEST_F(ServerTest, AcceptsTheNodesNames) {
+  Stop();
+  api::ServerOptions options;
+  options.hosts.AddName("spark-b.coati-puffin.ts.net");
+  options.hosts.AddName("spark-b");
+  std::array<std::uint8_t, 16> tailnet{100, 114, 118, 63};
+  options.hosts.AddAddress(false, tailnet);
+  Start(options);
+  const auto get = [&](std::string_view host, std::string_view extra = "") {
+    return Exchange(std::format("GET /v1/models HTTP/1.1\r\nHost: {}\r\n{}\r\n", host, extra));
+  };
+  for (const std::string_view ok :
+       {"spark-b.coati-puffin.ts.net:8114", "SPARK-B", "100.114.118.63:8114", "localhost"}) {
+    EXPECT_THAT(get(ok), StartsWith("HTTP/1.1 200 ")) << ok;
+  }
+  for (const std::string_view bad : {"evil.coati-puffin.ts.net", "spark-b.coati-puffin.ts.net.",
+                                     "100.114.118.64", "[fd7a:115c:a1e0::1]"}) {
+    EXPECT_THAT(get(bad), StartsWith("HTTP/1.1 403 ")) << bad;
+  }
+  EXPECT_THAT(
+      get("spark-b", std::format("Origin: http://spark-b.coati-puffin.ts.net:{}\r\n", port_)),
+      StartsWith("HTTP/1.1 200 "));
+  EXPECT_THAT(get("spark-b", "Origin: http://spark-b.coati-puffin.ts.net:3000\r\n"),
+              StartsWith("HTTP/1.1 403 "));
+  EXPECT_THAT(get("spark-b", std::format("Origin: http://evil.example:{}\r\n", port_)),
+              StartsWith("HTTP/1.1 403 "));
+  // A bare scheme once aborted the process; it is a 403, and the route
+  // goes on serving.
+  for (const std::string_view origin : {"http", "https", "null"}) {
+    EXPECT_THAT(get("localhost", std::format("Origin: {}\r\n", origin)),
+                StartsWith("HTTP/1.1 403 "))
+        << origin;
+  }
+  EXPECT_THAT(get("localhost"), StartsWith("HTTP/1.1 200 "));
 }
 
 TEST_F(ServerTest, AFailureAfterTheHeadersEndsTheStreamWithoutDone) {
@@ -644,9 +1333,7 @@ TEST_F(ServerTest, AFailureAfterTheHeadersEndsTheStreamWithoutDone) {
 TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
   backend_.release.store(false);
   const int fd = Connect(Post(Chat("block")));
-  while (!backend_.started.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  WaitStarted();
   (void)::close(fd);
   for (int i = 0; i < 400 && !backend_.cancelled.load(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -659,14 +1346,21 @@ TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
 TEST_F(ServerTest, StoppingEndsARunningRequest) {
   backend_.release.store(false);
   const int fd = Connect(Post(Chat("block")));
-  while (!backend_.started.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  WaitStarted();
+  const int queued = Connect(Post(Chat("queued")));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const std::uint64_t one = 1;
   (void)!::write(wake_, &one, sizeof one);
-  EXPECT_THAT(ReadAll(fd), StartsWith("HTTP/1.1 503 "));
+  std::string a;
+  std::string b;
+  EXPECT_THAT(ReadResponse(fd, a),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("Connection: close\r\n")));
+  EXPECT_THAT(ReadResponse(queued, b),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("Retry-After: 10\r\n")));
   thread_.join();
   (void)::close(wake_);
+  (void)::close(fd);
+  (void)::close(queued);
   EXPECT_TRUE(result_.has_value());
 }
 

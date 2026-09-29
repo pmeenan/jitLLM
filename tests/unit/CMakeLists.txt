@@ -41,8 +41,8 @@ target_link_libraries(runtime_test PRIVATE jitllm_runtime jitllm_platform)
 jitllm_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The loopback chat route (D-097): requests and their bounds, and the server
-# over a real loopback socket with a fake backend.
+# The chat route (D-097): requests and their bounds, the bind resolution and
+# Host guard, and the server over real loopback sockets with a fake backend.
 add_executable(api_test api_test.cc)
 target_link_libraries(api_test PRIVATE jitllm_runtime jitllm_json)
 jitllm_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)

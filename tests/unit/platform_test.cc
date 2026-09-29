@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -24,6 +25,7 @@
 #include "platform/direct_io.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
+#include "platform/interfaces.h"
 #include "platform/path_trust.h"
 
 namespace {
@@ -417,6 +419,36 @@ TEST(DirectIo, ProbesTheBuildTreesFilesystem) {
   EXPECT_LE(probe->offset_alignment, jitllm::platform::kDirectIoAlignment);
   // The probe's file had no name: nothing is left behind.
   EXPECT_TRUE(fs::is_empty(scratch.path()));
+}
+
+// The chat route's view of the node's network (platform/interfaces.h):
+// every host has its loopback addresses, and the open-file limit only
+// rises.
+TEST(InterfacesTest, ReadsTheLoopbackAddress) {
+  auto addresses = jitllm::platform::ReadInterfaceAddresses();
+  ASSERT_TRUE(addresses.has_value()) << addresses.error();
+  bool loopback = false;
+  for (const jitllm::platform::InterfaceAddress& a : *addresses) {
+    if (!a.ipv6 && a.Text() == "127.0.0.1") {
+      loopback = a.loopback;
+    }
+  }
+  EXPECT_TRUE(loopback);
+  const std::uint64_t now = jitllm::platform::RaiseOpenFileLimit(0);
+  EXPECT_GT(now, 0U);
+  EXPECT_GE(jitllm::platform::RaiseOpenFileLimit(now + 1), now);
+}
+
+// A reverse lookup never holds its caller past its limit, whatever the
+// resolver does (here it may answer at once, from /etc/hosts, or not).
+TEST(InterfacesTest, AReverseLookupKeepsToItsLimit) {
+  jitllm::platform::InterfaceAddress address;
+  address.bytes = {192, 0, 2, 1};  // TEST-NET-1: no name anywhere, perhaps a slow no
+  for (const auto limit : {std::chrono::milliseconds(0), std::chrono::milliseconds(50)}) {
+    const auto start = std::chrono::steady_clock::now();
+    (void)jitllm::platform::ReverseName(address, limit);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, limit + std::chrono::seconds(1));
+  }
 }
 
 }  // namespace

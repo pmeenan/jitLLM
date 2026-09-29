@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The service with models configured (D-097; docs/runtime-serving.md#the-chat-route):
-// the configured models registered on the node (serving.h), the loopback
-// chat route (api_server.h) over them, and the runtime's signals watched
-// through a signalfd on the node's driver thread, which runs every request.
+// the configured models registered on the node (serving.h), the chat
+// route (api_server.h) over them, where [client] bind says (binding.h), and
+// the runtime's signals watched through a signalfd on the node's driver
+// thread, which runs every request.
 
 #include <sys/random.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -26,10 +28,12 @@
 
 #include "base/report.h"
 #include "chat/chat.h"
+#include "platform/interfaces.h"
 #include "platform/job.h"
 #include "platform/sd_notify.h"
 #include "runtime/api.h"
 #include "runtime/api_server.h"
+#include "runtime/binding.h"
 #include "runtime/commands.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
@@ -161,9 +165,9 @@ class NodeBackend final : public api::Backend {
     if (request.temperature > 0) {
       options.sampling =
           execution::SamplingParams{.temperature = static_cast<float>(request.temperature),
-                                    .top_k = 0,
+                                    .top_k = request.top_k,
                                     .top_p = static_cast<float>(request.top_p),
-                                    .min_p = 0.0F};
+                                    .min_p = static_cast<float>(request.min_p)};
       options.seed = request.seed.value_or(RandomSeed());
     }
     tokenizer::StreamDecoder decoder(l.tokenizer(), {});
@@ -272,6 +276,52 @@ class NodeBackend final : public api::Backend {
   std::string failure_;  // a node failure: the service stops
 };
 
+// Descriptors the node needs besides the chat route's connections.
+constexpr std::uint64_t kReservedFiles = 256;
+
+// The reverse lookups' time at startup, all of them together: MagicDNS
+// answers in milliseconds, and a resolver that does not answer costs no
+// more than this (its names are then not accepted; the start log says
+// which are).
+constexpr auto kLookupBudget = std::chrono::seconds(5);
+
+// `[client] bind` against the node's addresses (binding.h), its notes
+// logged (its unauthenticated listeners are, once it listens).
+std::expected<api::Listening, std::string> ResolveBind(const config::ClientConfig& client,
+                                                       std::FILE* log) {
+  auto addresses = platform::ReadInterfaceAddresses();
+  if (!addresses) {
+    return std::unexpected("the chat route cannot read the node's addresses: " + addresses.error());
+  }
+  const auto by = std::chrono::steady_clock::now() + kLookupBudget;
+  const api::ReverseLookup reverse =
+      [by](const platform::InterfaceAddress& a) -> std::optional<std::string> {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+        by - std::chrono::steady_clock::now());
+    if (left.count() <= 0) {
+      return std::nullopt;
+    }
+    return platform::ReverseName(a, left);
+  };
+  api::Listening listening =
+      api::ResolveListening(client, *addresses, platform::HostName(), reverse);
+  for (const std::string& note : listening.notes) {
+    Say(log, note);
+  }
+  if (listening.endpoints.empty()) {
+    return std::unexpected("[client] bind resolves to no address to listen on");
+  }
+  return listening;
+}
+
+std::string HostNames(const api::HostGuard& hosts) {
+  std::string names;
+  for (const std::string& name : hosts.names()) {
+    names += (names.empty() ? "" : ", ") + name;
+  }
+  return names.empty() ? "(none)" : names;
+}
+
 }  // namespace
 
 int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles,
@@ -286,18 +336,48 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     if (started) {
       backend.emplace(server, config, log);
       api::ServerOptions options;
-      options.bind = config.client;
-      options.log = log;
-      http.emplace(*backend, std::move(options));
-      if (auto port = http->Listen(); !port) {
-        started =
-            std::unexpected(std::format("the chat route cannot listen on {}:{}: {}",
-                                        config.client.address, config.client.port, port.error()));
+      std::vector<std::string> unauthenticated;
+      if (auto listening = ResolveBind(config.client, log); !listening) {
+        started = std::unexpected(listening.error());
       } else {
-        Say(log, std::format("the chat route listens on {}{}{}:{} (/v1/chat/completions, "
-                             "/v1/models)",
-                             config.client.ipv6 ? "[" : "", config.client.address,
-                             config.client.ipv6 ? "]" : "", *port));
+        options.bind = std::move(listening->endpoints);
+        options.hosts = std::move(listening->hosts);
+        unauthenticated = std::move(listening->unauthenticated);
+      }
+      const std::vector<config::ClientEndpoint> endpoints = options.bind;
+      const std::string names = HostNames(options.hosts);
+      options.max_queued = config.client.max_queued;
+      options.max_connections = config.client.max_connections;
+      // Each connection is a descriptor; the rest (model files, the
+      // node's own) fit in kReservedFiles.
+      const std::uint64_t files =
+          platform::RaiseOpenFileLimit(std::uint64_t{options.max_connections} + kReservedFiles);
+      if (files < std::uint64_t{options.max_connections} + kReservedFiles) {
+        const std::uint64_t fits = files > kReservedFiles + 16 ? files - kReservedFiles : 16;
+        Say(log, std::format("the open-file limit is {}: the chat route keeps at most {} "
+                             "connections, not the {} configured",
+                             files, fits, options.max_connections));
+        options.max_connections = static_cast<std::size_t>(fits);
+      }
+      options.log = log;
+      if (started) {
+        http.emplace(*backend, std::move(options));
+        if (auto ports = http->Listen(); !ports) {
+          started = std::unexpected(std::format("the chat route cannot listen: {}", ports.error()));
+        } else {
+          std::string where;
+          for (std::size_t i = 0; i < endpoints.size() && i < ports->size(); ++i) {
+            const config::ClientEndpoint& e = endpoints[i];
+            where += std::format("{}{}{}{}:{}", where.empty() ? "" : ", ", e.ipv6 ? "[" : "",
+                                 e.address, e.ipv6 ? "]" : "", (*ports)[i]);
+          }
+          Say(log, std::format("the chat route listens on {} (/v1/chat/completions, /v1/models); "
+                               "Host names accepted besides loopback: {}",
+                               where, names));
+          for (const std::string& line : unauthenticated) {
+            Say(log, line);
+          }
+        }
       }
     }
     if (!started) {
@@ -314,9 +394,8 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
         Say(log, "cannot watch signals (signalfd)");
         status = kExitFailure;
       } else {
-        if (auto notified = platform::NotifyServiceManager(
-                std::format("READY=1\nSTATUS=serving {} models on the loopback chat route",
-                            backend->Models().size()));
+        if (auto notified = platform::NotifyServiceManager(std::format(
+                "READY=1\nSTATUS=serving {} models on the chat route", backend->Models().size()));
             !notified) {
           Say(log, notified.error());
         }

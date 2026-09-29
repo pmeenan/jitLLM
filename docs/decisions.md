@@ -39,69 +39,144 @@ one Spark and on two.
 
 ---
 
-## D-097: M3's loopback chat route: `[client] bind` (loopback only), a strict OpenAI subset with fixed intake bounds, one request at a time behind a short queue  (2026-09-28, status: proposed by the M3 chat-route slice, for the owner's review; adds a configuration key and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its first key; a subset of D-040's and D-045's M5 contract, which it does not amend)
+## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract)
 
 **Decision.** With models configured (D-096), the runtime service serves
-[runtime-serving.md](runtime-serving.md#the-chat-route)'s chat route:
-- **Listener.** `[client] bind = "<address>:<port>"`, default
-  `127.0.0.1:8114` (D-063's front-door port). Only a loopback address is
-  accepted (127.0.0.0/8 or `[::1]`); anything else is a configuration
-  error, since a remote binding needs D-014's authentication and transport
-  protection, which come with M5's front door. No other `[client]` key
-  exists yet. A service without models listens on nothing, as before.
+[runtime-serving.md](runtime-serving.md#the-chat-route)'s chat route. The
+M3 chat-route slice proposed a loopback-only route that refused unknown
+fields and closed every connection; the owner's review (2026-09-28)
+amended it to what follows.
+- **Listener.** `[client] bind` is one entry or a list of 1 to 16:
+  `"loopback"` (127.0.0.1, and ::1 where the node has it), `"tailscale"`
+  (the node's tailnet addresses) or an address with an optional port
+  (`"192.168.1.5"`, `"0.0.0.0:8114"`, `"[::]"`), any address at all;
+  `[client] port` (default 8114, D-063's front-door port) is the port of
+  the symbolic entries and of an address written without one. The default
+  is `["loopback", "tailscale"]`. The tailnet is found at startup from the
+  interfaces (getifaddrs, not the tailscale CLI): an interface named
+  `tailscale*` or holding an address in fd7a:115c:a1e0::/48, and its
+  addresses in that range or 100.64.0.0/10 (the same /10 on another
+  interface is a carrier's shared space, RFC 6598, and is not the
+  tailnet). Without one the route serves loopback only and says so; a
+  restart picks up a tailnet that came later. No binding needs
+  authentication (D-014's owner note, confirmed 2026-09-28): an address
+  that is neither loopback nor the tailnet, a wildcard included, is served
+  without it, and the start log says so for each such listener, as
+  information, not an error; an optional API key is M5's. A service
+  without models listens on nothing, as before. Peer projects checked
+  on 2026-09-28: Ollama (127.0.0.1:11434, widened by `OLLAMA_HOST`),
+  llama.cpp's llama-server (127.0.0.1:8080, optional `--api-key`),
+  SGLang (127.0.0.1) and LM Studio (127.0.0.1:1234, a "Serve on Local
+  Network" toggle) default to loopback, all without authentication by
+  default; vLLM binds every
+  interface when `--host` is unset (`sock_addr = (args.host or "",
+  args.port)` in vllm/entrypoints/launchers/launcher.py), with an optional
+  `--api-key` that covers only /v1, /v2 and /inference.
+- **Browser guards.** The `Host` (and an `Origin`, which must also name a
+  listening port) must name the node as it listens: loopback always; the
+  node's host name; with the tailnet, its addresses, its MagicDNS name
+  (the reverse name the node's resolver gives a tailnet address, under
+  ts.net) and that name's first label; an explicit address and its
+  reverse name (only a ts.net name for an address in Tailscale's ranges);
+  a wildcard, every non-link-local address of its family and their
+  reverse names (at most 16 lookups, within 5 s together at startup).
+  Anything else is a 403, as is a cross-site `Sec-Fetch-Site`. No CORS
+  headers are sent.
 - **Surface.** `POST /v1/chat/completions` (non-streaming and SSE),
-  `GET /v1/models`, `GET /v1/models/{id}`, in OpenAI's shapes. Honored:
+  `GET /v1/models`, `GET /v1/models/{id}`, in OpenAI's shapes, and for
+  loopback peers only `GET /jitllm/v1/ignored-fields` (below). Honored:
   `model`, text `messages` (system, developer as system, user, assistant
   with its `reasoning` or `reasoning_content` sent back),
-  `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `seed`,
-  `stop` (matched in the answer, not the reasoning), `stream`,
-  `stream_options.include_usage`. A listed set is accepted only at its
-  "off" value (n = 1, zero penalties, no logprobs, no tools, text
-  responses) and a listed set of metadata is ignored; every other field is
-  a 400 naming it (client-api-baseline.md's documented-rule clause).
-  Reasoning goes out as `reasoning` (D-043's spelling), split at the
-  template's `</think>` token. Omitted `temperature` samples at 1, as
-  OpenAI documents; 0 is greedy.
+  `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `top_k`,
+  `min_p`, `seed`, `stop` (matched in the answer, not the reasoning),
+  `stream`, `stream_options.include_usage`. Known fields that ask for what
+  the route does not do are refused with a 400 naming them, since ignoring
+  them would answer a different question: `n` above 1, nonzero penalties
+  (`repetition_penalty` other than 1), `logprobs` true or `top_logprobs`
+  above 0, non-empty `tools` or `functions`, a `tool_choice` other than
+  none or auto, a non-text `response_format`, a non-empty `logit_bias`,
+  `modalities` other than text, `audio`, `store` true, and OpenRouter's
+  `transforms` and `plugins` whatever their value (D-046). A listed set of
+  metadata is ignored, and an assistant message's null echoes
+  (`function_call`, `audio`, `refusal`, `tool_calls: []`, `annotations`)
+  are accepted. **Every other field, at the top, in a message, a text
+  part or `stream_options`, is ignored with a 200**, and its name (never
+  its value, D-014) is counted in a table of at most 256 names (count,
+  first and last seen), logged once when first seen and readable at the
+  diagnostic route, which M5's management listener takes over. Reasoning
+  goes out as `reasoning` (D-043's spelling), split at the template's
+  `</think>` token. Omitted `temperature` samples at 1, as OpenAI
+  documents; 0 is greedy.
 - **Bounds and statuses** as runtime-serving.md tabulates them: head 16
   KiB and 64 headers, target 2 KiB, body 4 MiB (Content-Length only), JSON
   depth 16 and 262,144 values, 1,024 messages of at most 1 MiB, 64
   content parts, 4 stop strings of 1–128 bytes, `max_tokens` 1 to the
-  model's usable context less the prompt, temperature 0–2, top_p (0, 1];
-  timeouts of 10 s for the head, 30 s for the body, 30 s per stalled
-  write, 120 s in the queue and 600 s a request. 413/414/408/411/501/505
-  for HTTP bounds, 400 for the body's, 404 for an unknown model, 400 for
-  the image pipeline, 403 for a non-loopback Host or any `Origin` or
-  cross-site `Sec-Fetch-Site`, 415 without `application/json`, 429 with
-  `Retry-After: 10` beyond four queued requests or 120 s queued, 504 past
-  the deadline, 503 while stopping.
-- **One request at a time.** Requests run in arrival order on the node's
-  driver thread; up to four wait. Every response closes its connection.
-  No keepalives: after a stream's headers the silence is a swap (~10 s)
-  and the prefill, inside the named clients' 300 s stream-idle bounds at
-  the default 8,704-token context; a much larger configured context is
-  not claimed to stay inside them (M5's keepalives). A queued wait comes
-  before the headers.
+  model's usable context less the prompt, temperature 0–2, top_p (0, 1],
+  top_k −1 to 2³¹−1, min_p [0, 1]; timeouts of 10 s for the head and 30 s
+  for the body (from a request's first byte), 30 s for output that makes
+  no progress, 60 s idle between requests, 120 s in the queue and 600 s a
+  request; 1,024 connections (`[client] max_connections`, 1–65,536) and
+  64 queued requests (`[client] max_queued`, 1–1,024), 64 MiB of bodies
+  arriving at once, 1 MiB of a stream its client has not taken.
+  413/414/408/411/417/501/505 for HTTP bounds, 400 for the body's, 404 for
+  an unknown model, 400 for the image pipeline, 403 for the guards, 415
+  without `application/json`, 429 with `Retry-After: 10` and
+  `x-should-retry: true` beyond the queue or its wait, 503 (the same
+  headers) for too many connections or bodies and while stopping, 504
+  past the deadline.
+- **Connections and threads.** One I/O thread runs an epoll loop over the
+  listeners and every connection, all non-blocking, and never waits on the
+  model; the driver thread (the node's one) runs requests one at a time,
+  first come first served, and never touches a socket: it appends each
+  response's bytes to a buffer the I/O thread writes as the client takes
+  them. HTTP/1.1 connections persist (keep-alive, 60 s idle; a stream is
+  chunked); at the connection limit the oldest idle connection is closed
+  for a new one. A request sent before the previous response ended
+  (pipelining) is not read: that response carries `Connection: close` and
+  the connection closes after it. A client that stops reading is dropped
+  (30 s without progress, or 1 MiB of a stream behind) and its generation
+  ends at the next step; a client that leaves ends its generation at the
+  next step and the request's lease is released as the backend returns.
+- **Keepalives.** A streamed request that waits in the queue for 15 s is
+  admitted early: its headers and role chunk go out then, and `:
+  keepalive` comment lines follow every 15 s without output, queued,
+  swapping or prefilling (D-045, well inside the named clients' 300 s
+  bounds); a queue wait that runs out after its headers is an in-stream
+  `rate_limit_error` without `[DONE]`, and a refusal from the model after
+  them (the context exceeded) an in-stream error. A request that starts
+  within 15 s is admitted by the model first, so those refusals stay
+  400s before any header. Non-streaming requests wait silently, up to the
+  queue's wait.
 
 **Why.** plan.md's last M3 item: a minimal OpenAI-compatible route with
-numeric intake bounds fixed before it accepts input. Refusing unknown
-fields rather than ignoring them keeps M5 free to give them meaning; a
-loopback-only key keeps D-014 true without an authentication design; one
-request at a time is M3's single user, and a bounded queue with 429s is
-client-api-baseline.md's admission table. Our own HTTP/1.1 reader (about
-400 lines) instead of a library: no new third-party code, and bounds we
-state ourselves.
+numeric intake bounds fixed before it accepts input. The owner's
+amendments: the tailnet is where the owner's clients are (Sparks,
+laptops), and authentication is optional on any binding, as in the other
+engines named above (D-014's owner note); ignoring unknown
+fields by name is what unmodified clients need (their SDKs send fields a
+route does not use), while the table shows which ones M5 should give
+meaning; the known fields that change the answer stay refused. An event
+loop keeps many idle client connections (agents keep pools) and slow
+readers from blocking anyone, and keepalives let a stream survive the
+queue and a swap. One request at a time is M3's single user; batching is
+later. Our own HTTP/1.1 code (no new dependency, bounds we state).
 
-**Consequences.** The configuration gains `[client] bind` (schema version
-stays 2: a new key). A CPU-only build refuses to start with models
-configured (it could never serve them). The runtime samples as well as
-decodes greedily: seeded by position (execution/sampling.h), with
-speculative sampling (VerifyDraft) where a model has a drafter. Clients
-are not claimed to work: M5 validates named clients; M3's route is
-checked with curl.
+**Consequences.** The configuration gains `[client] bind` (a string or a
+list), `port`, `max_connections` and `max_queued`; schema version stays 2
+(new keys; the loopback-only form still parses). The default listener
+widens from 127.0.0.1 to loopback and the tailnet. The runtime raises its
+open-file limit toward `max_connections` plus 256 and keeps fewer
+connections, saying so, if the hard limit is lower. A CPU-only build
+refuses to start with models configured (it could never serve them). The
+runtime samples as well as decodes greedily: seeded by position
+(execution/sampling.h), with speculative sampling (VerifyDraft) where a
+model has a drafter, now with `top_k` and `min_p`. Clients are not
+claimed to work: M5 validates named clients; M3's route is checked with
+curl.
 
-**Reopen if.** M5's front door replaces it (credentials, CORS for
-loopback origins, keepalives, tools, reasoning controls, Responses and
-Messages), or a real client needs a field refused here before then.
+**Reopen if.** M5's front door replaces it (an optional API key, CORS
+for loopback origins, tools, reasoning controls, Responses and Messages),
+or a real client needs a known field refused here.
 
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057)
 
@@ -2021,7 +2096,7 @@ apport or the kernel dumps a process that exits from a signal handler; a
 job must survive the runtime's unit restart; or DGX OS moves off cgroup v2
 or loses `DelegateSubgroup=` (systemd 254+).
 
-## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces; `[client] bind` fixed by D-097)
+## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces; `[client]` fixed by D-097)
 
 **Decision.** How M1's Node configuration item reads and checks the node's
 configuration (`src/config/`, `src/platform/path_trust.*`,
@@ -4645,7 +4720,7 @@ versioning names any jitLLM `format` value. No implementation is claimed.
 the schema under a pinned client version, or fallback is accepted under
 D-042 and needs the reserved spelling made concrete.
 
-## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064; the context-compacted release check moved from M3 to M4 in the 2026-09-23 milestone ladder, plan.md, which are M5 and M6 under D-087)
+## D-045: Front-door listener, auth and CORS defaults; admission status and keepalive contract; standard-client signals and alias echo  (2026-09-22, status: accepted; extends D-014 and D-040–D-044; OpenRouter vocabulary in D-046; streaming scope amended by D-047; extension naming in D-062; default ports in D-063; TLS sources in D-065; local management in D-064; the context-compacted release check moved from M3 to M4 in the 2026-09-23 milestone ladder, plan.md; its rule that a non-loopback binding requires credentials amended by the owner's 2026-09-28 note on D-014 and D-097: credentials are optional on every binding)
 
 **Decision.** At the owner's direction after review of the D-040–D-044
 documents, the inference front door adopts these public-interface rules:
@@ -4663,7 +4738,12 @@ documents, the inference front door adopts these public-interface rules:
   credential a client presents; configuring one turns anonymous access off
   unless explicitly re-enabled, after which a request carrying both
   `Authorization` and `x-api-key` must validate on each. Any non-loopback
-  binding requires credentials and transport protection. Authorization is
+  binding requires credentials and transport protection. *(Amended
+  2026-09-28 by the owner's note on D-014 and D-097: no binding requires
+  credentials; the front door listens on loopback and the tailnet by
+  default and anonymously on any address configured explicitly, as other
+  engines do, and an inference credential is an optional feature, M5's
+  optional API key.)* Authorization is
   decided per operation, never by path prefix; an inference credential never
   carries management authority; discovery output is filtered by caller
   authority.
@@ -6087,7 +6167,7 @@ in the handoff note.
 (a product-scope decision to make explicitly), or the owner extends the core
 list.
 
-## D-014: Local-first management and privacy defaults  (2026-09-20, status: accepted; TLS certificate sources in D-065; local management authority in D-064)
+## D-014: Local-first management and privacy defaults  (2026-09-20, status: accepted; TLS certificate sources in D-065; local management authority in D-064; authentication optional on every inference binding, the tailnet and explicit addresses included, by the owner's note of 2026-09-28 below and D-097)
 
 **Decision.** The management API binds to local interfaces by default. Remote
 access requires authentication and transport protection. Prompts and KV/state
@@ -6101,6 +6181,21 @@ explicit.
 **Consequences.** Detailed traces are opt-in per capture. Spill-file location,
 permissions, and lifetime are part of the storage design, not an afterthought.
 Any remote dashboard needs an authentication story before it ships.
+
+**Owner's note (2026-09-28, with D-097; confirmed by the owner that
+day).** Authentication is not required on any binding of the inference
+endpoint: jitLLM does what other engines do. Ollama, llama.cpp's
+llama-server, SGLang and LM Studio serve without authentication by
+default, and llama-server and vLLM offer an optional API key. The
+inference endpoint listens on loopback and the tailnet by default (the
+tailnet's WireGuard, membership and ACLs decide who reaches it), and a
+binding the owner configures on any other address, all interfaces
+included, needs no credential either; the runtime says at every start
+which listeners are served without authentication, as information, not
+as an error. Credentials are an optional feature, an M5 item (an optional
+API key, as llama-server and vLLM have), never a precondition for a
+binding. The rest of this entry (management local by default, no prompt
+or state logging, protected spill files) is unchanged.
 
 **Reopen if.** A deployment model beyond a single owner's local nodes is
 adopted.

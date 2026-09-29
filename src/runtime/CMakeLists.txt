@@ -3,9 +3,10 @@
 
 # The node runtime process (/usr/libexec/jitllm/jitllm-runtime once
 # packaged, D-063): startup, readiness and stop (runtime.h), the serving
-# commands' arguments (commands.h), and the loopback chat route's HTTP,
-# requests and server (http.h, api.h, api_server.h; D-097), all vendor-free.
-add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc)
+# commands' arguments (commands.h), and the chat route's HTTP,
+# requests, binding and server (http.h, api.h, binding.h, api_server.h;
+# D-097), all vendor-free.
+add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_config jitllm_platform
                       PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json

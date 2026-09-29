@@ -56,19 +56,29 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   speculative where a model has a drafter (`--plain` turns it off). CUDA
   builds only.
 - With models configured, the runtime service serves a minimal
-  OpenAI-compatible chat route on loopback (D-097): `POST
-  /v1/chat/completions` (text messages; `max_tokens` or
-  `max_completion_tokens`, `temperature`, `top_p`, `seed`, `stop`, `stream`
-  with `stream_options.include_usage`; reasoning returned as `reasoning`),
-  `GET /v1/models` and `GET /v1/models/{id}`, one request at a time with a
-  short queue, swapping models as requested. No credential; browser
-  requests are refused. Every intake bound, timeout and refusal is listed
-  in docs/runtime-serving.md; unsupported fields are refused, not ignored.
-  The listener is `[client] bind` in the configuration, a loopback address
-  and port (default `127.0.0.1:8114`); the configuration's schema version
-  stays 2. The runtime can sample (seeded, with speculative sampling where
-  a model has a drafter) as well as decode greedily. A CPU-only build
-  refuses to start with models configured.
+  OpenAI-compatible chat route (D-097): `POST /v1/chat/completions` (text
+  messages; `max_tokens` or `max_completion_tokens`, `temperature`,
+  `top_p`, `top_k`, `min_p`, `seed`, `stop`, `stream` with
+  `stream_options.include_usage`; reasoning returned as `reasoning`),
+  `GET /v1/models` and `GET /v1/models/{id}`, one request at a time,
+  first come first served, behind a queue of 64, swapping models as
+  requested. It listens on loopback and the node's Tailscale addresses by
+  default (`[client] bind = ["loopback", "tailscale"]`, `port = 8114`), or
+  on any configured address; none needs authentication, as with other
+  engines, and the start log names each listener beyond loopback and the
+  tailnet as served without it. The Host and Origin must name the node as
+  it listens (its tailnet MagicDNS name included), and cross-site browser
+  requests are refused. Connections persist (HTTP/1.1 keep-alive, up to
+  `[client] max_connections`, 1,024 by default) on an event loop where no
+  slow client holds up another; streams get `: keepalive` comments while
+  they wait, swap or prefill. Known fields the route does not implement
+  are refused when they would change the answer; unknown fields are
+  ignored, their names (never values) counted at
+  `GET /jitllm/v1/ignored-fields` for loopback clients. Every intake
+  bound, timeout and refusal is listed in docs/runtime-serving.md. The
+  configuration's schema version stays 2. The runtime can sample (seeded,
+  with speculative sampling where a model has a drafter) as well as decode
+  greedily. A CPU-only build refuses to start with models configured.
 - A DeepSeek artifact whose chat template has no native renderer is now
   refused when it registers, as Qwen3.8's already was, naming the
   template's SHA-256.
